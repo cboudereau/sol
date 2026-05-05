@@ -19,13 +19,14 @@ Sol inherits 42 GitHub Actions workflows from Vector. Most reference infrastruct
 
 ## Decision
 
-**Option C** — Write 2 new workflow files (`ci.yml`, `build.yml`) plus a simplified `changes.yml`. Reuse the `.github/actions/setup` composite action as-is. Delete all 42 existing workflow files and the unused custom actions.
+**Option C** — Write 3 new workflow files (`ci.yml`, `build.yml`, `nightly.yml`). Reuse the `.github/actions/setup` composite action as-is. Delete all 42 existing workflow files, the `changes.yml` path-filter workflow, and the unused custom actions.
 
-This gives us a clean, auditable CI surface while keeping the setup action that handles Rust toolchain installation, Cargo caching, mold linker, and tool installation.
+All CI checks run unconditionally on every PR (no path-based filtering). This gives us a clean, auditable CI surface while keeping the setup action that handles Rust toolchain installation, Cargo caching, mold linker, and tool installation.
 
 ## Consequences
 
-- All 42 existing workflow files will be deleted.
-- Custom actions `pull-test-runner` and `spelling/` will be deleted.
+- All 42 existing workflow files and `changes.yml` deleted.
+- Custom actions `pull-test-runner` and `spelling/` deleted.
 - The `setup` action is retained as the only custom action (`install-vdev` kept as its dependency).
+- No path-based filtering — every check runs on every PR. Simpler to maintain than conditional skipping.
 - Future upstream syncs of workflows are no longer possible (intentional — Sol's CI diverges from Vector).

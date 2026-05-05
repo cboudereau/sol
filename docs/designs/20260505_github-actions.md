@@ -16,17 +16,17 @@ Rename the default branch to `main`. All workflow triggers, branch references, a
 
 On every pull request, run the following checks (all must pass before merge):
 
-| Check | Command | Runner | Condition |
-|---|---|---|---|
-| Format | `make check-fmt` | ubuntu-24.04 | source changed |
-| Clippy | `make check-clippy` | ubuntu-24.04-8core | source changed |
-| Unit tests (Linux) | `make test` | ubuntu-24.04-8core | source changed |
-| Component spec validation | `make test-component-validation` | (same job as Linux unit tests) | source changed |
-| Unit tests (Windows) | `make test` | windows-2025-8core | source changed |
-| Security & license audit | `make check-deny` | ubuntu-24.04 | dependencies changed |
-| Protobuf compatibility | `buf breaking --against .git#branch=main` | ubuntu-24.04 | proto files changed |
+| Check | Command | Runner |
+|---|---|---|
+| Format | `make check-fmt` | ubuntu-24.04 |
+| Clippy | `make check-clippy` | ubuntu-24.04-8core |
+| Unit tests (Linux) | `make test` | ubuntu-24.04-8core |
+| Component spec validation | `make test-component-validation` | (same job as Linux unit tests) |
+| Unit tests (Windows) | `make test` | windows-2025-8core |
+| Security & license audit | `make check-deny` | ubuntu-24.04 |
+| Protobuf compatibility | `buf breaking --against .git#branch=main` | ubuntu-24.04 |
 
-Only run checks when relevant files change. Skip when only docs change.
+All checks run unconditionally on every PR — no path-based filtering.
 
 ### <a id="fr2"></a>FR2 — Build DEB package
 
@@ -44,7 +44,8 @@ Push the Docker image to a container registry configured via GitHub secrets:
 
 | Secret | Purpose |
 |---|---|
-| `DOCKER_REGISTRY` | Registry URL (e.g., `ghcr.io/org`, `registry.example.com`) |
+| `DOCKER_REGISTRY` | Registry host for login (e.g., `ghcr.io`, `registry.hub.docker.com`) |
+| `DOCKER_IMAGE` | Full image path for tagging (e.g., `ghcr.io/org/sol`, `superbeeeeeee/sol`) |
 | `DOCKER_USERNAME` | Registry username |
 | `DOCKER_PASSWORD` | Registry password/token |
 
@@ -66,7 +67,7 @@ If either step fails (build or tests break), the workflow fails — signaling th
 
 ### <a id="nfr1"></a>NFR1 — Minimize CI cost
 
-Use path-based filtering to skip unnecessary work. Use Cargo caching (`actions/cache`) to speed up builds. Target only `x86_64-unknown-linux-gnu` — no cross-compilation, no macOS, no Windows.
+Use Cargo caching (`actions/cache`) to speed up builds. Target `x86_64-unknown-linux-gnu` for packaging — no cross-compilation, no macOS. Windows is tested in CI but not packaged.
 
 ### <a id="nfr2"></a>NFR2 — No external service dependencies
 
@@ -78,7 +79,7 @@ Leverage the existing `Makefile`, `vdev` tool, `.github/actions/setup` composite
 
 ## Non-goals
 
-- **Multi-architecture builds** — Sol currently targets only x86_64 Linux for packaging. ARM/macOS support may come later.
+- **Multi-architecture builds** — Sol packages only x86_64 Linux. ARM/macOS packaging may come later.
 - **RPM packages** — Only `.deb` is required.
 - **Integration tests in CI** — The upstream integration test matrix (35+ services) is too heavy. Integration testing is done locally.
 - **Nightly release builds** — No scheduled release/package builds (nightly is for upstream compatibility only).
@@ -96,27 +97,25 @@ Leverage the existing `Makefile`, `vdev` tool, `.github/actions/setup` composite
 
 ### Workflow structure
 
-Replace 42 workflows with **4 files**:
+Replace 42 workflows with **3 files**:
 
 ```
 .github/workflows/
   ci.yml           <- PR checks (FR1)
   build.yml        <- Build + publish on main/tags (FR2, FR3, FR4)
   nightly.yml      <- Upstream proto compatibility check (FR5)
-  changes.yml      <- Reusable path-filter (keep, simplified)
 ```
 
 ### CI flow (ci.yml)
 
 ```mermaid
 graph LR
-    PR[Pull Request] --> changes[Detect changes]
-    changes -->|source changed| fmt[check-fmt]
-    changes -->|source changed| clippy[check-clippy]
-    changes -->|source changed| test[Unit tests + component spec]
-    changes -->|source changed| test_win[Unit tests Windows]
-    changes -->|deps changed| deny[cargo-deny]
-    changes -->|proto changed| buf[buf breaking]
+    PR[Pull Request] --> fmt[check-fmt]
+    PR --> clippy[check-clippy]
+    PR --> test[Unit tests Linux + component spec]
+    PR --> test_win[Unit tests Windows]
+    PR --> deny[cargo-deny]
+    PR --> buf[buf breaking]
     fmt --> gate[All checks]
     clippy --> gate
     test --> gate
@@ -149,7 +148,8 @@ graph LR
 
 | Secret | Used by | Required |
 |---|---|---|
-| `DOCKER_REGISTRY` | build.yml | Yes |
+| `DOCKER_REGISTRY` | build.yml (login) | Yes |
+| `DOCKER_IMAGE` | build.yml (tags) | Yes |
 | `DOCKER_USERNAME` | build.yml | Yes |
 | `DOCKER_PASSWORD` | build.yml | Yes |
 
