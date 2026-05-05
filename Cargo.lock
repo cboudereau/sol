@@ -7722,7 +7722,7 @@ dependencies = [
  "prost 0.13.5",
  "prost-build 0.13.5",
  "tonic 0.12.3",
- "tonic-build 0.12.3",
+ "tonic-build 0.13.1",
 ]
 
 [[package]]
@@ -10756,7 +10756,7 @@ dependencies = [
  "tokio-util",
  "toml 0.9.8",
  "tonic 0.12.3",
- "tonic-build 0.12.3",
+ "tonic-build 0.13.1",
  "tower 0.5.2",
  "tower-http 0.4.4",
  "tower-test",
@@ -11057,7 +11057,7 @@ dependencies = [
  "sol-core",
  "sol-lookup",
  "tonic 0.12.3",
- "tonic-build 0.12.3",
+ "tonic-build 0.13.1",
  "vrl",
 ]
 
@@ -12393,9 +12393,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.12.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+checksum = "eac6f67be712d12f0b41328db3137e0d0757645d8904b4cb7d51cd9c2279e847"
 dependencies = [
  "prettyplease 0.2.15",
  "proc-macro2 1.0.106",
