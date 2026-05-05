@@ -10562,7 +10562,7 @@ dependencies = [
 
 [[package]]
 name = "sol"
-version = "0.54.0"
+version = "0.1.0"
 dependencies = [
  "apache-avro 0.16.0",
  "approx",
