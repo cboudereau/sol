@@ -138,14 +138,14 @@ members = [
 ]
 
 [workspace.dependencies]
-anyhow = { version = "1.0.101", default-features = false, features = ["std"] }
+anyhow = { version = "1.0.102", default-features = false, features = ["std"] }
 arc-swap = { version = "1.7.1", default-features = false }
 async-stream = { version = "0.3.6", default-features = false }
 async-trait = { version = "0.1.89", default-features = false }
 base64 = { version = "0.22.1", default-features = false }
 bytes = { version = "1.11.1", default-features = false, features = ["serde"] }
 cfg-if = { version = "1.0.4", default-features = false }
-chrono = { version = "0.4.41", default-features = false, features = ["clock", "serde"] }
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde"] }
 crc32fast = { version = "1.5", default-features = false }
 chrono-tz = { version = "0.10.4", default-features = false, features = ["serde"] }
 clap = { version = "4.5.56", default-features = false, features = ["derive", "error-context", "env", "help", "std", "string", "usage", "wrap_help"] }
@@ -174,7 +174,7 @@ metrics-util = { version = "0.18.0", default-features = false, features = ["regi
 nom = { version = "8.0.0", default-features = false }
 ordered-float = { version = "4.6.0", default-features = false }
 paste = { version = "1.0.15" }
-pin-project = { version = "1.1.10", default-features = false }
+pin-project = { version = "1.1.12", default-features = false }
 proptest = { version = "1.8" }
 proptest-derive = { version = "0.6.0" }
 opentelemetry-proto = { version = "0.27", default-features = false, features = ["full", "with-serde"] }
@@ -187,7 +187,7 @@ rand_distr = { version = "0.5.1", default-features = false }
 regex = { version = "1.11.2", default-features = false, features = ["std", "perf"] }
 reqwest = { version = "0.11", features = ["json"] }
 rust_decimal = { version = "1.37.0", default-features = false, features = ["std"] }
-semver = { version = "1.0.27", default-features = false, features = ["serde", "std"] }
+semver = { version = "1.0.28", default-features = false, features = ["serde", "std"] }
 serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1.0.143", default-features = false, features = ["raw_value", "std"] }
 serde_yaml = { version = "0.9.34", default-features = false }
