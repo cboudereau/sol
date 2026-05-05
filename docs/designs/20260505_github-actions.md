@@ -157,8 +157,8 @@ graph LR
 
 ## Decisions
 
-- [ADR-0013: Workflow consolidation strategy](../adrs/0013-workflow-consolidation.md)
-- [ADR-0014: Single architecture target](../adrs/0014-single-arch-target.md)
+- [ADR-0014: Workflow consolidation strategy](../adrs/0014-workflow-consolidation.md)
+- [ADR-0015: Single architecture target](../adrs/0015-single-arch-target.md)
 
 ## Cross-cutting Concerns
 
