@@ -87,18 +87,18 @@ jobs:
       - name: Compute Docker tags
         id: tags
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          IMAGE="${{ secrets.DOCKER_IMAGE }}"
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"
-          TAGS="${REGISTRY}/sol:${SHORT_SHA}"
+          TAGS="${IMAGE}:${SHORT_SHA}"
 
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             VERSION="${{ github.ref_name }}"
-            TAGS="${TAGS},${REGISTRY}/sol:${VERSION}"
+            TAGS="${TAGS},${IMAGE}:${VERSION}"
           fi
 
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            TAGS="${TAGS},${REGISTRY}/sol:latest"
+            TAGS="${TAGS},${IMAGE}:latest"
           fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
