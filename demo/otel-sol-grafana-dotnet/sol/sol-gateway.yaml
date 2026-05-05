@@ -13,6 +13,13 @@ sources:
       service.name: sol/gateway
       service.namespace: gateway
 
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol
+
 transforms:
   # Promote resource attributes to metric data point attributes.
   # Equivalent to otelcontribcol transform/metrics/dotnet processor.
@@ -32,6 +39,12 @@ transforms:
     source: |
       .attributes."service.name" = .resource.attributes."service.name"
       .attributes."service.namespace" = .resource.attributes."service.namespace"
+
+  promote_host_metrics_attrs:
+    type: remap
+    inputs: ["host_metrics"]
+    source: |
+      .name = "node_" + string!(.name)
 
 sinks:
   otlp_traces:
@@ -72,7 +85,7 @@ sinks:
 
   otlp_self_metrics:
     type: opentelemetry
-    inputs: ["promote_self_metrics_attrs"]
+    inputs: ["promote_self_metrics_attrs", "promote_host_metrics_attrs"]
     protocol:
       type: http
       endpoint: "http://mimir:9009/otlp"

@@ -564,7 +564,7 @@ fn infer_unit(name: &str) -> &'static str {
     } else if name.contains("seconds") {
         "s"
     } else {
-        "1"
+        ""
     }
 }
 

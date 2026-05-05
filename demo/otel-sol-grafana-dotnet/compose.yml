@@ -7,6 +7,11 @@ services:
     command: ["--config", "/etc/sol/sol-gateway.yaml"]
     volumes:
       - ./sol/sol-gateway.yaml:/etc/sol/sol-gateway.yaml:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    environment:
+      - PROCFS_ROOT=/host/proc
+      - SYSFS_ROOT=/host/sys
     networks:
       - bridge
     depends_on:
