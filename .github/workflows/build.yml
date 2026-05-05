@@ -36,8 +36,8 @@ jobs:
 
   build-deb:
     name: Build x86_64 DEB package
-    runs-on: ubuntu-24.04-8core
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     needs: generate-metadata
     env:
       SOL_VERSION: ${{ needs.generate-metadata.outputs.sol_version }}
@@ -58,7 +58,7 @@ jobs:
 
   build-windows:
     name: Build Windows x86_64 zip
-    runs-on: windows-2025-8core
+    runs-on: windows-2025
     timeout-minutes: 90
     needs: generate-metadata
     env:

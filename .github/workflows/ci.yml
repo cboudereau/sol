@@ -28,7 +28,7 @@ jobs:
 
   check-clippy:
     name: Check clippy
-    runs-on: ubuntu-24.04-8core
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -40,7 +40,7 @@ jobs:
 
   test:
     name: Unit tests (Linux)
-    runs-on: ubuntu-24.04-8core
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -58,7 +58,7 @@ jobs:
 
   test-windows:
     name: Unit tests (Windows)
-    runs-on: windows-2025-8core
+    runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
