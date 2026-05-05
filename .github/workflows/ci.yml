@@ -16,14 +16,9 @@ permissions:
   contents: read
 
 jobs:
-  changes:
-    uses: ./.github/workflows/changes.yml
-
   check-fmt:
     name: Check format
     runs-on: ubuntu-24.04
-    if: ${{ needs.changes.outputs.source == 'true' }}
-    needs: changes
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -34,8 +29,6 @@ jobs:
   check-clippy:
     name: Check clippy
     runs-on: ubuntu-24.04-8core
-    if: ${{ needs.changes.outputs.source == 'true' }}
-    needs: changes
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -48,8 +41,6 @@ jobs:
   test:
     name: Unit tests (Linux)
     runs-on: ubuntu-24.04-8core
-    if: ${{ needs.changes.outputs.source == 'true' }}
-    needs: changes
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup
@@ -69,8 +60,6 @@ jobs:
     name: Unit tests (Windows)
     runs-on: windows-2025-8core
     timeout-minutes: 60
-    if: ${{ needs.changes.outputs.source == 'true' }}
-    needs: changes
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -82,8 +71,6 @@ jobs:
   check-deny:
     name: Security & license audit
     runs-on: ubuntu-24.04
-    if: ${{ needs.changes.outputs.dependencies == 'true' }}
-    needs: changes
     timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: 0
@@ -98,8 +85,6 @@ jobs:
   check-proto:
     name: Protobuf compatibility
     runs-on: ubuntu-24.04
-    if: ${{ needs.changes.outputs.proto == 'true' }}
-    needs: changes
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -115,7 +100,6 @@ jobs:
     runs-on: ubuntu-24.04
     if: always()
     needs:
-      - changes
       - check-fmt
       - check-clippy
       - test
