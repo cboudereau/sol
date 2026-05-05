@@ -2507,8 +2507,8 @@ dependencies = [
  "metrics",
  "opentelemetry-proto",
  "ordered-float 4.6.0",
- "prost 0.13.5",
- "prost-reflect",
+ "prost 0.14.3",
+ "prost-reflect 0.16.3",
  "rand 0.9.2",
  "regex",
  "rstest",
@@ -3514,8 +3514,8 @@ dependencies = [
  "dnsmsg-parser",
  "hickory-proto 0.25.2",
  "paste",
- "prost 0.13.5",
- "prost-build 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
  "snafu 0.8.9",
  "sol-common",
  "sol-config",
@@ -4071,6 +4071,12 @@ name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
+
+[[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flatbuffers"
@@ -6090,7 +6096,7 @@ dependencies = [
  "ena",
  "itertools 0.13.0",
  "lalrpop-util",
- "petgraph",
+ "petgraph 0.6.4",
  "regex",
  "regex-syntax",
  "sha3",
@@ -6395,9 +6401,9 @@ name = "loki-logproto"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "prost 0.13.5",
- "prost-build 0.13.5",
- "prost-types 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
+ "prost-types 0.14.3",
 ]
 
 [[package]]
@@ -7719,8 +7725,8 @@ name = "otel-proto-types"
 version = "0.1.0"
 dependencies = [
  "glob",
- "prost 0.13.5",
- "prost-build 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
  "tonic 0.12.3",
  "tonic-build 0.12.3",
 ]
@@ -7937,7 +7943,18 @@ version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d3afd2628e69da2be385eb6f2fd57c8ac7977ceeff6dc166ff1657b0e386a9"
 dependencies = [
- "fixedbitset",
+ "fixedbitset 0.4.2",
+ "indexmap 2.12.0",
+]
+
+[[package]]
+name = "petgraph"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
+dependencies = [
+ "fixedbitset 0.5.7",
+ "hashbrown 0.15.2",
  "indexmap 2.12.0",
 ]
 
@@ -8377,9 +8394,9 @@ version = "0.1.0"
 dependencies = [
  "indexmap 2.12.0",
  "nom 8.0.0",
- "prost 0.13.5",
- "prost-build 0.13.5",
- "prost-types 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
+ "prost-types 0.14.3",
  "snafu 0.8.9",
  "sol-common",
 ]
@@ -8446,6 +8463,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
+dependencies = [
+ "bytes 1.11.1",
+ "prost-derive 0.14.3",
+]
+
+[[package]]
 name = "prost-build"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8457,7 +8484,7 @@ dependencies = [
  "lazy_static",
  "log",
  "multimap",
- "petgraph",
+ "petgraph 0.6.4",
  "prettyplease 0.1.25",
  "prost 0.11.9",
  "prost-types 0.11.9",
@@ -8479,7 +8506,7 @@ dependencies = [
  "log",
  "multimap",
  "once_cell",
- "petgraph",
+ "petgraph 0.6.4",
  "prettyplease 0.2.15",
  "prost 0.12.6",
  "prost-types 0.12.6",
@@ -8495,16 +8522,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
- "petgraph",
+ "petgraph 0.6.4",
  "prettyplease 0.2.15",
  "prost 0.13.5",
  "prost-types 0.13.5",
  "regex",
  "syn 2.0.115",
+ "tempfile",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
+dependencies = [
+ "heck 0.5.0",
+ "itertools 0.10.5",
+ "log",
+ "multimap",
+ "petgraph 0.8.3",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "regex",
  "tempfile",
 ]
 
@@ -8541,7 +8585,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
+ "proc-macro2 1.0.106",
+ "quote 1.0.44",
+ "syn 2.0.115",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
+dependencies = [
+ "anyhow",
+ "itertools 0.10.5",
  "proc-macro2 1.0.106",
  "quote 1.0.44",
  "syn 2.0.115",
@@ -8553,10 +8610,20 @@ version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5edd582b62f5cde844716e66d92565d7faf7ab1445c8cebce6e00fba83ddb2"
 dependencies = [
- "base64 0.22.1",
  "once_cell",
  "prost 0.13.5",
  "prost-types 0.13.5",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b89455ef41ed200cafc47c76c552ee7792370ac420497e551f16123a9135f76e"
+dependencies = [
+ "base64 0.22.1",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
  "serde",
  "serde-value",
 ]
@@ -8586,6 +8653,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
 dependencies = [
  "prost 0.13.5",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
+dependencies = [
+ "prost 0.14.3",
 ]
 
 [[package]]
@@ -10696,10 +10772,10 @@ dependencies = [
  "postgres-openssl",
  "proptest",
  "proptest-derive",
- "prost 0.13.5",
- "prost-build 0.13.5",
- "prost-reflect",
- "prost-types 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
+ "prost-reflect 0.16.3",
+ "prost-types 0.14.3",
  "pulsar",
  "quick-junit",
  "quickcheck",
@@ -10967,9 +11043,9 @@ dependencies = [
  "parking_lot 0.12.5",
  "pin-project",
  "proptest",
- "prost 0.13.5",
- "prost-build 0.13.5",
- "prost-types 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
+ "prost-types 0.14.3",
  "quanta",
  "quickcheck",
  "quickcheck_macros",
@@ -11051,8 +11127,8 @@ dependencies = [
  "hex",
  "opentelemetry-proto",
  "ordered-float 4.6.0",
- "prost 0.13.5",
- "prost-build 0.13.5",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
  "sol-buffers",
  "sol-core",
  "sol-lookup",
@@ -13238,7 +13314,7 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "prost 0.13.5",
- "prost-reflect",
+ "prost-reflect 0.14.7",
  "psl",
  "psl-types",
  "publicsuffix",
