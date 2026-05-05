@@ -9,14 +9,14 @@ set -euo pipefail
 
 set -x
 
-ARCHIVE_VERSION="${VECTOR_VERSION:-"$(cargo vdev version)"}"
+ARCHIVE_VERSION="${SOL_VERSION:-"$(cargo vdev version)"}"
 
 rm -rf target/msi-x64
 cp -R distribution/msi target/msi-x64
-cp target/artifacts/vector-"${ARCHIVE_VERSION}"-x86_64-pc-windows-msvc.zip target/msi-x64
+cp target/artifacts/sol-"${ARCHIVE_VERSION}"-x86_64-pc-windows-msvc.zip target/msi-x64
 pushd target/msi-x64
 # shellcheck disable=SC2016
-powershell '$progressPreference = "silentlyContinue"; Expand-Archive vector-'"$ARCHIVE_VERSION"'-x86_64-pc-windows-msvc.zip'
+powershell '$progressPreference = "silentlyContinue"; Expand-Archive sol-'"$ARCHIVE_VERSION"'-x86_64-pc-windows-msvc.zip'
 
 # Building the MSI package requires the version to be purely numerical (eg 0.0.0),
 # which is not the case if with custom build workflow.
@@ -34,4 +34,4 @@ fi
 
 ./build.sh "${ARCHIVE_VERSION}" "${PACKAGE_VERSION}"
 popd
-cp target/msi-x64/vector.msi target/artifacts/vector-"${ARCHIVE_VERSION}"-x64.msi
+cp target/msi-x64/sol.msi target/artifacts/sol-"${ARCHIVE_VERSION}"-x64.msi

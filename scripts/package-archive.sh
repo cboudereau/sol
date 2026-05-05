@@ -24,7 +24,7 @@ OVERWRITE=${OVERWRITE:-"true"}
 ARCHIVE_TYPE="${ARCHIVE_TYPE:-"tar.gz"}"
 NATIVE_BUILD="${NATIVE_BUILD:-"true"}"
 TARGET="${TARGET:?"You must specify a target triple, ex: arm64-apple-darwin"}"
-ARCHIVE_VERSION="${VECTOR_VERSION:-"$(cargo vdev version)"}"
+ARCHIVE_VERSION="${SOL_VERSION:-"$(cargo vdev version)"}"
 
 #
 # Local Vars
@@ -36,9 +36,9 @@ else
   TARGET_DIR="target"
 fi
 
-ARCHIVE_DIR_NAME="vector-$TARGET"
+ARCHIVE_DIR_NAME="sol-$TARGET"
 ARCHIVE_DIR="$TARGET_DIR/$ARCHIVE_DIR_NAME"
-ARCHIVE_NAME="vector-$ARCHIVE_VERSION-$TARGET.$ARCHIVE_TYPE"
+ARCHIVE_NAME="sol-$ARCHIVE_VERSION-$TARGET.$ARCHIVE_TYPE"
 ARTIFACTS_DIR="target/artifacts"
 
 #
@@ -59,7 +59,7 @@ fi
 # Header
 #
 
-echo "Packaging the Vector archive"
+echo "Packaging the Sol archive"
 echo "OVERWRITE: $OVERWRITE"
 echo "ARCHIVE_TYPE: $ARCHIVE_TYPE"
 echo "NATIVE_BUILD: $NATIVE_BUILD"
@@ -90,10 +90,10 @@ cat LICENSE NOTICE > "$ARCHIVE_DIR/LICENSE$SUFFIX"
 cp -av licenses "$ARCHIVE_DIR/licenses"
 cp -av LICENSE-3rdparty.csv "$ARCHIVE_DIR"
 
-# Copy the vector binary to /bin
+# Copy the sol binary to /bin
 
 mkdir -p "$ARCHIVE_DIR/bin"
-cp -av "$TARGET_DIR/release/vector" "$ARCHIVE_DIR/bin"
+cp -av "$TARGET_DIR/release/sol" "$ARCHIVE_DIR/bin"
 
 # Copy the entire config dir to /config
 
@@ -103,9 +103,9 @@ cp -rv config "$ARCHIVE_DIR/config"
 
 if [[ $TARGET == *linux* ]]; then
   mkdir -p "$ARCHIVE_DIR/etc/systemd"
-  cp -av distribution/systemd/vector.service "$ARCHIVE_DIR/etc/systemd"
+  cp -av distribution/systemd/sol.service "$ARCHIVE_DIR/etc/systemd"
   mkdir -p "$ARCHIVE_DIR/etc/init.d"
-  cp -av distribution/init.d/vector "$ARCHIVE_DIR/etc/init.d"
+  cp -av distribution/init.d/sol "$ARCHIVE_DIR/etc/init.d"
 fi
 
 #
@@ -118,7 +118,7 @@ fi
     tar cvf - "./$ARCHIVE_DIR_NAME" | gzip -9 > "$ARCHIVE_NAME"
   elif [ "$ARCHIVE_TYPE" == "zip" ] && [[ $TARGET == *windows* ]]; then
     # shellcheck disable=SC2016
-    powershell '$progressPreference = "silentlyContinue"; Compress-Archive -DestinationPath vector-'"$ARCHIVE_VERSION"'-'"$TARGET"'.'"$ARCHIVE_TYPE"' -Path "./'"$ARCHIVE_DIR_NAME"'/*"'
+    powershell '$progressPreference = "silentlyContinue"; Compress-Archive -DestinationPath sol-'"$ARCHIVE_VERSION"'-'"$TARGET"'.'"$ARCHIVE_TYPE"' -Path "./'"$ARCHIVE_DIR_NAME"'/*"'
   else
     echo "Unsupported combination of ARCHIVE_TYPE and TARGET"
     exit 1

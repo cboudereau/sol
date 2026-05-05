@@ -67,7 +67,7 @@ If either step fails (build or tests break), the workflow fails — signaling th
 
 ### <a id="nfr1"></a>NFR1 — Minimize CI cost
 
-Use Cargo caching (`actions/cache`) to speed up builds. Target `x86_64-unknown-linux-gnu` for packaging — no cross-compilation, no macOS. Windows is tested in CI but not packaged.
+Use Cargo caching (`actions/cache`) to speed up builds. Package `x86_64-unknown-linux-gnu` (DEB + Docker) and `x86_64-pc-windows-msvc` (standalone zip). No cross-compilation, no macOS. Windows and Linux builds run in parallel.
 
 ### <a id="nfr2"></a>NFR2 — No external service dependencies
 
@@ -79,7 +79,7 @@ Leverage the existing `Makefile`, `vdev` tool, `.github/actions/setup` composite
 
 ## Non-goals
 
-- **Multi-architecture builds** — Sol packages only x86_64 Linux. ARM/macOS packaging may come later.
+- **Multi-architecture builds** — Sol packages x86_64 only (Linux + Windows). ARM/macOS packaging may come later.
 - **RPM packages** — Only `.deb` is required.
 - **Integration tests in CI** — The upstream integration test matrix (35+ services) is too heavy. Integration testing is done locally.
 - **Nightly release builds** — No scheduled release/package builds (nightly is for upstream compatibility only).

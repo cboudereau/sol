@@ -56,6 +56,28 @@ jobs:
           name: sol-${{ env.SOL_VERSION }}-x86_64-unknown-linux-gnu
           path: target/artifacts/sol*
 
+  build-windows:
+    name: Build Windows x86_64 zip
+    runs-on: windows-2025-8core
+    timeout-minutes: 90
+    needs: generate-metadata
+    env:
+      SOL_VERSION: ${{ needs.generate-metadata.outputs.sol_version }}
+      SOL_BUILD_DESC: ${{ needs.generate-metadata.outputs.sol_build_desc }}
+      RELEASE_BUILDER: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Bootstrap runner environment
+        run: .\scripts\environment\bootstrap-windows-2025.ps1
+      - name: Build archive
+        shell: bash
+        run: FEATURES=default-msvc ARCHIVE_TYPE=zip NATIVE_BUILD=true TARGET=x86_64-pc-windows-msvc make package
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sol-${{ env.SOL_VERSION }}-x86_64-pc-windows-msvc
+          path: target/artifacts/sol*
+
   build-docker:
     name: Build & push Docker image
     runs-on: ubuntu-24.04

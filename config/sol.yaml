@@ -1,39 +1,44 @@
 #                                    S O L
 #                                   Configuration
 #
+# OTLP drop-in: receives logs, metrics, and traces on standard OTLP ports
+# and prints them to the console in JSON format.
+#
+# See https://opentelemetry.io/docs/specs/otlp/ for protocol details.
 # ------------------------------------------------------------------------------
 
 # Change this to use a non-default directory for Sol data storage:
 # data_dir: "/var/lib/sol"
 
-# Random Syslog-formatted logs
 sources:
-  dummy_logs:
-    type: "demo_logs"
-    format: "syslog"
-    interval: 1
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:4317"
+    http:
+      address: "0.0.0.0:4318"
 
-# Parse Syslog logs
-# See the Vector Remap Language reference for more info: https://vrl.dev
-transforms:
-  parse_logs:
-    type: "remap"
-    inputs: ["dummy_logs"]
-    source: |
-      . = parse_syslog!(string!(.message))
-
-# Print parsed logs to stdout
 sinks:
-  print:
-    type: "console"
-    inputs: ["parse_logs"]
+  console_logs:
+    type: console
+    inputs: ["otlp.logs"]
     encoding:
-      codec: "json"
-      json:
-        pretty: true
+      codec: json
 
-# Vector's GraphQL API (disabled by default)
-# Uncomment to try it out with the `vector top` command or
+  console_metrics:
+    type: console
+    inputs: ["otlp.metrics"]
+    encoding:
+      codec: json
+
+  console_traces:
+    type: console
+    inputs: ["otlp.traces"]
+    encoding:
+      codec: json
+
+# Sol's GraphQL API (disabled by default)
+# Uncomment to try it out with the `sol top` command or
 # in your browser at http://localhost:8686
 # api:
 #   enabled: true

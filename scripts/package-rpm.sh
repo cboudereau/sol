@@ -17,8 +17,8 @@ TARGET="${TARGET:?"You must specify a target triple, ex: arm64-apple-darwin"}"
 # Local vars
 #
 
-PACKAGE_VERSION="${VECTOR_VERSION:-"$(cargo vdev version)"}"
-ARCHIVE_NAME="vector-$PACKAGE_VERSION-$TARGET.tar.gz"
+PACKAGE_VERSION="${SOL_VERSION:-"$(cargo vdev version)"}"
+ARCHIVE_NAME="sol-$PACKAGE_VERSION-$TARGET.tar.gz"
 ARCHIVE_PATH="target/artifacts/$ARCHIVE_NAME"
 
 #
@@ -61,7 +61,7 @@ mkdir -p \
 cp -av distribution/systemd/. "$RPMBUILD_DIR/SOURCES/systemd"
 
 # Copy the archive into the sources dir
-cp -av "$ARCHIVE_PATH" "$RPMBUILD_DIR/SOURCES/vector-$ARCH.tar.gz"
+cp -av "$ARCHIVE_PATH" "$RPMBUILD_DIR/SOURCES/sol-$ARCH.tar.gz"
 
 # Perform the build.
 rpmbuild \
@@ -76,4 +76,4 @@ rpmbuild \
 #
 
 ls "$RPMBUILD_DIR/RPMS/$ARCH"
-mv -v "$RPMBUILD_DIR/RPMS/$ARCH/vector-$CLEANED_VERSION-$RELEASE.$ARCH.rpm" "target/artifacts/vector-${CLEANED_VERSION}-${RELEASE}.${ARCH}.rpm"
+mv -v "$RPMBUILD_DIR/RPMS/$ARCH/sol-$CLEANED_VERSION-$RELEASE.$ARCH.rpm" "target/artifacts/sol-${CLEANED_VERSION}-${RELEASE}.${ARCH}.rpm"
