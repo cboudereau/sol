@@ -8,12 +8,12 @@ datasources:
     url: http://tempo:3200
     jsonData:
       httpMethod: GET
-      tracesToLogs:
+      tracesToLogsV2:
         datasourceUid: 'loki'
-        tags: ['application', 'host']
-        mappedTags: [{ key: 'application', value: 'service' }]
-        mapTagNamesEnabled: false
-        spanStartTimeShift: '1h'
+        tags:
+          - key: 'application'
+          - key: 'host'
+        spanStartTimeShift: '-1h'
         spanEndTimeShift: '1h'
         filterByTraceID: true
         filterBySpanID: true
@@ -23,5 +23,3 @@ datasources:
         hide: false
       nodeGraph:
         enabled: true
-      lokiSearch:
-        datasourceUid: 'loki'
