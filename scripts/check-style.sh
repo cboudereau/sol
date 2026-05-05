@@ -49,8 +49,8 @@ if [ "$CHECK_ALL" = true ]; then
   # Check all files tracked by git
   FILES=$(git ls-files)
 else
-  # Check only files changed in current branch compared to origin/master
-  FILES=$(git diff --name-only "origin/master"...HEAD)
+  # Check only files changed in current branch compared to origin/main
+  FILES=$(git diff --name-only "origin/main"...HEAD)
 
   # If no changed files, fall back to checking all files
   if [ -z "$FILES" ]; then

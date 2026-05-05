@@ -55,7 +55,7 @@ pub fn changed_files() -> Result<Vec<String>> {
     // Committed e.g.:
     // A   relative/path/to/file.added
     // M   relative/path/to/file.modified
-    let output = run_and_check_output(&["diff", "--name-status", "origin/master..."])?;
+    let output = run_and_check_output(&["diff", "--name-status", "origin/main..."])?;
     for line in output.lines() {
         if !is_warning_line(line)
             && let Some((_, path)) = line.split_once('\t')
