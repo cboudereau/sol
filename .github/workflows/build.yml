@@ -48,8 +48,10 @@ jobs:
         run: |
           sudo -E bash scripts/environment/bootstrap-ubuntu-24.04.sh
           bash scripts/environment/prepare.sh --modules=rustup
-      - name: Build binary and DEB package
-        run: make package-x86_64-unknown-linux-gnu-all
+      - name: Build binary and archive
+        run: TARGET=x86_64-unknown-linux-gnu make package
+      - name: Build DEB package
+        run: TARGET=x86_64-unknown-linux-gnu cargo vdev package deb
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
