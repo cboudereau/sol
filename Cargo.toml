@@ -202,7 +202,7 @@ toml = { version = "0.9.8", default-features = false, features = ["serde", "disp
 tonic = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost", "tls", "tls-native-roots", "gzip"] }
 tonic-build = { version = "0.12", default-features = false, features = ["transport", "prost"] }
 tracing = { version = "0.1.44", default-features = false }
-tracing-subscriber = { version = "0.3.22", default-features = false, features = ["fmt"]  }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"]  }
 url = { version = "2.5.4", default-features = false, features = ["serde"] }
 uuid = { version = "1.18.1", features = ["v4", "v7", "serde", "fast-rng"] }
 sol-config = { path = "lib/sol-config" }
