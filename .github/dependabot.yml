@@ -10,81 +10,11 @@ updates:
       - "no-changelog"
     commit-message:
       prefix: "chore(deps)"
-    open-pull-requests-limit: 100
+    open-pull-requests-limit: 10
     groups:
-      patches:
-        applies-to: version-updates
+      all-cargo:
         patterns:
-        - "*"
-        update-types:
-        - "patch"
-
-      amq:
-        patterns:
-        - "amq-*"
-      aws:
-        patterns:
-        - "aws-*"
-      azure:
-        patterns:
-        - "azure_*"
-      clap:
-        patterns:
-        - "clap*"
-      crossbeam:
-        patterns:
-        - "crossbeam*"
-      csv:
-        patterns:
-        - "csv*"
-      futures:
-        patterns:
-        - "futures"
-        - "futures-util"
-      graphql:
-        patterns:
-        - "async-graphql*"
-      metrics:
-        patterns:
-        - "metrics"
-        - "metrics-tracing-context"
-        - "metrics-util"
-      netlink:
-        patterns:
-        - "netlink-*"
-      phf:
-        patterns:
-        - "phf*"
-      prost:
-        patterns:
-        - "prost"
-        - "prost-*"
-      serde:
-        patterns:
-          - "serde"
-          - "serde_*"
-      tokio:
-        patterns:
-          - "tokio"
-          - "tokio-*"
-      tonic:
-        patterns:
-        - "tonic"
-        - "tonic-*"
-      tower:
-        patterns:
-        - "tower"
-        - "tower-*"
-      tracing:
-        patterns:
-          - "tracing"
-          - "tracing-*"
-      wasm-bindgen:
-        patterns:
-        - "wasm-bindgen-*"
-      zstd:
-        patterns:
-        - "zstd*"
+          - "*"
   - package-ecosystem: "docker"
     directory: "/distribution/docker/debian"
     schedule:
@@ -95,9 +25,9 @@ updates:
       - "no-changelog"
     commit-message:
       prefix: "chore(deps)"
-    open-pull-requests-limit: 100
+    open-pull-requests-limit: 5
     groups:
-      docker-images:
+      all-docker:
         patterns:
           - "*"
   - package-ecosystem: "github-actions"
@@ -109,8 +39,8 @@ updates:
       - "no-changelog"
     commit-message:
       prefix: "chore(ci)"
+    open-pull-requests-limit: 5
     groups:
-      artifact:
+      all-actions:
         patterns:
-        - "actions/download-artifact"
-        - "actions/upload-artifact"
+          - "*"

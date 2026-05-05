@@ -36,7 +36,7 @@ mlua = { version = "0.10.5", default-features = false, features = ["lua54", "sen
 no-proxy = { version = "0.3.6", default-features = false, features = ["serialize"] }
 opentelemetry-proto = { version = "0.27", default-features = false, features = ["full", "with-serde"] }
 ordered-float.workspace = true
-openssl = { version = "0.10.75", default-features = false, features = ["vendored"] }
+openssl = { version = "0.10.79", default-features = false, features = ["vendored"] }
 parking_lot = { version = "0.12.5", default-features = false }
 pin-project.workspace = true
 proptest = { version = "1.8", optional = true }
@@ -47,7 +47,7 @@ regex = { version = "1.11.2", default-features = false, features = ["std", "perf
 ryu = { version = "1", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
-serde_with = { version = "3.14.0", default-features = false, features = ["std", "macros"] }
+serde_with = { version = "3.19.0", default-features = false, features = ["std", "macros"] }
 smallvec = { version = "1", default-features = false, features = ["serde", "const_generics"] }
 snafu.workspace = true
 socket2.workspace = true
@@ -72,7 +72,7 @@ cfg-if.workspace = true
 security-framework = "3.5.1"
 
 [target.'cfg(windows)'.dependencies]
-schannel = "0.1.28"
+schannel = "0.1.29"
 
 [build-dependencies]
 prost-build.workspace = true
