@@ -1,6 +1,6 @@
 # Development Environment Setup
 
-This document describes the WSL2 and Rust setup used to build and develop Vector.
+This document describes the WSL2 and Rust setup used to build and develop Sol.
 
 ## Host
 
@@ -27,6 +27,31 @@ default=clem
 ```
 
 ## Rust toolchain
+
+### Installation
+
+Install Rust via [rustup](https://rustup.rs/):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Follow the on-screen prompts (the defaults are fine). Once installed, make sure `~/.cargo/bin` is on your `PATH` by sourcing the environment:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+Verify the installation:
+
+```bash
+rustc --version
+cargo --version
+```
+
+> **Note:** The project's `rust-toolchain.toml` will cause `rustup` to automatically download and use the correct toolchain version the first time you run a `cargo` command in the repository.
+
+### Pinned toolchain
 
 The project pins its toolchain via `rust-toolchain.toml`:
 
@@ -89,10 +114,10 @@ Installed versions on this machine:
 ## Repository
 
 ```
-git@github.com-cboudereau/vector.git   (fork)
+git@github.com-cboudereau/sol.git
 ```
 
-Workspace root: `/home/clem/gh/vector`
+Workspace root: `/home/clem/gh/sol`
 
 ## Build commands
 
