@@ -6,7 +6,7 @@ mod unix;
 use sol_lib::{
     codecs::decoding::DeserializerConfig,
     configurable::configurable_component,
-    lookup::{lookup_v2::OptionalValuePath, owned_value_path},
+    lookup::owned_value_path,
 };
 use vrl::value::{Kind, kind::Collection};
 
@@ -263,8 +263,9 @@ impl SourceConfig for SocketConfig {
     }
 }
 
-pub(crate) fn default_host_key() -> OptionalValuePath {
-    OptionalValuePath {
+#[cfg(unix)]
+pub(crate) fn default_host_key() -> sol_lib::lookup::lookup_v2::OptionalValuePath {
+    sol_lib::lookup::lookup_v2::OptionalValuePath {
         path: Some(owned_value_path!("resource", "host.name")),
     }
 }
