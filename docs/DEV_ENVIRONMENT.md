@@ -164,6 +164,28 @@ From `.cargo/config.toml`:
 - **Linux GNU target**: `-C link-args=-rdynamic` (export symbols for plugin support)
 - **Clippy denies**: `print_stdout`, `print_stderr`, `dbg_macro`
 
+## Git configuration
+
+Ensure `core.fileMode` is enabled so git preserves executable bits on checkout:
+
+```bash
+git config core.fileMode true
+```
+
+Some test fixtures (e.g. `tests/data/journalctl`) are shell scripts that must be executable. If `core.fileMode` is `false`, git ignores permission bits and these files lose their execute flag, causing tests to fail with `PermissionDenied`.
+
+If you already cloned with `core.fileMode=false`, restore the permissions after changing the setting:
+
+```bash
+git checkout -- tests/data/journalctl
+```
+
+Alternatively, fix the permission directly:
+
+```bash
+chmod +x tests/data/journalctl
+```
+
 ## Performance tips for WSL2
 
 - **Keep the repo on the Linux filesystem** (`/home/...`), not on `/mnt/c/...`. Cross-filesystem I/O through the 9P mount is 10-50x slower.
