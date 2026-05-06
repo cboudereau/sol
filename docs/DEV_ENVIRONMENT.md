@@ -137,14 +137,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Format check
 cargo fmt --all -- --check
 
-# Test vector
-cargo test -p vector --all-features
+# Test sol
+cargo test -p sol --all-features
 
 # Test
-cargo test -p vector -p vector-core -p codecs -p vector-vrl-metrics
+cargo test -p sol -p sol-core -p codecs
 
 # To log output:
-RUSTFLAGS="--cfg tokio_unstable" cargo test -p vector --all-features 2>&1 | tee tests.log
+RUSTFLAGS="--cfg tokio_unstable" cargo test -p sol --all-features 2>&1 | tee tests.log
 ```
 
 ### Cargo aliases
