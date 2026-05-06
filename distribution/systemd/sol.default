@@ -1,4 +1,4 @@
 # /etc/default/sol
 # This file can theoretically contain a bunch of environment variables
-# for Sol.  See https://vector.dev/docs/setup/configuration/#environment-variables
+# for Sol.  See https://github.com/cboudereau/sol
 # for details.

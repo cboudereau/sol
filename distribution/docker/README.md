@@ -1,16 +1,12 @@
 <p align="center">
   <strong>
-    <a href="https://vector.dev">Website<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://vector.dev/docs/">Docs<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://vector.dev/community/">Community<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://github.com/vectordotdev/vector">GitHub<a/>
+    <a href="https://github.com/cboudereau/sol">Website<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://github.com/cboudereau/sol">Docs<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://github.com/cboudereau/sol">Community<a/>&nbsp;&nbsp;&bull;&nbsp;&nbsp;<a href="https://github.com/cboudereau/sol">GitHub<a/>
   </strong>
 </p>
 
 ---
 
-<p align="center">
-  <img src="https://res.cloudinary.com/timber/image/upload/v1561214425/vector_diagram_w26yw3.svg" alt="Sol">
-</p>
-
-Sol is an [open-source][urls.vector_repo] utility for building observability
+Sol is an [open-source][urls.sol_repo] utility for building observability
 pipelines. [Collect][docs.sources], [transform][docs.transforms], and
 [route][docs.sinks] log, metrics and events with one simple tool.
 
@@ -50,8 +46,8 @@ deploy Sol.
 Simply run with newer version in the tag:
 
 ```bash
-docker pull timberio/sol:X.X.X-alpine && \
-  docker run timberio/sol:X.X.X-alpine
+docker pull superbeeeeeee/sol:X.X.X-alpine && \
+  docker run superbeeeeeee/sol:X.X.X-alpine
 ```
 
 See the [variants](#variants) and [versions](#versions) sections to choose
@@ -69,7 +65,7 @@ smaller in size than other Docker images and statically links libraries. This
 is the image we recommend due to it's small size and reliability.
 
 ```bash
-docker run timberio/sol:0.10.0-alpine
+docker run superbeeeeeee/sol:0.10.0-alpine
 ```
 
 #### debian
@@ -78,7 +74,7 @@ This image is based on the [`debian-slim` image][urls.docker_debian],
 which is a smaller, more compact variant of the [`debian` image][urls.docker_debian].
 
 ```bash
-docker run timberio/sol:0.10.0-debian
+docker run superbeeeeeee/sol:0.10.0-debian
 ```
 
 #### distroless-*
@@ -101,38 +97,38 @@ Docker handles this transparently for you.
 
 Sol's Docker images can be downloaded with the following tags. Note that
 Sol maintains special tags that are automatically updated whenever Sol is
-[released][urls.vector_releases]:
+[released][urls.sol_releases]:
 
 | Version          | URL                                                      |
 |:-----------------|:---------------------------------------------------------|
-| Latest major     | `timberio/sol:latest-alpine`               |
-| Latest minor     | `timberio/sol:<MAJOR>.X-alpine`            |
-| Latest patch     | `timberio/sol:<MAJOR.MINOR>.X-alpine`      |
-| Specific version | `timberio/sol:<MAJOR.MINOR.PATCH>-alpine`  |
-| Latest nightly   | `timberio/sol:nightly-alpine`              |
-| Specific nightly | `timberio/sol:nightly-<YYYY-MM-DD>-alpine` |
+| Latest major     | `superbeeeeeee/sol:latest-alpine`               |
+| Latest minor     | `superbeeeeeee/sol:<MAJOR>.X-alpine`            |
+| Latest patch     | `superbeeeeeee/sol:<MAJOR.MINOR>.X-alpine`      |
+| Specific version | `superbeeeeeee/sol:<MAJOR.MINOR.PATCH>-alpine`  |
+| Latest nightly   | `superbeeeeeee/sol:nightly-alpine`              |
+| Specific nightly | `superbeeeeeee/sol:nightly-<YYYY-MM-DD>-alpine` |
 
 ### Source Files
 
 Sol's Docker source files are located
-[in it's GitHub repo][urls.vector_docker_source_files].
+[in it's GitHub repo][urls.sol_docker_source_files].
 
-[docs.administration]: https://vector.dev/docs/administration/
-[docs.setup.configuration]: https://vector.dev/docs/setup/configuration/
-[docs.deployment]: https://vector.dev/docs/setup/deployment/
-[docs.sinks]: https://vector.dev/docs/reference/configuration/sinks/
-[docs.sources]: https://vector.dev/docs/reference/configuration/sources/
-[docs.strategies#daemon]: https://vector.dev/docs/setup/deployment/strategies/#daemon
-[docs.strategies#service]: https://vector.dev/docs/setup/deployment/strategies/#service
-[docs.strategies#sidecar]: https://vector.dev/docs/setup/deployment/strategies/#sidecar
-[docs.transforms]: https://vector.dev/docs/reference/configurationtransforms/
-[pages.index#correctness]: https://vector.dev/#correctness
-[pages.index#performance]: https://vector.dev/#performance
-[urls.default_configuration]: https://github.com/vectordotdev/vector/blob/master/config/vector.yaml
+[docs.administration]: https://github.com/cboudereau/sol
+[docs.setup.configuration]: https://github.com/cboudereau/sol
+[docs.deployment]: https://github.com/cboudereau/sol
+[docs.sinks]: https://github.com/cboudereau/sol
+[docs.sources]: https://github.com/cboudereau/sol
+[docs.strategies#daemon]: https://github.com/cboudereau/sol
+[docs.strategies#service]: https://github.com/cboudereau/sol
+[docs.strategies#sidecar]: https://github.com/cboudereau/sol
+[docs.transforms]: https://github.com/cboudereau/sol
+[pages.index#correctness]: https://github.com/cboudereau/sol
+[pages.index#performance]: https://github.com/cboudereau/sol
+[urls.default_configuration]: https://github.com/cboudereau/sol/blob/main/config/sol.yaml
 [urls.docker_alpine]: https://hub.docker.com/_/alpine
 [urls.docker_debian]: https://hub.docker.com/_/debian
 [urls.rust]: https://www.rust-lang.org/
-[urls.vector_docker_source_files]: https://github.com/vectordotdev/vector/tree/master/distribution/docker
-[urls.vector_releases]: https://vector.dev/releases/latest/
-[urls.vector_repo]: https://github.com/vectordotdev/vector
+[urls.sol_docker_source_files]: https://github.com/cboudereau/sol/tree/main/distribution/docker
+[urls.sol_releases]: https://github.com/cboudereau/sol/releases/latest
+[urls.sol_repo]: https://github.com/cboudereau/sol
 [urls.distroless]: https://github.com/GoogleContainerTools/distroless

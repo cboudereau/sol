@@ -6,7 +6,7 @@
 
 [Unit]
 Description=Sol
-Documentation=https://vector.dev
+Documentation=https://github.com/cboudereau/sol
 After=network-online.target
 Requires=network-online.target
 

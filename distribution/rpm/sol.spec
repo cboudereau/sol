@@ -1,7 +1,7 @@
 %define _name sol
 %define _cleaned_version %{getenv:CLEANED_VERSION}
 %define _release %{getenv:RELEASE}
-%define _url https://vector.dev
+%define _url https://github.com/cboudereau/sol
 %define _version %{getenv:VERSION}
 %define _source %{_name}-%{_arch}.tar.gz
 %define _sourceroot %{_name}-%{_arch}
@@ -90,5 +90,5 @@ rm -rf %{buildroot}
 %license LICENSE
 
 %changelog
-* Fri Jun 21 2019 Sol Devs <vector@datadoghq.com> - 0.3.0
+* Fri Jun 21 2019 Sol Devs <sol@cboudereau.com> - 0.3.0
 - Release v0.3.0

@@ -11,7 +11,7 @@
 set -u
 
 # If PACKAGE_ROOT is unset or empty, default it.
-PACKAGE_ROOT="${PACKAGE_ROOT:-"https://packages.timber.io/vector"}"
+PACKAGE_ROOT="${PACKAGE_ROOT:-"https://github.com/cboudereau/sol/releases/download"}"
 # If VECTOR_VERSION is unset or empty, default it.
 SOL_VERSION="${SOL_VERSION:-"0.53.0"}"
 _divider="--------------------------------------------------------------------------------"
@@ -25,9 +25,9 @@ header() {
 
 
 $_divider
-Website: https://vector.dev
-Docs: https://vector.dev/docs/
-Community: https://vector.dev/community/
+Website: https://github.com/cboudereau/sol
+Docs: https://github.com/cboudereau/sol
+Community: https://github.com/cboudereau/sol
 $_divider
 
 EOF
@@ -36,7 +36,7 @@ EOF
 usage() {
     cat 1>&2 <<EOF
 sol-install
-The installer for Sol (https://vector.dev)
+The installer for Sol (https://github.com/cboudereau/sol)
 
 USAGE:
     sol-install [FLAGS] [OPTIONS]
@@ -86,7 +86,7 @@ main() {
     # Confirm with the user before proceeding to install Sol through a
     # package manager. Otherwise, we install from an archive.
     if [ "$prompt" = "yes" ]; then
-        echo "$_prompt We'll be installing Sol via a pre-built archive at https://packages.timber.io/vector/${SOL_VERSION}/"
+        echo "$_prompt We'll be installing Sol via a pre-built archive at ${PACKAGE_ROOT}/${SOL_VERSION}/"
         echo "$_prompt Ready to proceed? (y/n)"
         echo ""
 
@@ -181,7 +181,7 @@ install_from_archive() {
         printf "%s Unpacking archive to $prefix ..." "$_prompt"
         ensure tar -xzf "$_file" --directory="$prefix" --strip-components=2
     else
-        # https://github.com/vectordotdev/vector/pull/13613#pullrequestreview-1045524132.
+        # https://github.com/cboudereau/sol/pull/13613#pullrequestreview-1045524132.
         # We will unpack the archive to a temporary directory and then copy the files to
         # their corresponding locations according to the new directory structure.
         printf "%s Using new directory structure since --prefix was specified...\n" "$_prompt"
@@ -214,7 +214,7 @@ install_from_archive() {
     printf "\n"
     printf "%s sol --config $prefix/config/sol.yaml\n" "$_indent"
     printf "\n"
-    printf "%s More information at https://vector.dev/docs/\n" "$_prompt"
+    printf "%s More information at https://github.com/cboudereau/sol\n" "$_prompt"
 
     local _retval=$?
 
@@ -251,7 +251,7 @@ get_gnu_musl_glibc() {
   # Detect both gnu and musl
   # Also detect glibc versions older than 2.18 and return musl for these
   # Required until we identify minimum supported version
-  # TODO: https://github.com/vectordotdev/vector/issues/10807
+  # TODO: https://github.com/cboudereau/sol/issues/10807
   local _ldd_version
   local _glibc_version
   _ldd_version=$(ldd --version 2>&1)
