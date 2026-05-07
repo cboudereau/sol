@@ -138,9 +138,9 @@ impl From<&DatadogSeriesMetric> for MetricSeries {
         let interval = input.interval.unwrap_or(0) as i64;
 
         let r#type = match input.r#type {
-            vector::common::datadog::DatadogMetricType::Gauge => 3,
-            vector::common::datadog::DatadogMetricType::Count => 1,
-            vector::common::datadog::DatadogMetricType::Rate => 2,
+            sol::common::datadog::DatadogMetricType::Gauge => 3,
+            sol::common::datadog::DatadogMetricType::Count => 1,
+            sol::common::datadog::DatadogMetricType::Rate => 2,
         };
 
         MetricSeries {

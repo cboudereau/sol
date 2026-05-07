@@ -74,7 +74,7 @@ fn bench_add_fields(c: &mut Criterion) {
                     futures::executor::block_on(tx.send(event)).unwrap();
                     let transformed = futures::executor::block_on(rx.next()).unwrap();
 
-                    debug_assert_eq!(transformed.as_log()[key], value.to_owned().into());
+                    debug_assert_eq!(transformed.as_log().get(event_path!("the_key")).unwrap(), value.to_owned().into());
 
                     transformed
                 },

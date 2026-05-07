@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group};
-use lookup::{OwnedTargetPath, owned_value_path};
+use sol_lib::lookup::{OwnedTargetPath, owned_value_path};
 use sol::event::{Event, OtelLog};
 
 fn bench_elasticsearch_index(c: &mut Criterion) {

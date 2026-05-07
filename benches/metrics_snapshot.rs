@@ -17,9 +17,9 @@ fn benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-fn prepare_metrics(cardinality: usize) -> &'static vector::metrics::Controller {
-    vector::metrics::init_test();
-    let controller = vector::metrics::Controller::get().unwrap();
+fn prepare_metrics(cardinality: usize) -> &'static sol::metrics::Controller {
+    sol::metrics::init_test();
+    let controller = sol::metrics::Controller::get().unwrap();
     controller.reset();
 
     for idx in 0..cardinality {

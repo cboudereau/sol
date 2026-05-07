@@ -249,7 +249,7 @@ fn benchmark_configs(
     input: &str,
     output: &serde_json::map::Map<String, serde_json::Value>,
 ) {
-    vector::test_util::trace_init();
+    sol::test_util::trace_init();
 
     // only used for debug assertions so assigned to suppress unused warning
     let _ = output;

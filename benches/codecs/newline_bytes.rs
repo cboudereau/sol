@@ -55,11 +55,11 @@ fn decoding(c: &mut Criterion) {
                                 .unwrap_or_default(),
                         );
                         let deserializer = Deserializer::Bytes(BytesDeserializer);
-                        let decoder = vector::codecs::Decoder::new(framer, deserializer);
+                        let decoder = sol::codecs::Decoder::new(framer, deserializer);
 
                         (Box::new(decoder), param.input.clone())
                     },
-                    |(mut decoder, mut input)| loop {
+                    |(mut decoder, mut input): (Box<sol::codecs::Decoder>, BytesMut)| loop {
                         match decoder.decode_eof(&mut input) {
                             Ok(Some(_)) => continue,
                             Ok(None) => break,

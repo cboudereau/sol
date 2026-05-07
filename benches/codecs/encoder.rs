@@ -6,7 +6,7 @@ use criterion::{
     measurement::WallTime,
 };
 use tokio_util::codec::Encoder;
-use sol::event::{Event, OtelLog};
+use sol::event::{Event, OtelLog, Value};
 use sol_lib::{
     btreemap,
     byte_size_of::ByteSizeOf,
@@ -45,11 +45,11 @@ fn encoder(c: &mut Criterion) {
     let mut group: BenchmarkGroup<WallTime> = c.benchmark_group("encoder");
     group.sampling_mode(SamplingMode::Auto);
 
-    let input: Event = Event::Log(OtelLog::from(btreemap! {
+    let input: Event = Event::Log(OtelLog::from(Value::from(btreemap! {
         "key1" => "value1",
         "key2" => "value2",
         "key3" => "value3"
-    }));
+    })));
 
     group.throughput(Throughput::Bytes(input.size_of() as u64));
     group.bench_with_input("JsonLogVecSerializer::encode", &(), |b, ()| {
@@ -94,7 +94,7 @@ fn encoder(c: &mut Criterion) {
     group.bench_with_input("vector::codecs::Encoder::encode", &(), |b, ()| {
         b.iter_batched(
             || {
-                vector::codecs::Encoder::<Framer>::new(
+                sol::codecs::Encoder::<Framer>::new(
                     NewlineDelimitedEncoder::default().into(),
                     JsonSerializerConfig::default().build().into(),
                 )
