@@ -235,11 +235,15 @@ match the local dev command exactly. After this work, verify that:
 
 ## Non-goals
 
-- **Fix casts in `src/` sinks/sources/transforms**: The main crate has ~150+
-  unchecked `as` casts across 51 source/sink/transform crates. These are
-  currently invisible because `src/lib.rs` does not enforce `deny(pedantic)`.
-  The [numeric conversion conventions ADR](./adrs/numeric-conversion-conventions.md)
-  establishes the rules; enforcement is incremental (Phase 2/3).
+- **Fix casts in `src/` sinks/sources/transforms**: The main crate has ~460
+  unchecked `as` casts across 122 files in sinks, sources, and transforms.
+  These are currently invisible because `src/lib.rs` does not enforce
+  `deny(pedantic)`. Enabling cast lints would produce ~398 warnings
+  (`cast_precision_loss`: 263, `cast_sign_loss`: 42, `cast_possible_truncation`:
+  37, `cast_lossless`: 37, `cast_possible_wrap`: 19). The patterns are highly
+  repetitive — two files alone account for 36% of all warnings. The
+  [numeric conversion conventions ADR](./adrs/numeric-conversion-conventions.md)
+  establishes the rules; a dedicated workspace covers the remediation.
 - **Refactor the VRL Value type boundary**: The `i64 ↔ u64` mismatch is
   inherent to how VRL's `Value::Integer(i64)` represents all integers. Changing
   this would require an upstream VRL change and is out of scope.
