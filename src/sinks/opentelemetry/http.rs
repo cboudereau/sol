@@ -199,10 +199,10 @@ impl DriverResponse for OtlpHttpResponse {
     fn event_status(&self) -> EventStatus {
         if self.status.is_success() {
             EventStatus::Delivered
-        } else if self.status.is_client_error() {
-            EventStatus::Rejected
-        } else {
+        } else if self.status.is_server_error() {
             EventStatus::Errored
+        } else {
+            EventStatus::Rejected
         }
     }
 
@@ -560,6 +560,22 @@ mod tests {
     fn test_otlp_http_response_event_status_5xx() {
         let resp = make_response(http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(resp.event_status(), EventStatus::Errored);
+    }
+
+    #[test]
+    fn test_otlp_http_response_event_status_3xx() {
+        let resp = make_response(http::StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(resp.event_status(), EventStatus::Rejected);
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_302() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::FOUND);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::DontRetry(_)
+        ));
     }
 
     #[test]

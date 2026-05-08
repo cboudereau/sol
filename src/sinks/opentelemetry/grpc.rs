@@ -930,6 +930,33 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_grpc_retry_logic_unknown() {
+        let logic = OtlpRetryLogic;
+        let err = OtlpGrpcError::GrpcRequest {
+            source: tonic::Status::unknown("unknown"),
+        };
+        assert!(logic.is_retriable_error(&err));
+    }
+
+    #[test]
+    fn test_otlp_grpc_retry_logic_aborted() {
+        let logic = OtlpRetryLogic;
+        let err = OtlpGrpcError::GrpcRequest {
+            source: tonic::Status::aborted("aborted"),
+        };
+        assert!(logic.is_retriable_error(&err));
+    }
+
+    #[test]
+    fn test_otlp_grpc_retry_logic_cancelled() {
+        let logic = OtlpRetryLogic;
+        let err = OtlpGrpcError::GrpcRequest {
+            source: tonic::Status::cancelled("cancelled"),
+        };
+        assert!(logic.is_retriable_error(&err));
+    }
+
+    #[test]
     fn test_otlp_grpc_retry_logic_invalid_argument() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
