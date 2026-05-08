@@ -14,18 +14,18 @@ use super::{
     recency::{GenerationalStorage, Recency},
     storage::VectorStorage,
 };
-use crate::event::{
-    OtelAttributes,
-    OtelMetric,
-    metric::MetricKind,
-};
+use crate::event::{OtelAttributes, OtelMetric, metric::MetricKind};
 
 fn tags_from_key(key: &Key) -> Option<OtelAttributes> {
     let labels: OtelAttributes = key
         .labels()
         .map(|label| (String::from(label.key()), String::from(label.value())))
         .collect();
-    if labels.is_empty() { None } else { Some(labels) }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels)
+    }
 }
 
 thread_local!(static LOCAL_REGISTRY: OnceCell<Registry> = const { OnceCell::new() });
@@ -112,18 +112,22 @@ impl Registry {
                 let inner = histogram.get_inner();
                 let name = format!("sol_{}", key.name());
                 metrics.push(
-                    OtelMetric::new_histogram(&name, MetricKind::Absolute, &inner.buckets(), inner.count(), inner.sum())
-                        .with_namespace(Some("sol".to_string()))
-                        .with_tags(tags_from_key(&key))
-                        .with_timestamp(Some(timestamp)),
+                    OtelMetric::new_histogram(
+                        &name,
+                        MetricKind::Absolute,
+                        &inner.buckets(),
+                        inner.count(),
+                        inner.sum(),
+                    )
+                    .with_namespace(Some("sol".to_string()))
+                    .with_tags(tags_from_key(&key))
+                    .with_timestamp(Some(timestamp)),
                 );
             }
         }
         metrics
     }
-
 }
-
 
 impl Registry {
     fn get_counter(&self, key: &Key) -> Counter {

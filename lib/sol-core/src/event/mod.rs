@@ -32,18 +32,22 @@ pub mod lua;
 pub mod merge_state;
 mod metadata;
 pub mod metric;
-mod r#ref;
-mod ser;
 pub mod otel_attributes;
+pub(crate) mod otel_conv;
 pub mod otel_event;
 pub mod otel_fields;
 pub mod otel_json;
 pub mod otel_metric;
 pub mod otlp;
-pub use otel_attributes::OtelAttributes;
-pub use otel_event::{AnyValue, OtelLog, OtelSpan, ValueAtQuantile, json_to_any_value, string_value, int_value, vrl_value_to_any_value};
-pub use otel_metric::{MetricView, OtelMetric};
+mod r#ref;
+mod ser;
 pub use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
+pub use otel_attributes::OtelAttributes;
+pub use otel_event::{
+    AnyValue, OtelLog, OtelSpan, ValueAtQuantile, int_value, json_to_any_value, string_value,
+    vrl_value_to_any_value,
+};
+pub use otel_metric::{MetricView, OtelMetric};
 
 pub use otlp::{OtlpCodec, register_otlp_codec};
 pub use ser::EventEncodableMetadata;
@@ -192,7 +196,6 @@ impl Event {
         }
     }
 
-
     /// Return self as an `OtelSpan` reference.
     ///
     /// # Panics
@@ -300,19 +303,53 @@ impl Event {
     }
 
     /// Backward-compat aliases — these just delegate to the renamed variants.
-    pub fn as_otel_log(&self) -> &OtelLog { self.as_log() }
-    pub fn as_mut_otel_log(&mut self) -> &mut OtelLog { self.as_mut_log() }
-    pub fn into_otel_log(self) -> OtelLog { self.into_log() }
-    pub fn try_into_otel_log(self) -> Option<OtelLog> { self.try_into_log() }
-    pub fn maybe_as_otel_log(&self) -> Option<&OtelLog> { self.maybe_as_log() }
-    pub fn as_otel_span(&self) -> &OtelSpan { self.as_trace() }
-    pub fn as_mut_otel_span(&mut self) -> &mut OtelSpan { self.as_mut_trace() }
-    pub fn into_otel_span(self) -> OtelSpan { self.into_trace() }
-    pub fn try_into_otel_span(self) -> Option<OtelSpan> { self.try_into_trace() }
-    pub fn as_otel_metric(&self) -> &OtelMetric { self.as_metric() }
-    pub fn as_mut_otel_metric(&mut self) -> &mut OtelMetric { self.as_mut_metric() }
-    pub fn into_otel_metric(self) -> OtelMetric { match self { Event::Metric(e) => e, _ => panic!("not a metric") } }
-    pub fn try_into_otel_metric(self) -> Option<OtelMetric> { match self { Event::Metric(e) => Some(e), _ => None } }
+    pub fn as_otel_log(&self) -> &OtelLog {
+        self.as_log()
+    }
+    pub fn as_mut_otel_log(&mut self) -> &mut OtelLog {
+        self.as_mut_log()
+    }
+    pub fn into_otel_log(self) -> OtelLog {
+        self.into_log()
+    }
+    pub fn try_into_otel_log(self) -> Option<OtelLog> {
+        self.try_into_log()
+    }
+    pub fn maybe_as_otel_log(&self) -> Option<&OtelLog> {
+        self.maybe_as_log()
+    }
+    pub fn as_otel_span(&self) -> &OtelSpan {
+        self.as_trace()
+    }
+    pub fn as_mut_otel_span(&mut self) -> &mut OtelSpan {
+        self.as_mut_trace()
+    }
+    pub fn into_otel_span(self) -> OtelSpan {
+        self.into_trace()
+    }
+    pub fn try_into_otel_span(self) -> Option<OtelSpan> {
+        self.try_into_trace()
+    }
+    pub fn as_otel_metric(&self) -> &OtelMetric {
+        self.as_metric()
+    }
+    pub fn as_mut_otel_metric(&mut self) -> &mut OtelMetric {
+        self.as_mut_metric()
+    }
+    /// # Panics
+    /// Panics if the event is not a metric.
+    pub fn into_otel_metric(self) -> OtelMetric {
+        match self {
+            Event::Metric(e) => e,
+            _ => panic!("not a metric"),
+        }
+    }
+    pub fn try_into_otel_metric(self) -> Option<OtelMetric> {
+        match self {
+            Event::Metric(e) => Some(e),
+            _ => None,
+        }
+    }
 
     /// Returns a reference to the event metadata source.
     #[must_use]
@@ -357,6 +394,9 @@ impl Event {
     }
 
     /// Creates an Event from a JSON value.
+    ///
+    /// # Errors
+    /// Returns an error if the JSON value cannot be converted.
     pub fn from_json_value(value: serde_json::Value) -> crate::Result<Self> {
         Ok(Event::Log(OtelLog::from(Value::from(value))))
     }
@@ -396,7 +436,6 @@ impl TryInto<serde_json::Value> for Event {
     }
 }
 
-
 impl From<OtelLog> for Event {
     fn from(e: OtelLog) -> Self {
         Event::Log(e)
@@ -414,7 +453,6 @@ impl From<OtelSpan> for Event {
         Event::Trace(e)
     }
 }
-
 
 pub trait MaybeAsLogMut {
     fn maybe_as_log_mut(&mut self) -> Option<&mut OtelLog>;

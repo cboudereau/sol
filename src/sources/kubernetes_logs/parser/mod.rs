@@ -17,7 +17,7 @@ fn transform_otel_event(parser: &mut ParserState, output: &mut OutputBuffer, mut
             return;
         }
         let bytes = bytes::Bytes::from(body);
-        let tmp_otel = crate::event::OtelLog::from_bytes(bytes.clone());
+        let tmp_otel = crate::event::OtelLog::from_bytes(&bytes);
         let tmp_event = Event::Log(tmp_otel);
         let mut tmp_output = OutputBuffer::with_capacity(1);
         match parser {

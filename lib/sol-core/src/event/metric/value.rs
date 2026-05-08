@@ -10,7 +10,6 @@ const INFINITY: &str = "inf";
 const NEG_INFINITY: &str = "-inf";
 const NAN: &str = "NaN";
 
-
 /// A single observation.
 #[configurable_component]
 #[derive(Clone, Copy, Debug)]

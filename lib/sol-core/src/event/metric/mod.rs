@@ -186,7 +186,10 @@ mod test {
         ];
 
         for (quantile, expected) in quantiles {
-            let quantile = Quantile { quantile, value: 1.0 };
+            let quantile = Quantile {
+                quantile,
+                value: 1.0,
+            };
             let result = quantile.to_percentile_string();
             assert_eq!(result, expected);
         }
@@ -207,7 +210,10 @@ mod test {
         ];
 
         for (quantile, expected) in quantiles {
-            let quantile = Quantile { quantile, value: 1.0 };
+            let quantile = Quantile {
+                quantile,
+                value: 1.0,
+            };
             let result = quantile.to_quantile_string();
             assert_eq!(result, expected);
         }

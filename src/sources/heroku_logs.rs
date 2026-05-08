@@ -368,7 +368,7 @@ fn line_to_events(
             fields = parts.len()
         );
 
-        let mut log = OtelLog::from_bytes(bytes::Bytes::from(line.to_owned()));
+        let mut log = OtelLog::from_bytes(line.as_bytes());
         log.record_mut().time_unix_nano = Utc::now()
             .timestamp_nanos_opt()
             .unwrap_or(0)

@@ -115,7 +115,6 @@ impl Histogram {
             })
             .collect()
     }
-
 }
 
 impl HistogramFn for Histogram {

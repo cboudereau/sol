@@ -24,10 +24,7 @@ async fn emits_lag_time_for_log() {
 #[tokio::test]
 async fn emits_lag_time_for_metric() {
     emit_and_test(|timestamp| {
-        Event::Metric(
-            OtelMetric::new_gauge("name", 123.4)
-                .with_timestamp(Some(timestamp)),
-        )
+        Event::Metric(OtelMetric::new_gauge("name", 123.4).with_timestamp(Some(timestamp)))
     })
     .await;
 }
@@ -84,9 +81,7 @@ async fn emit_and_test(make_event: impl FnOnce(DateTime<Utc>) -> Event) {
             assert_eq!(count, 1);
             assert!(
                 (sum - expected).abs() <= 0.002,
-                "Histogram sum does not match expected sum: {} vs {}",
-                sum,
-                expected,
+                "Histogram sum does not match expected sum: {sum} vs {expected}",
             );
         }
         _ => panic!("source_lag_time_seconds has invalid type"),
@@ -137,9 +132,7 @@ async fn emits_component_discarded_events_total_for_send_batch() {
 
     let expected_drop = 100;
     let events: Vec<Event> = (0..(CHUNK_SIZE + expected_drop))
-        .map(|_| {
-            Event::Metric(OtelMetric::new_gauge("name", 123.4))
-        })
+        .map(|_| Event::Metric(OtelMetric::new_gauge("name", 123.4)))
         .collect();
 
     // `CHUNK_SIZE` events will be sent into buffer but then the future will not be polled to completion.
@@ -202,9 +195,9 @@ async fn times_out_send_event_with_timeout() {
 /// cannot stall producers on another.
 #[tokio::test]
 async fn per_signal_backpressure_isolation() {
+    const BUF: usize = 1;
     metrics::init_test();
 
-    const BUF: usize = 1;
     let component_key = "test-source".into();
 
     // Build a sender with three named outputs (capacity 1 each).
@@ -239,7 +232,10 @@ async fn per_signal_backpressure_isolation() {
 
     // Fill the metrics channel to capacity (1 item).
     sender
-        .send_batch_named("metrics", vec![Event::Metric(OtelMetric::new_gauge("fill", 0.0))])
+        .send_batch_named(
+            "metrics",
+            vec![Event::Metric(OtelMetric::new_gauge("fill", 0.0))],
+        )
         .await
         .expect("first metric send should succeed");
 
@@ -253,8 +249,7 @@ async fn per_signal_backpressure_isolation() {
 
     let mut trace = OtelSpan::new(Default::default());
     trace.insert(event_path!("msg"), "hi");
-    let trace_future =
-        sender.send_batch_named("traces", vec![Event::Trace(trace)]);
+    let trace_future = sender.send_batch_named("traces", vec![Event::Trace(trace)]);
     timeout(StdDuration::from_millis(200), trace_future)
         .await
         .expect("trace send must not block when metric channel is full")
@@ -262,8 +257,14 @@ async fn per_signal_backpressure_isolation() {
 
     // Drain all channels so nothing leaks into other tests.
     assert!(log_rx.next().await.is_some(), "log item must be receivable");
-    assert!(trace_rx.next().await.is_some(), "trace item must be receivable");
-    assert!(metric_rx.next().await.is_some(), "metric item must be receivable");
+    assert!(
+        trace_rx.next().await.is_some(),
+        "trace item must be receivable"
+    );
+    assert!(
+        metric_rx.next().await.is_some(),
+        "metric item must be receivable"
+    );
 }
 
 fn get_component_metrics() -> Vec<OtelMetric> {

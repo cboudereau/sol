@@ -53,7 +53,7 @@ impl EventData {
     pub fn into_event(self) -> Event {
         match self {
             Self::Log(message) => {
-                Event::Log(OtelLog::from_bytes(bytes::Bytes::from(message)))
+                Event::Log(OtelLog::from_bytes(message.as_bytes()))
             }
             Self::LogBuilder(data) => {
                 // Build a Value tree using VRL path parsing, then convert

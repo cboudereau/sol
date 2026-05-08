@@ -104,11 +104,7 @@ impl Definition {
     /// This function should be called in the same order as the values are actually inserted into the event.
     #[must_use]
     pub fn with_standard_vector_source_metadata(self) -> Self {
-        let def = self.with_vector_metadata(
-            &owned_value_path!("source_type"),
-            Kind::bytes(),
-            None,
-        );
+        let def = self.with_vector_metadata(&owned_value_path!("source_type"), Kind::bytes(), None);
 
         def.with_metadata_field(
             &owned_value_path!("vector", "ingest_timestamp"),
@@ -127,11 +123,7 @@ impl Definition {
         kind: Kind,
         meaning: Option<&str>,
     ) -> Self {
-        self.with_metadata_field(
-            &vector_path.with_field_prefix(source_name),
-            kind,
-            meaning,
-        )
+        self.with_metadata_field(&vector_path.with_field_prefix(source_name), kind, meaning)
     }
 
     /// Register metadata type information for a vector-namespaced field.
@@ -143,11 +135,7 @@ impl Definition {
         kind: Kind,
         meaning: Option<&str>,
     ) -> Self {
-        self.with_metadata_field(
-            &vector_path.with_field_prefix("vector"),
-            kind,
-            meaning,
-        )
+        self.with_metadata_field(&vector_path.with_field_prefix("vector"), kind, meaning)
     }
 
     /// Add type information for an event or metadata field.
@@ -522,19 +510,16 @@ mod tests {
             },
             TestCase {
                 title: "event mismatch",
-                definition: Definition::new(
-                    Kind::object(Collection::empty()),
-                    Kind::any(),
-                ),
-                event: Event::Log(OtelLog::from(Value::Object(BTreeMap::from([("foo".into(), 4.into())])))),
+                definition: Definition::new(Kind::object(Collection::empty()), Kind::any()),
+                event: Event::Log(OtelLog::from(Value::Object(BTreeMap::from([(
+                    "foo".into(),
+                    4.into(),
+                )])))),
                 valid: false,
             },
             TestCase {
                 title: "metadata mismatch",
-                definition: Definition::new(
-                    Kind::any(),
-                    Kind::object(Collection::empty()),
-                ),
+                definition: Definition::new(Kind::any(), Kind::object(Collection::empty())),
                 event: Event::Log(OtelLog::from_value_map(
                     Value::Object(BTreeMap::new()),
                     EventMetadata::default_with_value(
@@ -545,10 +530,7 @@ mod tests {
             },
             TestCase {
                 title: "event mismatch - null vs undefined",
-                definition: Definition::new(
-                    Kind::object(Collection::empty()),
-                    Kind::any(),
-                ),
+                definition: Definition::new(Kind::object(Collection::empty()), Kind::any()),
                 event: Event::Log(OtelLog::from(Value::Object(BTreeMap::from([(
                     "foo".into(),
                     Value::Null,

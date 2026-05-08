@@ -243,8 +243,11 @@ mod tests {
     #[test]
     fn test_doesnt_validate_types() {
         let requirement = Requirement::empty().required_meaning("foo", Kind::boolean());
-        let definition = Definition::default_definition()
-            .with_event_field(&owned_value_path!("foo"), Kind::integer(), Some("foo"));
+        let definition = Definition::default_definition().with_event_field(
+            &owned_value_path!("foo"),
+            Kind::integer(),
+            Some("foo"),
+        );
 
         assert_eq!(Ok(()), requirement.validate(&definition, false));
     }
@@ -253,9 +256,11 @@ mod tests {
     fn test_validates_meaning_kind_mismatch() {
         let requirement = Requirement::empty().required_meaning("foo", Kind::boolean());
 
-        let definition =
-            Definition::default_definition()
-                .with_event_field(&owned_value_path!("foo"), Kind::integer(), Some("foo"));
+        let definition = Definition::default_definition().with_event_field(
+            &owned_value_path!("foo"),
+            Kind::integer(),
+            Some("foo"),
+        );
 
         // Validation catches the type mismatch: meaning "foo" expects boolean but got integer
         assert_ne!(Ok(()), requirement.validate(&definition, true));
@@ -337,8 +342,11 @@ mod tests {
                 "invalid required meaning kind",
                 TestCase {
                     requirement: Requirement::empty().required_meaning("foo", Kind::boolean()),
-                    definition: Definition::default_definition()
-                        .with_event_field(&owned_value_path!("foo"), Kind::integer(), Some("foo")),
+                    definition: Definition::default_definition().with_event_field(
+                        &owned_value_path!("foo"),
+                        Kind::integer(),
+                        Some("foo"),
+                    ),
                     errors: vec![ValidationError::MeaningKind {
                         identifier: "foo".into(),
                         want: Kind::boolean(),
@@ -350,8 +358,11 @@ mod tests {
                 "invalid optional meaning kind",
                 TestCase {
                     requirement: Requirement::empty().optional_meaning("foo", Kind::boolean()),
-                    definition: Definition::default_definition()
-                        .with_event_field(&owned_value_path!("foo"), Kind::integer(), Some("foo")),
+                    definition: Definition::default_definition().with_event_field(
+                        &owned_value_path!("foo"),
+                        Kind::integer(),
+                        Some("foo"),
+                    ),
                     errors: vec![ValidationError::MeaningKind {
                         identifier: "foo".into(),
                         want: Kind::boolean(),
@@ -365,14 +376,11 @@ mod tests {
                     requirement: Requirement::empty().optional_meaning("foo", Kind::boolean()),
                     definition: Definition::default_definition()
                         .with_event_field(&owned_value_path!("foo"), Kind::integer(), Some("foo"))
-                        .merge(
-                            Definition::default_definition()
-                                .with_event_field(
-                                    &owned_value_path!("bar"),
-                                    Kind::boolean(),
-                                    Some("foo"),
-                                ),
-                        ),
+                        .merge(Definition::default_definition().with_event_field(
+                            &owned_value_path!("bar"),
+                            Kind::boolean(),
+                            Some("foo"),
+                        )),
                     errors: vec![ValidationError::MeaningDuplicate {
                         identifier: "foo".into(),
                         paths: BTreeSet::from([

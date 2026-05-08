@@ -102,7 +102,6 @@ pub const SOURCE_TYPE: &str = "source_type";
 pub const SERVICE_NAME: &str = "service.name";
 pub const HOST_NAME: &str = "host.name";
 
-
 // Tracing metadata field names.
 pub const METADATA: &str = "metadata";
 pub const LEVEL: &str = "level";

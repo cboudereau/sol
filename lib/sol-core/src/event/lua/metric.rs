@@ -44,7 +44,6 @@ impl FromLua for MetricKind {
     }
 }
 
-
 impl FromLua for OtelAttributes {
     fn from_lua(value: LuaValue, _: &Lua) -> LuaResult<Self> {
         let LuaValue::Table(table) = value else {
@@ -58,9 +57,13 @@ impl FromLua for OtelAttributes {
         for pair in table.pairs::<String, LuaValue>() {
             let (key, val) = pair?;
             match val {
-                LuaValue::String(s) => { attrs.insert_string(key, s.to_string_lossy().to_string()); }
+                LuaValue::String(s) => {
+                    attrs.insert_string(key, s.to_string_lossy().clone());
+                }
                 LuaValue::Nil => {}
-                _ => { attrs.insert_string(key, format!("{val:?}")); }
+                _ => {
+                    attrs.insert_string(key, format!("{val:?}"));
+                }
             }
         }
         Ok(attrs)
@@ -91,10 +94,7 @@ impl IntoLua for LuaMetric {
             tbl.raw_set("interval_ms", i.get())?;
         }
         if let Some(attrs) = self.otel.tags() {
-            tbl.raw_set(
-                "tags",
-                LuaOtelAttributes { attrs },
-            )?;
+            tbl.raw_set("tags", LuaOtelAttributes { attrs })?;
         }
         tbl.raw_set("kind", self.otel.kind())?;
 
@@ -143,7 +143,13 @@ impl IntoLua for LuaMetric {
                 aggregated_summary.raw_set("sum", sum)?;
                 tbl.raw_set("aggregated_summary", aggregated_summary)?;
             }
-            MetricView::ExponentialHistogram { scale, count, sum, zero_count, .. } => {
+            MetricView::ExponentialHistogram {
+                scale,
+                count,
+                sum,
+                zero_count,
+                ..
+            } => {
                 let exp_hist = lua.create_table()?;
                 exp_hist.raw_set("scale", scale)?;
                 exp_hist.raw_set("count", count)?;
@@ -320,14 +326,21 @@ mod test {
     fn read_multi_value_tag() {
         use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value};
         let mut tags = OtelAttributes::default();
-        tags.insert("example tag".to_string(), AnyValue {
-            value: Some(any_value::Value::ArrayValue(ArrayValue {
-                values: vec![
-                    AnyValue { value: Some(any_value::Value::StringValue("a".into())) },
-                    AnyValue { value: Some(any_value::Value::StringValue("b".into())) },
-                ],
-            })),
-        });
+        tags.insert(
+            "example tag".to_string(),
+            AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("a".into())),
+                        },
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("b".into())),
+                        },
+                    ],
+                })),
+            },
+        );
         let metric = OtelMetric::new_counter("example counter", MetricKind::Incremental, 1.0)
             .with_tags(Some(tags));
 
@@ -390,6 +403,7 @@ mod test {
         );
     }
 
+    #[allow(clippy::useless_vec)]
     #[test]
     fn into_lua_distribution() {
         let metric = OtelMetric::new_histogram_from_samples(
@@ -466,8 +480,12 @@ mod test {
                 value = 0.57721566
             }
         }"#;
-        let expected = OtelMetric::new_counter("example counter", MetricKind::Absolute, 0.577_215_66);
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        let expected =
+            OtelMetric::new_counter("example counter", MetricKind::Absolute, 0.577_215_66);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -499,7 +517,10 @@ mod test {
                     .single()
                     .expect("invalid timestamp"),
             ));
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -526,14 +547,21 @@ mod test {
         let mut tags = OtelAttributes::default();
         {
             use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value};
-            tags.insert("example tag".to_string(), AnyValue {
-                value: Some(any_value::Value::ArrayValue(ArrayValue {
-                    values: vec![
-                        AnyValue { value: Some(any_value::Value::StringValue("a".into())) },
-                        AnyValue { value: Some(any_value::Value::StringValue("b".into())) },
-                    ],
-                })),
-            });
+            tags.insert(
+                "example tag".to_string(),
+                AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("a".into())),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("b".into())),
+                            },
+                        ],
+                    })),
+                },
+            );
         }
         let expected = OtelMetric::new_counter("example counter", MetricKind::Incremental, 1.0)
             .with_namespace(Some("example_namespace"))
@@ -543,7 +571,10 @@ mod test {
                     .single()
                     .expect("invalid timestamp"),
             ));
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -555,7 +586,10 @@ mod test {
             }
         }"#;
         let expected = OtelMetric::new_gauge("example gauge", 1.618_033_9);
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -571,9 +605,13 @@ mod test {
             MetricKind::Absolute,
             vec!["value", "another value"],
         );
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
+    #[allow(clippy::useless_vec)]
     #[test]
     fn from_lua_distribution() {
         let value = r#"{
@@ -589,7 +627,10 @@ mod test {
             MetricKind::Absolute,
             &crate::samples![1.0 => 10, 1.0 => 20],
         );
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -610,7 +651,10 @@ mod test {
             87,
             975.2,
         );
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -628,6 +672,9 @@ mod test {
             0.1 => 2.0, 0.25 => 3.0, 0.5 => 5.0, 0.75 => 8.0, 0.9 => 7.0, 0.99 => 9.0, 1.0 => 10.0
         ];
         let expected = OtelMetric::new_summary("example summary", &quantiles, 197, 975.2);
-        assert_event_data_eq!(Lua::new().load(value).eval::<OtelMetric>().unwrap(), expected);
+        assert_event_data_eq!(
+            Lua::new().load(value).eval::<OtelMetric>().unwrap(),
+            expected
+        );
     }
 }

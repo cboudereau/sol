@@ -120,11 +120,11 @@ centralize all VRL ↔ OTLP casts.
 (must produce zero errors for this file)
 
 **Acceptance criteria**:
-- [ ] `otel_conv.rs` exists with all four types and their methods
-- [ ] Every `#[expect]` has a `reason` argument
-- [ ] Module registered in `event/mod.rs`
-- [ ] Unit tests pass
-- [ ] Zero clippy errors from `otel_conv.rs`
+- [x] `otel_conv.rs` exists with all four types and their methods
+- [x] Every `#[expect]` has a `reason` argument
+- [x] Module registered in `event/mod.rs`
+- [x] Unit tests pass
+- [x] Zero clippy errors from `otel_conv.rs`
 
 **Depends on**: (none)
 **Time-box**: ~30 min
@@ -153,10 +153,10 @@ centralize all VRL ↔ OTLP casts.
 (must produce zero errors for this file)
 
 **Acceptance criteria**:
-- [ ] Zero clippy errors from `otel_metric.rs`
-- [ ] All VRL ↔ OTLP boundary casts use the typed newtypes
-- [ ] Non-boundary casts (enum discriminants, histogram math) have function-level `#[expect]` with `reason`
-- [ ] All sol-core tests pass
+- [x] Zero clippy errors from `otel_metric.rs`
+- [x] All VRL ↔ OTLP boundary casts use the typed newtypes
+- [x] Non-boundary casts (enum discriminants, histogram math) have function-level `#[expect]` with `reason`
+- [x] All sol-core tests pass
 
 **Depends on**: task 0
 **Time-box**: ~60 min
@@ -181,9 +181,9 @@ centralize all VRL ↔ OTLP casts.
 **Verify**: `cargo clippy -p sol-core --all-targets --all-features -- -D warnings 2>&1 | grep otel_event`
 
 **Acceptance criteria**:
-- [ ] Zero clippy errors from `otel_event.rs`
-- [ ] All VRL ↔ OTLP boundary casts use the typed newtypes
-- [ ] All sol-core tests pass
+- [x] Zero clippy errors from `otel_event.rs`
+- [x] All VRL ↔ OTLP boundary casts use the typed newtypes
+- [x] All sol-core tests pass
 
 **Depends on**: task 0
 **Time-box**: ~75 min
@@ -206,9 +206,9 @@ centralize all VRL ↔ OTLP casts.
 **Verify**: `cargo clippy -p sol-core --all-targets --all-features -- -D warnings 2>&1 | grep vrl_target`
 
 **Acceptance criteria**:
-- [ ] Zero clippy errors from `vrl_target.rs`
-- [ ] All VRL ↔ OTLP boundary casts use the typed newtypes
-- [ ] All sol-core tests pass
+- [x] Zero clippy errors from `vrl_target.rs`
+- [x] All VRL ↔ OTLP boundary casts use the typed newtypes
+- [x] All sol-core tests pass
 
 **Depends on**: task 0
 **Time-box**: ~60 min
@@ -238,10 +238,10 @@ Zero crate-wide allows added.
 (must produce zero errors total)
 
 **Acceptance criteria**:
-- [ ] Zero clippy errors across all of sol-core
-- [ ] `lib.rs` has exactly the original 10 upstream allows — nothing added
-- [ ] Inherited file fixes are minimal and mechanical
-- [ ] All sol-core tests pass
+- [x] Zero clippy errors across all of sol-core
+- [x] `lib.rs` has exactly the original 10 upstream allows — nothing added
+- [x] Inherited file fixes are minimal and mechanical
+- [x] All sol-core tests pass
 
 **Depends on**: tasks 1, 2, 3
 **Time-box**: ~30 min
@@ -260,13 +260,13 @@ Tasks: 0, 1, 2, 3, 4
 
 ## Quality gates (post-session review)
 
-- [ ] Acceptance criteria: all green above
-- [ ] Code review: boundary types used consistently for all VRL ↔ OTLP casts
-- [ ] Code review: every remaining `#[expect]` has a `reason` argument
-- [ ] Code organization: zero crate-wide allows added to `lib.rs`
-- [ ] Code organization: `otel_conv.rs` registered in `event/mod.rs`
-- [ ] Code quality: no bare `as` casts crossing the VRL ↔ OTLP boundary
-- [ ] Security review: no silent truncation of metric values or timestamps
-- [ ] Observability: round-trip fidelity preserved (integration tests)
-- [ ] Performance: newtypes are `Copy`, zero runtime cost
-- [ ] CI coherence: `make check-clippy` and `make check-fmt` pass locally (same commands as GitHub Actions CI)
+- [x] Acceptance criteria: all green above
+- [x] Code review: boundary types used consistently for all VRL ↔ OTLP casts
+- [x] Code review: every remaining `#[expect]` has a `reason` argument
+- [x] Code organization: zero crate-wide allows added to `lib.rs`
+- [x] Code organization: `otel_conv.rs` registered in `event/mod.rs`
+- [x] Code quality: no bare `as` casts crossing the VRL ↔ OTLP boundary
+- [x] Security review: no silent truncation of metric values or timestamps
+- [x] Observability: round-trip fidelity preserved (integration tests)
+- [x] Performance: newtypes are `Copy`, zero runtime cost
+- [x] CI coherence: `make check-clippy` and `make check-fmt` pass locally (same commands as GitHub Actions CI)

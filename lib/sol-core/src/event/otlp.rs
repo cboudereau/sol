@@ -13,9 +13,15 @@ use super::EventArray;
 /// before any disk buffer is opened.
 pub trait OtlpCodec: Send + Sync + 'static {
     /// Encode `array` as an `OtlpBufferBatch` protobuf message, appending bytes to `buf`.
+    ///
+    /// # Errors
+    /// Returns an error if encoding fails.
     fn encode(&self, array: &EventArray, buf: &mut Vec<u8>) -> Result<(), String>;
 
     /// Decode `buf` (a serialised `OtlpBufferBatch`) into an `EventArray`.
+    ///
+    /// # Errors
+    /// Returns an error if decoding fails.
     fn decode(&self, buf: Bytes) -> Result<EventArray, String>;
 }
 

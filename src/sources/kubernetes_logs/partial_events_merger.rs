@@ -321,7 +321,7 @@ mod test {
     async fn merge_single_event_vector_namespace() {
         use crate::event::string_value;
 
-        let mut e_1 = OtelLog::from_bytes(bytes::Bytes::from("test message 1"));
+        let mut e_1 = OtelLog::from_bytes(b"test message 1");
         e_1.set_attribute(FILE_KEY.to_string(), string_value("foo1"));
 
         let input_stream = futures::stream::iter([Event::from(e_1)]);
@@ -338,7 +338,7 @@ mod test {
         use opentelemetry_proto::tonic::common::v1::AnyValue;
         use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
 
-        let mut e_1 = OtelLog::from_bytes(bytes::Bytes::from("test message 1"));
+        let mut e_1 = OtelLog::from_bytes(b"test message 1");
         e_1.set_attribute(FILE_KEY.to_string(), string_value("foo1"));
         e_1.set_attribute(
             event::PARTIAL.to_string(),
@@ -347,7 +347,7 @@ mod test {
             },
         );
 
-        let mut e_2 = OtelLog::from_bytes(bytes::Bytes::from("test message 2"));
+        let mut e_2 = OtelLog::from_bytes(b"test message 2");
         e_2.set_attribute(FILE_KEY.to_string(), string_value("foo1"));
 
         let input_stream = futures::stream::iter([Event::from(e_1), Event::from(e_2)]);

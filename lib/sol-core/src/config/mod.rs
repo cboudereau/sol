@@ -12,9 +12,9 @@ mod telemetry;
 pub use global_options::{GlobalOptions, WildcardMatching};
 use lookup::{PathPrefix, lookup_v2::ValuePath, path};
 pub use output_id::OutputId;
-pub use telemetry::{Tags, Telemetry, init_telemetry, telemetry};
 pub use sol_common::config::ComponentKey;
 use sol_config::configurable_component;
+pub use telemetry::{Tags, Telemetry, init_telemetry, telemetry};
 use vrl::value::Value;
 
 use crate::{
@@ -30,7 +30,11 @@ use crate::{
 pub trait MetadataInsertable {
     fn insert_by_path<'a>(&mut self, path: impl ValuePath<'a>, value: impl Into<Value>);
     fn try_insert_by_path<'a>(&mut self, path: impl ValuePath<'a>, value: impl Into<Value>);
-    fn maybe_insert_by_path<'a>(&mut self, path: Option<impl ValuePath<'a>>, value: impl Into<Value>);
+    fn maybe_insert_by_path<'a>(
+        &mut self,
+        path: Option<impl ValuePath<'a>>,
+        value: impl Into<Value>,
+    );
     fn event_metadata_mut(&mut self) -> &mut EventMetadata;
     fn set_source_type(&mut self, value: impl Into<Value>);
     fn try_set_source_type(&mut self, value: impl Into<Value>);
@@ -45,7 +49,11 @@ impl MetadataInsertable for OtelLog {
     fn try_insert_by_path<'a>(&mut self, path: impl ValuePath<'a>, value: impl Into<Value>) {
         self.try_insert((PathPrefix::Event, path), value);
     }
-    fn maybe_insert_by_path<'a>(&mut self, path: Option<impl ValuePath<'a>>, value: impl Into<Value>) {
+    fn maybe_insert_by_path<'a>(
+        &mut self,
+        path: Option<impl ValuePath<'a>>,
+        value: impl Into<Value>,
+    ) {
         if let Some(path) = path {
             self.insert((PathPrefix::Event, path), value);
         }
@@ -435,7 +443,6 @@ impl From<bool> for AcknowledgementsConfig {
     }
 }
 
-
 /// Adds metadata to "event metadata", nested under the source name.
 pub fn insert_source_metadata<'a>(
     source_name: &'a str,
@@ -484,10 +491,7 @@ pub fn insert_vector_metadata<'a>(
 }
 
 /// Retrieves metadata from "event metadata" under "vector".
-pub fn get_vector_metadata<'a>(
-    log: &OtelLog,
-    metadata_key: impl ValuePath<'a>,
-) -> Option<Value> {
+pub fn get_vector_metadata<'a>(log: &OtelLog, metadata_key: impl ValuePath<'a>) -> Option<Value> {
     log.metadata()
         .value()
         .get(path!("vector").concat(metadata_key))

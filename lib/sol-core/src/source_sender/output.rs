@@ -8,7 +8,6 @@ use std::{
 use chrono::Utc;
 use futures::{Stream, StreamExt as _};
 use metrics::Histogram;
-use tracing::Span;
 use sol_buffers::{
     config::MemoryBufferSize,
     topology::channel::{self, ChannelMetricMetadata, LimitedReceiver, LimitedSender},
@@ -20,6 +19,7 @@ use sol_common::{
         InternalEventHandle as _, RegisterInternalEvent as _, Registered, UNINTENTIONAL,
     },
 };
+use tracing::Span;
 use vrl::value::Value;
 
 use super::{CHUNK_SIZE, SendError, SourceSenderItem};
@@ -246,12 +246,8 @@ impl Output {
     pub(super) fn emit_lag_time(&self, event: EventRef<'_>, reference: i64) {
         if let Some(lag_time) = &self.lag_time {
             let timestamp_millis = match event {
-                EventRef::Log(log) => log
-                    .get_timestamp()
-                    .and_then(|v| get_timestamp_millis(&v)),
-                EventRef::Metric(metric) => {
-                    metric.timestamp().map(|ts| ts.timestamp_millis())
-                }
+                EventRef::Log(log) => log.get_timestamp().and_then(|v| get_timestamp_millis(&v)),
+                EventRef::Metric(metric) => metric.timestamp().map(|ts| ts.timestamp_millis()),
                 EventRef::Trace(span) => {
                     let nanos = span.start_time_unix_nano();
                     if nanos == 0 {
@@ -263,6 +259,7 @@ impl Output {
             };
             if let Some(ts_millis) = timestamp_millis {
                 let lag = reference - ts_millis;
+                #[expect(clippy::cast_precision_loss, reason = "lag millis < 2^53 in practice")]
                 lag_time.record(lag as f64 / 1000.0);
             }
         }

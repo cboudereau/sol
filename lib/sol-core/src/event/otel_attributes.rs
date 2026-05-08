@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use opentelemetry_proto::tonic::common::v1::{
-    KeyValue, any_value::Value as OtelValueKind,
-};
+use opentelemetry_proto::tonic::common::v1::{KeyValue, any_value::Value as OtelValueKind};
 use sol_common::byte_size_of::ByteSizeOf;
 use vrl::value::{KeyString, ObjectMap};
 
@@ -22,7 +20,9 @@ pub struct OtelAttributes {
 
 impl OtelAttributes {
     pub fn new() -> Self {
-        Self { inner: BTreeMap::new() }
+        Self {
+            inner: BTreeMap::new(),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&AnyValue> {
@@ -54,29 +54,28 @@ impl OtelAttributes {
     }
 
     /// Convert from proto `Vec<KeyValue>` (at source ingestion boundary).
-    /// Duplicate keys are merged into an ArrayValue.
+    /// Duplicate keys are merged into an `ArrayValue`.
     pub fn from_key_values(kvs: Vec<KeyValue>) -> Self {
         let mut inner = BTreeMap::new();
         for kv in kvs {
             let val = kv.value.unwrap_or(AnyValue { value: None });
             match inner.entry(kv.key) {
-                std::collections::btree_map::Entry::Vacant(e) => { e.insert(val); }
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(val);
+                }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
                     let existing = e.get_mut();
-                    match &mut existing.value {
-                        Some(OtelValueKind::ArrayValue(arr)) => {
-                            arr.values.push(val);
-                        }
-                        _ => {
-                            let old = std::mem::take(existing);
-                            *existing = AnyValue {
-                                value: Some(OtelValueKind::ArrayValue(
-                                    opentelemetry_proto::tonic::common::v1::ArrayValue {
-                                        values: vec![old, val],
-                                    }
-                                )),
-                            };
-                        }
+                    if let Some(OtelValueKind::ArrayValue(arr)) = &mut existing.value {
+                        arr.values.push(val);
+                    } else {
+                        let old = std::mem::take(existing);
+                        *existing = AnyValue {
+                            value: Some(OtelValueKind::ArrayValue(
+                                opentelemetry_proto::tonic::common::v1::ArrayValue {
+                                    values: vec![old, val],
+                                },
+                            )),
+                        };
                     }
                 }
             }
@@ -86,17 +85,26 @@ impl OtelAttributes {
 
     /// Convert to proto `Vec<KeyValue>` (at sink egress boundary).
     pub fn to_key_values(&self) -> Vec<KeyValue> {
-        self.inner.iter()
+        self.inner
+            .iter()
             .map(|(k, v)| {
-                let value = if v.value.is_none() { None } else { Some(v.clone()) };
-                KeyValue { key: k.clone(), value }
+                let value = if v.value.is_none() {
+                    None
+                } else {
+                    Some(v.clone())
+                };
+                KeyValue {
+                    key: k.clone(),
+                    value,
+                }
             })
             .collect()
     }
 
     /// Convert from VRL `ObjectMap` (at deserialization boundary).
     pub fn from_object_map(map: &ObjectMap) -> Self {
-        let inner = map.iter()
+        let inner = map
+            .iter()
             .map(|(k, v)| (k.to_string(), vrl_value_to_any_value(v)))
             .collect();
         Self { inner }
@@ -104,7 +112,8 @@ impl OtelAttributes {
 
     /// Convert to VRL `ObjectMap` for canonical value representation.
     pub fn to_object_map(&self) -> ObjectMap {
-        self.inner.iter()
+        self.inner
+            .iter()
             .map(|(k, v)| (KeyString::from(k.clone()), any_value_to_vrl(v)))
             .collect()
     }
@@ -174,7 +183,8 @@ impl serde::Serialize for OtelAttributes {
 impl<'de> serde::Deserialize<'de> for OtelAttributes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let map: BTreeMap<String, serde_json::Value> = BTreeMap::deserialize(deserializer)?;
-        let inner = map.into_iter()
+        let inner = map
+            .into_iter()
             .map(|(k, v)| (k, json_to_any_value(v)))
             .collect();
         Ok(Self { inner })
@@ -184,7 +194,9 @@ impl<'de> serde::Deserialize<'de> for OtelAttributes {
 impl OtelAttributes {
     pub fn get_string(&self, key: &str) -> Option<&str> {
         match self.inner.get(key) {
-            Some(AnyValue { value: Some(OtelValueKind::StringValue(s)) }) => Some(s.as_str()),
+            Some(AnyValue {
+                value: Some(OtelValueKind::StringValue(s)),
+            }) => Some(s.as_str()),
             _ => None,
         }
     }
@@ -193,10 +205,18 @@ impl OtelAttributes {
         self.inner.contains_key(key)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API; callers pass owned values"
+    )]
     pub fn insert_string(&mut self, key: String, value: String) -> Option<AnyValue> {
         self.inner.insert(key, string_value(&value))
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API; callers pass owned values"
+    )]
     pub fn replace_string(&mut self, key: String, value: String) -> Option<String> {
         let old = self.inner.insert(key, string_value(&value));
         old.and_then(|av| match av.value {
@@ -205,23 +225,25 @@ impl OtelAttributes {
         })
     }
 
-    /// Iterate over all tag values, expanding ArrayValue entries into multiple pairs.
+    /// Iterate over all tag values, expanding `ArrayValue` entries into multiple pairs.
     /// This is the multi-valued counterpart to `iter_single()`.
     pub fn iter_all(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
         self.inner.iter().flat_map(|(k, v)| {
             let pairs: Vec<(&str, Option<&str>)> = match &v.value {
                 Some(OtelValueKind::StringValue(s)) => vec![(k.as_str(), Some(s.as_str()))],
                 None => vec![(k.as_str(), None)],
-                Some(OtelValueKind::ArrayValue(arr)) => {
-                    arr.values.iter().map(|item| {
+                Some(OtelValueKind::ArrayValue(arr)) => arr
+                    .values
+                    .iter()
+                    .map(|item| {
                         let s = match &item.value {
                             Some(OtelValueKind::StringValue(s)) => Some(s.as_str()),
                             None => None,
                             Some(other) => Some(otel_value_to_str_ref(other)),
                         };
                         (k.as_str(), s)
-                    }).collect()
-                }
+                    })
+                    .collect(),
                 Some(other) => vec![(k.as_str(), Some(otel_value_to_str_ref(other)))],
             };
             pairs.into_iter()
@@ -251,11 +273,14 @@ impl OtelAttributes {
                 Some(OtelValueKind::StringValue(s)) => Some((k, s)),
                 Some(OtelValueKind::ArrayValue(arr)) => {
                     // For array values, take the last element (consistent with iter_single).
-                    arr.values.into_iter().last().and_then(|item| match item.value {
-                        Some(OtelValueKind::StringValue(s)) => Some((k, s)),
-                        Some(other) => Some((k, otel_value_to_tag_string(&other))),
-                        None => None,
-                    })
+                    arr.values
+                        .into_iter()
+                        .last()
+                        .and_then(|item| match item.value {
+                            Some(OtelValueKind::StringValue(s)) => Some((k, s)),
+                            Some(other) => Some((k, otel_value_to_tag_string(&other))),
+                            None => None,
+                        })
                 }
                 Some(other) => Some((k, otel_value_to_tag_string(&other))),
                 None => None,
@@ -274,14 +299,19 @@ impl OtelAttributes {
     }
 
     pub fn as_option(self) -> Option<Self> {
-        if self.inner.is_empty() { None } else { Some(self) }
+        if self.inner.is_empty() {
+            None
+        } else {
+            Some(self)
+        }
     }
 }
 
 impl std::iter::FromIterator<(String, String)> for OtelAttributes {
     fn from_iter<I: IntoIterator<Item = (String, String)>>(iter: I) -> Self {
         Self {
-            inner: iter.into_iter()
+            inner: iter
+                .into_iter()
                 .map(|(k, v)| (k, string_value(&v)))
                 .collect(),
         }
@@ -304,24 +334,43 @@ fn hash_any_value<H: std::hash::Hasher>(av: &AnyValue, state: &mut H) {
     use std::hash::Hash;
     match &av.value {
         None => 0u8.hash(state),
-        Some(OtelValueKind::StringValue(s)) => { 1u8.hash(state); s.hash(state); }
-        Some(OtelValueKind::BoolValue(b)) => { 2u8.hash(state); b.hash(state); }
-        Some(OtelValueKind::IntValue(i)) => { 3u8.hash(state); i.hash(state); }
-        Some(OtelValueKind::DoubleValue(f)) => { 4u8.hash(state); f.to_bits().hash(state); }
+        Some(OtelValueKind::StringValue(s)) => {
+            1u8.hash(state);
+            s.hash(state);
+        }
+        Some(OtelValueKind::BoolValue(b)) => {
+            2u8.hash(state);
+            b.hash(state);
+        }
+        Some(OtelValueKind::IntValue(i)) => {
+            3u8.hash(state);
+            i.hash(state);
+        }
+        Some(OtelValueKind::DoubleValue(f)) => {
+            4u8.hash(state);
+            f.to_bits().hash(state);
+        }
         Some(OtelValueKind::ArrayValue(arr)) => {
             5u8.hash(state);
             state.write_usize(arr.values.len());
-            for v in &arr.values { hash_any_value(v, state); }
+            for v in &arr.values {
+                hash_any_value(v, state);
+            }
         }
         Some(OtelValueKind::KvlistValue(kvl)) => {
             6u8.hash(state);
             state.write_usize(kvl.values.len());
             for kv in &kvl.values {
                 kv.key.hash(state);
-                if let Some(v) = &kv.value { hash_any_value(v, state); }
+                if let Some(v) = &kv.value {
+                    hash_any_value(v, state);
+                }
             }
         }
-        Some(OtelValueKind::BytesValue(b)) => { 7u8.hash(state); b.hash(state); }
+        Some(OtelValueKind::BytesValue(b)) => {
+            7u8.hash(state);
+            b.hash(state);
+        }
     }
 }
 
@@ -343,46 +392,51 @@ fn cmp_any_value(a: &AnyValue, b: &AnyValue) -> std::cmp::Ordering {
         (Some(OtelValueKind::StringValue(a)), Some(OtelValueKind::StringValue(b))) => a.cmp(b),
         (Some(OtelValueKind::BoolValue(a)), Some(OtelValueKind::BoolValue(b))) => a.cmp(b),
         (Some(OtelValueKind::IntValue(a)), Some(OtelValueKind::IntValue(b))) => a.cmp(b),
-        (Some(OtelValueKind::DoubleValue(a)), Some(OtelValueKind::DoubleValue(b))) => a.total_cmp(b),
+        (Some(OtelValueKind::DoubleValue(a)), Some(OtelValueKind::DoubleValue(b))) => {
+            a.total_cmp(b)
+        }
         (Some(OtelValueKind::BytesValue(a)), Some(OtelValueKind::BytesValue(b))) => a.cmp(b),
-        (Some(OtelValueKind::ArrayValue(a)), Some(OtelValueKind::ArrayValue(b))) => {
-            a.values.iter().zip(b.values.iter())
-                .map(|(x, y)| cmp_any_value(x, y))
-                .find(|o| *o != std::cmp::Ordering::Equal)
-                .unwrap_or_else(|| a.values.len().cmp(&b.values.len()))
-        }
-        (Some(OtelValueKind::KvlistValue(a)), Some(OtelValueKind::KvlistValue(b))) => {
-            a.values.iter().zip(b.values.iter())
-                .map(|(x, y)| {
-                    x.key.cmp(&y.key).then_with(|| {
-                        match (&x.value, &y.value) {
-                            (Some(xv), Some(yv)) => cmp_any_value(xv, yv),
-                            (None, None) => std::cmp::Ordering::Equal,
-                            (None, Some(_)) => std::cmp::Ordering::Less,
-                            (Some(_), None) => std::cmp::Ordering::Greater,
-                        }
-                    })
+        (Some(OtelValueKind::ArrayValue(a)), Some(OtelValueKind::ArrayValue(b))) => a
+            .values
+            .iter()
+            .zip(b.values.iter())
+            .map(|(x, y)| cmp_any_value(x, y))
+            .find(|o| *o != std::cmp::Ordering::Equal)
+            .unwrap_or_else(|| a.values.len().cmp(&b.values.len())),
+        (Some(OtelValueKind::KvlistValue(a)), Some(OtelValueKind::KvlistValue(b))) => a
+            .values
+            .iter()
+            .zip(b.values.iter())
+            .map(|(x, y)| {
+                x.key.cmp(&y.key).then_with(|| match (&x.value, &y.value) {
+                    (Some(xv), Some(yv)) => cmp_any_value(xv, yv),
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (Some(_), None) => std::cmp::Ordering::Greater,
                 })
-                .find(|o| *o != std::cmp::Ordering::Equal)
-                .unwrap_or_else(|| a.values.len().cmp(&b.values.len()))
-        }
+            })
+            .find(|o| *o != std::cmp::Ordering::Equal)
+            .unwrap_or_else(|| a.values.len().cmp(&b.values.len())),
         _ => discriminant(a).cmp(&discriminant(b)),
     }
 }
 
 fn any_value_allocated_bytes(av: &AnyValue) -> usize {
     match &av.value {
-        None => 0,
         Some(OtelValueKind::StringValue(s)) => s.len(),
         Some(OtelValueKind::BytesValue(b)) => b.len(),
         Some(OtelValueKind::ArrayValue(arr)) => {
-            arr.values.iter().map(any_value_allocated_bytes).sum::<usize>()
+            arr.values
+                .iter()
+                .map(any_value_allocated_bytes)
+                .sum::<usize>()
                 + arr.values.capacity() * std::mem::size_of::<AnyValue>()
         }
         Some(OtelValueKind::KvlistValue(kvl)) => {
-            kvl.values.iter().map(|kv| {
-                kv.key.len() + kv.value.as_ref().map(any_value_allocated_bytes).unwrap_or(0)
-            }).sum::<usize>()
+            kvl.values
+                .iter()
+                .map(|kv| kv.key.len() + kv.value.as_ref().map_or(0, any_value_allocated_bytes))
+                .sum::<usize>()
                 + kvl.values.capacity() * std::mem::size_of::<KeyValue>()
         }
         _ => 0,

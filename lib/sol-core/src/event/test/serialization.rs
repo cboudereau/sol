@@ -10,11 +10,7 @@ fn serialization() {
     event.insert(vrl::event_path!("bar"), "baz");
 
     // Convert Vec<(KeyString, Value)> to an ObjectMap for JSON object serialization
-    let fields: vrl::value::ObjectMap = event
-        .all_event_fields()
-        .unwrap()
-        .into_iter()
-        .collect();
+    let fields: vrl::value::ObjectMap = event.all_event_fields().unwrap().into_iter().collect();
     let actual_all = serde_json::to_value(&fields).unwrap();
 
     // OtelLog::from("...") sets body but does not auto-insert a timestamp
@@ -24,11 +20,12 @@ fn serialization() {
     assert_eq!(actual_all["bar"], serde_json::json!("baz"));
 
     // If a timestamp was populated, verify its format.
-    if let Some(ts_val) = actual_all.pointer("/timestamp") {
-        if let Some(ts_str) = ts_val.as_str() {
-            let rfc3339_re = Regex::new(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\z").unwrap();
-            assert!(rfc3339_re.is_match(ts_str));
-        }
+    if let Some(ts_str) = actual_all
+        .pointer("/timestamp")
+        .and_then(serde_json::Value::as_str)
+    {
+        let rfc3339_re = Regex::new(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\z").unwrap();
+        assert!(rfc3339_re.is_match(ts_str));
     }
 }
 
@@ -42,11 +39,7 @@ fn type_serialization() {
     event.insert(vrl::event_path!("bool"), true);
     event.insert(vrl::event_path!("string"), "thisisastring");
 
-    let fields: vrl::value::ObjectMap = event
-        .all_event_fields()
-        .unwrap()
-        .into_iter()
-        .collect();
+    let fields: vrl::value::ObjectMap = event.all_event_fields().unwrap().into_iter().collect();
     let map = serde_json::to_value(&fields).unwrap();
     assert_eq!(map["float"], json!(5.5));
     assert_eq!(map["int"], json!(4));

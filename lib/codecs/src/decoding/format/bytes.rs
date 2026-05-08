@@ -54,7 +54,7 @@ pub struct BytesDeserializer;
 impl BytesDeserializer {
     /// Deserializes the given bytes, which will always produce a single `OtelLog`.
     pub fn parse_single(&self, bytes: Bytes) -> OtelLog {
-        OtelLog::from_bytes(bytes)
+        OtelLog::from_bytes(&bytes)
     }
 }
 

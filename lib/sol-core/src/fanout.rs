@@ -3,9 +3,9 @@ use std::{collections::HashMap, fmt, task::Poll, time::Instant};
 use futures::{Stream, StreamExt};
 use futures_util::{pending, poll};
 use indexmap::IndexMap;
+use sol_buffers::topology::channel::BufferSender;
 use tokio::sync::mpsc;
 use tokio_util::sync::ReusableBoxFuture;
-use sol_buffers::topology::channel::BufferSender;
 
 use crate::{config::ComponentKey, event::EventArray};
 
@@ -462,10 +462,13 @@ impl Sender {
 mod tests {
     use std::{mem, num::NonZeroUsize};
 
+    use super::{ControlMessage, Fanout};
+    use crate::{
+        config::ComponentKey,
+        event::{Event, EventArray, EventContainer, OtelLog},
+        test_util::{collect_ready, collect_ready_events},
+    };
     use futures::poll;
-    use tokio::sync::mpsc::UnboundedSender;
-    use tokio_test::{assert_pending, assert_ready, task::spawn};
-    use tracing::Span;
     use sol_buffers::{
         WhenFull,
         topology::{
@@ -473,12 +476,9 @@ mod tests {
             channel::{BufferReceiver, BufferSender},
         },
     };
-    use super::{ControlMessage, Fanout};
-    use crate::{
-        config::ComponentKey,
-        event::{Event, EventArray, EventContainer, OtelLog},
-        test_util::{collect_ready, collect_ready_events},
-    };
+    use tokio::sync::mpsc::UnboundedSender;
+    use tokio_test::{assert_pending, assert_ready, task::spawn};
+    use tracing::Span;
 
     fn build_sender_pair(
         capacity: usize,

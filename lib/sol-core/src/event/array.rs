@@ -135,11 +135,17 @@ pub enum EventArray {
 /// Backward-compat: these used to be separate variants.
 impl EventArray {
     /// Backward-compat alias for `EventArray::Logs`.
-    pub fn is_otel_logs(&self) -> bool { matches!(self, Self::Logs(_)) }
+    pub fn is_otel_logs(&self) -> bool {
+        matches!(self, Self::Logs(_))
+    }
     /// Backward-compat alias for `EventArray::Metrics`.
-    pub fn is_otel_metrics(&self) -> bool { matches!(self, Self::Metrics(_)) }
+    pub fn is_otel_metrics(&self) -> bool {
+        matches!(self, Self::Metrics(_))
+    }
     /// Backward-compat alias for `EventArray::Traces`.
-    pub fn is_otel_spans(&self) -> bool { matches!(self, Self::Traces(_)) }
+    pub fn is_otel_spans(&self) -> bool {
+        matches!(self, Self::Traces(_))
+    }
 }
 
 impl EventArray {
@@ -206,7 +212,6 @@ impl From<OtelSpan> for EventArray {
         Self::Traces(vec![span])
     }
 }
-
 
 impl From<LogArray> for EventArray {
     fn from(array: LogArray) -> Self {

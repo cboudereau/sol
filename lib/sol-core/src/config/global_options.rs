@@ -165,7 +165,6 @@ pub struct GlobalOptions {
     /// `find_vector_metrics`, and `aggregate_vector_metrics` functions.
     #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     pub metrics_storage_refresh_period: Option<f64>,
-
 }
 
 impl_generate_config_from_default!(GlobalOptions);

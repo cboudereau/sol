@@ -5,7 +5,9 @@ use sol_common::byte_size_of::ByteSizeOf;
 use crate::event::OtelAttributes;
 
 /// Metric identity — the grouping key for metric aggregation.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct MetricIdentity {
     pub name: String,
 
@@ -59,7 +61,9 @@ impl MetricIdentity {
                     self.tags = None;
                 }
                 old.and_then(|av| match av.value {
-                    Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => Some(s),
+                    Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s),
+                    ) => Some(s),
                     _ => None,
                 })
             }
@@ -71,7 +75,10 @@ impl ByteSizeOf for MetricIdentity {
     fn allocated_bytes(&self) -> usize {
         self.name.allocated_bytes()
             + self.namespace.allocated_bytes()
-            + self.tags.as_ref().map_or(0, |t| t.allocated_bytes())
+            + self
+                .tags
+                .as_ref()
+                .map_or(0, sol_common::byte_size_of::ByteSizeOf::allocated_bytes)
     }
 }
 

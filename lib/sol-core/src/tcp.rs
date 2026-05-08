@@ -1,6 +1,6 @@
 use socket2::SockRef;
-use tokio::net::TcpStream;
 use sol_config::configurable_component;
+use tokio::net::TcpStream;
 
 /// TCP keepalive settings for socket-based components.
 #[configurable_component]

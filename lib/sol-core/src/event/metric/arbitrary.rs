@@ -1,17 +1,10 @@
-use proptest::{
-    collection::{hash_set},
-    option,
-    prelude::*,
-};
+use proptest::{collection::hash_set, option, prelude::*};
 
-use super::{
-    Bucket, Quantile, Sample, TagValue, TagValueSet,
-};
+use super::{Bucket, Quantile, Sample, TagValue, TagValueSet};
 
 fn realistic_float() -> proptest::num::f64::Any {
     proptest::num::f64::POSITIVE | proptest::num::f64::NEGATIVE | proptest::num::f64::ZERO
 }
-
 
 impl Arbitrary for Sample {
     type Parameters = ();

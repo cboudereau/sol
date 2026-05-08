@@ -2,8 +2,8 @@ use headers::Authorization;
 use http::uri::InvalidUri;
 use hyper_proxy::{Custom, Intercept, Proxy, ProxyConnector};
 use no_proxy::NoProxy;
-use url::Url;
 use sol_config::configurable_component;
+use url::Url;
 
 use crate::serde::is_default;
 

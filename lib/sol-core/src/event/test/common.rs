@@ -6,10 +6,7 @@ use vrl::value::{ObjectMap, Value};
 
 use super::super::{
     Event, EventMetadata, MetricKind, OtelAttributes, OtelLog, OtelMetric, OtelSpan,
-    metric::{
-        Bucket,
-        Quantile, Sample,
-    },
+    metric::{Bucket, Quantile, Sample},
 };
 
 const MAX_F64_SIZE: f64 = 1_000_000.0;
@@ -118,13 +115,20 @@ impl Arbitrary for OtelMetric {
             for _ in 0..count {
                 let key: Name = Name::arbitrary(g);
                 let val: Name = Name::arbitrary(g);
-                attrs.insert(String::from(key), super::super::string_value(String::from(val)));
+                attrs.insert(
+                    String::from(key),
+                    super::super::string_value(String::from(val)),
+                );
             }
             if attrs.is_empty() { None } else { Some(attrs) }
         } else {
             None
         };
-        let timestamp = if bool::arbitrary(g) { Some(datetime(g)) } else { None };
+        let timestamp = if bool::arbitrary(g) {
+            Some(datetime(g))
+        } else {
+            None
+        };
         let metadata = EventMetadata::arbitrary(g);
 
         let otel = match u8::arbitrary(g) % 6 {
@@ -136,12 +140,18 @@ impl Arbitrary for OtelMetric {
                 let value = f64::arbitrary(g) % MAX_F64_SIZE;
                 match kind {
                     MetricKind::Absolute => OtelMetric::new_gauge(String::from(name), value),
-                    MetricKind::Incremental => OtelMetric::new_gauge_delta(String::from(name), value),
+                    MetricKind::Incremental => {
+                        OtelMetric::new_gauge_delta(String::from(name), value)
+                    }
                 }
             }
             2 => {
                 let values: BTreeSet<String> = BTreeSet::arbitrary(g);
-                OtelMetric::new_set_from_values(String::from(name), kind, values.into_iter().collect::<Vec<_>>())
+                OtelMetric::new_set_from_values(
+                    String::from(name),
+                    kind,
+                    values.into_iter().collect::<Vec<_>>(),
+                )
             }
             3 => {
                 let samples: Vec<Sample> = Vec::arbitrary(g);
@@ -278,7 +288,6 @@ impl Arbitrary for Bucket {
         )
     }
 }
-
 
 impl Arbitrary for EventMetadata {
     fn arbitrary(g: &mut Gen) -> Self {

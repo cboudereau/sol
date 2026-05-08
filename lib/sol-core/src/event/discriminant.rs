@@ -193,7 +193,10 @@ mod tests {
         event_1.insert(vrl::event_path!("hostname"), "localhost");
         event_1.insert(vrl::event_path!("irrelevant"), "not even used");
         let mut event_2 = event_1.clone();
-        event_2.insert(vrl::event_path!("irrelevant"), "does not matter if it's different");
+        event_2.insert(
+            vrl::event_path!("irrelevant"),
+            "does not matter if it's different",
+        );
 
         let discriminant_fields = vec!["hostname".to_string(), "container_id".to_string()];
 

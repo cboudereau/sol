@@ -2,9 +2,7 @@
 
 use sol_common::EventDataEq;
 
-use super::{
-    Event, EventMetadata, OtelLog, OtelMetric, OtelSpan,
-};
+use super::{Event, EventMetadata, OtelLog, OtelMetric, OtelSpan};
 
 /// A wrapper for references to inner event types, where reconstituting
 /// a full `Event` from an `OtelLog` or `OtelMetric` might be inconvenient.
@@ -66,7 +64,6 @@ impl<'a> EventRef<'a> {
             _ => panic!("Failed type coercion, {self:?} is not a metric reference"),
         }
     }
-
 }
 
 impl<'a> From<&'a Event> for EventRef<'a> {
@@ -96,7 +93,6 @@ impl<'a> From<&'a OtelSpan> for EventRef<'a> {
         Self::Trace(trace)
     }
 }
-
 
 impl EventDataEq<Event> for EventRef<'_> {
     fn event_data_eq(&self, that: &Event) -> bool {

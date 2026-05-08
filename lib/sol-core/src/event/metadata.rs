@@ -5,18 +5,15 @@ use std::{borrow::Cow, collections::BTreeMap, fmt, sync::Arc, time::Instant};
 use derivative::Derivative;
 use lookup::OwnedTargetPath;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use sol_common::{EventDataEq, byte_size_of::ByteSizeOf, config::ComponentKey};
+use uuid::Uuid;
 use vrl::{
     compiler::SecretTarget,
     value::{KeyString, Kind, Value},
 };
 
 use super::{BatchNotifier, EventFinalizer, EventFinalizers, EventStatus, ObjectMap};
-use crate::{
-    config::OutputId,
-    schema,
-};
+use crate::{config::OutputId, schema};
 
 const SPLUNK_HEC_TOKEN: &str = "splunk_hec_token";
 
@@ -227,9 +224,7 @@ impl Default for EventMetadata {
 }
 
 pub(super) fn default_schema_definition() -> Arc<schema::Definition> {
-    Arc::new(schema::Definition::new_with_default_metadata(
-        Kind::any()
-    ))
+    Arc::new(schema::Definition::new_with_default_metadata(Kind::any()))
 }
 
 impl ByteSizeOf for EventMetadata {
@@ -495,9 +490,14 @@ mod test {
     #[test]
     fn metadata_hardcoded_secrets_get_set() {
         let mut metadata = EventMetadata::default();
-        metadata.secrets_mut().insert("datadog_api_key", Arc::from(SECRET));
+        metadata
+            .secrets_mut()
+            .insert("datadog_api_key", Arc::from(SECRET));
         metadata.set_splunk_hec_token(Arc::from(SECRET2));
-        assert_eq!(metadata.secrets().get("datadog_api_key").unwrap().as_ref(), SECRET);
+        assert_eq!(
+            metadata.secrets().get("datadog_api_key").unwrap().as_ref(),
+            SECRET
+        );
         assert_eq!(metadata.splunk_hec_token().unwrap().as_ref(), SECRET2);
     }
 

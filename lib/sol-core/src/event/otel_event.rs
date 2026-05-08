@@ -21,12 +21,12 @@ use sol_common::{
 };
 use vrl::value::{KeyString, ObjectMap, Value};
 
+use super::otel_conv::{OtlpCount, OtlpEnumField, OtlpTimestamp};
 use super::{
-    BatchNotifier, EstimatedJsonEncodedSizeOf, EventFinalizer, EventMetadata,
-    otel_fields as f,
+    BatchNotifier, EstimatedJsonEncodedSizeOf, EventFinalizer, EventMetadata, otel_fields as f,
 };
 
-/// Convert a JSON value to an OTel `AnyValue`.
+/// Convert a JSON value to an `OTel` `AnyValue`.
 pub fn json_to_any_value(value: serde_json::Value) -> AnyValue {
     let kind = match value {
         serde_json::Value::Null => None,
@@ -69,16 +69,20 @@ fn json_to_vrl_value(value: serde_json::Value) -> Value {
             if let Some(i) = n.as_i64() {
                 Value::Integer(i)
             } else {
-                Value::Float(ordered_float::NotNan::new(n.as_f64().unwrap_or(0.0)).unwrap_or_default())
+                Value::Float(
+                    ordered_float::NotNan::new(n.as_f64().unwrap_or(0.0)).unwrap_or_default(),
+                )
             }
         }
         serde_json::Value::String(s) => Value::Bytes(bytes::Bytes::from(s)),
         serde_json::Value::Array(arr) => {
             Value::Array(arr.into_iter().map(json_to_vrl_value).collect())
         }
-        serde_json::Value::Object(map) => {
-            Value::Object(map.into_iter().map(|(k, v)| (KeyString::from(k), json_to_vrl_value(v))).collect())
-        }
+        serde_json::Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (KeyString::from(k), json_to_vrl_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -105,41 +109,54 @@ struct OtelLogTracingBuilder {
 }
 
 impl OtelLogTracingBuilder {
-    /// Map the tracing field name to the canonical OtelLog key.
+    /// Map the tracing field name to the canonical `OtelLog` key.
     /// The tracing framework uses "message" for the log body, but
     /// the proto-canonical key is "body".
     fn canonical_key(field: &tracing::field::Field) -> vrl::prelude::KeyString {
         let name = field.name();
-        if name == f::STATUS_MESSAGE { f::BODY.into() } else { name.into() }
+        if name == f::STATUS_MESSAGE {
+            f::BODY.into()
+        } else {
+            name.into()
+        }
     }
 }
 
 impl tracing::field::Visit for OtelLogTracingBuilder {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.map
-            .insert(Self::canonical_key(field), Value::Bytes(value.to_string().into()));
+        self.map.insert(
+            Self::canonical_key(field),
+            Value::Bytes(value.to_string().into()),
+        );
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.map
-            .insert(Self::canonical_key(field), Value::Bytes(format!("{value:?}").into()));
+        self.map.insert(
+            Self::canonical_key(field),
+            Value::Bytes(format!("{value:?}").into()),
+        );
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.map.insert(Self::canonical_key(field), Value::Integer(value));
+        self.map
+            .insert(Self::canonical_key(field), Value::Integer(value));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         match i64::try_from(value) {
-            Ok(v) => self.map.insert(Self::canonical_key(field), Value::Integer(v)),
-            Err(_) => self
+            Ok(v) => self
                 .map
-                .insert(Self::canonical_key(field), Value::Bytes(value.to_string().into())),
+                .insert(Self::canonical_key(field), Value::Integer(v)),
+            Err(_) => self.map.insert(
+                Self::canonical_key(field),
+                Value::Bytes(value.to_string().into()),
+            ),
         };
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.map.insert(Self::canonical_key(field), Value::Boolean(value));
+        self.map
+            .insert(Self::canonical_key(field), Value::Boolean(value));
     }
 }
 
@@ -158,9 +175,8 @@ pub(super) fn hex_encode(bytes: &[u8]) -> Value {
 /// to storing the original Value as an attribute, so corrupt data does not
 /// silently disappear.
 fn hex_decode(value: &Value) -> Option<Vec<u8>> {
-    let bytes = match value {
-        Value::Bytes(b) => b,
-        _ => return None,
+    let Value::Bytes(bytes) = value else {
+        return None;
     };
     let s = std::str::from_utf8(bytes).ok()?;
     if s.is_empty() || s.len() % 2 != 0 {
@@ -170,17 +186,21 @@ fn hex_decode(value: &Value) -> Option<Vec<u8>> {
     for pair in s.as_bytes().chunks_exact(2) {
         let hi = (pair[0] as char).to_digit(16)?;
         let lo = (pair[1] as char).to_digit(16)?;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "hex nibble result fits in u8"
+        )]
         out.push(((hi << 4) | lo) as u8);
     }
     Some(out)
 }
 
-/// Try to interpret a VRL Value::Object as an OTLP JSON AnyValue pattern.
+/// Try to interpret a VRL `Value::Object` as an OTLP JSON `AnyValue` pattern.
 ///
 /// When data roundtrips through OTLP JSON serialization and JSON parsing,
-/// AnyValue wrappers like `{"stringValue":"hello"}` become VRL Objects.
+/// `AnyValue` wrappers like `{"stringValue":"hello"}` become VRL Objects.
 /// This function recognizes these patterns and converts them back to the
-/// proper AnyValue proto representation.
+/// proper `AnyValue` proto representation.
 pub fn try_parse_otlp_any_value(value: &Value) -> Option<AnyValue> {
     let map = match value {
         Value::Object(m) if m.len() == 1 => m,
@@ -209,6 +229,10 @@ pub fn try_parse_otlp_any_value(value: &Value) -> Option<AnyValue> {
         f::DOUBLE_VALUE => {
             let d = match val {
                 Value::Float(f) => f.into_inner(),
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "integer to f64 for OTLP double value"
+                )]
                 Value::Integer(i) => *i as f64,
                 _ => return None,
             };
@@ -234,17 +258,15 @@ pub fn try_parse_otlp_any_value(value: &Value) -> Option<AnyValue> {
         f::ARRAY_VALUE => {
             // {"arrayValue": {"values": [...]}}
             let arr = match val {
-                Value::Object(obj) => {
-                    match obj.get(&KeyString::from(f::VALUES)) {
-                        Some(Value::Array(arr)) => {
-                            arr.iter().map(|v| {
-                                try_parse_otlp_any_value(v)
-                                    .unwrap_or_else(|| vrl_value_to_any_value(v))
-                            }).collect()
-                        }
-                        _ => return None,
-                    }
-                }
+                Value::Object(obj) => match obj.get(&KeyString::from(f::VALUES)) {
+                    Some(Value::Array(arr)) => arr
+                        .iter()
+                        .map(|v| {
+                            try_parse_otlp_any_value(v).unwrap_or_else(|| vrl_value_to_any_value(v))
+                        })
+                        .collect(),
+                    _ => return None,
+                },
                 _ => return None,
             };
             Some(OtelValueKind::ArrayValue(
@@ -254,14 +276,10 @@ pub fn try_parse_otlp_any_value(value: &Value) -> Option<AnyValue> {
         f::KVLIST_VALUE => {
             // {"kvlistValue": {"values": [{"key":"k","value":{...}}]}}
             let kvl = match val {
-                Value::Object(obj) => {
-                    match obj.get(&KeyString::from(f::VALUES)) {
-                        Some(Value::Array(arr)) => {
-                            parse_otlp_key_value_array(arr)?
-                        }
-                        _ => return None,
-                    }
-                }
+                Value::Object(obj) => match obj.get(&KeyString::from(f::VALUES)) {
+                    Some(Value::Array(arr)) => parse_otlp_key_value_array(arr)?,
+                    _ => return None,
+                },
                 _ => return None,
             };
             Some(OtelValueKind::KvlistValue(
@@ -278,17 +296,16 @@ pub fn try_parse_otlp_any_value(value: &Value) -> Option<AnyValue> {
 fn parse_otlp_key_value_array(arr: &[Value]) -> Option<Vec<KeyValue>> {
     let mut result = Vec::with_capacity(arr.len());
     for item in arr {
-        let obj = match item {
-            Value::Object(m) => m,
-            _ => return None,
+        let Value::Object(obj) = item else {
+            return None;
         };
         let key = match obj.get(&KeyString::from(f::KEY)) {
             Some(Value::Bytes(b)) => String::from_utf8(b.to_vec()).ok()?,
             _ => return None,
         };
-        let value = obj.get(&KeyString::from(f::VALUE)).and_then(|v| {
-            try_parse_otlp_any_value(v)
-        });
+        let value = obj
+            .get(&KeyString::from(f::VALUE))
+            .and_then(try_parse_otlp_any_value);
         result.push(KeyValue { key, value });
     }
     Some(result)
@@ -359,11 +376,7 @@ pub(crate) fn any_value_to_vrl(av: &AnyValue) -> Value {
 pub fn kvlist_to_object_map(kvs: &[KeyValue]) -> ObjectMap {
     kvs.iter()
         .map(|kv| {
-            let v = kv
-                .value
-                .as_ref()
-                .map(any_value_to_vrl)
-                .unwrap_or(Value::Null);
+            let v = kv.value.as_ref().map_or(Value::Null, any_value_to_vrl);
             (kv.key.clone().into(), v)
         })
         .collect()
@@ -381,9 +394,13 @@ pub fn object_map_to_kvlist(map: &ObjectMap) -> Vec<KeyValue> {
 fn restore_resource(map: &mut ObjectMap) -> (Option<Resource>, OtelAttributes) {
     match map.remove(f::RESOURCE) {
         Some(Value::Object(mut res_map)) => {
-            let dropped_count = res_map.remove(f::DROPPED_ATTRIBUTES_COUNT)
-                .and_then(|v| v.as_integer())
-                .unwrap_or(0) as u32;
+            let dropped_count = OtlpCount::from_vrl(
+                res_map
+                    .remove(f::DROPPED_ATTRIBUTES_COUNT)
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(0),
+            )
+            .as_proto();
 
             // Try OTLP JSON format first: {"attributes":[{"key":"k","value":{...}}]}
             let attrs = if let Some(Value::Array(arr)) = res_map.remove(f::ATTRIBUTES) {
@@ -403,10 +420,16 @@ fn restore_resource(map: &mut ObjectMap) -> (Option<Resource>, OtelAttributes) {
                 OtelAttributes::from_object_map(&res_map)
             };
 
-            let resource = Resource { attributes: Vec::new(), dropped_attributes_count: dropped_count };
+            let resource = Resource {
+                attributes: Vec::new(),
+                dropped_attributes_count: dropped_count,
+            };
             (Some(resource), attrs)
         }
-        Some(other) => { map.insert(f::RESOURCE.into(), other); (None, OtelAttributes::new()) }
+        Some(other) => {
+            map.insert(f::RESOURCE.into(), other);
+            (None, OtelAttributes::new())
+        }
         None => (None, OtelAttributes::new()),
     }
 }
@@ -441,15 +464,26 @@ fn restore_scope(map: &mut ObjectMap) -> (Option<InstrumentationScope>, OtelAttr
             if name.is_empty() && version.is_empty() && attrs.is_empty() {
                 (None, OtelAttributes::new())
             } else {
-                (Some(InstrumentationScope { name, version, attributes: Vec::new(), dropped_attributes_count: 0 }), attrs)
+                (
+                    Some(InstrumentationScope {
+                        name,
+                        version,
+                        attributes: Vec::new(),
+                        dropped_attributes_count: 0,
+                    }),
+                    attrs,
+                )
             }
         }
-        Some(other) => { map.insert(f::SCOPE.into(), other); (None, OtelAttributes::new()) }
+        Some(other) => {
+            map.insert(f::SCOPE.into(), other);
+            (None, OtelAttributes::new())
+        }
         None => (None, OtelAttributes::new()),
     }
 }
 
-/// Convert an OTel `any_value::Value` to a string for use as a metric tag.
+/// Convert an `OTel` `any_value::Value` to a string for use as a metric tag.
 pub(super) fn otel_value_to_tag_string(v: &OtelValueKind) -> String {
     match v {
         OtelValueKind::StringValue(s) => s.clone(),
@@ -461,8 +495,6 @@ pub(super) fn otel_value_to_tag_string(v: &OtelValueKind) -> String {
         OtelValueKind::KvlistValue(_) => "<kvlist>".to_string(),
     }
 }
-
-
 
 fn nanos_to_timestamp(nanos: u64) -> Option<Value> {
     let secs = (nanos / 1_000_000_000) as i64;
@@ -485,32 +517,26 @@ fn navigate_value(v: &Value, remaining: &[String]) -> Option<Value> {
 
 fn insert_value_at(v: &mut Value, remaining: &[String], new_val: Value) -> Option<Value> {
     if remaining.len() == 1 {
-        match v {
-            Value::Object(map) => map.insert(remaining[0].as_str().into(), new_val),
-            _ => {
-                let mut map = ObjectMap::new();
-                map.insert(remaining[0].as_str().into(), new_val);
-                *v = Value::Object(map);
-                None
-            }
+        if let Value::Object(map) = v {
+            map.insert(remaining[0].as_str().into(), new_val)
+        } else {
+            let mut map = ObjectMap::new();
+            map.insert(remaining[0].as_str().into(), new_val);
+            *v = Value::Object(map);
+            None
         }
+    } else if let Value::Object(map) = v {
+        let entry = map
+            .entry(remaining[0].as_str().into())
+            .or_insert_with(|| Value::Object(ObjectMap::new()));
+        insert_value_at(entry, &remaining[1..], new_val)
     } else {
-        match v {
-            Value::Object(map) => {
-                let entry = map
-                    .entry(remaining[0].as_str().into())
-                    .or_insert_with(|| Value::Object(ObjectMap::new()));
-                insert_value_at(entry, &remaining[1..], new_val)
-            }
-            _ => {
-                let mut map = ObjectMap::new();
-                let mut inner = Value::Object(ObjectMap::new());
-                insert_value_at(&mut inner, &remaining[1..], new_val);
-                map.insert(remaining[0].as_str().into(), inner);
-                *v = Value::Object(map);
-                None
-            }
-        }
+        let mut map = ObjectMap::new();
+        let mut inner = Value::Object(ObjectMap::new());
+        insert_value_at(&mut inner, &remaining[1..], new_val);
+        map.insert(remaining[0].as_str().into(), inner);
+        *v = Value::Object(map);
+        None
     }
 }
 
@@ -525,12 +551,11 @@ fn remove_value_at(v: &mut Value, remaining: &[String], prune: bool) -> Option<V
             Value::Object(map) => {
                 let inner = map.get_mut(remaining[0].as_str())?;
                 let result = remove_value_at(inner, &remaining[1..], prune);
-                if prune {
-                    if let Value::Object(inner_map) = inner {
-                        if inner_map.is_empty() {
-                            map.remove(remaining[0].as_str());
-                        }
-                    }
+                if prune
+                    && let Value::Object(inner_map) = inner
+                    && inner_map.is_empty()
+                {
+                    map.remove(remaining[0].as_str());
                 }
                 result
             }
@@ -562,18 +587,13 @@ fn remaining_value_path<'a>(
 /// parsed as RFC 3339. This is needed because OTLP `AnyValue` has no native
 /// timestamp type, so timestamps round-trip as strings.
 fn coerce_to_timestamp(v: Value) -> Value {
-    match &v {
-        Value::Timestamp(_) => v,
-        Value::Bytes(b) => {
-            if let Ok(s) = std::str::from_utf8(b) {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-                    return Value::Timestamp(dt.with_timezone(&chrono::Utc));
-                }
-            }
-            v
-        }
-        _ => v,
+    if let Value::Bytes(b) = &v
+        && let Ok(s) = std::str::from_utf8(b)
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s)
+    {
+        return Value::Timestamp(dt.with_timezone(&chrono::Utc));
     }
+    v
 }
 
 // -- OtelAttributes --
@@ -595,7 +615,10 @@ pub fn resource_to_proto(resource: Option<&Resource>, attrs: &OtelAttributes) ->
 }
 
 /// Return a full `InstrumentationScope` proto with attributes reconstituted.
-pub fn scope_to_proto(scope: Option<&InstrumentationScope>, attrs: &OtelAttributes) -> Option<InstrumentationScope> {
+pub fn scope_to_proto(
+    scope: Option<&InstrumentationScope>,
+    attrs: &OtelAttributes,
+) -> Option<InstrumentationScope> {
     let has_scope = scope.is_some();
     let has_attrs = !attrs.is_empty();
     if !has_scope && !has_attrs {
@@ -615,13 +638,13 @@ fn append_canonical_resource_scope(
 ) {
     {
         let mut res_map = resource_attrs.to_object_map();
-        if let Some(ref res) = resource {
-            if res.dropped_attributes_count != 0 {
-                res_map.insert(
-                    f::DROPPED_ATTRIBUTES_COUNT.into(),
-                    Value::Integer(res.dropped_attributes_count as i64),
-                );
-            }
+        if let Some(res) = resource
+            && res.dropped_attributes_count != 0
+        {
+            res_map.insert(
+                f::DROPPED_ATTRIBUTES_COUNT.into(),
+                Value::Integer(i64::from(res.dropped_attributes_count)),
+            );
         }
         if !res_map.is_empty() {
             map.insert(f::RESOURCE.into(), Value::Object(res_map));
@@ -629,7 +652,7 @@ fn append_canonical_resource_scope(
     }
     {
         let mut scope_map = ObjectMap::new();
-        if let Some(ref s) = scope {
+        if let Some(s) = scope {
             if !s.name.is_empty() {
                 scope_map.insert(f::NAME.into(), Value::Bytes(s.name.clone().into()));
             }
@@ -655,7 +678,8 @@ fn remove_resource_subpath(
     prune: bool,
 ) -> Option<Value> {
     if remaining.len() == 1 {
-        resource_attrs.remove(remaining[0].as_str())
+        resource_attrs
+            .remove(remaining[0].as_str())
             .map(|av| any_value_to_vrl(&av))
     } else {
         let key = remaining[0].as_str();
@@ -676,25 +700,32 @@ fn remove_scope_subpath(
     let scope = scope?;
     match remaining[0].as_str() {
         f::NAME if remaining.len() == 1 => {
-            if scope.name.is_empty() { return None; }
+            if scope.name.is_empty() {
+                return None;
+            }
             let old = Some(Value::Bytes(scope.name.clone().into()));
             scope.name = String::new();
             old
         }
         f::VERSION if remaining.len() == 1 => {
-            if scope.version.is_empty() { return None; }
+            if scope.version.is_empty() {
+                return None;
+            }
             let old = Some(Value::Bytes(scope.version.clone().into()));
             scope.version = String::new();
             old
         }
         f::ATTRIBUTES => {
             if remaining.len() == 1 {
-                if scope_attrs.is_empty() { return None; }
+                if scope_attrs.is_empty() {
+                    return None;
+                }
                 let old = Some(Value::Object(scope_attrs.to_object_map()));
                 *scope_attrs = OtelAttributes::new();
                 old
             } else if remaining.len() == 2 {
-                scope_attrs.remove(remaining[1].as_str())
+                scope_attrs
+                    .remove(remaining[1].as_str())
                     .map(|av| any_value_to_vrl(&av))
             } else {
                 let key = remaining[1].as_str();
@@ -719,13 +750,12 @@ fn remove_attrs_subpath(
     let mut v = any_value_to_vrl(av);
     let result = remove_value_at(&mut v, remaining, prune);
     if result.is_some() {
-        if prune {
-            if let Value::Object(ref map) = v {
-                if map.is_empty() {
-                    attrs.remove(first);
-                    return result;
-                }
-            }
+        if prune
+            && let Value::Object(ref map) = v
+            && map.is_empty()
+        {
+            attrs.remove(first);
+            return result;
         }
         attrs.insert(first.to_string(), vrl_value_to_any_value(&v));
     }
@@ -769,8 +799,8 @@ impl OtelLog {
     }
 
     /// Create an `OtelLog` from raw bytes, setting `record.body` to a string value.
-    pub fn from_bytes(bytes: bytes::Bytes) -> Self {
-        let body_value = match std::str::from_utf8(&bytes) {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let body_value = match std::str::from_utf8(bytes) {
             Ok(s) => OtelValueKind::StringValue(s.to_owned()),
             Err(_) => OtelValueKind::BytesValue(bytes.to_vec()),
         };
@@ -828,10 +858,12 @@ impl OtelLog {
         metadata: EventMetadata,
     ) -> Self {
         let record_attrs = OtelAttributes::from_key_values(std::mem::take(&mut record.attributes));
-        let resource_attrs = resource.as_mut()
+        let resource_attrs = resource
+            .as_mut()
             .map(|r| OtelAttributes::from_key_values(std::mem::take(&mut r.attributes)))
             .unwrap_or_default();
-        let scope_attrs = scope.as_mut()
+        let scope_attrs = scope
+            .as_mut()
             .map(|s| OtelAttributes::from_key_values(std::mem::take(&mut s.attributes)))
             .unwrap_or_default();
         Self {
@@ -855,13 +887,10 @@ impl OtelLog {
         event.record(&mut builder);
 
         let meta = event.metadata();
-        let now_nanos = chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or(0) as u64;
-        builder.map.insert(
-            f::TIME_UNIX_NANO.into(),
-            Value::Integer(now_nanos as i64),
-        );
+        let now_nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64;
+        builder
+            .map
+            .insert(f::TIME_UNIX_NANO.into(), Value::Integer(now_nanos as i64));
         let kind_value = if meta.is_event() {
             Value::Bytes(f::EVENT.to_string().into())
         } else if meta.is_span() {
@@ -871,7 +900,10 @@ impl OtelLog {
         };
         let mut metadata_map = ObjectMap::new();
         metadata_map.insert(f::SPAN_KIND.into(), kind_value);
-        metadata_map.insert(f::LEVEL.into(), Value::Bytes(meta.level().to_string().into()));
+        metadata_map.insert(
+            f::LEVEL.into(),
+            Value::Bytes(meta.level().to_string().into()),
+        );
         metadata_map.insert(
             f::MODULE_PATH.into(),
             meta.module_path()
@@ -881,7 +913,9 @@ impl OtelLog {
             f::TARGET.into(),
             Value::Bytes(meta.target().to_string().into()),
         );
-        builder.map.insert(f::METADATA.into(), Value::Object(metadata_map));
+        builder
+            .map
+            .insert(f::METADATA.into(), Value::Object(metadata_map));
 
         OtelLog::from_value_map(Value::Object(builder.map), EventMetadata::default())
     }
@@ -942,7 +976,8 @@ impl OtelLog {
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
-        self.resource_attrs = OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
+        self.resource_attrs =
+            OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
         self.resource = Some(resource);
     }
 
@@ -968,7 +1003,7 @@ impl OtelLog {
     }
 
     /// Return the body as a human-readable string, suitable for text-oriented
-    /// serializers (text, raw_message, etc.).
+    /// serializers (text, `raw_message`, etc.).
     pub fn body_string(&self) -> String {
         match self.record.body.as_ref().and_then(|av| av.value.as_ref()) {
             Some(OtelValueKind::StringValue(s)) => s.clone(),
@@ -1010,23 +1045,25 @@ impl OtelLog {
         &self.record.span_id
     }
 
-    /// Merge another OtelLog's body into this one (concatenate string bodies).
+    /// Merge another `OtelLog`'s body into this one (concatenate string bodies).
     /// Used for partial line merging (e.g. Docker logs).
     /// Also merges metadata.
     pub fn merge_body(&mut self, incoming: &OtelLog) {
         if let (Some(self_body), Some(inc_body)) = (self.body(), incoming.body()) {
-            if let (Some(OtelValueKind::StringValue(self_s)), Some(OtelValueKind::StringValue(inc_s)))
-                = (&self_body.value, &inc_body.value)
+            if let (
+                Some(OtelValueKind::StringValue(self_s)),
+                Some(OtelValueKind::StringValue(inc_s)),
+            ) = (&self_body.value, &inc_body.value)
             {
-                let merged = format!("{}{}", self_s, inc_s);
+                let merged = format!("{self_s}{inc_s}");
                 self.set_body(AnyValue {
                     value: Some(OtelValueKind::StringValue(merged)),
                 });
             }
-        } else if self.body().is_none() {
-            if let Some(inc_body) = incoming.body() {
-                self.set_body(inc_body.clone());
-            }
+        } else if self.body().is_none()
+            && let Some(inc_body) = incoming.body()
+        {
+            self.set_body(inc_body.clone());
         }
         self.metadata.merge(incoming.metadata.clone());
     }
@@ -1035,17 +1072,17 @@ impl OtelLog {
         self.record_attrs.get(key)
     }
 
-    /// Returns `true` if the body is a KvList that contains `key`, or if `key`
+    /// Returns `true` if the body is a `KvList` that contains `key`, or if `key`
     /// exists as a record attribute.  This is the appropriate check before
     /// writing a header value so that body fields always take precedence.
     pub fn has_field(&self, key: &str) -> bool {
         if self.attribute(key).is_some() {
             return true;
         }
-        if let Some(body) = self.body() {
-            if let Some(OtelValueKind::KvlistValue(kvl)) = &body.value {
-                return kvl.values.iter().any(|kv| kv.key == key);
-            }
+        if let Some(body) = self.body()
+            && let Some(OtelValueKind::KvlistValue(kvl)) = &body.value
+        {
+            return kvl.values.iter().any(|kv| kv.key == key);
         }
         false
     }
@@ -1090,23 +1127,18 @@ impl OtelLog {
         self.resource_attrs.insert(key, value);
     }
 
-    /// Set the observed_time_unix_nano (ingest timestamp) from a chrono DateTime.
+    /// Set the `observed_time_unix_nano` (ingest timestamp) from a chrono `DateTime`.
     pub fn set_observed_timestamp(&mut self, now: chrono::DateTime<chrono::Utc>) {
-        self.record.observed_time_unix_nano =
-            now.timestamp_nanos_opt().unwrap_or(0) as u64;
+        self.record.observed_time_unix_nano = now.timestamp_nanos_opt().unwrap_or(0) as u64;
     }
 
-    /// Set source metadata: source_type (resource attribute) and observed_time_unix_nano.
-    pub fn set_source_metadata(
-        &mut self,
-        source_name: &str,
-        now: chrono::DateTime<chrono::Utc>,
-    ) {
+    /// Set source metadata: `source_type` (resource attribute) and `observed_time_unix_nano`.
+    pub fn set_source_metadata(&mut self, source_name: &str, now: chrono::DateTime<chrono::Utc>) {
         self.set_resource_attribute(f::SOURCE_TYPE.to_string(), string_value(source_name));
         self.set_observed_timestamp(now);
     }
 
-    /// Set source metadata for Vector namespace: populates both OtelLog
+    /// Set source metadata for Vector namespace: populates both `OtelLog`
     /// fields and `%vector.*` metadata entries for backward compatibility.
     pub fn set_source_metadata_vector_ns(
         &mut self,
@@ -1114,12 +1146,14 @@ impl OtelLog {
         now: chrono::DateTime<chrono::Utc>,
     ) {
         self.set_source_metadata(source_name, now);
-        self.metadata
-            .value_mut()
-            .insert(lookup::path!("vector", f::SOURCE_TYPE), source_name.to_owned());
-        self.metadata
-            .value_mut()
-            .insert(lookup::path!("vector", f::INGEST_TIMESTAMP), Value::Timestamp(now));
+        self.metadata.value_mut().insert(
+            lookup::path!("vector", f::SOURCE_TYPE),
+            source_name.to_owned(),
+        );
+        self.metadata.value_mut().insert(
+            lookup::path!("vector", f::INGEST_TIMESTAMP),
+            Value::Timestamp(now),
+        );
     }
 
     pub fn add_finalizer(&mut self, finalizer: EventFinalizer) {
@@ -1147,25 +1181,31 @@ impl OtelLog {
 
     /// Get a field value by its semantic meaning (looks up schema definition).
     pub fn get_by_meaning(&self, meaning: impl AsRef<str>) -> Option<Value> {
-        self.metadata
-            .dropped_field(&meaning)
-            .cloned()
-            .or_else(|| {
-                self.metadata
-                    .schema_definition()
-                    .meaning_path(meaning.as_ref())
-                    .and_then(|path| self.get(path))
-            })
+        self.metadata.dropped_field(&meaning).cloned().or_else(|| {
+            self.metadata
+                .schema_definition()
+                .meaning_path(meaning.as_ref())
+                .and_then(|path| self.get(path))
+        })
     }
 
     /// Find the path for a field by its semantic meaning.
-    pub fn find_key_by_meaning(&self, meaning: impl AsRef<str>) -> Option<&vrl::path::OwnedTargetPath> {
-        self.metadata.schema_definition().meaning_path(meaning.as_ref())
+    pub fn find_key_by_meaning(
+        &self,
+        meaning: impl AsRef<str>,
+    ) -> Option<&vrl::path::OwnedTargetPath> {
+        self.metadata
+            .schema_definition()
+            .meaning_path(meaning.as_ref())
     }
 
     /// Get a field value by path.
-    /// Navigates proto fields and OtelAttributes directly. For paths containing
+    /// Navigates proto fields and `OtelAttributes` directly. For paths containing
     /// array indices, resolves the root field then navigates the Value subtree.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn get<'a>(&self, path: impl lookup::lookup_v2::TargetPath<'a>) -> Option<Value> {
         use lookup::lookup_v2::ValuePath;
         use lookup::path::BorrowedSegment;
@@ -1175,60 +1215,52 @@ impl OtelLog {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.get_single_segment(first.as_ref()),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let base = self.get_field_path(&fields)?;
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    base.get(&sub).cloned()
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.get_single_segment(first.as_ref()),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.get_field_path(&fields)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let base = self.get_single_segment(first.as_ref())?;
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let base = self.get_field_path(&fields)?;
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 base.get(&sub).cloned()
+                            } else {
+                                self.get_field_path(&fields)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let base = self.get_single_segment(first.as_ref())?;
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            base.get(&sub).cloned()
+                        }
+                    },
                     None => self.as_map().map(Value::Object),
                     _ => None,
                 }
             }
-            lookup::PathPrefix::Metadata => {
-                self.metadata.value().get(path.value_path()).cloned()
-            }
+            lookup::PathPrefix::Metadata => self.metadata.value().get(path.value_path()).cloned(),
         }
     }
 
     fn get_single_segment(&self, field: &str) -> Option<Value> {
         match field {
-            f::BODY => {
-                self.body().map(any_value_to_vrl)
-            }
+            f::BODY => self.body().map(any_value_to_vrl),
             f::SEVERITY_TEXT if !self.record.severity_text.is_empty() => {
                 Some(Value::Bytes(self.record.severity_text.clone().into()))
             }
             f::SEVERITY_NUMBER if self.record.severity_number != 0 => {
-                Some(Value::Integer(self.record.severity_number as i64))
+                Some(Value::Integer(i64::from(self.record.severity_number)))
             }
             f::LOG_TRACE_ID if !self.record.trace_id.is_empty() => {
                 Some(hex_encode(&self.record.trace_id))
@@ -1242,10 +1274,7 @@ impl OtelLog {
             f::OBSERVED_TIME_UNIX_NANO if self.record.observed_time_unix_nano != 0 => {
                 Some(Value::Integer(self.record.observed_time_unix_nano as i64))
             }
-            other => {
-                self.record_attrs.get(other)
-                    .map(any_value_to_vrl)
-            }
+            other => self.record_attrs.get(other).map(any_value_to_vrl),
         }
     }
 
@@ -1259,7 +1288,7 @@ impl OtelLog {
                     if key == f::DROPPED_ATTRIBUTES_COUNT {
                         let res = self.resource.as_ref()?;
                         if res.dropped_attributes_count != 0 {
-                            return Some(Value::Integer(res.dropped_attributes_count as i64));
+                            return Some(Value::Integer(i64::from(res.dropped_attributes_count)));
                         }
                         return None;
                     }
@@ -1276,17 +1305,26 @@ impl OtelLog {
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
-                        if scope.name.is_empty() { None }
-                        else { Some(Value::Bytes(scope.name.clone().into())) }
+                        if scope.name.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.name.clone().into()))
+                        }
                     }
                     f::VERSION if remaining.len() == 1 => {
-                        if scope.version.is_empty() { None }
-                        else { Some(Value::Bytes(scope.version.clone().into())) }
+                        if scope.version.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.version.clone().into()))
+                        }
                     }
                     f::ATTRIBUTES => {
                         if remaining.len() == 1 {
-                            if self.scope_attrs.is_empty() { None }
-                            else { Some(Value::Object(self.scope_attrs.to_object_map())) }
+                            if self.scope_attrs.is_empty() {
+                                None
+                            } else {
+                                Some(Value::Object(self.scope_attrs.to_object_map()))
+                            }
                         } else {
                             let av = self.scope_attrs.get(&remaining[1])?;
                             if remaining.len() == 2 {
@@ -1309,6 +1347,10 @@ impl OtelLog {
     }
 
     /// Insert a field value by path.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn insert<'a>(
         &mut self,
         path: impl lookup::lookup_v2::TargetPath<'a>,
@@ -1323,45 +1365,42 @@ impl OtelLog {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.insert_single_segment(first.as_ref(), value),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let mut base = self.get_field_path(&fields).unwrap_or(Value::Null);
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    let old = base.insert(&sub, value);
-                                    self.insert_field_path(&fields, base);
-                                    old
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.insert_single_segment(first.as_ref(), value),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.insert_field_path(&fields, value)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let first_str = first.as_ref();
-                                let mut base = self.get_single_segment(first_str).unwrap_or(Value::Null);
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let mut base = self.get_field_path(&fields).unwrap_or(Value::Null);
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 let old = base.insert(&sub, value);
-                                self.insert_single_segment(first_str, base);
+                                self.insert_field_path(&fields, base);
                                 old
+                            } else {
+                                self.insert_field_path(&fields, value)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let first_str = first.as_ref();
+                            let mut base =
+                                self.get_single_segment(first_str).unwrap_or(Value::Null);
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            let old = base.insert(&sub, value);
+                            self.insert_single_segment(first_str, base);
+                            old
+                        }
+                    },
                     _ => None,
                 }
             }
@@ -1371,6 +1410,14 @@ impl OtelLog {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "value ownership needed for API consistency with callers"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP log field mapping requires many branches"
+    )]
     fn insert_single_segment(&mut self, field: &str, value: Value) -> Option<Value> {
         match field {
             f::BODY => {
@@ -1379,51 +1426,62 @@ impl OtelLog {
                 old
             }
             f::SEVERITY_TEXT => {
-                let old = if self.record.severity_text.is_empty() { None }
-                    else { Some(Value::Bytes(self.record.severity_text.clone().into())) };
-                self.record_mut().severity_text = value.as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                let old = if self.record.severity_text.is_empty() {
+                    None
+                } else {
+                    Some(Value::Bytes(self.record.severity_text.clone().into()))
+                };
+                self.record_mut().severity_text = value
+                    .as_str()
+                    .map_or_else(|| value.to_string_lossy().into_owned(), |s| s.to_string());
                 old
             }
             f::SEVERITY_NUMBER => {
-                let old = if self.record.severity_number == 0 { None }
-                    else { Some(Value::Integer(self.record.severity_number as i64)) };
+                let old = if self.record.severity_number == 0 {
+                    None
+                } else {
+                    Some(Value::Integer(i64::from(self.record.severity_number)))
+                };
                 if let Some(n) = value.as_integer() {
-                    self.record_mut().severity_number = n as i32;
+                    self.record_mut().severity_number = OtlpEnumField::from_vrl(n).as_proto();
                 }
                 old
             }
             f::LOG_TRACE_ID => {
-                let old = if self.record.trace_id.is_empty() { None }
-                    else { Some(hex_encode(&self.record.trace_id)) };
+                let old = if self.record.trace_id.is_empty() {
+                    None
+                } else {
+                    Some(hex_encode(&self.record.trace_id))
+                };
                 if let Some(decoded) = hex_decode(&value) {
                     self.record_mut().trace_id = decoded;
                 } else {
                     // Malformed hex: store as attribute so data isn't lost
-                    self.record_attrs.insert(
-                        f::LOG_TRACE_ID.to_string(),
-                        vrl_value_to_any_value(&value),
-                    );
+                    self.record_attrs
+                        .insert(f::LOG_TRACE_ID.to_string(), vrl_value_to_any_value(&value));
                 }
                 old
             }
             f::LOG_SPAN_ID => {
-                let old = if self.record.span_id.is_empty() { None }
-                    else { Some(hex_encode(&self.record.span_id)) };
+                let old = if self.record.span_id.is_empty() {
+                    None
+                } else {
+                    Some(hex_encode(&self.record.span_id))
+                };
                 if let Some(decoded) = hex_decode(&value) {
                     self.record_mut().span_id = decoded;
                 } else {
-                    self.record_attrs.insert(
-                        f::LOG_SPAN_ID.to_string(),
-                        vrl_value_to_any_value(&value),
-                    );
+                    self.record_attrs
+                        .insert(f::LOG_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
                 }
                 old
             }
             f::TIME_UNIX_NANO => {
-                let old = if self.record.time_unix_nano == 0 { None }
-                    else { Some(Value::Integer(self.record.time_unix_nano as i64)) };
+                let old = if self.record.time_unix_nano == 0 {
+                    None
+                } else {
+                    Some(Value::Integer(self.record.time_unix_nano as i64))
+                };
                 match &value {
                     Value::Integer(n) => {
                         self.record_mut().time_unix_nano = *n as u64;
@@ -1442,8 +1500,11 @@ impl OtelLog {
                 old
             }
             f::OBSERVED_TIME_UNIX_NANO => {
-                let old = if self.record.observed_time_unix_nano == 0 { None }
-                    else { Some(Value::Integer(self.record.observed_time_unix_nano as i64)) };
+                let old = if self.record.observed_time_unix_nano == 0 {
+                    None
+                } else {
+                    Some(Value::Integer(self.record.observed_time_unix_nano as i64))
+                };
                 match &value {
                     Value::Integer(n) => {
                         self.record_mut().observed_time_unix_nano = *n as u64;
@@ -1458,12 +1519,9 @@ impl OtelLog {
             }
             other => {
                 // Generic: upsert into record attributes
-                let old = self.record_attrs.get(other)
-                    .map(any_value_to_vrl);
-                self.record_attrs.insert(
-                    other.to_string(),
-                    vrl_value_to_any_value(&value),
-                );
+                let old = self.record_attrs.get(other).map(any_value_to_vrl);
+                self.record_attrs
+                    .insert(other.to_string(), vrl_value_to_any_value(&value));
                 old
             }
         }
@@ -1478,15 +1536,18 @@ impl OtelLog {
                 if remaining.len() == 1 {
                     let key = remaining[0].as_str();
                     let old = self.resource_attrs.get(key).map(any_value_to_vrl);
-                    self.resource_attrs.insert(key.to_string(), vrl_value_to_any_value(&value));
+                    self.resource_attrs
+                        .insert(key.to_string(), vrl_value_to_any_value(&value));
                     old
                 } else {
                     let key = remaining[0].as_str();
-                    let mut v = self.resource_attrs.get(key)
-                        .map(any_value_to_vrl)
-                        .unwrap_or(Value::Object(ObjectMap::new()));
+                    let mut v = self
+                        .resource_attrs
+                        .get(key)
+                        .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                     let old = insert_value_at(&mut v, &remaining[1..], value);
-                    self.resource_attrs.insert(key.to_string(), vrl_value_to_any_value(&v));
+                    self.resource_attrs
+                        .insert(key.to_string(), vrl_value_to_any_value(&v));
                     old
                 }
             }
@@ -1495,28 +1556,39 @@ impl OtelLog {
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
-                        let old = if scope.name.is_empty() { None }
-                            else { Some(Value::Bytes(scope.name.clone().into())) };
-                        scope.name = value.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                        let old = if scope.name.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.name.clone().into()))
+                        };
+                        scope.name = value.as_str().map_or_else(
+                            || value.to_string_lossy().into_owned(),
+                            |s| s.to_string(),
+                        );
                         old
                     }
                     f::VERSION if remaining.len() == 1 => {
-                        let old = if scope.version.is_empty() { None }
-                            else { Some(Value::Bytes(scope.version.clone().into())) };
-                        scope.version = value.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                        let old = if scope.version.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.version.clone().into()))
+                        };
+                        scope.version = value.as_str().map_or_else(
+                            || value.to_string_lossy().into_owned(),
+                            |s| s.to_string(),
+                        );
                         old
                     }
                     f::ATTRIBUTES => {
                         if remaining.len() == 1 {
-                            let old = if self.scope_attrs.is_empty() { None }
-                                else { Some(Value::Object(self.scope_attrs.to_object_map())) };
+                            let old = if self.scope_attrs.is_empty() {
+                                None
+                            } else {
+                                Some(Value::Object(self.scope_attrs.to_object_map()))
+                            };
                             if let Value::Object(map) = &value {
                                 let mut new_attrs = OtelAttributes::new();
-                                for (k, v) in map.iter() {
+                                for (k, v) in map {
                                     new_attrs.insert(k.to_string(), vrl_value_to_any_value(v));
                                 }
                                 self.scope_attrs = new_attrs;
@@ -1526,14 +1598,17 @@ impl OtelLog {
                             let key = remaining[1].as_str();
                             if remaining.len() == 2 {
                                 let old = self.scope_attrs.get(key).map(any_value_to_vrl);
-                                self.scope_attrs.insert(key.to_string(), vrl_value_to_any_value(&value));
+                                self.scope_attrs
+                                    .insert(key.to_string(), vrl_value_to_any_value(&value));
                                 old
                             } else {
-                                let mut v = self.scope_attrs.get(key)
-                                    .map(any_value_to_vrl)
-                                    .unwrap_or(Value::Object(ObjectMap::new()));
+                                let mut v = self
+                                    .scope_attrs
+                                    .get(key)
+                                    .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                                 let old = insert_value_at(&mut v, &remaining[2..], value);
-                                self.scope_attrs.insert(key.to_string(), vrl_value_to_any_value(&v));
+                                self.scope_attrs
+                                    .insert(key.to_string(), vrl_value_to_any_value(&v));
                                 old
                             }
                         }
@@ -1542,29 +1617,29 @@ impl OtelLog {
                 }
             }
             first => {
-                let mut v = self.record_attrs.get(first)
-                    .map(any_value_to_vrl)
-                    .unwrap_or(Value::Object(ObjectMap::new()));
+                let mut v = self
+                    .record_attrs
+                    .get(first)
+                    .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                 let old = insert_value_at(&mut v, &fields[1..], value);
-                self.record_attrs.insert(
-                    first.to_string(),
-                    vrl_value_to_any_value(&v),
-                );
+                self.record_attrs
+                    .insert(first.to_string(), vrl_value_to_any_value(&v));
                 old
             }
         }
     }
 
     /// Remove a field value by path.
-    pub fn remove<'a>(
-        &mut self,
-        path: impl lookup::lookup_v2::TargetPath<'a>,
-    ) -> Option<Value> {
+    pub fn remove<'a>(&mut self, path: impl lookup::lookup_v2::TargetPath<'a>) -> Option<Value> {
         self.remove_prune(path, false)
     }
 
     /// Remove at `path`. If `prune` is true, empty parent objects along
     /// the path are also removed.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn remove_prune<'a>(
         &mut self,
         path: impl lookup::lookup_v2::TargetPath<'a>,
@@ -1578,45 +1653,41 @@ impl OtelLog {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.remove_single_segment(first.as_ref()),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let mut base = self.get_field_path(&fields)?;
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    let old = base.remove(&sub, prune);
-                                    self.insert_field_path(&fields, base);
-                                    old
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.remove_single_segment(first.as_ref()),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.remove_field_path(&fields, prune)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let first_str = first.as_ref();
-                                let mut base = self.get_single_segment(first_str)?;
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let mut base = self.get_field_path(&fields)?;
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 let old = base.remove(&sub, prune);
-                                self.insert_single_segment(first_str, base);
+                                self.insert_field_path(&fields, base);
                                 old
+                            } else {
+                                self.remove_field_path(&fields, prune)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let first_str = first.as_ref();
+                            let mut base = self.get_single_segment(first_str)?;
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            let old = base.remove(&sub, prune);
+                            self.insert_single_segment(first_str, base);
+                            old
+                        }
+                    },
                     _ => None,
                 }
             }
@@ -1634,60 +1705,71 @@ impl OtelLog {
                 old
             }
             f::SEVERITY_TEXT => {
-                if self.record.severity_text.is_empty() { return None; }
+                if self.record.severity_text.is_empty() {
+                    return None;
+                }
                 let old = Some(Value::Bytes(self.record.severity_text.clone().into()));
                 self.record_mut().severity_text = String::new();
                 old
             }
             f::SEVERITY_NUMBER => {
-                if self.record.severity_number == 0 { return None; }
-                let old = Some(Value::Integer(self.record.severity_number as i64));
+                if self.record.severity_number == 0 {
+                    return None;
+                }
+                let old = Some(Value::Integer(i64::from(self.record.severity_number)));
                 self.record_mut().severity_number = 0;
                 old
             }
             f::LOG_TRACE_ID => {
-                if self.record.trace_id.is_empty() { return None; }
+                if self.record.trace_id.is_empty() {
+                    return None;
+                }
                 let old = Some(hex_encode(&self.record.trace_id));
                 self.record_mut().trace_id.clear();
                 old
             }
             f::LOG_SPAN_ID => {
-                if self.record.span_id.is_empty() { return None; }
+                if self.record.span_id.is_empty() {
+                    return None;
+                }
                 let old = Some(hex_encode(&self.record.span_id));
                 self.record_mut().span_id.clear();
                 old
             }
             f::TIME_UNIX_NANO => {
-                if self.record.time_unix_nano == 0 { return None; }
+                if self.record.time_unix_nano == 0 {
+                    return None;
+                }
                 let old = Some(Value::Integer(self.record.time_unix_nano as i64));
                 self.record_mut().time_unix_nano = 0;
                 old
             }
             f::OBSERVED_TIME_UNIX_NANO => {
-                if self.record.observed_time_unix_nano == 0 { return None; }
+                if self.record.observed_time_unix_nano == 0 {
+                    return None;
+                }
                 let old = Some(Value::Integer(self.record.observed_time_unix_nano as i64));
                 self.record_mut().observed_time_unix_nano = 0;
                 old
             }
-            other => {
-                self.record_attrs.remove(other)
-                    .map(|av| any_value_to_vrl(&av))
-            }
+            other => self
+                .record_attrs
+                .remove(other)
+                .map(|av| any_value_to_vrl(&av)),
         }
     }
 
     fn remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(
-                &mut self.resource_attrs, &fields[1..], prune,
-            ),
+            f::RESOURCE => remove_resource_subpath(&mut self.resource_attrs, &fields[1..], prune),
             f::SCOPE => remove_scope_subpath(
-                self.scope.as_mut(), &mut self.scope_attrs, &fields[1..], prune,
+                self.scope.as_mut(),
+                &mut self.scope_attrs,
+                &fields[1..],
+                prune,
             ),
-            first => remove_attrs_subpath(
-                &mut self.record_attrs, first, &fields[1..], prune,
-            ),
+            first => remove_attrs_subpath(&mut self.record_attrs, first, &fields[1..], prune),
         }
     }
 
@@ -1727,7 +1809,7 @@ impl OtelLog {
     /// Build a Value tree with the legacy layout — no intermediate conversion.
     /// This ensures callers see the same field names and types.
     /// Build a flat `ObjectMap` from proto fields + attributes.
-    /// Proto fields (body, severity_text, etc.) take precedence over
+    /// Proto fields (body, `severity_text`, etc.) take precedence over
     /// attributes with the same name.
     pub fn as_map(&self) -> Option<ObjectMap> {
         let mut map = ObjectMap::new();
@@ -1736,16 +1818,28 @@ impl OtelLog {
             map.insert(f::BODY.into(), any_value_to_vrl(body));
         }
         if !self.record.severity_text.is_empty() {
-            map.insert(f::SEVERITY_TEXT.into(), Value::Bytes(self.record.severity_text.clone().into()));
+            map.insert(
+                f::SEVERITY_TEXT.into(),
+                Value::Bytes(self.record.severity_text.clone().into()),
+            );
         }
         if self.record.severity_number != 0 {
-            map.insert(f::SEVERITY_NUMBER.into(), Value::Integer(self.record.severity_number as i64));
+            map.insert(
+                f::SEVERITY_NUMBER.into(),
+                Value::Integer(i64::from(self.record.severity_number)),
+            );
         }
         if self.record.time_unix_nano != 0 {
-            map.insert(f::TIME_UNIX_NANO.into(), Value::Integer(self.record.time_unix_nano as i64));
+            map.insert(
+                f::TIME_UNIX_NANO.into(),
+                Value::Integer(self.record.time_unix_nano as i64),
+            );
         }
         if self.record.observed_time_unix_nano != 0 {
-            map.insert(f::OBSERVED_TIME_UNIX_NANO.into(), Value::Integer(self.record.observed_time_unix_nano as i64));
+            map.insert(
+                f::OBSERVED_TIME_UNIX_NANO.into(),
+                Value::Integer(self.record.observed_time_unix_nano as i64),
+            );
         }
         if !self.record.trace_id.is_empty() {
             map.insert(f::LOG_TRACE_ID.into(), hex_encode(&self.record.trace_id));
@@ -1754,17 +1848,21 @@ impl OtelLog {
             map.insert(f::LOG_SPAN_ID.into(), hex_encode(&self.record.span_id));
         }
         if self.record.flags != 0 {
-            map.insert(f::LOG_FLAGS.into(), Value::Integer(i64::from(self.record.flags)));
+            map.insert(
+                f::LOG_FLAGS.into(),
+                Value::Integer(i64::from(self.record.flags)),
+            );
         }
         if self.record.dropped_attributes_count != 0 {
-            map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), Value::Integer(i64::from(self.record.dropped_attributes_count)));
+            map.insert(
+                f::DROPPED_ATTRIBUTES_COUNT.into(),
+                Value::Integer(i64::from(self.record.dropped_attributes_count)),
+            );
         }
         if !self.record_attrs.is_empty() {
             for (k, v) in self.record_attrs.iter() {
                 let key = KeyString::from(k.clone());
-                if !map.contains_key(&key) {
-                    map.insert(key, any_value_to_vrl(v));
-                }
+                map.entry(key).or_insert_with(|| any_value_to_vrl(v));
             }
         }
         append_canonical_resource_scope(
@@ -1778,8 +1876,8 @@ impl OtelLog {
         Some(map)
     }
 
-    /// Construct an OtelLog from a legacy-layout Value + metadata.
-    /// Routes fields into OTel structure: body, timestamp, source_type/host
+    /// Construct an `OtelLog` from a legacy-layout Value + metadata.
+    /// Routes fields into `OTel` structure: body, timestamp, `source_type/host`
     /// → resource attrs, everything else → record.attributes. Clears scope.
     pub fn from_value_map(value: Value, metadata: EventMetadata) -> Self {
         let mut out = Self {
@@ -1796,14 +1894,9 @@ impl OtelLog {
     }
 
     /// Extract a nanoseconds-timestamp field from the map, accepting both
-    /// snake_case and camelCase names, and both integer and string-encoded values.
-    fn extract_nanos_field(
-        map: &mut ObjectMap,
-        snake_name: &str,
-        camel_name: &str,
-    ) -> u64 {
-        let val = map.remove(snake_name)
-            .or_else(|| map.remove(camel_name));
+    /// `snake_case` and camelCase names, and both integer and string-encoded values.
+    fn extract_nanos_field(map: &mut ObjectMap, snake_name: &str, camel_name: &str) -> u64 {
+        let val = map.remove(snake_name).or_else(|| map.remove(camel_name));
         match val {
             Some(Value::Integer(n)) => n as u64,
             Some(Value::Bytes(b)) => {
@@ -1816,7 +1909,10 @@ impl OtelLog {
                         0
                     })
             }
-            Some(other) => { map.insert(snake_name.into(), other); 0 }
+            Some(other) => {
+                map.insert(snake_name.into(), other);
+                0
+            }
             None => 0,
         }
     }
@@ -1828,6 +1924,10 @@ impl OtelLog {
     /// Proto fields are extracted into their native slots;
     /// `resource`/`scope` sub-objects are restored;
     /// the remainder becomes `record.attributes`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP log field restoration requires many branches"
+    )]
     fn apply_value_map(&mut self, value: Value) {
         let mut map = match value {
             Value::Object(m) => m,
@@ -1846,14 +1946,13 @@ impl OtelLog {
         };
 
         // Handle body: try OTLP AnyValue pattern first (e.g. {"stringValue":"hello"})
-        let body = map.remove(f::BODY)
-            .map(|v| {
-                try_parse_otlp_any_value(&v)
-                    .unwrap_or_else(|| vrl_value_to_any_value(&v))
-            });
+        let body = map
+            .remove(f::BODY)
+            .map(|v| try_parse_otlp_any_value(&v).unwrap_or_else(|| vrl_value_to_any_value(&v)));
 
         // time_unix_nano: accept snake_case or camelCase, integer or string-encoded
-        let time_unix_nano = Self::extract_nanos_field(&mut map, f::TIME_UNIX_NANO, f::TIME_UNIX_NANO_CC);
+        let time_unix_nano =
+            Self::extract_nanos_field(&mut map, f::TIME_UNIX_NANO, f::TIME_UNIX_NANO_CC);
 
         // observed_time_unix_nano: accept snake_case or camelCase
         let observed_time_unix_nano = Self::extract_nanos_field(
@@ -1863,49 +1962,72 @@ impl OtelLog {
         );
 
         // severity_text: accept snake_case or camelCase
-        let severity_text = map.remove(f::SEVERITY_TEXT)
+        let severity_text = map
+            .remove(f::SEVERITY_TEXT)
             .or_else(|| map.remove(f::SEVERITY_TEXT_CC))
             .map(|v| match v {
                 Value::Bytes(b) => String::from_utf8(b.to_vec()).unwrap_or_default(),
-                other => { map.insert(f::SEVERITY_TEXT.into(), other); String::new() }
+                other => {
+                    map.insert(f::SEVERITY_TEXT.into(), other);
+                    String::new()
+                }
             })
             .unwrap_or_default();
 
         // severity_number: accept snake_case or camelCase
-        let severity_number = map.remove(f::SEVERITY_NUMBER)
+        let severity_number = map
+            .remove(f::SEVERITY_NUMBER)
             .or_else(|| map.remove(f::SEVERITY_NUMBER_CC))
-            .map(|v| match v {
-                Value::Integer(i) => i as i32,
-                other => { map.insert(f::SEVERITY_NUMBER.into(), other); 0 }
-            })
-            .unwrap_or(0);
+            .map_or(0, |v| match v {
+                Value::Integer(i) => OtlpEnumField::from_vrl(i).as_proto(),
+                other => {
+                    map.insert(f::SEVERITY_NUMBER.into(), other);
+                    0
+                }
+            });
 
         // trace_id: accept snake_case or camelCase
-        let trace_id = map.remove(f::LOG_TRACE_ID)
+        let trace_id = map
+            .remove(f::LOG_TRACE_ID)
             .or_else(|| map.remove(f::TRACE_ID_CC))
-            .map(|v| match hex_decode(&v) {
-                Some(bytes) => bytes,
-                None => { map.insert(f::LOG_TRACE_ID.into(), v); Vec::new() }
+            .map(|v| {
+                if let Some(bytes) = hex_decode(&v) {
+                    bytes
+                } else {
+                    map.insert(f::LOG_TRACE_ID.into(), v);
+                    Vec::new()
+                }
             })
             .unwrap_or_default();
 
         // span_id: accept snake_case or camelCase
-        let span_id = map.remove(f::LOG_SPAN_ID)
+        let span_id = map
+            .remove(f::LOG_SPAN_ID)
             .or_else(|| map.remove(f::SPAN_ID_CC))
-            .map(|v| match hex_decode(&v) {
-                Some(bytes) => bytes,
-                None => { map.insert(f::LOG_SPAN_ID.into(), v); Vec::new() }
+            .map(|v| {
+                if let Some(bytes) = hex_decode(&v) {
+                    bytes
+                } else {
+                    map.insert(f::LOG_SPAN_ID.into(), v);
+                    Vec::new()
+                }
             })
             .unwrap_or_default();
 
         let flags = match map.remove(f::LOG_FLAGS) {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert(f::LOG_FLAGS.into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert(f::LOG_FLAGS.into(), other);
+                0
+            }
             None => 0,
         };
         let dropped_attributes_count = match map.remove(f::DROPPED_ATTRIBUTES_COUNT) {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), other);
+                0
+            }
             None => 0,
         };
 
@@ -1932,7 +2054,8 @@ impl OtelLog {
         }
 
         self.record_attrs = OtelAttributes {
-            inner: map.into_iter()
+            inner: map
+                .into_iter()
                 .map(|(k, v)| (k.to_string(), vrl_value_to_any_value(&v)))
                 .collect(),
         };
@@ -1986,20 +2109,18 @@ impl OtelLog {
         ts
     }
 
-    /// Set the event timestamp (`time_unix_nano`) from a chrono DateTime.
+    /// Set the event timestamp (`time_unix_nano`) from a chrono `DateTime`.
     /// Returns the previous timestamp value, if any.
     pub fn set_timestamp(&mut self, ts: chrono::DateTime<chrono::Utc>) -> Option<Value> {
         let old = self.get_timestamp();
-        self.record_mut().time_unix_nano =
-            ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+        self.record_mut().time_unix_nano = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
         old
     }
 
     /// Set the event timestamp only if one is not already present.
     pub fn try_set_timestamp(&mut self, ts: chrono::DateTime<chrono::Utc>) {
         if self.record.time_unix_nano == 0 {
-            self.record_mut().time_unix_nano =
-                ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+            self.record_mut().time_unix_nano = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
         }
     }
 
@@ -2013,13 +2134,13 @@ impl OtelLog {
         self.body().map(any_value_to_vrl)
     }
 
-    /// Get the "source_type" from resource attributes.
+    /// Get the "`source_type`" from resource attributes.
     pub fn get_source_type(&self) -> Option<Value> {
         self.resource_attribute(f::SOURCE_TYPE)
             .map(any_value_to_vrl)
     }
 
-    /// Set the source_type as a resource attribute.
+    /// Set the `source_type` as a resource attribute.
     pub fn set_source_type(&mut self, value: impl Into<Value>) {
         self.set_resource_attribute(
             f::SOURCE_TYPE.to_string(),
@@ -2027,7 +2148,7 @@ impl OtelLog {
         );
     }
 
-    /// Set the source_type only if not already present.
+    /// Set the `source_type` only if not already present.
     pub fn try_set_source_type(&mut self, value: impl Into<Value>) {
         if self.resource_attribute(f::SOURCE_TYPE).is_none() {
             self.set_source_type(value);
@@ -2036,8 +2157,7 @@ impl OtelLog {
 
     /// Get the host value from resource attributes.
     pub fn get_host(&self) -> Option<Value> {
-        self.resource_attribute(f::HOST_NAME)
-            .map(any_value_to_vrl)
+        self.resource_attribute(f::HOST_NAME).map(any_value_to_vrl)
     }
 
     /// Set the host as a resource attribute (`host.name`).
@@ -2056,6 +2176,10 @@ impl OtelLog {
     }
 
     /// Parse a path and get a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `path` cannot be parsed as a valid target path.
     pub fn parse_path_and_get_value(
         &self,
         path: &str,
@@ -2066,19 +2190,29 @@ impl OtelLog {
 
     /// Iterate all event fields (flattened, dotted keys). Owned values.
     /// Iterator over all event fields, returning owned values
-    /// since OtelLog builds the field tree dynamically from proto.
+    /// since `OtelLog` builds the field tree dynamically from proto.
     pub fn all_event_fields(&self) -> Option<Vec<(vrl::value::KeyString, Value)>> {
         let fields = self.convert_to_fields();
-        if fields.is_empty() { None } else { Some(fields) }
+        if fields.is_empty() {
+            None
+        } else {
+            Some(fields)
+        }
     }
 
     /// Like `all_event_fields` but skips individual array elements.
-    pub fn all_event_fields_skip_array_elements(&self) -> Option<Vec<(vrl::value::KeyString, Value)>> {
+    pub fn all_event_fields_skip_array_elements(
+        &self,
+    ) -> Option<Vec<(vrl::value::KeyString, Value)>> {
         let map = self.as_map().unwrap_or_default();
         let fields: Vec<_> = super::util::log::all_fields_skip_array_elements(&map)
             .map(|(k, v)| (k, v.clone()))
             .collect();
-        if fields.is_empty() { None } else { Some(fields) }
+        if fields.is_empty() {
+            None
+        } else {
+            Some(fields)
+        }
     }
 
     /// Iterate all metadata fields (flattened, with `%` prefix). Owned values.
@@ -2088,7 +2222,11 @@ impl OtelLog {
                 let fields: Vec<_> = super::util::log::all_metadata_fields(metadata_map)
                     .map(|(k, v)| (k, v.clone()))
                     .collect();
-                if fields.is_empty() { None } else { Some(fields) }
+                if fields.is_empty() {
+                    None
+                } else {
+                    Some(fields)
+                }
             }
             _ => None,
         }
@@ -2115,19 +2253,19 @@ impl OtelLog {
 
     /// Get the timestamp path (proto-canonical: `time_unix_nano`).
     pub fn timestamp_path(&self) -> Option<vrl::path::OwnedTargetPath> {
-        use vrl::path::OwnedTargetPath;
         use lookup::owned_value_path;
+        use vrl::path::OwnedTargetPath;
         Some(OwnedTargetPath::event(owned_value_path!(f::TIME_UNIX_NANO)))
     }
 
     /// Get the body path.
     pub fn body_path(&self) -> Option<vrl::path::OwnedTargetPath> {
-        use vrl::path::OwnedTargetPath;
         use lookup::owned_value_path;
+        use vrl::path::OwnedTargetPath;
         Some(OwnedTargetPath::event(owned_value_path!(f::BODY)))
     }
 
-    /// Returns the path to the source_type resource attribute, if present.
+    /// Returns the path to the `source_type` resource attribute, if present.
     pub fn source_type_path(&self) -> Option<vrl::path::OwnedTargetPath> {
         if self.resource_attribute(f::SOURCE_TYPE).is_some() {
             Some(vrl::path::OwnedTargetPath::event(
@@ -2141,7 +2279,7 @@ impl OtelLog {
     /// Try insert - only inserts if the path doesn't exist.
     pub fn try_insert<'a>(
         &mut self,
-        path: impl lookup::lookup_v2::TargetPath<'a> + Clone,
+        path: impl lookup::lookup_v2::TargetPath<'a>,
         value: impl Into<Value>,
     ) {
         if self.get(path.clone()).is_none() {
@@ -2153,23 +2291,39 @@ impl OtelLog {
     /// In Vector namespace: returns body only.
     /// In Legacy namespace: returns canonical proto layout.
     pub fn value(&self) -> Value {
-        self.body()
-            .map(any_value_to_vrl)
-            .unwrap_or(Value::Null)
+        self.body().map_or(Value::Null, any_value_to_vrl)
     }
 
     /// Get all top-level keys from the event (enumerates proto fields directly).
     pub fn keys(&self) -> Option<std::vec::IntoIter<vrl::value::KeyString>> {
         let mut keys = Vec::new();
-        if self.record.body.is_some() { keys.push(KeyString::from(f::BODY)); }
-        if !self.record.severity_text.is_empty() { keys.push(KeyString::from(f::SEVERITY_TEXT)); }
-        if self.record.severity_number != 0 { keys.push(KeyString::from(f::SEVERITY_NUMBER)); }
-        if self.record.time_unix_nano != 0 { keys.push(KeyString::from(f::TIME_UNIX_NANO)); }
-        if self.record.observed_time_unix_nano != 0 { keys.push(KeyString::from(f::OBSERVED_TIME_UNIX_NANO)); }
-        if !self.record.trace_id.is_empty() { keys.push(KeyString::from(f::LOG_TRACE_ID)); }
-        if !self.record.span_id.is_empty() { keys.push(KeyString::from(f::LOG_SPAN_ID)); }
-        if self.record.flags != 0 { keys.push(KeyString::from(f::LOG_FLAGS)); }
-        if self.record.dropped_attributes_count != 0 { keys.push(KeyString::from(f::DROPPED_ATTRIBUTES_COUNT)); }
+        if self.record.body.is_some() {
+            keys.push(KeyString::from(f::BODY));
+        }
+        if !self.record.severity_text.is_empty() {
+            keys.push(KeyString::from(f::SEVERITY_TEXT));
+        }
+        if self.record.severity_number != 0 {
+            keys.push(KeyString::from(f::SEVERITY_NUMBER));
+        }
+        if self.record.time_unix_nano != 0 {
+            keys.push(KeyString::from(f::TIME_UNIX_NANO));
+        }
+        if self.record.observed_time_unix_nano != 0 {
+            keys.push(KeyString::from(f::OBSERVED_TIME_UNIX_NANO));
+        }
+        if !self.record.trace_id.is_empty() {
+            keys.push(KeyString::from(f::LOG_TRACE_ID));
+        }
+        if !self.record.span_id.is_empty() {
+            keys.push(KeyString::from(f::LOG_SPAN_ID));
+        }
+        if self.record.flags != 0 {
+            keys.push(KeyString::from(f::LOG_FLAGS));
+        }
+        if self.record.dropped_attributes_count != 0 {
+            keys.push(KeyString::from(f::DROPPED_ATTRIBUTES_COUNT));
+        }
         for k in self.record_attrs.keys() {
             keys.push(KeyString::from(k.clone()));
         }
@@ -2179,7 +2333,11 @@ impl OtelLog {
         if self.scope.is_some() || !self.scope_attrs.is_empty() {
             keys.push(KeyString::from(f::SCOPE));
         }
-        if keys.is_empty() { None } else { Some(keys.into_iter()) }
+        if keys.is_empty() {
+            None
+        } else {
+            Some(keys.into_iter())
+        }
     }
 
     /// Check if the log has no body and no attributes.
@@ -2197,10 +2355,8 @@ impl OtelLog {
 
     pub fn from_str_legacy(msg: impl Into<String>) -> Self {
         let mut log = Self::from(msg.into());
-        log.record_mut().time_unix_nano = chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or(0)
-            .max(0) as u64;
+        log.record_mut().time_unix_nano =
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
         log
     }
 
@@ -2220,6 +2376,11 @@ impl OtelLog {
         }
     }
 
+    /// Parse a path string and insert a value at that path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `path` cannot be parsed as a valid target path.
     pub fn parse_path_and_insert(
         &mut self,
         path: impl AsRef<str>,
@@ -2228,7 +2389,6 @@ impl OtelLog {
         let target_path = vrl::path::parse_target_path(path.as_ref())?;
         Ok(self.insert(&target_path, value))
     }
-
 }
 
 // -- OtelSpan --
@@ -2258,9 +2418,9 @@ impl OtelSpan {
         }
     }
 
-    /// Create an OtelSpan from an OtelLog (for trace signal detection in OTLP decoder).
+    /// Create an `OtelSpan` from an `OtelLog` (for trace signal detection in OTLP decoder).
     ///
-    /// The OtelLog's fields become span attributes. Resource and scope are preserved.
+    /// The `OtelLog`'s fields become span attributes. Resource and scope are preserved.
     pub fn from_otel_log(log: OtelLog) -> Self {
         let map = log.as_map().unwrap_or_default();
         let mut span_attrs = OtelAttributes::new();
@@ -2305,10 +2465,12 @@ impl OtelSpan {
         metadata: EventMetadata,
     ) -> Self {
         let span_attrs = OtelAttributes::from_key_values(std::mem::take(&mut span.attributes));
-        let resource_attrs = resource.as_mut()
+        let resource_attrs = resource
+            .as_mut()
             .map(|r| OtelAttributes::from_key_values(std::mem::take(&mut r.attributes)))
             .unwrap_or_default();
-        let scope_attrs = scope.as_mut()
+        let scope_attrs = scope
+            .as_mut()
             .map(|s| OtelAttributes::from_key_values(std::mem::take(&mut s.attributes)))
             .unwrap_or_default();
         Self {
@@ -2373,7 +2535,8 @@ impl OtelSpan {
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
-        self.resource_attrs = OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
+        self.resource_attrs =
+            OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
         self.resource = Some(resource);
     }
 
@@ -2490,7 +2653,11 @@ impl OtelSpan {
     /// Handles canonical layout (from `as_map`): proto fields
     /// are extracted into `Span` slots, `resource`/`scope` sub-objects are
     /// restored, remainder becomes `span.attributes`. Also handles legacy
-    /// "start_time"/"end_time" (Timestamp) for old disk buffer compat.
+    /// "`start_time"/"end_time`" (Timestamp) for old disk buffer compat.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "span field extraction is inherently verbose but logically cohesive"
+    )]
     fn apply_value_map(&mut self, value: Value) {
         use opentelemetry_proto::tonic::trace::v1::{Status, span};
 
@@ -2501,16 +2668,23 @@ impl OtelSpan {
 
         let name = match map.remove(f::NAME) {
             Some(Value::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap_or_default(),
-            Some(other) => { map.insert(f::NAME.into(), other); String::new() }
+            Some(other) => {
+                map.insert(f::NAME.into(), other);
+                String::new()
+            }
             None => String::new(),
         };
 
         let take_id = |map: &mut ObjectMap, key: &str| -> Vec<u8> {
             match map.remove(key) {
-                Some(v) => match hex_decode(&v) {
-                    Some(bytes) => bytes,
-                    None => { map.insert(key.into(), v); Vec::new() }
-                },
+                Some(v) => {
+                    if let Some(bytes) = hex_decode(&v) {
+                        bytes
+                    } else {
+                        map.insert(key.into(), v);
+                        Vec::new()
+                    }
+                }
                 None => Vec::new(),
             }
         };
@@ -2521,7 +2695,10 @@ impl OtelSpan {
         let take_integer = |map: &mut ObjectMap, key: &str| -> u64 {
             match map.remove(key) {
                 Some(Value::Integer(n)) => n as u64,
-                Some(other) => { map.insert(key.into(), other); 0 }
+                Some(other) => {
+                    map.insert(key.into(), other);
+                    0
+                }
                 None => 0,
             }
         };
@@ -2529,19 +2706,28 @@ impl OtelSpan {
         let end_time_unix_nano = take_integer(&mut map, f::END_TIME_UNIX_NANO);
 
         let kind = match map.remove(f::SPAN_KIND) {
-            Some(Value::Integer(i)) => i as i32,
-            Some(other) => { map.insert(f::SPAN_KIND.into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpEnumField::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert(f::SPAN_KIND.into(), other);
+                0
+            }
             None => 0,
         };
 
         let flags = match map.remove(f::SPAN_FLAGS) {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert(f::SPAN_FLAGS.into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert(f::SPAN_FLAGS.into(), other);
+                0
+            }
             None => 0,
         };
         let dropped_attributes_count = match map.remove(f::DROPPED_ATTRIBUTES_COUNT) {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), other);
+                0
+            }
             None => 0,
         };
 
@@ -2552,7 +2738,7 @@ impl OtelSpan {
                     _ => String::new(),
                 };
                 let code = match status_map.remove(f::STATUS_CODE) {
-                    Some(Value::Integer(i)) => i as i32,
+                    Some(Value::Integer(i)) => OtlpEnumField::from_vrl(i).as_proto(),
                     _ => 0,
                 };
                 if message.is_empty() && code == 0 && status_map.is_empty() {
@@ -2561,7 +2747,10 @@ impl OtelSpan {
                     Some(Status { message, code })
                 }
             }
-            Some(other) => { map.insert(f::SPAN_STATUS.into(), other); None }
+            Some(other) => {
+                map.insert(f::SPAN_STATUS.into(), other);
+                None
+            }
             None => None,
         };
 
@@ -2574,22 +2763,46 @@ impl OtelSpan {
 
         let trace_state = match map.remove("trace_state") {
             Some(Value::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap_or_default(),
-            Some(other) => { map.insert("trace_state".into(), other); String::new() }
+            Some(other) => {
+                map.insert("trace_state".into(), other);
+                String::new()
+            }
             None => String::new(),
         };
 
         let events = map
             .remove(f::SPAN_EVENTS)
-            .and_then(|v| match v { Value::Array(a) => Some(a), _ => None })
+            .and_then(|v| match v {
+                Value::Array(a) => Some(a),
+                _ => None,
+            })
             .map(|arr| {
                 arr.into_iter()
                     .filter_map(|v| {
-                        let em = match v { Value::Object(m) => m, _ => return None };
+                        let Value::Object(em) = v else { return None };
                         Some(span::Event {
-                            time_unix_nano: em.get(f::TIME_UNIX_NANO).and_then(|v| v.as_integer()).unwrap_or(0) as u64,
-                            name: em.get(f::NAME).and_then(|v| v.as_bytes()).map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default(),
-                            attributes: em.get(f::ATTRIBUTES).and_then(|v| v.as_object()).map(object_map_to_kvlist).unwrap_or_default(),
-                            dropped_attributes_count: em.get(f::DROPPED_ATTRIBUTES_COUNT).and_then(|v| v.as_integer()).unwrap_or(0) as u32,
+                            time_unix_nano: OtlpTimestamp::from_vrl(
+                                em.get(f::TIME_UNIX_NANO)
+                                    .and_then(vrl::value::Value::as_integer)
+                                    .unwrap_or(0),
+                            )
+                            .as_nanos(),
+                            name: em
+                                .get(f::NAME)
+                                .and_then(|v| v.as_bytes())
+                                .map(|b| String::from_utf8_lossy(b).into_owned())
+                                .unwrap_or_default(),
+                            attributes: em
+                                .get(f::ATTRIBUTES)
+                                .and_then(|v| v.as_object())
+                                .map(object_map_to_kvlist)
+                                .unwrap_or_default(),
+                            dropped_attributes_count: OtlpCount::from_vrl(
+                                em.get(f::DROPPED_ATTRIBUTES_COUNT)
+                                    .and_then(vrl::value::Value::as_integer)
+                                    .unwrap_or(0),
+                            )
+                            .as_proto(),
                         })
                     })
                     .collect()
@@ -2597,25 +2810,55 @@ impl OtelSpan {
             .unwrap_or_default();
 
         let dropped_events_count = match map.remove("dropped_events_count") {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert("dropped_events_count".into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert("dropped_events_count".into(), other);
+                0
+            }
             None => 0,
         };
 
         let links = map
             .remove(f::SPAN_LINKS)
-            .and_then(|v| match v { Value::Array(a) => Some(a), _ => None })
+            .and_then(|v| match v {
+                Value::Array(a) => Some(a),
+                _ => None,
+            })
             .map(|arr| {
                 arr.into_iter()
                     .filter_map(|v| {
-                        let lm = match v { Value::Object(m) => m, _ => return None };
+                        let Value::Object(lm) = v else { return None };
                         Some(span::Link {
-                            trace_id: lm.get(f::SPAN_TRACE_ID).and_then(|v| hex_decode(v)).unwrap_or_default(),
-                            span_id: lm.get(f::SPAN_SPAN_ID).and_then(|v| hex_decode(v)).unwrap_or_default(),
-                            trace_state: lm.get("trace_state").and_then(|v| v.as_bytes()).map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default(),
-                            attributes: lm.get(f::ATTRIBUTES).and_then(|v| v.as_object()).map(object_map_to_kvlist).unwrap_or_default(),
-                            dropped_attributes_count: lm.get(f::DROPPED_ATTRIBUTES_COUNT).and_then(|v| v.as_integer()).unwrap_or(0) as u32,
-                            flags: lm.get(f::SPAN_FLAGS).and_then(|v| v.as_integer()).unwrap_or(0) as u32,
+                            trace_id: lm
+                                .get(f::SPAN_TRACE_ID)
+                                .and_then(hex_decode)
+                                .unwrap_or_default(),
+                            span_id: lm
+                                .get(f::SPAN_SPAN_ID)
+                                .and_then(hex_decode)
+                                .unwrap_or_default(),
+                            trace_state: lm
+                                .get("trace_state")
+                                .and_then(|v| v.as_bytes())
+                                .map(|b| String::from_utf8_lossy(b).into_owned())
+                                .unwrap_or_default(),
+                            attributes: lm
+                                .get(f::ATTRIBUTES)
+                                .and_then(|v| v.as_object())
+                                .map(object_map_to_kvlist)
+                                .unwrap_or_default(),
+                            dropped_attributes_count: OtlpCount::from_vrl(
+                                lm.get(f::DROPPED_ATTRIBUTES_COUNT)
+                                    .and_then(vrl::value::Value::as_integer)
+                                    .unwrap_or(0),
+                            )
+                            .as_proto(),
+                            flags: OtlpCount::from_vrl(
+                                lm.get(f::SPAN_FLAGS)
+                                    .and_then(vrl::value::Value::as_integer)
+                                    .unwrap_or(0),
+                            )
+                            .as_proto(),
                         })
                     })
                     .collect()
@@ -2623,8 +2866,11 @@ impl OtelSpan {
             .unwrap_or_default();
 
         let dropped_links_count = match map.remove("dropped_links_count") {
-            Some(Value::Integer(i)) => i as u32,
-            Some(other) => { map.insert("dropped_links_count".into(), other); 0 }
+            Some(Value::Integer(i)) => OtlpCount::from_vrl(i).as_proto(),
+            Some(other) => {
+                map.insert("dropped_links_count".into(), other);
+                0
+            }
             None => 0,
         };
 
@@ -2655,6 +2901,10 @@ impl OtelSpan {
     }
 
     /// Get a field value by path.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn get<'a>(&self, path: impl lookup::lookup_v2::TargetPath<'a>) -> Option<Value> {
         use lookup::lookup_v2::ValuePath;
         use lookup::path::BorrowedSegment;
@@ -2664,46 +2914,40 @@ impl OtelSpan {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.span_get_single_segment(first.as_ref()),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let base = self.span_get_field_path(&fields)?;
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    base.get(&sub).cloned()
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.span_get_single_segment(first.as_ref()),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.span_get_field_path(&fields)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let base = self.span_get_single_segment(first.as_ref())?;
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let base = self.span_get_field_path(&fields)?;
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 base.get(&sub).cloned()
+                            } else {
+                                self.span_get_field_path(&fields)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let base = self.span_get_single_segment(first.as_ref())?;
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            base.get(&sub).cloned()
+                        }
+                    },
                     _ => None,
                 }
             }
-            lookup::PathPrefix::Metadata => {
-                self.metadata.value().get(path.value_path()).cloned()
-            }
+            lookup::PathPrefix::Metadata => self.metadata.value().get(path.value_path()).cloned(),
         }
     }
 
@@ -2727,22 +2971,23 @@ impl OtelSpan {
             f::END_TIME if self.span.end_time_unix_nano != 0 => {
                 nanos_to_timestamp(self.span.end_time_unix_nano)
             }
-            f::SPAN_KIND if self.span.kind != 0 => {
-                Some(Value::Integer(self.span.kind as i64))
-            }
+            f::SPAN_KIND if self.span.kind != 0 => Some(Value::Integer(i64::from(self.span.kind))),
             f::SPAN_STATUS => {
                 let status = self.span.status.as_ref()?;
                 let mut status_map = ObjectMap::new();
                 if !status.message.is_empty() {
-                    status_map.insert(f::STATUS_MESSAGE.into(), Value::Bytes(status.message.clone().into()));
+                    status_map.insert(
+                        f::STATUS_MESSAGE.into(),
+                        Value::Bytes(status.message.clone().into()),
+                    );
                 }
-                status_map.insert(f::STATUS_CODE.into(), Value::Integer(status.code as i64));
+                status_map.insert(
+                    f::STATUS_CODE.into(),
+                    Value::Integer(i64::from(status.code)),
+                );
                 Some(Value::Object(status_map))
             }
-            other => {
-                self.span_attrs.get(other)
-                    .map(any_value_to_vrl)
-            }
+            other => self.span_attrs.get(other).map(any_value_to_vrl),
         }
     }
 
@@ -2756,7 +3001,7 @@ impl OtelSpan {
                     if key == f::DROPPED_ATTRIBUTES_COUNT {
                         let res = self.resource.as_ref()?;
                         if res.dropped_attributes_count != 0 {
-                            return Some(Value::Integer(res.dropped_attributes_count as i64));
+                            return Some(Value::Integer(i64::from(res.dropped_attributes_count)));
                         }
                         return None;
                     }
@@ -2773,17 +3018,26 @@ impl OtelSpan {
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
-                        if scope.name.is_empty() { None }
-                        else { Some(Value::Bytes(scope.name.clone().into())) }
+                        if scope.name.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.name.clone().into()))
+                        }
                     }
                     f::VERSION if remaining.len() == 1 => {
-                        if scope.version.is_empty() { None }
-                        else { Some(Value::Bytes(scope.version.clone().into())) }
+                        if scope.version.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.version.clone().into()))
+                        }
                     }
                     f::ATTRIBUTES => {
                         if remaining.len() == 1 {
-                            if self.scope_attrs.is_empty() { None }
-                            else { Some(Value::Object(self.scope_attrs.to_object_map())) }
+                            if self.scope_attrs.is_empty() {
+                                None
+                            } else {
+                                Some(Value::Object(self.scope_attrs.to_object_map()))
+                            }
                         } else {
                             let av = self.scope_attrs.get(&remaining[1])?;
                             if remaining.len() == 2 {
@@ -2802,11 +3056,14 @@ impl OtelSpan {
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::STATUS_MESSAGE if remaining.len() == 1 => {
-                        if status.message.is_empty() { None }
-                        else { Some(Value::Bytes(status.message.clone().into())) }
+                        if status.message.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(status.message.clone().into()))
+                        }
                     }
                     f::STATUS_CODE if remaining.len() == 1 => {
-                        Some(Value::Integer(status.code as i64))
+                        Some(Value::Integer(i64::from(status.code)))
                     }
                     _ => None,
                 }
@@ -2824,6 +3081,10 @@ impl OtelSpan {
     }
 
     /// Insert a field value by path.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn insert<'a>(
         &mut self,
         path: impl lookup::lookup_v2::TargetPath<'a>,
@@ -2838,45 +3099,44 @@ impl OtelSpan {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.span_insert_single_segment(first.as_ref(), value),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let mut base = self.span_get_field_path(&fields).unwrap_or(Value::Null);
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    let old = base.insert(&sub, value);
-                                    self.span_insert_field_path(&fields, base);
-                                    old
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.span_insert_single_segment(first.as_ref(), value),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.span_insert_field_path(&fields, value)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let first_str = first.as_ref();
-                                let mut base = self.span_get_single_segment(first_str).unwrap_or(Value::Null);
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let mut base =
+                                    self.span_get_field_path(&fields).unwrap_or(Value::Null);
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 let old = base.insert(&sub, value);
-                                self.span_insert_single_segment(first_str, base);
+                                self.span_insert_field_path(&fields, base);
                                 old
+                            } else {
+                                self.span_insert_field_path(&fields, value)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let first_str = first.as_ref();
+                            let mut base = self
+                                .span_get_single_segment(first_str)
+                                .unwrap_or(Value::Null);
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            let old = base.insert(&sub, value);
+                            self.span_insert_single_segment(first_str, base);
+                            old
+                        }
+                    },
                     _ => None,
                 }
             }
@@ -2886,83 +3146,115 @@ impl OtelSpan {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "value ownership needed for API consistency with callers"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP span field mapping requires many branches"
+    )]
     fn span_insert_single_segment(&mut self, field: &str, value: Value) -> Option<Value> {
         use opentelemetry_proto::tonic::trace::v1::Status;
 
         match field {
             f::NAME => {
-                let old = if self.span.name.is_empty() { None }
-                    else { Some(Value::Bytes(self.span.name.clone().into())) };
-                self.span.name = value.as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                let old = if self.span.name.is_empty() {
+                    None
+                } else {
+                    Some(Value::Bytes(self.span.name.clone().into()))
+                };
+                self.span.name = value
+                    .as_str()
+                    .map_or_else(|| value.to_string_lossy().into_owned(), |s| s.to_string());
                 old
             }
             f::SPAN_TRACE_ID => {
-                let old = if self.span.trace_id.is_empty() { None }
-                    else { Some(hex_encode(&self.span.trace_id)) };
+                let old = if self.span.trace_id.is_empty() {
+                    None
+                } else {
+                    Some(hex_encode(&self.span.trace_id))
+                };
                 if let Some(decoded) = hex_decode(&value) {
                     self.span.trace_id = decoded;
                 } else {
-                    self.span_attrs.insert(f::SPAN_TRACE_ID.to_string(), vrl_value_to_any_value(&value));
+                    self.span_attrs
+                        .insert(f::SPAN_TRACE_ID.to_string(), vrl_value_to_any_value(&value));
                 }
                 old
             }
             f::SPAN_SPAN_ID => {
-                let old = if self.span.span_id.is_empty() { None }
-                    else { Some(hex_encode(&self.span.span_id)) };
+                let old = if self.span.span_id.is_empty() {
+                    None
+                } else {
+                    Some(hex_encode(&self.span.span_id))
+                };
                 if let Some(decoded) = hex_decode(&value) {
                     self.span.span_id = decoded;
                 } else {
-                    self.span_attrs.insert(f::SPAN_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
+                    self.span_attrs
+                        .insert(f::SPAN_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
                 }
                 old
             }
             f::PARENT_SPAN_ID => {
-                let old = if self.span.parent_span_id.is_empty() { None }
-                    else { Some(hex_encode(&self.span.parent_span_id)) };
+                let old = if self.span.parent_span_id.is_empty() {
+                    None
+                } else {
+                    Some(hex_encode(&self.span.parent_span_id))
+                };
                 if let Some(decoded) = hex_decode(&value) {
                     self.span.parent_span_id = decoded;
                 } else {
-                    self.span_attrs.insert(f::PARENT_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
+                    self.span_attrs.insert(
+                        f::PARENT_SPAN_ID.to_string(),
+                        vrl_value_to_any_value(&value),
+                    );
                 }
                 old
             }
             f::START_TIME => {
                 let old = if self.span.start_time_unix_nano != 0 {
                     nanos_to_timestamp(self.span.start_time_unix_nano)
-                } else { None };
-                if let Some(ts) = value.as_timestamp() {
-                    if let Some(nanos) = ts.timestamp_nanos_opt() {
-                        if nanos >= 0 {
-                            self.span.start_time_unix_nano = nanos as u64;
-                            return old;
-                        }
-                    }
+                } else {
+                    None
+                };
+                if let Some(ts) = value.as_timestamp()
+                    && let Some(nanos) = ts.timestamp_nanos_opt()
+                    && nanos >= 0
+                {
+                    self.span.start_time_unix_nano = nanos as u64;
+                    return old;
                 }
-                self.span_attrs.insert(f::START_TIME.to_string(), vrl_value_to_any_value(&value));
+                self.span_attrs
+                    .insert(f::START_TIME.to_string(), vrl_value_to_any_value(&value));
                 old
             }
             f::END_TIME => {
                 let old = if self.span.end_time_unix_nano != 0 {
                     nanos_to_timestamp(self.span.end_time_unix_nano)
-                } else { None };
-                if let Some(ts) = value.as_timestamp() {
-                    if let Some(nanos) = ts.timestamp_nanos_opt() {
-                        if nanos >= 0 {
-                            self.span.end_time_unix_nano = nanos as u64;
-                            return old;
-                        }
-                    }
+                } else {
+                    None
+                };
+                if let Some(ts) = value.as_timestamp()
+                    && let Some(nanos) = ts.timestamp_nanos_opt()
+                    && nanos >= 0
+                {
+                    self.span.end_time_unix_nano = nanos as u64;
+                    return old;
                 }
-                self.span_attrs.insert(f::END_TIME.to_string(), vrl_value_to_any_value(&value));
+                self.span_attrs
+                    .insert(f::END_TIME.to_string(), vrl_value_to_any_value(&value));
                 old
             }
             f::SPAN_KIND => {
-                let old = if self.span.kind == 0 { None }
-                    else { Some(Value::Integer(self.span.kind as i64)) };
+                let old = if self.span.kind == 0 {
+                    None
+                } else {
+                    Some(Value::Integer(i64::from(self.span.kind)))
+                };
                 if let Some(n) = value.as_integer() {
-                    self.span.kind = n as i32;
+                    self.span.kind = OtlpEnumField::from_vrl(n).as_proto();
                 }
                 old
             }
@@ -2970,30 +3262,42 @@ impl OtelSpan {
                 let old = self.span.status.as_ref().map(|st| {
                     let mut m = ObjectMap::new();
                     if !st.message.is_empty() {
-                        m.insert(f::STATUS_MESSAGE.into(), Value::Bytes(st.message.clone().into()));
+                        m.insert(
+                            f::STATUS_MESSAGE.into(),
+                            Value::Bytes(st.message.clone().into()),
+                        );
                     }
-                    m.insert(f::STATUS_CODE.into(), Value::Integer(st.code as i64));
+                    m.insert(f::STATUS_CODE.into(), Value::Integer(i64::from(st.code)));
                     Value::Object(m)
                 });
                 if let Value::Object(map) = &value {
-                    let message = map.get(f::STATUS_MESSAGE)
+                    let message = map
+                        .get(f::STATUS_MESSAGE)
                         .and_then(|v| v.as_str().map(|s| s.to_string()))
                         .unwrap_or_default();
-                    let code = map.get(f::STATUS_CODE)
-                        .and_then(|v| v.as_integer())
-                        .unwrap_or(0) as i32;
+                    let code = OtlpEnumField::from_vrl(
+                        map.get(f::STATUS_CODE)
+                            .and_then(vrl::value::Value::as_integer)
+                            .unwrap_or(0),
+                    )
+                    .as_proto();
                     self.span.status = Some(Status { message, code });
                 }
                 old
             }
             other => {
                 let old = self.span_attrs.get(other).map(any_value_to_vrl);
-                self.span_attrs.insert(other.to_string(), vrl_value_to_any_value(&value));
+                self.span_attrs
+                    .insert(other.to_string(), vrl_value_to_any_value(&value));
                 old
             }
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP span nested field mapping requires many branches"
+    )]
     fn span_insert_field_path(&mut self, fields: &[String], value: Value) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
@@ -3008,15 +3312,18 @@ impl OtelSpan {
                 if remaining.len() == 1 {
                     let key = remaining[0].as_str();
                     let old = self.resource_attrs.get(key).map(any_value_to_vrl);
-                    self.resource_attrs.insert(key.to_string(), vrl_value_to_any_value(&value));
+                    self.resource_attrs
+                        .insert(key.to_string(), vrl_value_to_any_value(&value));
                     old
                 } else {
                     let key = remaining[0].as_str();
-                    let mut v = self.resource_attrs.get(key)
-                        .map(any_value_to_vrl)
-                        .unwrap_or(Value::Object(ObjectMap::new()));
+                    let mut v = self
+                        .resource_attrs
+                        .get(key)
+                        .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                     let old = insert_value_at(&mut v, &remaining[1..], value);
-                    self.resource_attrs.insert(key.to_string(), vrl_value_to_any_value(&v));
+                    self.resource_attrs
+                        .insert(key.to_string(), vrl_value_to_any_value(&v));
                     old
                 }
             }
@@ -3025,24 +3332,35 @@ impl OtelSpan {
                 let scope = self.scope.get_or_insert_with(InstrumentationScope::default);
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
-                        let old = if scope.name.is_empty() { None }
-                            else { Some(Value::Bytes(scope.name.clone().into())) };
-                        scope.name = value.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                        let old = if scope.name.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.name.clone().into()))
+                        };
+                        scope.name = value.as_str().map_or_else(
+                            || value.to_string_lossy().into_owned(),
+                            |s| s.to_string(),
+                        );
                         old
                     }
                     f::VERSION if remaining.len() == 1 => {
-                        let old = if scope.version.is_empty() { None }
-                            else { Some(Value::Bytes(scope.version.clone().into())) };
-                        scope.version = value.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                        let old = if scope.version.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(scope.version.clone().into()))
+                        };
+                        scope.version = value.as_str().map_or_else(
+                            || value.to_string_lossy().into_owned(),
+                            |s| s.to_string(),
+                        );
                         old
                     }
                     f::ATTRIBUTES if remaining.len() == 1 => {
-                        let old = if self.scope_attrs.is_empty() { None }
-                            else { Some(Value::Object(self.scope_attrs.to_object_map())) };
+                        let old = if self.scope_attrs.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Object(self.scope_attrs.to_object_map()))
+                        };
                         if let Value::Object(map) = &value {
                             self.scope_attrs = OtelAttributes::from_object_map(map);
                         }
@@ -3052,14 +3370,17 @@ impl OtelSpan {
                         let key = remaining[1].as_str();
                         if remaining.len() == 2 {
                             let old = self.scope_attrs.get(key).map(any_value_to_vrl);
-                            self.scope_attrs.insert(key.to_string(), vrl_value_to_any_value(&value));
+                            self.scope_attrs
+                                .insert(key.to_string(), vrl_value_to_any_value(&value));
                             old
                         } else {
-                            let mut v = self.scope_attrs.get(key)
-                                .map(any_value_to_vrl)
-                                .unwrap_or(Value::Object(ObjectMap::new()));
+                            let mut v = self
+                                .scope_attrs
+                                .get(key)
+                                .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                             let old = insert_value_at(&mut v, &remaining[2..], value);
-                            self.scope_attrs.insert(key.to_string(), vrl_value_to_any_value(&v));
+                            self.scope_attrs
+                                .insert(key.to_string(), vrl_value_to_any_value(&v));
                             old
                         }
                     }
@@ -3075,17 +3396,21 @@ impl OtelSpan {
                 });
                 match remaining[0].as_str() {
                     f::STATUS_MESSAGE if remaining.len() == 1 => {
-                        let old = if status.message.is_empty() { None }
-                            else { Some(Value::Bytes(status.message.clone().into())) };
-                        status.message = value.as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| value.to_string_lossy().into_owned());
+                        let old = if status.message.is_empty() {
+                            None
+                        } else {
+                            Some(Value::Bytes(status.message.clone().into()))
+                        };
+                        status.message = value.as_str().map_or_else(
+                            || value.to_string_lossy().into_owned(),
+                            |s| s.to_string(),
+                        );
                         old
                     }
                     f::STATUS_CODE if remaining.len() == 1 => {
-                        let old = Some(Value::Integer(status.code as i64));
+                        let old = Some(Value::Integer(i64::from(status.code)));
                         if let Some(n) = value.as_integer() {
-                            status.code = n as i32;
+                            status.code = OtlpEnumField::from_vrl(n).as_proto();
                         }
                         old
                     }
@@ -3093,23 +3418,26 @@ impl OtelSpan {
                 }
             }
             first => {
-                let mut v = self.span_attrs.get(first)
-                    .map(any_value_to_vrl)
-                    .unwrap_or(Value::Object(ObjectMap::new()));
+                let mut v = self
+                    .span_attrs
+                    .get(first)
+                    .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                 let old = insert_value_at(&mut v, &fields[1..], value);
-                self.span_attrs.insert(first.to_string(), vrl_value_to_any_value(&v));
+                self.span_attrs
+                    .insert(first.to_string(), vrl_value_to_any_value(&v));
                 old
             }
         }
     }
 
-    pub fn remove<'a>(
-        &mut self,
-        path: impl lookup::lookup_v2::TargetPath<'a>,
-    ) -> Option<Value> {
+    pub fn remove<'a>(&mut self, path: impl lookup::lookup_v2::TargetPath<'a>) -> Option<Value> {
         self.remove_prune(path, false)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "impl Trait parameter follows VRL target API convention"
+    )]
     pub fn remove_prune<'a>(
         &mut self,
         path: impl lookup::lookup_v2::TargetPath<'a>,
@@ -3123,45 +3451,41 @@ impl OtelSpan {
                 let vp = path.value_path();
                 let mut iter = vp.segment_iter();
                 match iter.next() {
-                    Some(BorrowedSegment::Field(ref first)) => {
-                        match iter.next() {
-                            None => self.span_remove_single_segment(first.as_ref()),
-                            Some(BorrowedSegment::Field(ref second)) => {
-                                let mut fields = vec![first.to_string(), second.to_string()];
-                                let mut remaining_iter = None;
-                                for seg in &mut iter {
-                                    match seg {
-                                        BorrowedSegment::Field(f) => fields.push(f.to_string()),
-                                        _ => {
-                                            remaining_iter = Some((seg, iter));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some((non_field_seg, rest)) = remaining_iter {
-                                    let mut base = self.span_get_field_path(&fields)?;
-                                    let sub = remaining_value_path(
-                                        std::iter::once(non_field_seg).chain(rest),
-                                    );
-                                    let old = base.remove(&sub, prune);
-                                    self.span_insert_field_path(&fields, base);
-                                    old
+                    Some(BorrowedSegment::Field(ref first)) => match iter.next() {
+                        None => self.span_remove_single_segment(first.as_ref()),
+                        Some(BorrowedSegment::Field(ref second)) => {
+                            let mut fields = vec![first.to_string(), second.to_string()];
+                            let mut remaining_iter = None;
+                            for seg in &mut iter {
+                                if let BorrowedSegment::Field(f) = seg {
+                                    fields.push(f.to_string());
                                 } else {
-                                    self.span_remove_field_path(&fields, prune)
+                                    remaining_iter = Some((seg, iter));
+                                    break;
                                 }
                             }
-                            Some(non_field_seg) => {
-                                let first_str = first.as_ref();
-                                let mut base = self.span_get_single_segment(first_str)?;
+                            if let Some((non_field_seg, rest)) = remaining_iter {
+                                let mut base = self.span_get_field_path(&fields)?;
                                 let sub = remaining_value_path(
-                                    std::iter::once(non_field_seg).chain(iter),
+                                    std::iter::once(non_field_seg).chain(rest),
                                 );
                                 let old = base.remove(&sub, prune);
-                                self.span_insert_single_segment(first_str, base);
+                                self.span_insert_field_path(&fields, base);
                                 old
+                            } else {
+                                self.span_remove_field_path(&fields, prune)
                             }
                         }
-                    }
+                        Some(non_field_seg) => {
+                            let first_str = first.as_ref();
+                            let mut base = self.span_get_single_segment(first_str)?;
+                            let sub =
+                                remaining_value_path(std::iter::once(non_field_seg).chain(iter));
+                            let old = base.remove(&sub, prune);
+                            self.span_insert_single_segment(first_str, base);
+                            old
+                        }
+                    },
                     _ => None,
                 }
             }
@@ -3171,34 +3495,48 @@ impl OtelSpan {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP span field removal requires many branches"
+    )]
     fn span_remove_single_segment(&mut self, field: &str) -> Option<Value> {
         match field {
             f::NAME => {
-                if self.span.name.is_empty() { return None; }
+                if self.span.name.is_empty() {
+                    return None;
+                }
                 let old = Some(Value::Bytes(self.span.name.clone().into()));
                 self.span.name = String::new();
                 old
             }
             f::SPAN_TRACE_ID => {
-                if self.span.trace_id.is_empty() { return None; }
+                if self.span.trace_id.is_empty() {
+                    return None;
+                }
                 let old = Some(hex_encode(&self.span.trace_id));
                 self.span.trace_id.clear();
                 old
             }
             f::SPAN_SPAN_ID => {
-                if self.span.span_id.is_empty() { return None; }
+                if self.span.span_id.is_empty() {
+                    return None;
+                }
                 let old = Some(hex_encode(&self.span.span_id));
                 self.span.span_id.clear();
                 old
             }
             f::PARENT_SPAN_ID => {
-                if self.span.parent_span_id.is_empty() { return None; }
+                if self.span.parent_span_id.is_empty() {
+                    return None;
+                }
                 let old = Some(hex_encode(&self.span.parent_span_id));
                 self.span.parent_span_id.clear();
                 old
             }
             f::START_TIME | f::START_TIME_UNIX_NANO => {
-                if self.span.start_time_unix_nano == 0 { return None; }
+                if self.span.start_time_unix_nano == 0 {
+                    return None;
+                }
                 let old = if field == f::START_TIME {
                     nanos_to_timestamp(self.span.start_time_unix_nano)
                 } else {
@@ -3208,7 +3546,9 @@ impl OtelSpan {
                 old
             }
             f::END_TIME | f::END_TIME_UNIX_NANO => {
-                if self.span.end_time_unix_nano == 0 { return None; }
+                if self.span.end_time_unix_nano == 0 {
+                    return None;
+                }
                 let old = if field == f::END_TIME {
                     nanos_to_timestamp(self.span.end_time_unix_nano)
                 } else {
@@ -3218,20 +3558,28 @@ impl OtelSpan {
                 old
             }
             f::SPAN_KIND => {
-                if self.span.kind == 0 { return None; }
-                let old = Some(Value::Integer(self.span.kind as i64));
+                if self.span.kind == 0 {
+                    return None;
+                }
+                let old = Some(Value::Integer(i64::from(self.span.kind)));
                 self.span.kind = 0;
                 old
             }
             f::SPAN_FLAGS => {
-                if self.span.flags == 0 { return None; }
+                if self.span.flags == 0 {
+                    return None;
+                }
                 let old = Some(Value::Integer(i64::from(self.span.flags)));
                 self.span.flags = 0;
                 old
             }
             f::DROPPED_ATTRIBUTES_COUNT => {
-                if self.span.dropped_attributes_count == 0 { return None; }
-                let old = Some(Value::Integer(i64::from(self.span.dropped_attributes_count)));
+                if self.span.dropped_attributes_count == 0 {
+                    return None;
+                }
+                let old = Some(Value::Integer(i64::from(
+                    self.span.dropped_attributes_count,
+                )));
                 self.span.dropped_attributes_count = 0;
                 old
             }
@@ -3239,48 +3587,55 @@ impl OtelSpan {
                 let status = self.span.status.take()?;
                 let mut m = ObjectMap::new();
                 if !status.message.is_empty() {
-                    m.insert(f::STATUS_MESSAGE.into(), Value::Bytes(status.message.into()));
+                    m.insert(
+                        f::STATUS_MESSAGE.into(),
+                        Value::Bytes(status.message.into()),
+                    );
                 }
-                m.insert(f::STATUS_CODE.into(), Value::Integer(status.code as i64));
+                m.insert(
+                    f::STATUS_CODE.into(),
+                    Value::Integer(i64::from(status.code)),
+                );
                 Some(Value::Object(m))
             }
-            other => {
-                self.span_attrs.remove(other)
-                    .map(|av| any_value_to_vrl(&av))
-            }
+            other => self
+                .span_attrs
+                .remove(other)
+                .map(|av| any_value_to_vrl(&av)),
         }
     }
 
     fn span_remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(
-                &mut self.resource_attrs, &fields[1..], prune,
-            ),
+            f::RESOURCE => remove_resource_subpath(&mut self.resource_attrs, &fields[1..], prune),
             f::SCOPE => remove_scope_subpath(
-                self.scope.as_mut(), &mut self.scope_attrs, &fields[1..], prune,
+                self.scope.as_mut(),
+                &mut self.scope_attrs,
+                &fields[1..],
+                prune,
             ),
             f::SPAN_STATUS => {
                 let status = self.span.status.as_mut()?;
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::STATUS_MESSAGE if remaining.len() == 1 => {
-                        if status.message.is_empty() { return None; }
+                        if status.message.is_empty() {
+                            return None;
+                        }
                         let old = Some(Value::Bytes(status.message.clone().into()));
                         status.message = String::new();
                         old
                     }
                     f::STATUS_CODE if remaining.len() == 1 => {
-                        let old = Some(Value::Integer(status.code as i64));
+                        let old = Some(Value::Integer(i64::from(status.code)));
                         status.code = 0;
                         old
                     }
                     _ => None,
                 }
             }
-            first => remove_attrs_subpath(
-                &mut self.span_attrs, first, &fields[1..], prune,
-            ),
+            first => remove_attrs_subpath(&mut self.span_attrs, first, &fields[1..], prune),
         }
     }
 
@@ -3290,6 +3645,10 @@ impl OtelSpan {
     }
 
     /// Build a flat `ObjectMap` from proto fields + attributes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OTLP span has many proto fields to map"
+    )]
     pub fn as_map(&self) -> Option<ObjectMap> {
         let mut map = ObjectMap::new();
 
@@ -3303,74 +3662,133 @@ impl OtelSpan {
             map.insert(f::SPAN_SPAN_ID.into(), hex_encode(&self.span.span_id));
         }
         if !self.span.parent_span_id.is_empty() {
-            map.insert(f::PARENT_SPAN_ID.into(), hex_encode(&self.span.parent_span_id));
+            map.insert(
+                f::PARENT_SPAN_ID.into(),
+                hex_encode(&self.span.parent_span_id),
+            );
         }
         if self.span.start_time_unix_nano != 0 {
-            map.insert(f::START_TIME_UNIX_NANO.into(), Value::Integer(self.span.start_time_unix_nano as i64));
+            map.insert(
+                f::START_TIME_UNIX_NANO.into(),
+                Value::Integer(self.span.start_time_unix_nano as i64),
+            );
         }
         if self.span.end_time_unix_nano != 0 {
-            map.insert(f::END_TIME_UNIX_NANO.into(), Value::Integer(self.span.end_time_unix_nano as i64));
+            map.insert(
+                f::END_TIME_UNIX_NANO.into(),
+                Value::Integer(self.span.end_time_unix_nano as i64),
+            );
         }
         if self.span.kind != 0 {
-            map.insert(f::SPAN_KIND.into(), Value::Integer(self.span.kind as i64));
+            map.insert(
+                f::SPAN_KIND.into(),
+                Value::Integer(i64::from(self.span.kind)),
+            );
         }
         if self.span.flags != 0 {
-            map.insert(f::SPAN_FLAGS.into(), Value::Integer(i64::from(self.span.flags)));
+            map.insert(
+                f::SPAN_FLAGS.into(),
+                Value::Integer(i64::from(self.span.flags)),
+            );
         }
         if self.span.dropped_attributes_count != 0 {
-            map.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), Value::Integer(i64::from(self.span.dropped_attributes_count)));
+            map.insert(
+                f::DROPPED_ATTRIBUTES_COUNT.into(),
+                Value::Integer(i64::from(self.span.dropped_attributes_count)),
+            );
         }
         if let Some(status) = &self.span.status {
             let mut status_map = ObjectMap::new();
             if !status.message.is_empty() {
-                status_map.insert(f::STATUS_MESSAGE.into(), Value::Bytes(status.message.clone().into()));
+                status_map.insert(
+                    f::STATUS_MESSAGE.into(),
+                    Value::Bytes(status.message.clone().into()),
+                );
             }
-            status_map.insert(f::STATUS_CODE.into(), Value::Integer(status.code as i64));
+            status_map.insert(
+                f::STATUS_CODE.into(),
+                Value::Integer(i64::from(status.code)),
+            );
             map.insert(f::SPAN_STATUS.into(), Value::Object(status_map));
         }
         if !self.span.trace_state.is_empty() {
-            map.insert("trace_state".into(), Value::Bytes(self.span.trace_state.clone().into()));
+            map.insert(
+                "trace_state".into(),
+                Value::Bytes(self.span.trace_state.clone().into()),
+            );
         }
         if !self.span.events.is_empty() {
-            let events: Vec<Value> = self.span.events.iter().map(|e| {
-                let mut em = ObjectMap::new();
-                em.insert(f::TIME_UNIX_NANO.into(), Value::Integer(e.time_unix_nano as i64));
-                em.insert(f::NAME.into(), Value::Bytes(e.name.clone().into()));
-                em.insert(f::ATTRIBUTES.into(), Value::Object(kvlist_to_object_map(&e.attributes)));
-                em.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), Value::Integer(e.dropped_attributes_count as i64));
-                Value::Object(em)
-            }).collect();
+            let events: Vec<Value> = self
+                .span
+                .events
+                .iter()
+                .map(|e| {
+                    let mut em = ObjectMap::new();
+                    em.insert(
+                        f::TIME_UNIX_NANO.into(),
+                        Value::Integer(e.time_unix_nano as i64),
+                    );
+                    em.insert(f::NAME.into(), Value::Bytes(e.name.clone().into()));
+                    em.insert(
+                        f::ATTRIBUTES.into(),
+                        Value::Object(kvlist_to_object_map(&e.attributes)),
+                    );
+                    em.insert(
+                        f::DROPPED_ATTRIBUTES_COUNT.into(),
+                        Value::Integer(i64::from(e.dropped_attributes_count)),
+                    );
+                    Value::Object(em)
+                })
+                .collect();
             map.insert(f::SPAN_EVENTS.into(), Value::Array(events));
         }
         if self.span.dropped_events_count != 0 {
-            map.insert("dropped_events_count".into(), Value::Integer(self.span.dropped_events_count as i64));
+            map.insert(
+                "dropped_events_count".into(),
+                Value::Integer(i64::from(self.span.dropped_events_count)),
+            );
         }
         if !self.span.links.is_empty() {
-            let links: Vec<Value> = self.span.links.iter().map(|l| {
-                let mut lm = ObjectMap::new();
-                lm.insert(f::SPAN_TRACE_ID.into(), hex_encode(&l.trace_id));
-                lm.insert(f::SPAN_SPAN_ID.into(), hex_encode(&l.span_id));
-                if !l.trace_state.is_empty() {
-                    lm.insert("trace_state".into(), Value::Bytes(l.trace_state.clone().into()));
-                }
-                lm.insert(f::ATTRIBUTES.into(), Value::Object(kvlist_to_object_map(&l.attributes)));
-                lm.insert(f::DROPPED_ATTRIBUTES_COUNT.into(), Value::Integer(l.dropped_attributes_count as i64));
-                if l.flags != 0 {
-                    lm.insert(f::SPAN_FLAGS.into(), Value::Integer(l.flags as i64));
-                }
-                Value::Object(lm)
-            }).collect();
+            let links: Vec<Value> = self
+                .span
+                .links
+                .iter()
+                .map(|l| {
+                    let mut lm = ObjectMap::new();
+                    lm.insert(f::SPAN_TRACE_ID.into(), hex_encode(&l.trace_id));
+                    lm.insert(f::SPAN_SPAN_ID.into(), hex_encode(&l.span_id));
+                    if !l.trace_state.is_empty() {
+                        lm.insert(
+                            "trace_state".into(),
+                            Value::Bytes(l.trace_state.clone().into()),
+                        );
+                    }
+                    lm.insert(
+                        f::ATTRIBUTES.into(),
+                        Value::Object(kvlist_to_object_map(&l.attributes)),
+                    );
+                    lm.insert(
+                        f::DROPPED_ATTRIBUTES_COUNT.into(),
+                        Value::Integer(i64::from(l.dropped_attributes_count)),
+                    );
+                    if l.flags != 0 {
+                        lm.insert(f::SPAN_FLAGS.into(), Value::Integer(i64::from(l.flags)));
+                    }
+                    Value::Object(lm)
+                })
+                .collect();
             map.insert(f::SPAN_LINKS.into(), Value::Array(links));
         }
         if self.span.dropped_links_count != 0 {
-            map.insert("dropped_links_count".into(), Value::Integer(self.span.dropped_links_count as i64));
+            map.insert(
+                "dropped_links_count".into(),
+                Value::Integer(i64::from(self.span.dropped_links_count)),
+            );
         }
         if !self.span_attrs.is_empty() {
             for (k, v) in self.span_attrs.iter() {
                 let key = KeyString::from(k.clone());
-                if !map.contains_key(&key) {
-                    map.insert(key, any_value_to_vrl(v));
-                }
+                map.entry(key).or_insert_with(|| any_value_to_vrl(v));
             }
         }
         append_canonical_resource_scope(
@@ -3385,6 +3803,10 @@ impl OtelSpan {
     }
 
     /// Parse a path and get a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `path` cannot be parsed as a valid target path.
     pub fn parse_path_and_get_value(
         &self,
         path: &str,
@@ -3392,12 +3814,10 @@ impl OtelSpan {
         let target_path = vrl::path::parse_target_path(path)?;
         Ok(self.get(&target_path))
     }
-
 }
 
 // OtelMetric and MetricView are defined in the sibling `otel_metric` module.
 pub use super::otel_metric::{MetricView, OtelMetric};
-
 
 // -- Trait implementations --
 
@@ -3406,14 +3826,8 @@ macro_rules! impl_otel_event_traits {
         impl ByteSizeOf for $ty {
             fn allocated_bytes(&self) -> usize {
                 self.$proto_field.encoded_len()
-                    + self
-                        .resource
-                        .as_ref()
-                        .map_or(0, |r| r.encoded_len())
-                    + self
-                        .scope
-                        .as_ref()
-                        .map_or(0, |s| s.encoded_len())
+                    + self.resource.as_ref().map_or(0, |r| r.encoded_len())
+                    + self.scope.as_ref().map_or(0, |s| s.encoded_len())
                     + self.metadata.allocated_bytes()
             }
         }
@@ -3438,7 +3852,6 @@ macro_rules! impl_otel_event_traits {
                 self.metadata.take_finalizers()
             }
         }
-
     };
 }
 
@@ -3464,11 +3877,12 @@ impl GetEventCountTags for OtelLog {
         };
 
         let service = if telemetry().tags().emit_service {
-            self.resource_attrs.get(f::SERVICE_NAME)
+            self.resource_attrs
+                .get(f::SERVICE_NAME)
                 .and_then(|av| match &av.value {
-                    Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                        s,
-                    )) => Some(s.clone()),
+                    Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s),
+                    ) => Some(s.clone()),
                     _ => None,
                 })
                 .into()
@@ -3517,19 +3931,19 @@ impl Default for OtelLog {
 
 impl From<&str> for OtelLog {
     fn from(s: &str) -> Self {
-        Self::from_bytes(bytes::Bytes::from(s.to_owned()))
+        Self::from_bytes(s.as_bytes())
     }
 }
 
 impl From<String> for OtelLog {
     fn from(s: String) -> Self {
-        Self::from_bytes(bytes::Bytes::from(s))
+        Self::from_bytes(s.as_bytes())
     }
 }
 
 impl From<bytes::Bytes> for OtelLog {
     fn from(b: bytes::Bytes) -> Self {
-        Self::from_bytes(b)
+        Self::from_bytes(&b)
     }
 }
 
@@ -3570,8 +3984,10 @@ pub(super) fn hex_encode_bytes(bytes: &[u8]) -> String {
 
 impl Serialize for OtelLog {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use super::otel_json::{
+            SerializableAnyValue, SerializableAttributes, SerializableResource, SerializableScope,
+        };
         use serde::ser::SerializeMap;
-        use super::otel_json::*;
 
         let mut map = serializer.serialize_map(None)?;
         if let Some(ref body) = self.record.body {
@@ -3584,10 +4000,16 @@ impl Serialize for OtelLog {
             map.serialize_entry(f::SEVERITY_NUMBER_CC, &self.record.severity_number)?;
         }
         if self.record.time_unix_nano != 0 {
-            map.serialize_entry(f::TIME_UNIX_NANO_CC, &self.record.time_unix_nano.to_string())?;
+            map.serialize_entry(
+                f::TIME_UNIX_NANO_CC,
+                &self.record.time_unix_nano.to_string(),
+            )?;
         }
         if self.record.observed_time_unix_nano != 0 {
-            map.serialize_entry(f::OBSERVED_TIME_UNIX_NANO_CC, &self.record.observed_time_unix_nano.to_string())?;
+            map.serialize_entry(
+                f::OBSERVED_TIME_UNIX_NANO_CC,
+                &self.record.observed_time_unix_nano.to_string(),
+            )?;
         }
         if !self.record.trace_id.is_empty() {
             map.serialize_entry(f::TRACE_ID_CC, &hex_encode_bytes(&self.record.trace_id))?;
@@ -3614,8 +4036,11 @@ impl Serialize for OtelLog {
 
 impl Serialize for OtelSpan {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use super::otel_json::{
+            SerializableAttributes, SerializableResource, SerializableScope, SerializableSpanEvent,
+            SerializableSpanLink,
+        };
         use serde::ser::SerializeMap;
-        use super::otel_json::*;
 
         let mut map = serializer.serialize_map(None)?;
         if !self.span.name.is_empty() {
@@ -3628,26 +4053,38 @@ impl Serialize for OtelSpan {
             map.serialize_entry(f::SPAN_ID_CC, &hex_encode_bytes(&self.span.span_id))?;
         }
         if !self.span.parent_span_id.is_empty() {
-            map.serialize_entry(f::PARENT_SPAN_ID_CC, &hex_encode_bytes(&self.span.parent_span_id))?;
+            map.serialize_entry(
+                f::PARENT_SPAN_ID_CC,
+                &hex_encode_bytes(&self.span.parent_span_id),
+            )?;
         }
         if self.span.kind != 0 {
             map.serialize_entry(f::SPAN_KIND, &self.span.kind)?;
         }
         if self.span.start_time_unix_nano != 0 {
-            map.serialize_entry(f::START_TIME_UNIX_NANO_CC, &self.span.start_time_unix_nano.to_string())?;
+            map.serialize_entry(
+                f::START_TIME_UNIX_NANO_CC,
+                &self.span.start_time_unix_nano.to_string(),
+            )?;
         }
         if self.span.end_time_unix_nano != 0 {
-            map.serialize_entry(f::END_TIME_UNIX_NANO_CC, &self.span.end_time_unix_nano.to_string())?;
+            map.serialize_entry(
+                f::END_TIME_UNIX_NANO_CC,
+                &self.span.end_time_unix_nano.to_string(),
+            )?;
         }
         if !self.span_attrs.is_empty() {
             let kvs = self.span_attrs.to_key_values();
             map.serialize_entry(f::ATTRIBUTES, &SerializableAttributes(&kvs))?;
         }
         if let Some(ref status) = self.span.status {
-            map.serialize_entry(f::SPAN_STATUS, &serde_json::json!({
-                "code": status.code,
-                "message": status.message,
-            }))?;
+            map.serialize_entry(
+                f::SPAN_STATUS,
+                &serde_json::json!({
+                    "code": status.code,
+                    "message": status.message,
+                }),
+            )?;
         }
         if self.span.flags != 0 {
             map.serialize_entry(f::SPAN_FLAGS, &self.span.flags)?;
@@ -3681,7 +4118,6 @@ impl Serialize for OtelSpan {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3704,9 +4140,11 @@ mod tests {
         let mut event = OtelLog::new(LogRecord::default());
 
         let value = AnyValue {
-            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                "bar".to_string(),
-            )),
+            value: Some(
+                opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "bar".to_string(),
+                ),
+            ),
         };
 
         assert!(event.attribute("foo").is_none());
@@ -3731,9 +4169,11 @@ mod tests {
         assert!(event.resource_attribute("host.name").is_none());
 
         let host = AnyValue {
-            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                "myhost".to_string(),
-            )),
+            value: Some(
+                opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "myhost".to_string(),
+                ),
+            ),
         };
         event.set_resource(Resource {
             attributes: vec![KeyValue {
@@ -3842,9 +4282,11 @@ mod tests {
     fn byte_size_of_non_zero() {
         let event = OtelLog::new(LogRecord {
             body: Some(AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "hello world".to_string(),
-                )),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "hello world".to_string(),
+                    ),
+                ),
             }),
             ..Default::default()
         });
@@ -3866,10 +4308,7 @@ mod tests {
     fn event_count_is_one() {
         assert_eq!(OtelLog::new(LogRecord::default()).event_count(), 1);
         assert_eq!(OtelSpan::new(Span::default()).event_count(), 1);
-        assert_eq!(
-            OtelMetric::new(OtelMetricProto::default()).event_count(),
-            1
-        );
+        assert_eq!(OtelMetric::new(OtelMetricProto::default()).event_count(), 1);
     }
 
     #[test]
@@ -3888,8 +4327,7 @@ mod tests {
         });
         let metadata = EventMetadata::default();
 
-        let event =
-            OtelLog::from_parts(record.clone(), resource.clone(), scope.clone(), metadata);
+        let event = OtelLog::from_parts(record.clone(), resource.clone(), scope.clone(), metadata);
         let (r, res, sc, _meta) = event.into_parts();
         assert_eq!(r.severity_text, "INFO");
         assert_eq!(res, resource);
@@ -3935,8 +4373,14 @@ mod tests {
         let map = event.as_map().expect("expected object map");
         assert_eq!(map.get("body").unwrap().as_str().unwrap(), "hello world");
         assert_eq!(map.get("severity_text").unwrap().as_str().unwrap(), "ERROR");
-        assert_eq!(map.get("severity_number").unwrap().as_integer().unwrap(), 17);
-        assert_eq!(map.get("time_unix_nano").unwrap().as_integer().unwrap(), 1_700_000_000_000_000_000);
+        assert_eq!(
+            map.get("severity_number").unwrap().as_integer().unwrap(),
+            17
+        );
+        assert_eq!(
+            map.get("time_unix_nano").unwrap().as_integer().unwrap(),
+            1_700_000_000_000_000_000
+        );
         assert_eq!(map.get("trace_id").unwrap().as_str().unwrap(), "abcd");
         assert_eq!(map.get("span_id").unwrap().as_str().unwrap(), "1234");
         assert_eq!(map.get("env").unwrap().as_str().unwrap(), "prod");
@@ -3995,7 +4439,10 @@ mod tests {
         assert_eq!(v["severityText"], "INFO");
         assert!(v["resource"]["attributes"].is_array());
         assert_eq!(v["resource"]["attributes"][0]["key"], "service.name");
-        assert_eq!(v["resource"]["attributes"][0]["value"]["stringValue"], "test-svc");
+        assert_eq!(
+            v["resource"]["attributes"][0]["value"]["stringValue"],
+            "test-svc"
+        );
     }
 
     #[test]
@@ -4036,21 +4483,26 @@ mod tests {
         use crate::event::metric::Bucket;
 
         let buckets = vec![
-            Bucket { count: 10, upper_limit: 5.0 },
-            Bucket { count: 20, upper_limit: 10.0 },
-            Bucket { count: 5, upper_limit: f64::INFINITY },
+            Bucket {
+                count: 10,
+                upper_limit: 5.0,
+            },
+            Bucket {
+                count: 20,
+                upper_limit: 10.0,
+            },
+            Bucket {
+                count: 5,
+                upper_limit: f64::INFINITY,
+            },
         ];
-        let otel = OtelMetric::new_histogram(
-            "latency",
-            MetricKind::Absolute,
-            &buckets,
-            35,
-            150.0,
-        );
+        let otel = OtelMetric::new_histogram("latency", MetricKind::Absolute, &buckets, 35, 150.0);
 
         assert_eq!(otel.name(), "latency");
         match otel.view() {
-            MetricView::Histogram { counts, count, sum, .. } => {
+            MetricView::Histogram {
+                counts, count, sum, ..
+            } => {
                 assert_eq!(count, 35);
                 assert!((sum - 150.0).abs() < f64::EPSILON);
                 assert_eq!(counts.len(), 3);
@@ -4066,7 +4518,10 @@ mod tests {
 
         let otel = OtelMetric::new_gauge("test", 1.0);
         let event: Event = Event::Metric(otel);
-        assert!(matches!(event, Event::Metric(_)), "expected Event::Metric, got {event:?}");
+        assert!(
+            matches!(event, Event::Metric(_)),
+            "expected Event::Metric, got {event:?}"
+        );
 
         let metric = event.try_into_otel_metric().expect("should convert back");
         assert_eq!(metric.name(), "test");
@@ -4112,10 +4567,10 @@ mod tests {
         );
 
         // Set Vector namespace metadata
-        event.metadata_mut().value_mut().insert(
-            lookup::path!("vector", "ns"),
-            Value::Bytes("true".into()),
-        );
+        event
+            .metadata_mut()
+            .value_mut()
+            .insert(lookup::path!("vector", "ns"), Value::Bytes("true".into()));
 
         // Set schema meaning: "timestamp" → "@timestamp"
         let schema = event
@@ -4185,8 +4640,8 @@ mod tests {
     fn tags_builds_metric_tags_from_proto() {
         use crate::event::MetricKind;
 
-        let otel = OtelMetric::new_counter("test_metric", MetricKind::Incremental, 1.0)
-            .with_tags(Some(
+        let otel =
+            OtelMetric::new_counter("test_metric", MetricKind::Incremental, 1.0).with_tags(Some(
                 vec![
                     ("env".to_string(), "prod".to_string()),
                     ("region".to_string(), "us-east".to_string()),
@@ -4231,20 +4686,10 @@ mod tests {
         use crate::event::MetricKind;
 
         let buckets = crate::buckets![1.0 => 10, 5.0 => 20, 10.0 => 5];
-        let direct = OtelMetric::new_histogram(
-            "request_duration",
-            MetricKind::Absolute,
-            &buckets,
-            35,
-            8.0,
-        );
-        let via_ctor = OtelMetric::new_histogram(
-            "request_duration",
-            MetricKind::Absolute,
-            &buckets,
-            35,
-            8.0,
-        );
+        let direct =
+            OtelMetric::new_histogram("request_duration", MetricKind::Absolute, &buckets, 35, 8.0);
+        let via_ctor =
+            OtelMetric::new_histogram("request_duration", MetricKind::Absolute, &buckets, 35, 8.0);
 
         assert_eq!(direct.name(), via_ctor.name());
         assert_eq!(direct.kind(), via_ctor.kind());
@@ -4254,18 +4699,8 @@ mod tests {
     #[test]
     fn new_summary_matches_from_metric_parts() {
         let quantiles = crate::quantiles![0.5 => 100.0, 0.99 => 200.0];
-        let direct = OtelMetric::new_summary(
-            "request_latency",
-            &quantiles,
-            50,
-            4200.0,
-        );
-        let via_ctor = OtelMetric::new_summary(
-            "request_latency",
-            &quantiles,
-            50,
-            4200.0,
-        );
+        let direct = OtelMetric::new_summary("request_latency", &quantiles, 50, 4200.0);
+        let via_ctor = OtelMetric::new_summary("request_latency", &quantiles, 50, 4200.0);
 
         assert_eq!(direct.name(), via_ctor.name());
         assert_eq!(format!("{}", direct.view()), format!("{}", via_ctor.view()));
@@ -4304,43 +4739,46 @@ mod tests {
         // Standard metadata fields are present.
         assert!(
             ol.get(vrl::event_path!("metadata", "level"))
-                .and_then(|v| v.as_str().map(|s| s.into_owned()))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned))
                 .is_some(),
             "metadata.level must be present"
         );
         assert!(
             ol.get(vrl::event_path!("metadata", "target"))
-                .and_then(|v| v.as_str().map(|s| s.into_owned()))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned))
                 .is_some(),
             "metadata.target must be present"
         );
         assert!(
             ol.get(vrl::event_path!("metadata", "kind"))
-                .and_then(|v| v.as_str().map(|s| s.into_owned()))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned))
                 .is_some(),
             "metadata.kind must be present"
         );
         // Visitor records fields at top level.
         assert!(
-            ol.get(vrl::event_path!("count")).and_then(|v| v.as_integer()).is_some(),
+            ol.get(vrl::event_path!("count"))
+                .and_then(|v| v.as_integer())
+                .is_some(),
             "i64 field via record_i64"
         );
         assert!(
-            ol.get(vrl::event_path!("ready")).and_then(|v| v.as_boolean()).is_some(),
+            ol.get(vrl::event_path!("ready"))
+                .and_then(|v| v.as_boolean())
+                .is_some(),
             "bool field via record_bool"
         );
         // time_unix_nano is present as integer.
         assert!(
             ol.get(vrl::event_path!("time_unix_nano"))
-                .map(|v| matches!(v, vrl::value::Value::Integer(_)))
-                .unwrap_or(false),
+                .is_some_and(|v| matches!(v, vrl::value::Value::Integer(_))),
             "OtelLog has time_unix_nano"
         );
     }
 
-    /// Round-trip fidelity test: OtelLog → as_map → apply_value_map
-    /// should produce an OtelLog equivalent to the starting one for field lookups.
-    /// This protects against regressions when rewriting apply_value_map.
+    /// Round-trip fidelity test: `OtelLog` → `as_map` → `apply_value_map`
+    /// should produce an `OtelLog` equivalent to the starting one for field lookups.
+    /// This protects against regressions when rewriting `apply_value_map`.
     #[test]
     fn insert_preserves_body_via_round_trip() {
         use opentelemetry_proto::tonic::common::v1::any_value::Value as Kind;
@@ -4354,11 +4792,15 @@ mod tests {
         // Insert triggers the full round-trip
         event.insert(vrl::event_path!("new_field"), "new_value");
         assert_eq!(
-            event.get(vrl::event_path!("body")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("body"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("hello".to_string())
         );
         assert_eq!(
-            event.get(vrl::event_path!("new_field")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("new_field"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("new_value".to_string())
         );
     }
@@ -4371,14 +4813,18 @@ mod tests {
         event.set_resource(Resource {
             attributes: vec![KeyValue {
                 key: "source_type".into(),
-                value: Some(AnyValue { value: Some(Kind::StringValue("syslog".into())) }),
+                value: Some(AnyValue {
+                    value: Some(Kind::StringValue("syslog".into())),
+                }),
             }],
             dropped_attributes_count: 0,
         });
         event.insert(vrl::event_path!("another"), "x");
         // source_type lives at canonical resource path
         assert_eq!(
-            event.get(vrl::event_path!("resource", "source_type")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("resource", "source_type"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("syslog".to_string())
         );
     }
@@ -4398,7 +4844,10 @@ mod tests {
         match tags.unwrap() {
             Value::Array(arr) => {
                 assert_eq!(arr.len(), 1);
-                assert_eq!(arr[0].as_str().map(|s| s.into_owned()), Some("a:foo".to_string()));
+                assert_eq!(
+                    arr[0].as_str().map(std::borrow::Cow::into_owned),
+                    Some("a:foo".to_string())
+                );
             }
             other => panic!("expected Array, got {other:?}"),
         }
@@ -4418,23 +4867,32 @@ mod tests {
         event.set_resource(Resource {
             attributes: vec![KeyValue {
                 key: "service.name".into(),
-                value: Some(AnyValue { value: Some(Kind::StringValue("my-svc".into())) }),
+                value: Some(AnyValue {
+                    value: Some(Kind::StringValue("my-svc".into())),
+                }),
             }],
             dropped_attributes_count: 0,
         });
         // Before insert, we can read the resource attr via the resource sub-object
-        let before = event.get(vrl::event_path!("resource", "service.name"))
-            .and_then(|v| v.as_str().map(|s| s.into_owned()));
-        assert_eq!(before, Some("my-svc".to_string()),
-            "resource sub-object should be readable before insert");
+        let before = event
+            .get(vrl::event_path!("resource", "service.name"))
+            .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned));
+        assert_eq!(
+            before,
+            Some("my-svc".to_string()),
+            "resource sub-object should be readable before insert"
+        );
 
         event.insert(vrl::event_path!("attr"), "val");
 
         // After insert: the current implementation's behavior (for regression detection)
-        let after = event.get(vrl::event_path!("resource", "service.name"))
-            .and_then(|v| v.as_str().map(|s| s.into_owned()));
-        assert_eq!(after, before,
-            "resource sub-object fidelity must be preserved across insert");
+        let after = event
+            .get(vrl::event_path!("resource", "service.name"))
+            .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned));
+        assert_eq!(
+            after, before,
+            "resource sub-object fidelity must be preserved across insert"
+        );
     }
 
     #[test]
@@ -4445,14 +4903,18 @@ mod tests {
         event.set_resource(Resource {
             attributes: vec![KeyValue {
                 key: "host.name".into(),
-                value: Some(AnyValue { value: Some(Kind::StringValue("srv01".into())) }),
+                value: Some(AnyValue {
+                    value: Some(Kind::StringValue("srv01".into())),
+                }),
             }],
             dropped_attributes_count: 0,
         });
         event.insert(vrl::event_path!("attr"), "val");
         // host.name at canonical resource path
         assert_eq!(
-            event.get(vrl::event_path!("resource", "host.name")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("resource", "host.name"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("srv01".to_string())
         );
     }
@@ -4485,8 +4947,8 @@ mod tests {
     #[test]
     fn insert_preserves_trace_id_via_round_trip() {
         let trace_id_bytes = vec![
-            0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,
-            0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19,
         ];
         let mut event = OtelLog::new(LogRecord {
             trace_id: trace_id_bytes.clone(),
@@ -4514,9 +4976,14 @@ mod tests {
         // attribute rather than dropped.
         let mut event = OtelLog::new(LogRecord::default());
         event.insert(vrl::event_path!("trace_id"), "not-hex-data");
-        assert!(event.trace_id().is_empty(), "native field should stay empty for invalid hex");
+        assert!(
+            event.trace_id().is_empty(),
+            "native field should stay empty for invalid hex"
+        );
         assert_eq!(
-            event.get(vrl::event_path!("trace_id")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("trace_id"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("not-hex-data".to_string()),
             "invalid hex should be preserved as an attribute"
         );
@@ -4531,22 +4998,32 @@ mod tests {
             attributes: vec![KeyValue {
                 key: "lib.lang".into(),
                 value: Some(AnyValue {
-                    value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("rust".into())),
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "rust".into(),
+                        ),
+                    ),
                 }),
             }],
             dropped_attributes_count: 0,
         });
         event.insert(vrl::event_path!("new_field"), "new_value");
         assert_eq!(
-            event.get(vrl::event_path!("scope", "name")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("scope", "name"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("my-lib".to_string())
         );
         assert_eq!(
-            event.get(vrl::event_path!("scope", "version")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("scope", "version"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("1.2.3".to_string())
         );
         assert_eq!(
-            event.get(vrl::event_path!("scope", "attributes", "lib.lang")).and_then(|v| v.as_str().map(|s| s.into_owned())),
+            event
+                .get(vrl::event_path!("scope", "attributes", "lib.lang"))
+                .and_then(|v| v.as_str().map(std::borrow::Cow::into_owned)),
             Some("rust".to_string())
         );
     }
@@ -4558,7 +5035,10 @@ mod tests {
             ..Default::default()
         });
         event.insert(vrl::event_path!("new_field"), "new_value");
-        assert_eq!(event.record.observed_time_unix_nano, 1_700_000_000_000_000_000);
+        assert_eq!(
+            event.record.observed_time_unix_nano,
+            1_700_000_000_000_000_000
+        );
     }
 
     #[test]
@@ -4596,21 +5076,24 @@ mod tests {
 
         let mut tags = OtelAttributes::default();
         tags.insert("host".to_string(), string_value("srv01"));
-        tags.insert("env".to_string(), AnyValue {
-            value: Some(any_value::Value::ArrayValue(ArrayValue {
-                values: vec![
-                    string_value("prod"),
-                    AnyValue { value: None },
-                    string_value("staging"),
-                ],
-            })),
-        });
+        tags.insert(
+            "env".to_string(),
+            AnyValue {
+                value: Some(any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        string_value("prod"),
+                        AnyValue { value: None },
+                        string_value("staging"),
+                    ],
+                })),
+            },
+        );
 
         let direct = OtelMetric::new_counter("requests", MetricKind::Incremental, 1.0)
             .with_tags(Some(tags.clone()));
 
-        let via_ctor = OtelMetric::new_counter("requests", MetricKind::Incremental, 1.0)
-            .with_tags(Some(tags));
+        let via_ctor =
+            OtelMetric::new_counter("requests", MetricKind::Incremental, 1.0).with_tags(Some(tags));
 
         let find_env = |m: &OtelMetric| -> any_value::Value {
             m.first_dp_attrs()
@@ -4762,10 +5245,7 @@ mod tests {
             span_event.get(event_path!("name")),
             Some(Value::Bytes("GET /api".into()))
         );
-        assert_eq!(
-            span_event.get(event_path!("kind")),
-            Some(Value::Integer(2))
-        );
+        assert_eq!(span_event.get(event_path!("kind")), Some(Value::Integer(2)));
 
         // Multi-segment resource get
         assert_eq!(
@@ -4788,12 +5268,15 @@ mod tests {
         );
 
         // Insert/get status sub-fields
-        span_event.insert(event_path!("status"), Value::Object({
-            let mut m = ObjectMap::new();
-            m.insert("message".into(), Value::Bytes("OK".into()));
-            m.insert("code".into(), Value::Integer(1));
-            m
-        }));
+        span_event.insert(
+            event_path!("status"),
+            Value::Object({
+                let mut m = ObjectMap::new();
+                m.insert("message".into(), Value::Bytes("OK".into()));
+                m.insert("code".into(), Value::Integer(1));
+                m
+            }),
+        );
         assert_eq!(
             span_event.get(event_path!("status", "code")),
             Some(Value::Integer(1))
@@ -4826,12 +5309,15 @@ mod tests {
             }],
             dropped_attributes_count: 0,
         });
-        span.insert(event_path!("status"), Value::Object({
-            let mut m = ObjectMap::new();
-            m.insert("message".into(), Value::Bytes("OK".into()));
-            m.insert("code".into(), Value::Integer(1));
-            m
-        }));
+        span.insert(
+            event_path!("status"),
+            Value::Object({
+                let mut m = ObjectMap::new();
+                m.insert("message".into(), Value::Bytes("OK".into()));
+                m.insert("code".into(), Value::Integer(1));
+                m
+            }),
+        );
 
         // Remove single-segment proto field
         let removed = span.remove(event_path!("name"));
@@ -4877,11 +5363,14 @@ mod tests {
         assert_eq!(removed, Some(Value::Integer(1)));
 
         // Remove entire status
-        span.insert(event_path!("status"), Value::Object({
-            let mut m = ObjectMap::new();
-            m.insert("code".into(), Value::Integer(2));
-            m
-        }));
+        span.insert(
+            event_path!("status"),
+            Value::Object({
+                let mut m = ObjectMap::new();
+                m.insert("code".into(), Value::Integer(2));
+                m
+            }),
+        );
         let removed = span.remove(event_path!("status"));
         assert!(removed.is_some());
         assert!(span.status().is_none());
@@ -4897,7 +5386,10 @@ mod tests {
         assert!(span2.attribute("nested").is_some());
         let removed = span2.remove_prune(event_path!("nested", "only_child"), true);
         assert_eq!(removed, Some(Value::Bytes("value".into())));
-        assert!(span2.attribute("nested").is_none(), "prune should remove empty parent");
+        assert!(
+            span2.attribute("nested").is_none(),
+            "prune should remove empty parent"
+        );
     }
 
     #[test]
@@ -4910,13 +5402,17 @@ mod tests {
             observed_time_unix_nano: 2_000_000_000,
             trace_id: vec![0xab; 16],
             span_id: vec![0xcd; 8],
-            body: Some(AnyValue { value: Some(Kind::StringValue("test body".into())) }),
+            body: Some(AnyValue {
+                value: Some(Kind::StringValue("test body".into())),
+            }),
             ..Default::default()
         };
         let resource = Some(Resource {
             attributes: vec![KeyValue {
                 key: "service.name".into(),
-                value: Some(AnyValue { value: Some(Kind::StringValue("svc".into())) }),
+                value: Some(AnyValue {
+                    value: Some(Kind::StringValue("svc".into())),
+                }),
             }],
             dropped_attributes_count: 0,
         });
@@ -4926,7 +5422,8 @@ mod tests {
             ..Default::default()
         });
         let mut log = OtelLog::from_parts(record, resource, scope, EventMetadata::default());
-        log.record_attrs.insert("custom.attr".into(), string_value("val"));
+        log.record_attrs
+            .insert("custom.attr".into(), string_value("val"));
 
         let json: serde_json::Value = serde_json::to_value(&log).unwrap();
 
@@ -4946,7 +5443,9 @@ mod tests {
         assert_eq!(attrs[0]["value"]["stringValue"], "val");
 
         // Resource with nested attributes array
-        let res_attrs = json["resource"]["attributes"].as_array().expect("resource attributes");
+        let res_attrs = json["resource"]["attributes"]
+            .as_array()
+            .expect("resource attributes");
         assert_eq!(res_attrs[0]["key"], "service.name");
         assert_eq!(res_attrs[0]["value"]["stringValue"], "svc");
 
@@ -4966,18 +5465,25 @@ mod tests {
             start_time_unix_nano: 100,
             end_time_unix_nano: 200,
             kind: 2,
-            status: Some(Status { code: 1, message: "OK".into() }),
+            status: Some(Status {
+                code: 1,
+                message: "OK".into(),
+            }),
             ..Default::default()
         };
         let resource = Some(Resource {
             attributes: vec![KeyValue {
                 key: "host".into(),
-                value: Some(AnyValue { value: Some(OtelValueKind::StringValue("box1".into())) }),
+                value: Some(AnyValue {
+                    value: Some(OtelValueKind::StringValue("box1".into())),
+                }),
             }],
             dropped_attributes_count: 0,
         });
         let mut otel_span = OtelSpan::from_parts(span, resource, None, EventMetadata::default());
-        otel_span.span_attrs.insert("http.method".into(), string_value("GET"));
+        otel_span
+            .span_attrs
+            .insert("http.method".into(), string_value("GET"));
 
         let json: serde_json::Value = serde_json::to_value(&otel_span).unwrap();
 
@@ -5000,7 +5506,9 @@ mod tests {
         assert_eq!(attrs[0]["value"]["stringValue"], "GET");
 
         // Resource
-        let res_attrs = json["resource"]["attributes"].as_array().expect("resource attributes");
+        let res_attrs = json["resource"]["attributes"]
+            .as_array()
+            .expect("resource attributes");
         assert_eq!(res_attrs[0]["key"], "host");
         assert_eq!(res_attrs[0]["value"]["stringValue"], "box1");
     }
@@ -5076,7 +5584,10 @@ mod tests {
         let gauge = OtelMetric::new_gauge("g", 1.0);
         assert!(!delta.is_cumulative());
         assert!(cumulative.is_cumulative());
-        assert!(!gauge.is_cumulative(), "Gauge has no temporality per OTel spec");
+        assert!(
+            !gauge.is_cumulative(),
+            "Gauge has no temporality per OTel spec"
+        );
     }
 
     #[test]
@@ -5094,20 +5605,40 @@ mod tests {
         let mut m1 = OtelMetric::new_histogram(
             "h",
             MetricKind::Incremental,
-            &[Bucket { upper_limit: 1.0, count: 5 }, Bucket { upper_limit: 2.0, count: 10 }],
+            &[
+                Bucket {
+                    upper_limit: 1.0,
+                    count: 5,
+                },
+                Bucket {
+                    upper_limit: 2.0,
+                    count: 10,
+                },
+            ],
             15,
             25.0,
         );
         let m2 = OtelMetric::new_histogram(
             "h",
             MetricKind::Incremental,
-            &[Bucket { upper_limit: 1.0, count: 3 }, Bucket { upper_limit: 2.0, count: 7 }],
+            &[
+                Bucket {
+                    upper_limit: 1.0,
+                    count: 3,
+                },
+                Bucket {
+                    upper_limit: 2.0,
+                    count: 7,
+                },
+            ],
             10,
             15.0,
         );
         assert!(m1.add(&m2));
         match m1.view() {
-            MetricView::Histogram { counts, count, sum, .. } => {
+            MetricView::Histogram {
+                counts, count, sum, ..
+            } => {
                 assert_eq!(count, 25);
                 assert_eq!(sum, 40.0);
                 assert_eq!(counts[0], 8);
@@ -5119,8 +5650,8 @@ mod tests {
 
     #[test]
     fn otel_span_events_links_roundtrip_through_as_map() {
-        use opentelemetry_proto::tonic::trace::v1::{Span, span};
         use opentelemetry_proto::tonic::common::v1::KeyValue;
+        use opentelemetry_proto::tonic::trace::v1::{Span, span};
 
         let span_proto = Span {
             name: "test-span".into(),
@@ -5128,12 +5659,16 @@ mod tests {
             span_id: vec![2; 8],
             trace_state: "rojo=00f067aa0ba902b7".into(),
             events: vec![span::Event {
-                time_unix_nano: 1234567890,
+                time_unix_nano: 1_234_567_890,
                 name: "exception".into(),
                 attributes: vec![KeyValue {
                     key: "exception.type".into(),
                     value: Some(opentelemetry_proto::tonic::common::v1::AnyValue {
-                        value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("RuntimeError".into())),
+                        value: Some(
+                            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                                "RuntimeError".into(),
+                            ),
+                        ),
                     }),
                 }],
                 dropped_attributes_count: 1,
@@ -5158,7 +5693,7 @@ mod tests {
         assert_eq!(roundtripped.span.trace_state, "rojo=00f067aa0ba902b7");
         assert_eq!(roundtripped.span.events.len(), 1);
         assert_eq!(roundtripped.span.events[0].name, "exception");
-        assert_eq!(roundtripped.span.events[0].time_unix_nano, 1234567890);
+        assert_eq!(roundtripped.span.events[0].time_unix_nano, 1_234_567_890);
         assert_eq!(roundtripped.span.events[0].attributes.len(), 1);
         assert_eq!(roundtripped.span.events[0].dropped_attributes_count, 1);
         assert_eq!(roundtripped.span.dropped_events_count, 3);
@@ -5204,7 +5739,10 @@ mod tests {
         assert_eq!(json["events"][0]["timeUnixNano"], "999");
         assert_eq!(json["droppedEventsCount"], 2);
         assert!(json["links"].is_array());
-        assert_eq!(json["links"][0]["traceId"], "efefefefefefefefefefefefefefefef");
+        assert_eq!(
+            json["links"][0]["traceId"],
+            "efefefefefefefefefefefefefefefef"
+        );
         assert_eq!(json["droppedLinksCount"], 4);
     }
 }

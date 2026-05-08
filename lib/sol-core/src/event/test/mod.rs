@@ -9,8 +9,14 @@ use super::*;
 fn event_iteration() {
     let mut log = OtelLog::default();
 
-    log.insert(vrl::event_path!("Kesha"), "It's going down, I'm yelling timber");
-    log.insert(vrl::event_path!("Pitbull"), "The bigger they are, the harder they fall");
+    log.insert(
+        vrl::event_path!("Kesha"),
+        "It's going down, I'm yelling timber",
+    );
+    log.insert(
+        vrl::event_path!("Pitbull"),
+        "The bigger they are, the harder they fall",
+    );
 
     let all: HashSet<(String, String)> = log
         .all_event_fields()

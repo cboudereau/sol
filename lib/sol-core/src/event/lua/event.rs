@@ -22,7 +22,7 @@ impl IntoLua for LuaEvent {
                 // would return only the body scalar in Vector-namespace mode,
                 // which is not a Lua table and breaks all field-access code.
                 let value = Value::Object(otel_log.as_map().unwrap_or_default());
-                table.raw_set("log", value.into_lua(lua)?)?
+                table.raw_set("log", value.into_lua(lua)?)?;
             }
             Event::Metric(otel_metric) => {
                 table.raw_set(
@@ -32,7 +32,7 @@ impl IntoLua for LuaEvent {
                         multi_value_tags: self.metric_multi_value_tags,
                     }
                     .into_lua(lua)?,
-                )?
+                )?;
             }
             Event::Trace(_) => {
                 return Err(LuaError::ToLuaConversionError {
@@ -84,10 +84,7 @@ impl FromLua for Event {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::event::{
-        OtelMetric, Value,
-        metric::MetricKind,
-    };
+    use crate::event::{OtelMetric, Value, metric::MetricKind};
 
     fn assert_event(event: Event, assertions: Vec<&'static str>) {
         let lua = Lua::new();
@@ -129,7 +126,11 @@ mod test {
 
     #[test]
     fn into_lua_metric() {
-        let event = Event::Metric(OtelMetric::new_counter("example counter", MetricKind::Absolute, 0.577_215_66));
+        let event = Event::Metric(OtelMetric::new_counter(
+            "example counter",
+            MetricKind::Absolute,
+            0.577_215_66,
+        ));
 
         let assertions = vec![
             "type(event) == 'table'",
@@ -156,8 +157,20 @@ mod test {
 
         let event = Lua::new().load(lua_event).eval::<Event>().unwrap();
         let log = event.as_log();
-        assert_eq!(log.parse_path_and_get_value("field").ok().flatten().unwrap(), Value::Bytes("example".into()));
-        assert_eq!(log.parse_path_and_get_value("nested.field").ok().flatten().unwrap(), Value::Bytes("another example".into()));
+        assert_eq!(
+            log.parse_path_and_get_value("field")
+                .ok()
+                .flatten()
+                .unwrap(),
+            Value::Bytes("example".into())
+        );
+        assert_eq!(
+            log.parse_path_and_get_value("nested.field")
+                .ok()
+                .flatten()
+                .unwrap(),
+            Value::Bytes("another example".into())
+        );
     }
 
     #[test]
@@ -171,7 +184,11 @@ mod test {
                 }
             }
         }"#;
-        let expected = Event::Metric(OtelMetric::new_counter("example counter", MetricKind::Absolute, 0.577_215_66));
+        let expected = Event::Metric(OtelMetric::new_counter(
+            "example counter",
+            MetricKind::Absolute,
+            0.577_215_66,
+        ));
 
         let event = Lua::new().load(lua_event).eval::<Event>().unwrap();
         sol_common::assert_event_data_eq!(event, expected);

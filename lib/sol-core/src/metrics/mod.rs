@@ -274,11 +274,15 @@ mod tests {
             for metric in metrics {
                 match metric.name() {
                     n if n == sol_cardinality => {
-                        assert!(matches!(metric.view(), MetricView::Gauge { value: v } if v == value));
+                        assert!(
+                            matches!(metric.view(), MetricView::Gauge { value: v } if v == value)
+                        );
                         assert_eq!(metric.kind(), MetricKind::Absolute);
                     }
                     n if n == sol_cardinality_counter => {
-                        assert!(matches!(metric.view(), MetricView::Sum { value: v } if v == value));
+                        assert!(
+                            matches!(metric.view(), MetricView::Sum { value: v } if v == value)
+                        );
                         assert_eq!(metric.kind(), MetricKind::Absolute);
                     }
                     _ => {}
