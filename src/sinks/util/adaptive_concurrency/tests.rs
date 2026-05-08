@@ -90,7 +90,7 @@ impl LimitParams {
             .and_then(|limit| (level > limit).then_some(self.action))
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn scale(&self, level: usize) -> f64 {
         ((level - 1) as f64).mul_add(
             self.scale,
@@ -530,7 +530,7 @@ impl Range {
         reason = "test range bounds are small f64 values"
     )]
     #[expect(clippy::cast_sign_loss, reason = "test range bounds are non-negative")]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn assert_usize(&self, value: usize, name1: &str, name2: &str) -> Option<Failure> {
         if value < self.0 as usize {
             Some(Failure {

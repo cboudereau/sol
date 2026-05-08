@@ -201,7 +201,7 @@ mod tests {
             .collect()
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn rebuffer_incremental_counters<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         for i in 0..4 {
@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(buffer.len(), 2);
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn rebuffer_absolute_counters<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // counter-0 and -1 only emitted once
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn rebuffer_incremental_gauges<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // gauge-1 emitted once
@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn rebuffer_absolute_gauges<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // gauge-2 emitted once
@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     fn rebuffer_absolute_aggregated_histograms<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         for _ in 2..5 {

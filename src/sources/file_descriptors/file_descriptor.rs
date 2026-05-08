@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "test line counts are non-negative")]
     async fn file_descriptor_decodes_line() {
         assert_source_compliance(&SOURCE_TAGS, async {
             let (tx, rx) = SourceSender::new_test();
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "test line counts are non-negative")]
     async fn file_descriptor_decodes_line_vector_namespace() {
         assert_source_compliance(&SOURCE_TAGS, async {
             let (tx, rx) = SourceSender::new_test();
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "test line counts are non-negative")]
     async fn file_descriptor_handles_invalid_fd() {
         assert_source_error(&COMPONENT_ERROR_TAGS, async {
             let (tx, rx) = SourceSender::new_test();

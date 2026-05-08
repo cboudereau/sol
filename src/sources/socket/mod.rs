@@ -375,7 +375,7 @@ mod test {
             .into_iter()
             .enumerate()
             .map(|(i, payload_chunk)| {
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(clippy::cast_possible_truncation, reason = "chunk index fits in u16")]
                 create_gelf_chunk(message_id, i as u8, total_chunks as u8, payload_chunk)
             })
             .collect::<Vec<_>>();

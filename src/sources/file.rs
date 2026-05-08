@@ -1208,7 +1208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "test line counts are non-negative")]
     async fn file_multiple_paths() {
         let n = 5;
 
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "test line counts are non-negative")]
     async fn file_exclude_paths() {
         let n = 5;
 
@@ -1603,7 +1603,7 @@ mod tests {
 
     #[cfg(unix)] // this test uses unix-specific function `futimes` during test time
     #[tokio::test]
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(clippy::cast_possible_wrap, reason = "test data fits in target type")]
     async fn file_start_position_ignore_old_files() {
         use std::{
             os::unix::io::AsRawFd,

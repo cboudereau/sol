@@ -32,7 +32,7 @@ struct LatencyTestRun {
 }
 
 #[tokio::test]
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "test metric values")]
 async fn component_latency_metrics_emitted() {
     let run = run_latency_topology().await;
 

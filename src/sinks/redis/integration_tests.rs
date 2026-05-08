@@ -516,7 +516,7 @@ async fn redis_sink_channel_data_volume_tags() {
 }
 
 #[tokio::test]
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "test metric values")]
 async fn redis_sink_metrics() {
     trace_init();
 

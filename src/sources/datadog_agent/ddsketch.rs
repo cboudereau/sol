@@ -604,7 +604,7 @@ impl AgentDDSketch {
 
             // SAFETY: This integer cast is intentional: we want to get the non-fractional part, as
             // we've captured the fractional part in the above conditional.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "index difference is non-negative and fits in usize")]
             let mut kn = fkn as u32;
             if remainder > 1.0 {
                 kn += 1;
@@ -798,7 +798,11 @@ impl AgentDDSketch {
                 reason = "histogram bin count; precise for |v| <= 2^53"
             )]
             let total_f = total as f64;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "fraction * total is non-negative and fits in u64"
+            )]
             let bucket_count = (fraction * total_f).round() as u64;
             buckets.push(Bucket {
                 upper_limit: upper,
@@ -1137,7 +1141,7 @@ fn rank(count: u32, q: f64) -> f64 {
     round_to_even(q * f64::from(count - 1))
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "test index fits in target type")]
 fn buf_count_leading_equal(keys: &[i16], start_idx: usize) -> u32 {
     if start_idx == keys.len() - 1 {
         return 1;
@@ -1195,7 +1199,7 @@ fn trim_left(bins: &mut Vec<Bin>, bin_limit: u16) {
     mem::swap(bins, &mut overflow);
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "test index fits in target type")]
 fn generate_bins(bins: &mut Vec<Bin>, k: i16, n: u32) {
     if n < u32::from(MAX_BIN_WIDTH) {
         // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
@@ -1219,7 +1223,7 @@ fn generate_bins(bins: &mut Vec<Bin>, k: i16, n: u32) {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "test index fits in target type")]
 #[inline]
 const fn capped_u64_shift(shift: u64) -> u32 {
     if shift >= 64 {
@@ -1564,7 +1568,7 @@ mod tests {
         let config = Config::default();
         let min_value = 1.0;
         // We don't care about precision loss, just consistency.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation, reason = "test index fits in target type")]
         let max_value = config.gamma_v.powf(5.0) as f32;
 
         test_relative_accuracy(config, AGENT_DEFAULT_EPS, min_value, max_value);

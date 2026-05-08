@@ -187,7 +187,7 @@ async fn receive_trace() {
 }
 
 #[tokio::test]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "test data fits in target type")]
 async fn receive_metric() {
     // generate a metrics gauge request
     let req = ExportMetricsServiceRequest {

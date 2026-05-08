@@ -46,7 +46,7 @@ async fn emits_internal_events() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "test sample rates")]
 fn hash_samples_at_roughly_the_configured_rate() {
     let num_events = 10000;
 
@@ -310,7 +310,7 @@ fn handles_trace_event() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "test sample rates")]
 fn sample_at_rates_higher_then_half() {
     // Retain 80% of the events of the stream
     let events = random_events(10000);

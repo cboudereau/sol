@@ -418,7 +418,7 @@ fn splunk_encode_log_event_semantic_meanings() {
     let og_time = Utc::now();
 
     // determine the time we expect to get after encoding
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "test metric values")]
     let expected_time = (og_time.timestamp_millis() as f64) / 1000f64;
 
     log.insert(metadata_path!("splunk_hec", "hostname"), "roast");

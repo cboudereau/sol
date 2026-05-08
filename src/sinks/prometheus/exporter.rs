@@ -1379,7 +1379,7 @@ mod integration_tests {
             data["metric"]["some_tag"],
             Value::String("some_value".into())
         );
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss, reason = "test metric values")]
         let start_f64 = start as f64;
         assert!(data["value"][0].as_f64().unwrap() >= start_f64);
         assert_eq!(data["value"][1], Value::String("123.4".into()));

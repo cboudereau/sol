@@ -35,7 +35,7 @@ impl Histogram {
         self.totals[index] += amount;
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "count for statistical average")]
     pub fn stats(&self) -> Option<HistogramStats> {
         let (min, max, mode, sum) = self.totals.iter().enumerate().fold(
             (None, None, None, WeightedSum::default()),

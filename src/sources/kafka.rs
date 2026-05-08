@@ -1503,7 +1503,7 @@ mod integration_test {
         send_receive(true, |n| n >= 2, 2).await;
     }
 
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(clippy::cast_possible_wrap, reason = "test offset fits in target type")]
     async fn send_receive(
         acknowledgements: bool,
         error_at: impl Fn(usize) -> bool,
@@ -1667,7 +1667,7 @@ mod integration_test {
     // - Consumer B skips receiving messages?
     #[ignore]
     #[tokio::test]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap, reason = "test data fits in target type")]
     async fn handles_rebalance() {
         // The test plan here is to:
         // - Set up one source instance, feeding into a pipeline that delays acks.
