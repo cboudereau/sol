@@ -2504,7 +2504,7 @@ mod tests {
         }
     }
 
-    #[allow(clippy::useless_vec)]
+    #[expect(clippy::useless_vec, reason = "vec needed for slice comparison in test")]
     #[test]
     fn new_histogram_from_samples_has_overflow() {
         let metric = OtelMetric::new_histogram_from_samples(
@@ -2565,7 +2565,14 @@ mod tests {
         assert!(!a.subtract(&b), "underflow should fail");
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "reference implementation mirrors production IEEE 754 algorithm"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "reference implementation mirrors production IEEE 754 algorithm"
+    )]
     #[test]
     fn exp_hist_single_index_matches_statsd() {
         fn map_to_index_reference(value: f64, scale: i32) -> i32 {
