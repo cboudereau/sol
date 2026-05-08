@@ -122,7 +122,7 @@ mod tests {
     use rdkafka::message::Headers;
 
     use super::*;
-    use crate::event::{OtelLog, ObjectMap};
+    use crate::event::{ObjectMap, OtelLog};
 
     #[test]
     fn kafka_get_headers() {

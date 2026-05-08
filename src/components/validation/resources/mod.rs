@@ -3,7 +3,6 @@ mod http;
 
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, mpsc};
 use sol_lib::{
     codecs::{
         BytesEncoder, Decoder, DecodingConfig, Encoder, EncodingConfig, EncodingConfigWithFraming,
@@ -16,6 +15,7 @@ use sol_lib::{
     config::DataType,
     event::Event,
 };
+use tokio::sync::{Mutex, mpsc};
 
 use self::http::HttpResourceOutputContext;
 pub use self::{

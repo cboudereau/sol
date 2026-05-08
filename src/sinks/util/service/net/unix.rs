@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use snafu::ResultExt;
-use tokio::net::{UnixDatagram, UnixStream};
 use sol_lib::configurable::configurable_component;
+use tokio::net::{UnixDatagram, UnixStream};
 
 use super::{ConnectorType, NetError, NetworkConnector, net_error::*};
 use crate::{net, sinks::util::unix::UnixEither};

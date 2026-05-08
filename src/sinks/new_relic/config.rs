@@ -1,8 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
 use http::Uri;
-use tower::ServiceBuilder;
 use sol_lib::sensitive_string::SensitiveString;
+use tower::ServiceBuilder;
 
 use super::{
     NewRelicApiResponse, NewRelicApiService, NewRelicEncoder, NewRelicSink, NewRelicSinkError,

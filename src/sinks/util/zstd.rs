@@ -12,6 +12,7 @@ impl From<CompressionLevel> for ZstdCompressionLevel {
             CompressionLevel::Default => zstd::DEFAULT_COMPRESSION_LEVEL,
             CompressionLevel::Best => 21,
             CompressionLevel::Fast => 1,
+            #[expect(clippy::cast_possible_wrap, reason = "value is clamped to 1..=21")]
             CompressionLevel::Val(v) => v.clamp(1, 21) as i32,
         };
         ZstdCompressionLevel(val)

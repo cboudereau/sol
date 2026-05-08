@@ -36,7 +36,6 @@ pub struct StdinConfig {
     #[configurable(derived)]
     #[serde(default = "default_decoding")]
     pub decoding: DeserializerConfig,
-
 }
 
 impl FileDescriptorConfig for StdinConfig {
@@ -74,11 +73,7 @@ impl_generate_config_from_default!(StdinConfig);
 #[typetag::serde(name = "stdin")]
 impl SourceConfig for StdinConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<crate::sources::Source> {
-        self.source(
-            io::BufReader::new(io::stdin()),
-            cx.shutdown,
-            cx.out,
-        )
+        self.source(io::BufReader::new(io::stdin()), cx.shutdown, cx.out)
     }
 
     fn outputs(&self) -> Vec<SourceOutput> {
@@ -132,23 +127,23 @@ mod tests {
             let event = stream.next().await;
             assert_eq!(
                 Some("hello world".into()),
-                event.map(
-                    |event| event.as_log().get("body")
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned()
-                )
+                event.map(|event| event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned())
             );
 
             let event = stream.next().await;
             assert_eq!(
                 Some("hello world again".into()),
-                event.map(
-                    |event| event.as_log().get("body")
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned()
-                )
+                event.map(|event| event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned())
             );
 
             let event = stream.next().await;

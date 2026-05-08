@@ -11,6 +11,10 @@ use super::HostMetrics;
 use crate::internal_events::HostMetricsScrapeDetailError;
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn memory_metrics(&self, output: &mut super::MetricsBuffer) {
         output.name = "memory";
         match heim::memory::memory().await {
@@ -82,6 +86,10 @@ impl HostMetrics {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn swap_metrics(&self, output: &mut super::MetricsBuffer) {
         output.name = "memory";
         match heim::memory::swap().await {

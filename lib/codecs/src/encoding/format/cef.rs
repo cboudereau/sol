@@ -4,13 +4,13 @@ use bytes::BytesMut;
 use chrono::SecondsFormat;
 use lookup::lookup_v2::ConfigTargetPath;
 use snafu::Snafu;
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
 use sol_core::{
     config::DataType,
     event::{Event, OtelLog, Value},
     schema,
 };
+use tokio_util::codec::Encoder;
 
 use crate::encoding::BuildError;
 
@@ -390,7 +390,7 @@ mod tests {
     use chrono::DateTime;
     use ordered_float::NotNan;
     use sol_common::btreemap;
-    use sol_core::event::{Event, OtelLog, ObjectMap, Value};
+    use sol_core::event::{Event, ObjectMap, OtelLog, Value};
 
     use super::*;
 

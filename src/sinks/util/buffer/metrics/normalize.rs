@@ -9,10 +9,7 @@ use snafu::Snafu;
 use sol_config_macros::configurable_component;
 use sol_lib::{
     ByteSizeOf,
-    event::{
-        Event, MetricKind, OtelMetric,
-        metric::MetricSeries,
-    },
+    event::{Event, MetricKind, OtelMetric, metric::MetricSeries},
 };
 
 #[derive(Debug, Snafu, PartialEq, Eq)]
@@ -227,7 +224,7 @@ impl ByteSizeOf for CachedMetric {
 }
 
 impl CachedMetric {
-    fn new(metric: OtelMetric, last_seen: Option<Instant>) -> Self {
+    const fn new(metric: OtelMetric, last_seen: Option<Instant>) -> Self {
         Self { metric, last_seen }
     }
 
@@ -569,11 +566,7 @@ impl MetricSet {
         let mut accumulated = match self.inner.get(&series) {
             Some(cached) => {
                 let mut acc = cached.metric.clone();
-                if !acc.add(&metric) {
-                    metric
-                } else {
-                    acc
-                }
+                if !acc.add(&metric) { metric } else { acc }
             }
             None => metric,
         };
@@ -613,16 +606,16 @@ impl MetricSet {
         self.maybe_cleanup();
         let timestamp = self.create_timestamp();
         let series = metric.metric_series();
-        if metric.kind() == MetricKind::Incremental {
-            if let Some(cached) = self.inner.get(&series) {
-                let mut accumulated = cached.metric.clone();
-                if accumulated.add(&metric) {
-                    accumulated.metadata_mut().merge(metric.metadata().clone());
-                    self.store(series, accumulated, timestamp);
-                    return;
-                }
-                warn!(message = "Metric changed type, dropping old value.", %series);
+        if metric.kind() == MetricKind::Incremental
+            && let Some(cached) = self.inner.get(&series)
+        {
+            let mut accumulated = cached.metric.clone();
+            if accumulated.add(&metric) {
+                accumulated.metadata_mut().merge(metric.metadata().clone());
+                self.store(series, accumulated, timestamp);
+                return;
             }
+            warn!(message = "Metric changed type, dropping old value.", %series);
         }
         self.store(series, metric, timestamp);
     }

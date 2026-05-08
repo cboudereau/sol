@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
-use tokio_util::codec::Encoder;
 use sol_core::{config::DataType, event::Event, schema};
+use tokio_util::codec::Encoder;
 
 use crate::encoding::format::common::get_serializer_schema_requirement;
 
@@ -39,14 +39,11 @@ impl Encoder<Event> for RawMessageSerializer {
     type Error = sol_common::Error;
 
     fn encode(&mut self, event: Event, buffer: &mut BytesMut) -> Result<(), Self::Error> {
-        match &event {
-            Event::Log(otel_log) => {
-                let s = otel_log.body_string();
-                if !s.is_empty() {
-                    buffer.put(s.as_bytes());
-                }
+        if let Event::Log(otel_log) = &event {
+            let s = otel_log.body_string();
+            if !s.is_empty() {
+                buffer.put(s.as_bytes());
             }
-            _ => {}
         }
         Ok(())
     }

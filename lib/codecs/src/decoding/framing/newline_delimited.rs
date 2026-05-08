@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use derivative::Derivative;
-use tokio_util::codec::Decoder;
 use sol_config::configurable_component;
+use tokio_util::codec::Decoder;
 
 use super::{BoxedFramingError, CharacterDelimitedDecoder};
 

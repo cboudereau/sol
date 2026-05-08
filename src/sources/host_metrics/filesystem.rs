@@ -47,6 +47,10 @@ fn example_mountpoints() -> FilterList {
 }
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn filesystem_metrics(&self, output: &mut super::MetricsBuffer) {
         output.name = "filesystem";
         match heim::disk::partitions().await {
@@ -129,7 +133,7 @@ impl HostMetrics {
                     #[cfg(not(windows))]
                     output.gauge(
                         "filesystem_used_ratio",
-                        usage.ratio().get::<ratio>() as f64,
+                        f64::from(usage.ratio().get::<ratio>()),
                         tags.clone(),
                     );
 

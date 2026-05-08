@@ -1,5 +1,4 @@
 use futures::TryFutureExt;
-use tonic::{Request, Response, Status};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
@@ -18,6 +17,7 @@ use sol_lib::{
         },
     },
 };
+use tonic::{Request, Response, Status};
 
 use crate::{
     SourceSender,

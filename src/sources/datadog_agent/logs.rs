@@ -3,13 +3,13 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::Utc;
 use http::StatusCode;
-use tokio_util::codec::Decoder;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::StreamDecodingError,
     internal_event::{CountByteSize, InternalEventHandle as _},
     json_size::JsonSize,
 };
+use tokio_util::codec::Decoder;
 use vrl::core::Value;
 use warp::{Filter, filters::BoxedFilter, path as warp_path, path::FullPath, reply::Response};
 
@@ -102,9 +102,17 @@ pub(crate) fn decode_log_body(
                     for mut event in events {
                         if let Event::Log(ref mut otel_log) = event {
                             otel_log.set_source_metadata(DatadogAgentConfig::NAME, now);
-                            otel_log.set_attribute("status".to_string(), string_value(String::from_utf8_lossy(&status)));
+                            otel_log.set_attribute(
+                                "status".to_string(),
+                                string_value(String::from_utf8_lossy(&status)),
+                            );
                             if let Some(nanos) = timestamp.timestamp_nanos_opt() {
-                                otel_log.record_mut().time_unix_nano = nanos as u64;
+                                #[expect(
+                                    clippy::cast_sign_loss,
+                                    reason = "timestamp nanos are non-negative for post-epoch dates"
+                                )]
+                                let nanos_u64 = nanos as u64;
+                                otel_log.record_mut().time_unix_nano = nanos_u64;
                                 if nanos == 0 {
                                     otel_log.set_attribute(
                                         "timestamp".to_string(),
@@ -112,9 +120,18 @@ pub(crate) fn decode_log_body(
                                     );
                                 }
                             }
-                            otel_log.set_attribute("hostname".to_string(), string_value(String::from_utf8_lossy(&hostname)));
-                            otel_log.set_attribute("service".to_string(), string_value(String::from_utf8_lossy(&service)));
-                            otel_log.set_attribute("ddsource".to_string(), string_value(String::from_utf8_lossy(&ddsource)));
+                            otel_log.set_attribute(
+                                "hostname".to_string(),
+                                string_value(String::from_utf8_lossy(&hostname)),
+                            );
+                            otel_log.set_attribute(
+                                "service".to_string(),
+                                string_value(String::from_utf8_lossy(&service)),
+                            );
+                            otel_log.set_attribute(
+                                "ddsource".to_string(),
+                                string_value(String::from_utf8_lossy(&ddsource)),
+                            );
 
                             if source.parse_ddtags {
                                 let parsed = parse_ddtags(&ddtags);
@@ -122,13 +139,17 @@ pub(crate) fn decode_log_body(
                                 otel_log.set_attribute(DDTAGS.to_string(), av);
                             } else {
                                 let ddtags_str = String::from_utf8_lossy(&ddtags);
-                                otel_log.set_attribute(DDTAGS.to_string(), string_value(ddtags_str));
+                                otel_log
+                                    .set_attribute(DDTAGS.to_string(), string_value(ddtags_str));
                             }
 
                             event_bytes_received += otel_log.estimated_json_encoded_size_of();
 
                             if let Some(k) = &api_key {
-                                otel_log.metadata_mut().secrets_mut().insert("datadog_api_key", Arc::clone(k));
+                                otel_log
+                                    .metadata_mut()
+                                    .secrets_mut()
+                                    .insert("datadog_api_key", Arc::clone(k));
                             }
 
                             let logs_schema_definition = source
@@ -136,7 +157,8 @@ pub(crate) fn decode_log_body(
                                 .as_ref()
                                 .unwrap_or_else(|| panic!("registered log schema required"));
 
-                            otel_log.metadata_mut()
+                            otel_log
+                                .metadata_mut()
                                 .set_schema_definition(logs_schema_definition);
                         }
 

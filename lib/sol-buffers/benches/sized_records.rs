@@ -9,8 +9,8 @@ use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
     criterion_main, measurement::WallTime,
 };
-use tokio::runtime::{Handle, Runtime};
 use sol_buffers::{BufferType, MemoryBufferSize, WhenFull};
+use tokio::runtime::{Handle, Runtime};
 
 use crate::common::{init_instrumentation, war_measurement, wtr_measurement};
 

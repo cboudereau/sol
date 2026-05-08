@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use tracing::info;
 use sol::test_util::trace_init;
+use tracing::info;
 
 use super::*;
 

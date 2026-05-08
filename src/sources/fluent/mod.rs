@@ -12,7 +12,6 @@ use flate2::read::MultiGzDecoder;
 use rmp_serde::{Deserializer, Serializer, decode};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
-use tokio_util::codec::Decoder;
 use sol_lib::{
     codecs::{BytesDeserializerConfig, StreamDecodingError},
     config::insert_source_metadata,
@@ -21,6 +20,7 @@ use sol_lib::{
     lookup::{owned_value_path, path},
     schema::Definition,
 };
+use tokio_util::codec::Decoder;
 use vrl::value::{Kind, Value, kind::Collection};
 
 use super::util::net::{SocketListenAddr, TcpSource, TcpSourceAck, TcpSourceAcker};
@@ -37,9 +37,7 @@ use crate::{
 };
 
 mod message;
-use self::message::{
-    FluentEntry, FluentMessage, FluentRecord, FluentTag, FluentTimestamp,
-};
+use self::message::{FluentEntry, FluentMessage, FluentRecord, FluentTag, FluentTimestamp};
 
 /// Configuration for the `fluent` source.
 #[configurable_component(source("fluent", "Collect logs from a Fluentd or Fluent Bit agent."))]
@@ -47,7 +45,6 @@ use self::message::{
 pub struct FluentConfig {
     #[serde(flatten)]
     mode: FluentMode,
-
 }
 
 /// Listening mode for the `fluent` source.
@@ -196,10 +193,7 @@ pub struct FluentTcpConfig {
 }
 
 impl FluentTcpConfig {
-    fn build(
-        &self,
-        cx: SourceContext,
-    ) -> crate::Result<super::Source> {
+    fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         let source = FluentSource::new();
         let shutdown_secs = Duration::from_secs(30);
         let tls_config = self.tls.as_ref().map(|tls| tls.tls_config.clone());
@@ -250,10 +244,7 @@ pub struct FluentUnixConfig {
 
 #[cfg(unix)]
 impl FluentUnixConfig {
-    fn build(
-        &self,
-        cx: SourceContext,
-    ) -> crate::Result<super::Source> {
+    fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         let source = FluentSource::new();
 
         crate::sources::util::build_unix_stream_source(
@@ -366,7 +357,7 @@ impl FluentConfig {
 struct FluentSource;
 
 impl FluentSource {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self
     }
 
@@ -597,7 +588,12 @@ impl Decoder for FluentDecoder {
                     return Ok(None);
                 }
 
-                (des.position() as usize, res)
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "msgpack cursor position bounded by buffer size which fits usize"
+                )]
+                let byte_size = des.position() as usize;
+                (byte_size, res)
             };
 
             src.advance(byte_size);
@@ -644,7 +640,12 @@ impl Decoder for FluentEntryStreamDecoder {
 
             emit!(FluentMessageReceived { byte_size });
 
-            (byte_size as usize, res)
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "msgpack cursor position bounded by buffer size which fits usize"
+            )]
+            let byte_size_usize = byte_size as usize;
+            (byte_size_usize, res)
         };
 
         src.advance(byte_size);
@@ -715,12 +716,7 @@ impl From<FluentEvent> for Event {
             .value_mut()
             .insert(path!("vector", "ingest_timestamp"), Utc::now());
 
-        insert_source_metadata(
-            FluentConfig::NAME,
-            &mut log,
-            path!("tag"),
-            tag,
-        );
+        insert_source_metadata(FluentConfig::NAME, &mut log, path!("tag"), tag);
 
         for (key, value) in record.into_iter() {
             let value: Value = value.into();
@@ -753,13 +749,16 @@ mod tests {
     use chrono::{DateTime, Utc};
     use rmp_serde::Serializer;
     use serde::Serialize;
+    use sol_lib::{assert_event_data_eq, lookup::event_path, schema::Definition};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         time::{Duration, error::Elapsed, timeout},
     };
     use tokio_util::codec::Decoder;
-    use sol_lib::{assert_event_data_eq, lookup::event_path, schema::Definition};
-    use vrl::{path, value::{Value, kind::Collection}};
+    use vrl::{
+        path,
+        value::{Value, kind::Collection},
+    };
 
     use super::{message::FluentMessageOptions, *};
     use crate::{
@@ -781,7 +780,8 @@ mod tests {
 
     fn mock_event(name: &str, timestamp: &str) -> Event {
         use vrl::path;
-        let dt: chrono::DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(timestamp).unwrap().into();
+        let dt: chrono::DateTime<chrono::Utc> =
+            DateTime::parse_from_rfc3339(timestamp).unwrap().into();
         let mut log = OtelLog::new(Default::default());
         // In Vector namespace, fluent metadata is stored in EventMetadata, not as record fields.
         // EventDataEq only compares record fields and resource, so the expected event
@@ -796,9 +796,10 @@ mod tests {
         log.metadata_mut()
             .value_mut()
             .insert(path!(FluentConfig::NAME, "tag"), "tag.name");
-        log.metadata_mut()
-            .value_mut()
-            .insert(path!(FluentConfig::NAME, "record", "message"), Value::from(name));
+        log.metadata_mut().value_mut().insert(
+            path!(FluentConfig::NAME, "record", "message"),
+            Value::from(name),
+        );
         Event::Log(log)
     }
 
@@ -1057,10 +1058,14 @@ mod tests {
         let meta = log.metadata().value();
         // In Vector namespace, fluent fields are in EventMetadata["fluent"][...]
         assert_eq!(
-            meta.get(path!(FluentConfig::NAME, "record", "field")).unwrap(),
+            meta.get(path!(FluentConfig::NAME, "record", "field"))
+                .unwrap(),
             &Value::from(msg)
         );
-        assert!(matches!(log.get(event_path!("resource", "host.name")).unwrap(), Value::Bytes(_)));
+        assert!(matches!(
+            log.get(event_path!("resource", "host.name")).unwrap(),
+            Value::Bytes(_)
+        ));
         assert!(matches!(
             meta.get(path!(FluentConfig::NAME, "timestamp")).unwrap(),
             Value::Timestamp(_)
@@ -1107,47 +1112,43 @@ mod tests {
             }),
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(&owned_value_path!("fluent", "tag"), Kind::bytes(), None)
-        .with_metadata_field(
-            &owned_value_path!("fluent", "timestamp"),
-            Kind::timestamp(),
-            Some("timestamp"),
-        )
-        .with_metadata_field(
-            &owned_value_path!("fluent", "record"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("fluent", "host"),
-            Kind::bytes(),
-            Some("host"),
-        )
-        .with_metadata_field(
-            &owned_value_path!("fluent", "tls_client_metadata"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        )
-        .unknown_fields(Kind::bytes());
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(&owned_value_path!("fluent", "tag"), Kind::bytes(), None)
+                .with_metadata_field(
+                    &owned_value_path!("fluent", "timestamp"),
+                    Kind::timestamp(),
+                    Some("timestamp"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("fluent", "record"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("fluent", "host"),
+                    Kind::bytes(),
+                    Some("host"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("fluent", "tls_client_metadata"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                )
+                .unknown_fields(Kind::bytes());
 
         assert_eq!(definitions, Some(expected_definition))
     }
@@ -1158,8 +1159,8 @@ mod integration_tests {
     use std::{fs::File, io::Write, net::SocketAddr, time::Duration};
 
     use futures::Stream;
-    use tokio::time::sleep;
     use sol_lib::event::{Event, EventStatus};
+    use tokio::time::sleep;
 
     use vrl::event_path;
 
@@ -1334,7 +1335,12 @@ mod integration_tests {
             assert_eq!(events[0].as_log().get("tag").unwrap(), "".into());
             assert_eq!(events[0].as_log().get("message").unwrap(), msg.into());
             assert!(events[0].as_log().get("timestamp").is_some());
-            assert!(events[0].as_log().get(event_path!("resource", "host.name")).is_some());
+            assert!(
+                events[0]
+                    .as_log()
+                    .get(event_path!("resource", "host.name"))
+                    .is_some()
+            );
         })
         .await;
     }

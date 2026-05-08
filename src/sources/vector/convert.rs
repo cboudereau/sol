@@ -7,17 +7,13 @@
 use std::collections::BTreeMap;
 
 use opentelemetry_proto::tonic::common::v1::{
-    AnyValue, ArrayValue, KeyValue, KeyValueList,
-    any_value::Value as OtelVal,
+    AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value as OtelVal,
 };
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::metrics::v1::metric::Data as MetricData;
 use opentelemetry_proto::tonic::trace::v1::Span;
-use sol_lib::event::{
-    Event, MetricKind, OtelLog, OtelSpan,
-    string_value,
-};
 use sol_lib::event::otel_metric::OtelMetric;
+use sol_lib::event::{Event, MetricKind, OtelLog, OtelSpan, string_value};
 
 use super::proto::event;
 
@@ -25,9 +21,7 @@ use super::proto::event;
 pub fn convert_event(wrapper: event::EventWrapper) -> Option<Event> {
     match wrapper.event? {
         event::event_wrapper::Event::Log(log) => Some(Event::Log(convert_log(log))),
-        event::event_wrapper::Event::Metric(metric) => {
-            Some(Event::Metric(convert_metric(metric)))
-        }
+        event::event_wrapper::Event::Metric(metric) => Some(Event::Metric(convert_metric(metric))),
         event::event_wrapper::Event::Trace(trace) => Some(Event::Trace(convert_trace(trace))),
     }
 }
@@ -92,6 +86,10 @@ fn convert_metric(metric: event::Metric) -> OtelMetric {
         format!("{}.{}", metric.namespace, metric.name)
     };
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "protobuf Timestamp seconds/nanos are non-negative for post-epoch dates"
+    )]
     let ts_nanos = metric
         .timestamp
         .as_ref()
@@ -99,7 +97,7 @@ fn convert_metric(metric: event::Metric) -> OtelMetric {
         .unwrap_or(0);
 
     let start_ts_nanos = if metric.interval_ms > 0 && ts_nanos > 0 {
-        ts_nanos.saturating_sub(metric.interval_ms as u64 * 1_000_000)
+        ts_nanos.saturating_sub(u64::from(metric.interval_ms) * 1_000_000)
     } else {
         0
     };
@@ -118,12 +116,8 @@ fn convert_metric(metric: event::Metric) -> OtelMetric {
         Some(event::metric::Value::Set(s)) => {
             OtelMetric::new_set_from_values(&full_name, kind, s.values)
         }
-        Some(event::metric::Value::Distribution1(d)) => {
-            convert_distribution1(&full_name, kind, d)
-        }
-        Some(event::metric::Value::Distribution2(d)) => {
-            convert_distribution2(&full_name, kind, d)
-        }
+        Some(event::metric::Value::Distribution1(d)) => convert_distribution1(&full_name, kind, d),
+        Some(event::metric::Value::Distribution2(d)) => convert_distribution2(&full_name, kind, d),
         Some(event::metric::Value::AggregatedHistogram1(h)) => {
             convert_aggregated_histogram1(&full_name, kind, h)
         }
@@ -158,11 +152,7 @@ fn convert_metric(metric: event::Metric) -> OtelMetric {
     otel
 }
 
-fn convert_distribution1(
-    name: &str,
-    kind: MetricKind,
-    d: event::Distribution1,
-) -> OtelMetric {
+fn convert_distribution1(name: &str, kind: MetricKind, d: event::Distribution1) -> OtelMetric {
     let samples: Vec<sol_lib::event::metric::Sample> = d
         .values
         .iter()
@@ -172,11 +162,7 @@ fn convert_distribution1(
     OtelMetric::new_histogram_from_samples(name, kind, &samples)
 }
 
-fn convert_distribution2(
-    name: &str,
-    kind: MetricKind,
-    d: event::Distribution2,
-) -> OtelMetric {
+fn convert_distribution2(name: &str, kind: MetricKind, d: event::Distribution2) -> OtelMetric {
     let samples: Vec<sol_lib::event::metric::Sample> = d
         .samples
         .iter()
@@ -199,10 +185,10 @@ fn convert_aggregated_histogram1(
         .zip(h.counts.iter())
         .map(|(&upper_limit, &count)| sol_lib::event::metric::Bucket {
             upper_limit,
-            count: count as u64,
+            count: u64::from(count),
         })
         .collect();
-    OtelMetric::new_histogram(name, kind, &buckets, h.count as u64, h.sum)
+    OtelMetric::new_histogram(name, kind, &buckets, u64::from(h.count), h.sum)
 }
 
 fn convert_aggregated_histogram2(
@@ -215,10 +201,10 @@ fn convert_aggregated_histogram2(
         .iter()
         .map(|b| sol_lib::event::metric::Bucket {
             upper_limit: b.upper_limit,
-            count: b.count as u64,
+            count: u64::from(b.count),
         })
         .collect();
-    OtelMetric::new_histogram(name, kind, &buckets, h.count as u64, h.sum)
+    OtelMetric::new_histogram(name, kind, &buckets, u64::from(h.count), h.sum)
 }
 
 fn convert_aggregated_histogram3(
@@ -248,7 +234,7 @@ fn convert_aggregated_summary1(
         .zip(s.values.iter())
         .map(|(&quantile, &value)| sol_lib::event::metric::Quantile { quantile, value })
         .collect();
-    OtelMetric::new_summary(name, &quantiles, s.count as u64, s.sum)
+    OtelMetric::new_summary(name, &quantiles, u64::from(s.count), s.sum)
 }
 
 fn convert_aggregated_summary2(
@@ -264,7 +250,7 @@ fn convert_aggregated_summary2(
             value: q.value,
         })
         .collect();
-    OtelMetric::new_summary(name, &quantiles, s.count as u64, s.sum)
+    OtelMetric::new_summary(name, &quantiles, u64::from(s.count), s.sum)
 }
 
 fn convert_aggregated_summary3(
@@ -290,18 +276,30 @@ fn convert_sketch(name: &str, _kind: MetricKind, sketch: event::Sketch) -> OtelM
     match sketch.sketch {
         Some(event::sketch::Sketch::AgentDdSketch(dd)) => {
             let mut m = OtelMetric::new_gauge(name, dd.sum);
-            m.set_data_point_attribute("sketch.count".to_string(), AnyValue {
-                value: Some(OtelVal::IntValue(dd.count as i64)),
-            });
-            m.set_data_point_attribute("sketch.min".to_string(), AnyValue {
-                value: Some(OtelVal::DoubleValue(dd.min)),
-            });
-            m.set_data_point_attribute("sketch.max".to_string(), AnyValue {
-                value: Some(OtelVal::DoubleValue(dd.max)),
-            });
-            m.set_data_point_attribute("sketch.avg".to_string(), AnyValue {
-                value: Some(OtelVal::DoubleValue(dd.avg)),
-            });
+            m.set_data_point_attribute(
+                "sketch.count".to_string(),
+                AnyValue {
+                    value: Some(OtelVal::IntValue(i64::from(dd.count))),
+                },
+            );
+            m.set_data_point_attribute(
+                "sketch.min".to_string(),
+                AnyValue {
+                    value: Some(OtelVal::DoubleValue(dd.min)),
+                },
+            );
+            m.set_data_point_attribute(
+                "sketch.max".to_string(),
+                AnyValue {
+                    value: Some(OtelVal::DoubleValue(dd.max)),
+                },
+            );
+            m.set_data_point_attribute(
+                "sketch.avg".to_string(),
+                AnyValue {
+                    value: Some(OtelVal::DoubleValue(dd.avg)),
+                },
+            );
             m
         }
         None => OtelMetric::new_gauge(name, 0.0),
@@ -349,7 +347,7 @@ fn apply_metric_tags(
             .map(|tv| {
                 tv.value
                     .as_ref()
-                    .map(|v| string_value(v))
+                    .map(string_value)
                     .unwrap_or(AnyValue { value: None })
             })
             .collect();
@@ -411,7 +409,12 @@ fn convert_trace(trace: event::Trace) -> OtelSpan {
             }
             "kind" => {
                 if let Some(event::value::Kind::Integer(i)) = &v.kind {
-                    span.kind = *i as i32;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "OTel SpanKind enum value fits i32"
+                    )]
+                    let kind = *i as i32;
+                    span.kind = kind;
                 }
             }
             _ => {
@@ -448,7 +451,7 @@ fn proto_value_to_any_value(v: event::Value) -> AnyValue {
             value: Some(OtelVal::BoolValue(b)),
         },
         Some(event::value::Kind::Timestamp(ts)) => {
-            let nanos = ts.seconds * 1_000_000_000 + ts.nanos as i64;
+            let nanos = ts.seconds * 1_000_000_000 + i64::from(ts.nanos);
             AnyValue {
                 value: Some(OtelVal::StringValue(nanos.to_string())),
             }
@@ -498,14 +501,16 @@ fn extract_bytes(v: &event::Value) -> Option<Vec<u8>> {
 
 fn extract_string(v: &event::Value) -> Option<String> {
     match &v.kind {
-        Some(event::value::Kind::RawBytes(b)) => {
-            Some(String::from_utf8_lossy(b).into_owned())
-        }
+        Some(event::value::Kind::RawBytes(b)) => Some(String::from_utf8_lossy(b).into_owned()),
         _ => None,
     }
 }
 
-fn extract_timestamp(v: &event::Value) -> Option<u64> {
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "protobuf Timestamp seconds/nanos and integer timestamps are non-negative for post-epoch dates"
+)]
+const fn extract_timestamp(v: &event::Value) -> Option<u64> {
     match &v.kind {
         Some(event::value::Kind::Timestamp(ts)) => {
             Some(ts.seconds as u64 * 1_000_000_000 + ts.nanos as u64)

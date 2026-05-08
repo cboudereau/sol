@@ -17,7 +17,12 @@ pub struct ConnectionOpen {
 
 impl InternalEvent for ConnectionOpen {
     fn emit(self) {
-        gauge!("open_connections").set(self.count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "open connection count gauge; precise for |v| <= 2^53"
+        )]
+        let count = self.count as f64;
+        gauge!("open_connections").set(count);
     }
 }
 
@@ -28,7 +33,12 @@ pub struct EndpointsActive {
 
 impl InternalEvent for EndpointsActive {
     fn emit(self) {
-        gauge!("active_endpoints").set(self.count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "active endpoint count gauge; precise for |v| <= 2^53"
+        )]
+        let count = self.count as f64;
+        gauge!("active_endpoints").set(count);
     }
 }
 
@@ -99,6 +109,11 @@ fn gauge_add(gauge: &AtomicUsize, add: isize, emitter: impl Fn(usize)) {
     // `emitter`.
     let mut value = gauge.load(Ordering::Acquire);
     loop {
+        #[expect(
+            clippy::cast_possible_wrap,
+            clippy::cast_sign_loss,
+            reason = "gauge arithmetic: usize ↔ isize wrapping is intentional for atomic gauge updates"
+        )]
         let new_value = (value as isize + add) as usize;
         emitter(new_value);
         // Try to update gauge to new value and releasing writes to gauge metric

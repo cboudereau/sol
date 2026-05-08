@@ -1,9 +1,9 @@
+use sol_lib::metrics::Controller;
 use std::time::Instant;
 use tokio::{
     sync::oneshot,
     time::{Duration, timeout},
 };
-use sol_lib::metrics::Controller;
 
 use crate::{
     config::Config,
@@ -32,6 +32,7 @@ struct LatencyTestRun {
 }
 
 #[tokio::test]
+#[allow(clippy::cast_precision_loss)]
 async fn component_latency_metrics_emitted() {
     let run = run_latency_topology().await;
 
@@ -94,7 +95,11 @@ async fn run_latency_topology() -> LatencyTestRun {
     }
 }
 
-fn assert_histogram_count(metrics: &[OtelMetric], metric_name: &str, tags_match: fn(&OtelMetric) -> bool) {
+fn assert_histogram_count(
+    metrics: &[OtelMetric],
+    metric_name: &str,
+    tags_match: fn(&OtelMetric) -> bool,
+) {
     let histogram = metrics
         .iter()
         .find(|metric| metric.name() == metric_name && tags_match(metric))

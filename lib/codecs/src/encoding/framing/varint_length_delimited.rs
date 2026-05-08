@@ -1,8 +1,8 @@
 use bytes::{BufMut, BytesMut};
 use derivative::Derivative;
 use snafu::Snafu;
-use tokio_util::codec::Encoder;
 use sol_config::configurable_component;
+use tokio_util::codec::Encoder;
 
 use super::{BoxedFramingError, FramingError};
 
@@ -61,10 +61,20 @@ impl VarintLengthDelimitedEncoder {
 
         let mut val = value;
         while val >= 0x80 {
-            buf.put_u8((val as u8) | 0x80);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "intentionally taking low 7 bits of varint-encoded frame length"
+            )]
+            let byte = (val as u8) | 0x80;
+            buf.put_u8(byte);
             val >>= 7;
         }
-        buf.put_u8(val as u8);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "final varint byte is < 0x80 and fits in u8"
+        )]
+        let byte = val as u8;
+        buf.put_u8(byte);
         Ok(())
     }
 }

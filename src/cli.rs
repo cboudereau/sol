@@ -70,13 +70,7 @@ pub struct RootOpts {
     /// File format is detected from the file name.
     /// If zero files are specified, the deprecated default config path
     /// `/etc/sol/sol.yaml` is targeted.
-    #[arg(
-        id = "config",
-        short,
-        long,
-        env = "SOL_CONFIG",
-        value_delimiter(',')
-    )]
+    #[arg(id = "config", short, long, env = "SOL_CONFIG", value_delimiter(','))]
     pub config_paths: Vec<PathBuf>,
 
     /// Read configuration from files in one or more directories.
@@ -172,11 +166,7 @@ pub struct RootOpts {
     /// - `ReadDirectoryChangesWatcher` for windows
     ///
     /// The `poll` watcher can be used in cases where `inotify` doesn't work, e.g., when attaching the configuration via NFS.
-    #[arg(
-        long,
-        default_value = "recommended",
-        env = "SOL_WATCH_CONFIG_METHOD"
-    )]
+    #[arg(long, default_value = "recommended", env = "SOL_WATCH_CONFIG_METHOD")]
     pub watch_config_method: WatchConfigMethod,
 
     /// Poll for changes in the configuration file at the given interval.
@@ -203,12 +193,7 @@ pub struct RootOpts {
     /// - 1: Very verbose, logs can repeat every second
     /// - 10 (default): Logs can repeat every 10 seconds
     /// - 60: Less verbose, logs can repeat every minute
-    #[arg(
-        short,
-        long,
-        env = "SOL_INTERNAL_LOG_RATE_LIMIT",
-        default_value = "10"
-    )]
+    #[arg(short, long, env = "SOL_INTERNAL_LOG_RATE_LIMIT", default_value = "10")]
     pub internal_log_rate_limit: u64,
 
     /// Set the duration in seconds to wait for graceful shutdown after SIGINT or SIGTERM are

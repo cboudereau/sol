@@ -26,9 +26,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::serde_as;
 use smallvec::SmallVec;
 use snafu::{ResultExt, Snafu};
-use tokio::{pin, select};
-use tokio_util::codec::FramedRead;
-use tracing::Instrument;
 use sol_lib::{
     codecs::decoding::FramingError,
     config::insert_source_metadata,
@@ -39,6 +36,9 @@ use sol_lib::{
     lookup::{metadata_path, path},
     source_sender::SendError,
 };
+use tokio::{pin, select};
+use tokio_util::codec::FramedRead;
+use tracing::Instrument;
 
 use crate::{
     SourceSender,
@@ -313,6 +313,21 @@ impl Ingestor {
                 messages: config.max_number_of_messages,
             });
         }
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SQS poll_secs config value is small enough to fit i32"
+        )]
+        let poll_secs = config.poll_secs as i32;
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SQS max_number_of_messages config value fits i32 (AWS limit is 10)"
+        )]
+        let max_number_of_messages = config.max_number_of_messages as i32;
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SQS visibility_timeout_secs config value fits i32 (AWS limit is 43200)"
+        )]
+        let visibility_timeout_secs = config.visibility_timeout_secs as i32;
         let state = Arc::new(State {
             region,
 
@@ -323,13 +338,13 @@ impl Ingestor {
             multiline,
 
             queue_url: config.queue_url,
-            poll_secs: config.poll_secs as i32,
-            max_number_of_messages: config.max_number_of_messages as i32,
+            poll_secs,
+            max_number_of_messages,
             client_concurrency: config
                 .client_concurrency
                 .map(|n| n.get())
                 .unwrap_or_else(crate::num_threads),
-            visibility_timeout_secs: config.visibility_timeout_secs as i32,
+            visibility_timeout_secs,
             delete_message: config.delete_message,
             delete_failed_message: config.delete_failed_message,
             decoder,
@@ -653,7 +668,12 @@ impl IngestorProcess {
 
         if let Some(deferred) = &self.state.deferred {
             let delta = Utc::now() - s3_event.event_time;
-            if delta.num_seconds() > deferred.max_age_secs as i64 {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "deferred max_age_secs config value fits i64"
+            )]
+            let max_age = deferred.max_age_secs as i64;
+            if delta.num_seconds() > max_age {
                 return Err(ProcessingError::FileTooOld {
                     bucket: s3_event.s3.bucket.name.clone(),
                     key: s3_event.s3.object.key.clone(),

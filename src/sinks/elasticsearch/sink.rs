@@ -70,9 +70,7 @@ where
         input
             .scan(self.metric_to_log, |metric_to_log, event| {
                 future::ready(Some(match event {
-                    Event::Metric(metric) => {
-                        metric_to_log.transform_one(metric)
-                    }
+                    Event::Metric(metric) => metric_to_log.transform_one(metric),
                     Event::Log(log) => Some(log),
                     Event::Trace(_) => None,
                 }))

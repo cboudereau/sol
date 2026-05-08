@@ -3,9 +3,7 @@ use std::{marker::PhantomData, num::NonZeroUsize, time::Duration};
 use derivative::Derivative;
 use serde_with::serde_as;
 use snafu::Snafu;
-use sol_lib::{
-    configurable::configurable_component, json_size::JsonSize, stream::BatcherSettings,
-};
+use sol_lib::{configurable::configurable_component, json_size::JsonSize, stream::BatcherSettings};
 
 use super::EncodedEvent;
 use crate::{event::EventFinalizers, internal_events::LargeEventDroppedError};

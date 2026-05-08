@@ -22,7 +22,12 @@ pub const fn default_false() -> bool {
 ///
 /// Any input exceeding this limit will be discarded.
 pub fn default_max_length() -> usize {
-    bytesize::kib(100u64) as usize
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "100 KiB always fits in usize"
+    )]
+    let max_len = bytesize::kib(100u64) as usize;
+    max_len
 }
 
 pub fn default_framing_message_based() -> FramingConfig {

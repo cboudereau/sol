@@ -10,9 +10,6 @@ use glob::{Pattern, PatternError};
 use heim::units::ratio::ratio;
 use heim::units::time::second;
 use serde_with::serde_as;
-use sysinfo::System;
-use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
@@ -20,6 +17,9 @@ use sol_lib::{
         ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol, Registered,
     },
 };
+use sysinfo::System;
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 
@@ -342,7 +342,7 @@ impl HostMetricsConfig {
             bytes_received.emit(ByteSize(0));
             let metrics = generator.capture_metrics().await;
             let count = metrics.len();
-            let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+            let events: Vec<Event> = metrics.into_iter().map(Event::Metric).collect();
             if (out.send_batch(events).await).is_err() {
                 emit!(StreamClosedError { count });
                 return Err(());
@@ -391,7 +391,10 @@ impl HostMetrics {
     }
 
     pub fn buffer(&self) -> MetricsBuffer {
-        MetricsBuffer::new(self.config.namespace.clone(), &self.config.resource_attributes)
+        MetricsBuffer::new(
+            self.config.namespace.clone(),
+            &self.config.resource_attributes,
+        )
     }
 
     async fn capture_metrics(&mut self) -> Vec<OtelMetric> {
@@ -446,17 +449,17 @@ impl HostMetrics {
             Ok(loadavg) => {
                 output.gauge(
                     "load1",
-                    loadavg.0.get::<ratio>() as f64,
+                    f64::from(loadavg.0.get::<ratio>()),
                     OtelAttributes::default(),
                 );
                 output.gauge(
                     "load5",
-                    loadavg.1.get::<ratio>() as f64,
+                    f64::from(loadavg.1.get::<ratio>()),
                     OtelAttributes::default(),
                 );
                 output.gauge(
                     "load15",
-                    loadavg.2.get::<ratio>() as f64,
+                    f64::from(loadavg.2.get::<ratio>()),
                     OtelAttributes::default(),
                 );
             }
@@ -515,7 +518,10 @@ impl MetricsBuffer {
             host: crate::get_hostname().ok(),
             timestamp: Utc::now(),
             namespace,
-            resource: Some(source_otel::build_source_resource("host_metrics", resource_attributes)),
+            resource: Some(source_otel::build_source_resource(
+                "host_metrics",
+                resource_attributes,
+            )),
             scope: Some(source_otel::build_source_scope("host_metrics")),
         }
     }
@@ -937,7 +943,13 @@ mod tests {
     fn collect_tag_values(metrics: &[OtelMetric], tag: &str) -> HashSet<String> {
         metrics
             .iter()
-            .filter_map(|metric| metric.tags().unwrap().get_string(tag).map(ToOwned::to_owned))
+            .filter_map(|metric| {
+                metric
+                    .tags()
+                    .unwrap()
+                    .get_string(tag)
+                    .map(ToOwned::to_owned)
+            })
             .collect::<HashSet<_>>()
     }
 

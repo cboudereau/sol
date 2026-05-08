@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use chrono::Utc;
-use uuid::Uuid;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, codecs::encoding::Framer, request_metadata::RequestMetadata,
 };
+use uuid::Uuid;
 
 use crate::{
     codecs::{Encoder, Transformer},

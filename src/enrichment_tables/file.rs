@@ -2,13 +2,13 @@
 use std::{collections::HashMap, fs, hash::Hasher, path::PathBuf, time::SystemTime};
 
 use bytes::Bytes;
-use tracing::trace;
 use sol_lib::{
     TimeZone,
     configurable::configurable_component,
     conversion::Conversion,
     enrichment::{Case, Condition, IndexHandle, Table},
 };
+use tracing::trace;
 use vrl::value::{ObjectMap, Value};
 
 use crate::config::EnrichmentTableConfig;

@@ -134,7 +134,12 @@ impl<'a> MetricsFilter<'a> for Vec<&'a OtelMetric> {
 
 /// Returns a stream of `OtelMetric`s, collected at the provided millisecond interval.
 pub fn get_metrics(interval: i32) -> impl Stream<Item = OtelMetric> {
-    let mut interval = tokio::time::interval(Duration::from_millis(interval as u64));
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "GraphQL interval validated to [10, 60_000]"
+    )]
+    let interval_ms = interval as u64;
+    let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
 
     stream! {
         loop {
@@ -147,7 +152,12 @@ pub fn get_metrics(interval: i32) -> impl Stream<Item = OtelMetric> {
 }
 
 pub fn get_all_metrics(interval: i32) -> impl Stream<Item = Vec<OtelMetric>> {
-    let mut interval = tokio::time::interval(Duration::from_millis(interval as u64));
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "GraphQL interval validated to [10, 60_000]"
+    )]
+    let interval_ms = interval as u64;
+    let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
 
     stream! {
         loop {
@@ -347,15 +357,25 @@ pub fn component_sent_events_total_throughputs_with_outputs(
                         .filter_map(|output| {
                             let m = filter_output_metric(metrics.as_ref(), output.as_ref())?;
                             let throughput = throughput(&m, format!("{id}.{output}"), &mut cache)?;
-                            Some(OutputThroughput::new(output.clone(), throughput as i64))
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "f64 throughput → i64 for GraphQL API"
+                            )]
+                            let throughput_i = throughput as i64;
+                            Some(OutputThroughput::new(output.clone(), throughput_i))
                         })
                         .collect::<Vec<_>>();
 
                     let sum = sum_metrics_owned(metrics)?;
                     let total_throughput = throughput(&sum, id.clone(), &mut cache)?;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f64 throughput → i64 for GraphQL API"
+                    )]
+                    let total_throughput_i = total_throughput as i64;
                     Some((
                         ComponentKey::from(id),
-                        total_throughput as i64,
+                        total_throughput_i,
                         throughput_by_outputs,
                     ))
                 })

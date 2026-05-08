@@ -2,13 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::{FutureExt, future};
-use stream_cancel::{Trigger, Tripwire};
 use sol_lib::{
     config::{DataType, SourceOutput},
     configurable::configurable_component,
     schema::Definition,
     source::Source,
 };
+use stream_cancel::{Trigger, Tripwire};
 
 use crate::config::{GenerateConfig, SourceConfig, SourceContext};
 

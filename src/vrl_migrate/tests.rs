@@ -1,5 +1,5 @@
-use super::*;
 use super::MigrateLogSchema;
+use super::*;
 
 fn assert_migrates(input: &str, expected: &str) {
     let output = migrate(input);
@@ -163,24 +163,33 @@ fn sem03_del_message() {
 fn sem05_parse_json_message() {
     let output = migrate("parsed = parse_json(.message)");
     // .message → .body, parse_json(.body) is valid as-is
-    assert!(output.text.contains("parse_json(.body)"),
-        "Expected parse_json(.body) in:\n{}", output.text);
+    assert!(
+        output.text.contains("parse_json(.body)"),
+        "Expected parse_json(.body) in:\n{}",
+        output.text
+    );
 }
 
 #[test]
 fn sem06_is_string_message() {
     let output = migrate("if is_string(.message) {");
     // .message → .body, is_string(.body) is valid as-is
-    assert!(output.text.contains("is_string(.body)"),
-        "Expected is_string(.body) in:\n{}", output.text);
+    assert!(
+        output.text.contains("is_string(.body)"),
+        "Expected is_string(.body) in:\n{}",
+        output.text
+    );
 }
 
 #[test]
 fn sem07_assert_eq_message() {
     let output = migrate(r#"assert_eq!(.message, "hello")"#);
     // .message → .body, assert_eq!(.body, "hello") is valid as-is
-    assert!(output.text.contains(r#"assert_eq!(.body,"#),
-        "Expected assert_eq!(.body, ...) in:\n{}", output.text);
+    assert!(
+        output.text.contains(r#"assert_eq!(.body,"#),
+        "Expected assert_eq!(.body, ...) in:\n{}",
+        output.text
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -228,7 +237,11 @@ fn multi_line_program() {
 .tags.env = "prod""#;
 
     let output = migrate(input);
-    assert!(output.text.contains("parse_json(.body)"), "Expected parse_json(.body) in:\n{}", output.text);
+    assert!(
+        output.text.contains("parse_json(.body)"),
+        "Expected parse_json(.body) in:\n{}",
+        output.text
+    );
     assert!(output.text.contains(".severity_text"));
     assert!(output.text.contains(r#".resource.attributes."host.name""#));
     assert!(output.text.contains(r#".attributes."env""#));
@@ -284,21 +297,13 @@ fn assert_migrates_with_schema(input: &str, schema: &MigrateLogSchema, expected_
 #[test]
 fn ls01_custom_message_key() {
     let schema = schema_with("message_key", "msg");
-    assert_migrates_with_schema(
-        ".foo = .msg",
-        &schema,
-        ".foo = .body",
-    );
+    assert_migrates_with_schema(".foo = .msg", &schema, ".foo = .body");
 }
 
 #[test]
 fn ls02_custom_timestamp_key() {
     let schema = schema_with("timestamp_key", "ts");
-    assert_migrates_with_schema(
-        ".t = .ts",
-        &schema,
-        ".t = .time_unix_nano",
-    );
+    assert_migrates_with_schema(".t = .ts", &schema, ".t = .time_unix_nano");
 }
 
 #[test]
@@ -327,7 +332,8 @@ fn ls05_custom_metadata_key_review() {
     let output = migrate_with_log_schema(".m = .meta", &schema);
     assert!(
         output.reviews.iter().any(|r| r.rule_id == RuleId::Ls05),
-        "Expected REVIEW for LS-05, got: {:?}", output.reviews
+        "Expected REVIEW for LS-05, got: {:?}",
+        output.reviews
     );
 }
 
@@ -378,7 +384,19 @@ fn ls_combined_custom_and_structural() {
     let output = migrate_with_log_schema(input, &schema);
     // Pass 0: .payload → .body, .server → .resource.attributes."host.name"
     // Pass 1: .timestamp → .time_unix_nano
-    assert!(output.text.contains(".out = .body"), "payload→body:\n{}", output.text);
-    assert!(output.text.contains(r#".resource.attributes."host.name""#), "server→host.name:\n{}", output.text);
-    assert!(output.text.contains(".time_unix_nano"), "timestamp→time_unix_nano:\n{}", output.text);
+    assert!(
+        output.text.contains(".out = .body"),
+        "payload→body:\n{}",
+        output.text
+    );
+    assert!(
+        output.text.contains(r#".resource.attributes."host.name""#),
+        "server→host.name:\n{}",
+        output.text
+    );
+    assert!(
+        output.text.contains(".time_unix_nano"),
+        "timestamp→time_unix_nano:\n{}",
+        output.text
+    );
 }

@@ -5,10 +5,10 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use flate2::read::ZlibDecoder;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, BufReader};
-use tracing::{debug, warn};
 use sol::test_util::{compression::is_zstd, trace_init};
 use sol_common::Result;
+use tokio::io::{AsyncReadExt, BufReader};
+use tracing::{debug, warn};
 
 mod series;
 mod sketches;

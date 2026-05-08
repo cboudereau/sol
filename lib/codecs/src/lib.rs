@@ -15,10 +15,9 @@ pub use decoding::{
     BytesDecoder, BytesDecoderConfig, BytesDeserializer, BytesDeserializerConfig,
     CharacterDelimitedDecoder, CharacterDelimitedDecoderConfig, Decoder, DecodingConfig,
     GelfDeserializer, GelfDeserializerConfig, JsonDeserializer, JsonDeserializerConfig,
-    LengthDelimitedDecoder, LengthDelimitedDecoderConfig,
-    NewlineDelimitedDecoder, NewlineDelimitedDecoderConfig, OctetCountingDecoder,
-    OctetCountingDecoderConfig, StreamDecodingError, VarintLengthDelimitedDecoder,
-    VarintLengthDelimitedDecoderConfig,
+    LengthDelimitedDecoder, LengthDelimitedDecoderConfig, NewlineDelimitedDecoder,
+    NewlineDelimitedDecoderConfig, OctetCountingDecoder, OctetCountingDecoderConfig,
+    StreamDecodingError, VarintLengthDelimitedDecoder, VarintLengthDelimitedDecoderConfig,
 };
 #[cfg(feature = "syslog")]
 pub use decoding::{SyslogDeserializer, SyslogDeserializerConfig};

@@ -17,8 +17,7 @@ pub use format::{
     BoxedDeserializer, BytesDeserializer, BytesDeserializerConfig, GelfDeserializer,
     GelfDeserializerConfig, GelfDeserializerOptions, InfluxdbDeserializer,
     InfluxdbDeserializerConfig, JsonDeserializer, JsonDeserializerConfig, JsonDeserializerOptions,
-    ProtobufDeserializer,
-    ProtobufDeserializerConfig, ProtobufDeserializerOptions,
+    ProtobufDeserializer, ProtobufDeserializerConfig, ProtobufDeserializerOptions,
 };
 #[cfg(feature = "opentelemetry")]
 pub use format::{OtlpDeserializer, OtlpDeserializerConfig, OtlpSignalType};
@@ -34,11 +33,7 @@ pub use framing::{
 };
 use smallvec::SmallVec;
 use sol_config::configurable_component;
-use sol_core::{
-    config::DataType,
-    event::Event,
-    schema,
-};
+use sol_core::{config::DataType, event::Event, schema};
 
 use self::format::{AvroDeserializer, AvroDeserializerConfig, AvroDeserializerOptions};
 use crate::decoding::format::{VrlDeserializer, VrlDeserializerConfig};
@@ -430,13 +425,11 @@ impl DeserializerConfig {
     /// Get the HTTP content type.
     pub const fn content_type(&self, framer: &FramingConfig) -> &'static str {
         match (&self, framer) {
+            (DeserializerConfig::Json(_), FramingConfig::NewlineDelimited(_)) => {
+                "application/x-ndjson"
+            }
             (
-                DeserializerConfig::Json(_),
-                FramingConfig::NewlineDelimited(_),
-            ) => "application/x-ndjson",
-            (
-                DeserializerConfig::Gelf(_)
-                | DeserializerConfig::Json(_),
+                DeserializerConfig::Gelf(_) | DeserializerConfig::Json(_),
                 FramingConfig::CharacterDelimited(CharacterDelimitedDecoderConfig {
                     character_delimited:
                         CharacterDelimitedDecoderOptions {
@@ -445,9 +438,7 @@ impl DeserializerConfig {
                         },
                 }),
             ) => "application/json",
-            (DeserializerConfig::Avro { .. }, _) => {
-                "application/octet-stream"
-            }
+            (DeserializerConfig::Avro { .. }, _) => "application/octet-stream",
             (DeserializerConfig::Protobuf(_), _) => "application/octet-stream",
             #[cfg(feature = "opentelemetry")]
             (DeserializerConfig::Otlp(_), _) => "application/x-protobuf",
@@ -494,10 +485,7 @@ pub enum Deserializer {
 }
 
 impl format::Deserializer for Deserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         match self {
             Deserializer::Avro(deserializer) => deserializer.parse(bytes),
             Deserializer::Bytes(deserializer) => deserializer.parse(bytes),

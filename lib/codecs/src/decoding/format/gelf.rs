@@ -9,7 +9,7 @@ use serde_with::{TimestampSecondsWithFrac, serde_as};
 use smallvec::{SmallVec, smallvec};
 use sol_config::configurable_component;
 use sol_core::{
-    config::{DataType},
+    config::DataType,
     event::{Event, EventMetadata, OtelLog},
     schema,
 };
@@ -73,22 +73,20 @@ impl GelfDeserializerConfig {
 
     /// The schema produced by the deserializer.
     pub fn schema_definition(&self) -> schema::Definition {
-        schema::Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!(VERSION), Kind::bytes(), None)
-        .with_event_field(&owned_value_path!(HOST), Kind::bytes(), None)
-        .with_event_field(&owned_value_path!(SHORT_MESSAGE), Kind::bytes(), None)
-        .optional_field(&owned_value_path!(FULL_MESSAGE), Kind::bytes(), None)
-        .optional_field(&owned_value_path!(TIMESTAMP), Kind::timestamp(), None)
-        .optional_field(&owned_value_path!(LEVEL), Kind::integer(), None)
-        .optional_field(&owned_value_path!(FACILITY), Kind::bytes(), None)
-        .optional_field(&owned_value_path!(LINE), Kind::integer(), None)
-        .optional_field(&owned_value_path!(FILE), Kind::bytes(), None)
-        // Every field with an underscore (_) prefix will be treated as an additional field.
-        // Allowed characters in field names are any word character (letter, number, underscore), dashes and dots.
-        // Libraries SHOULD not allow to send id as additional field ( _id). Graylog server nodes omit this field automatically.
-        .unknown_fields(Kind::bytes().or_integer().or_float())
+        schema::Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+            .with_event_field(&owned_value_path!(VERSION), Kind::bytes(), None)
+            .with_event_field(&owned_value_path!(HOST), Kind::bytes(), None)
+            .with_event_field(&owned_value_path!(SHORT_MESSAGE), Kind::bytes(), None)
+            .optional_field(&owned_value_path!(FULL_MESSAGE), Kind::bytes(), None)
+            .optional_field(&owned_value_path!(TIMESTAMP), Kind::timestamp(), None)
+            .optional_field(&owned_value_path!(LEVEL), Kind::integer(), None)
+            .optional_field(&owned_value_path!(FACILITY), Kind::bytes(), None)
+            .optional_field(&owned_value_path!(LINE), Kind::integer(), None)
+            .optional_field(&owned_value_path!(FILE), Kind::bytes(), None)
+            // Every field with an underscore (_) prefix will be treated as an additional field.
+            // Allowed characters in field names are any word character (letter, number, underscore), dashes and dots.
+            // Libraries SHOULD not allow to send id as additional field ( _id). Graylog server nodes omit this field automatically.
+            .unknown_fields(Kind::bytes().or_integer().or_float())
     }
 }
 
@@ -156,8 +154,17 @@ impl GelfDeserializer {
 
         {
             let ts = parsed.timestamp.unwrap_or_else(Utc::now);
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "GELF timestamps are always non-negative nanoseconds since epoch"
+            )]
             let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
-            map.insert("time_unix_nano".into(), Value::Integer(nanos as i64));
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "nanosecond timestamps within representable range for both u64 and i64"
+            )]
+            let nanos_i64 = nanos as i64;
+            map.insert("time_unix_nano".into(), Value::Integer(nanos_i64));
         }
 
         if let Some(level) = parsed.level {
@@ -240,10 +247,7 @@ struct GelfMessage {
 }
 
 impl Deserializer for GelfDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let parsed: GelfMessage = match self.lossy {
             true => serde_json::from_str(&String::from_utf8_lossy(&bytes)),
             false => serde_json::from_slice(&bytes),
@@ -258,10 +262,10 @@ impl Deserializer for GelfDeserializer {
 mod tests {
     use bytes::Bytes;
     use lookup::event_path;
+    use lookup::{OwnedTargetPath, owned_value_path};
     use serde_json::json;
     use similar_asserts::assert_eq;
     use smallvec::SmallVec;
-    use lookup::{OwnedTargetPath, owned_value_path};
     use sol_core::event::Event;
     use vrl::value::Value;
 
@@ -325,10 +329,15 @@ mod tests {
         );
         let expected_nanos: i64 = 1385053862 * 1_000_000_000 + 307_200_000;
         assert_eq!(
-            log.parse_path_and_get_value("time_unix_nano").ok().flatten(),
+            log.parse_path_and_get_value("time_unix_nano")
+                .ok()
+                .flatten(),
             Some(Value::Integer(expected_nanos))
         );
-        assert_eq!(log.parse_path_and_get_value(LEVEL).ok().flatten(), Some(Value::Integer(1)));
+        assert_eq!(
+            log.parse_path_and_get_value(LEVEL).ok().flatten(),
+            Some(Value::Integer(1))
+        );
         assert_eq!(
             log.parse_path_and_get_value(FACILITY).ok().flatten(),
             Some(Value::Bytes(Bytes::from_static(b"foo")))
@@ -343,9 +352,7 @@ mod tests {
         );
         assert_eq!(
             log.get(event_path!(add_on_int_in)),
-            Some(Value::Float(
-                ordered_float::NotNan::new(2001.1002).unwrap()
-            ))
+            Some(Value::Float(ordered_float::NotNan::new(2001.1002).unwrap()))
         );
         assert_eq!(
             log.get(event_path!(add_on_str_in)),

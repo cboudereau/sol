@@ -5,9 +5,7 @@ use futures_util::StreamExt;
 use serde_json::{Value as JsonValue, json};
 use sol_lib::{
     ByteSizeOf,
-    event::{
-        Event, MetricKind, OtelMetric,
-    },
+    event::{Event, MetricKind, OtelMetric},
     otel_tags,
 };
 use vrl::owned_value_path;
@@ -113,11 +111,8 @@ fn test_process_metric() {
 
 #[test]
 fn test_process_metric_unsupported_type_returns_none() {
-    let metric = OtelMetric::new_set_from_values(
-        "example-set",
-        MetricKind::Absolute,
-        vec!["value1"],
-    );
+    let metric =
+        OtelMetric::new_set_from_values("example-set", MetricKind::Absolute, vec!["value1"]);
 
     let event_byte_size = metric.size_of();
     let sourcetype = None;

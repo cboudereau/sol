@@ -15,18 +15,15 @@ use sol_core::event::{
 };
 use vrl::value::Value;
 
-use crate::{
-    proto::{
-        collector::{
-            logs::v1::ExportLogsServiceRequest,
-            metrics::v1::ExportMetricsServiceRequest,
-            trace::v1::ExportTraceServiceRequest,
-        },
-        common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
-        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-        resource::v1::Resource,
-        trace::v1::{ResourceSpans, ScopeSpans, Span},
+use crate::proto::{
+    collector::{
+        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+        trace::v1::ExportTraceServiceRequest,
     },
+    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
+    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+    resource::v1::Resource,
+    trace::v1::{ResourceSpans, ScopeSpans, Span},
 };
 
 /// Wire format: `OtlpBufferBatch` protobuf.
@@ -180,8 +177,13 @@ fn collect_metric_extensions(otel_metrics: &OtelMetricArray) -> Vec<MetricExtens
             if !has_set && !has_kind {
                 return None;
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "metric batch size is bounded by OTLP message limits, well within u32::MAX"
+            )]
+            let metric_index = i as u32;
             Some(MetricExtension {
-                metric_index: i as u32,
+                metric_index,
                 set_values: otel
                     .set_values()
                     .map(|s| s.iter().cloned().collect())
@@ -197,8 +199,8 @@ fn collect_metric_extensions(otel_metrics: &OtelMetricArray) -> Vec<MetricExtens
 }
 
 fn apply_metric_extensions(metrics: &mut MetricArray, extensions: Vec<MetricExtension>) {
-    use std::collections::BTreeSet;
     use sol_core::event::MetricKind;
+    use std::collections::BTreeSet;
 
     for ext in extensions {
         let idx = ext.metric_index as usize;
@@ -249,10 +251,7 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
         let logs: LogArray = req
             .resource_logs
             .into_iter()
-            .flat_map(|rl| {
-                rl.into_otel_event_iter()
-                    .filter_map(|e| e.try_into_log())
-            })
+            .flat_map(|rl| rl.into_otel_event_iter().filter_map(|e| e.try_into_log()))
             .collect();
         EventArray::Logs(logs)
     } else if let Some(req) = batch.metrics {
@@ -272,10 +271,7 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
         let traces: TraceArray = req
             .resource_spans
             .into_iter()
-            .flat_map(|rs| {
-                rs.into_otel_event_iter()
-                    .filter_map(|e| e.try_into_trace())
-            })
+            .flat_map(|rs| rs.into_otel_event_iter().filter_map(|e| e.try_into_trace()))
             .collect();
         EventArray::Traces(traces)
     } else {
@@ -293,16 +289,14 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
 
 pub fn value_into_any_value(v: Value) -> any_value::Value {
     match v {
-        Value::Bytes(b) => {
-            any_value::Value::StringValue(String::from_utf8_lossy(&b).into_owned())
-        }
+        Value::Bytes(b) => any_value::Value::StringValue(String::from_utf8_lossy(&b).into_owned()),
         Value::Integer(i) => any_value::Value::IntValue(i),
         Value::Float(f) => any_value::Value::DoubleValue(f.into_inner()),
         Value::Boolean(b) => any_value::Value::BoolValue(b),
         Value::Null => any_value::Value::StringValue(String::new()),
-        Value::Timestamp(ts) => any_value::Value::StringValue(
-            ts.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
-        ),
+        Value::Timestamp(ts) => {
+            any_value::Value::StringValue(ts.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+        }
         Value::Object(map) => {
             use crate::proto::common::v1::KeyValueList;
             let kvs = map
@@ -379,10 +373,7 @@ mod tests {
         match decoded {
             EventArray::Logs(logs) => {
                 assert_eq!(logs.len(), 1);
-                assert_eq!(
-                    logs[0].body_string(),
-                    "hello otlp"
-                );
+                assert_eq!(logs[0].body_string(), "hello otlp");
             }
             other => panic!("expected Logs, got {other:?}"),
         }
@@ -414,7 +405,11 @@ mod tests {
     #[test]
     fn round_trip_set_metric_preserves_set_values() {
         setup();
-        let metric = OtelMetric::new_set_from_values("unique_users", MetricKind::Incremental, ["alice", "bob", "charlie"]);
+        let metric = OtelMetric::new_set_from_values(
+            "unique_users",
+            MetricKind::Incremental,
+            ["alice", "bob", "charlie"],
+        );
         assert!(metric.is_set());
         assert_eq!(metric.set_values().unwrap().len(), 3);
 
@@ -423,12 +418,17 @@ mod tests {
         let mut buf = Vec::new();
         codec.encode(&array, &mut buf).expect("encode failed");
 
-        let decoded = codec.decode(bytes::Bytes::from(buf)).expect("decode failed");
+        let decoded = codec
+            .decode(bytes::Bytes::from(buf))
+            .expect("decode failed");
         match decoded {
             EventArray::Metrics(metrics) => {
                 assert_eq!(metrics.len(), 1);
                 assert_eq!(metrics[0].name(), "unique_users");
-                assert!(metrics[0].is_set(), "set_values should survive buffer round-trip");
+                assert!(
+                    metrics[0].is_set(),
+                    "set_values should survive buffer round-trip"
+                );
                 let vals = metrics[0].set_values().expect("set_values should be Some");
                 assert_eq!(vals.len(), 3);
                 assert!(vals.contains("alice"));
@@ -451,7 +451,9 @@ mod tests {
         let mut buf = Vec::new();
         codec.encode(&array, &mut buf).expect("encode failed");
 
-        let decoded = codec.decode(bytes::Bytes::from(buf)).expect("decode failed");
+        let decoded = codec
+            .decode(bytes::Bytes::from(buf))
+            .expect("decode failed");
         match decoded {
             EventArray::Metrics(metrics) => {
                 assert_eq!(metrics.len(), 1);
@@ -481,8 +483,7 @@ mod tests {
         array.encode(&mut buf).expect("encode failed");
 
         assert!(EventArray::can_decode(metadata));
-        let decoded = EventArray::decode(metadata, buf.as_slice())
-            .expect("decode failed");
+        let decoded = EventArray::decode(metadata, buf.as_slice()).expect("decode failed");
         match decoded {
             EventArray::Logs(logs) => assert_eq!(logs.len(), 1),
             other => panic!("expected Logs, got {other:?}"),

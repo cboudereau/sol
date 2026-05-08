@@ -10,7 +10,7 @@ use crate::{
         util::GrpcAddress,
     },
     config::{BoxedSink, BoxedSource, BoxedTransform, ConfigBuilder},
-    sinks::opentelemetry::{OpenTelemetryConfig, GrpcConfig, Protocol},
+    sinks::opentelemetry::{GrpcConfig, OpenTelemetryConfig, Protocol},
     sources::vector::VectorConfig as VectorSourceConfig,
     test_util::addr::next_addr,
 };

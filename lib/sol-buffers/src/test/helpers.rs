@@ -1,9 +1,9 @@
 use std::{future::Future, path::Path, str::FromStr, sync::LazyLock};
 
+use sol_common::finalization::{EventStatus, Finalizable};
 use temp_dir::TempDir;
 use tracing_fluent_assertions::{AssertionRegistry, AssertionsLayer};
 use tracing_subscriber::{Layer, Registry, filter::LevelFilter, layer::SubscriberExt};
-use sol_common::finalization::{EventStatus, Finalizable};
 
 #[macro_export]
 macro_rules! assert_file_does_not_exist_async {

@@ -68,13 +68,21 @@ impl FunctionTransform for BasicTransform {
     fn transform(&mut self, output: &mut OutputBuffer, mut event: Event) {
         match &mut event {
             Event::Log(otel_log) => {
-                let message_key = sol_lib::lookup::OwnedTargetPath::event(sol_lib::lookup::owned_value_path!("body"));
-                let mut v = otel_log.get(&message_key).unwrap().to_string_lossy().into_owned();
+                let message_key = sol_lib::lookup::OwnedTargetPath::event(
+                    sol_lib::lookup::owned_value_path!("body"),
+                );
+                let mut v = otel_log
+                    .get(&message_key)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 v.push_str(&self.suffix);
                 otel_log.insert(&message_key, Value::from(v));
             }
             Event::Metric(otel_metric) => {
-                use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point::Value as NDPValue};
+                use opentelemetry_proto::tonic::metrics::v1::{
+                    metric, number_data_point::Value as NDPValue,
+                };
                 // Modify the first data point value directly on the proto
                 if let Some(data) = otel_metric.metric_mut().data.as_mut() {
                     match data {
@@ -82,7 +90,14 @@ impl FunctionTransform for BasicTransform {
                             if let Some(dp) = sum.data_points.first_mut() {
                                 match &mut dp.value {
                                     Some(NDPValue::AsDouble(v)) => *v += self.increase,
-                                    Some(NDPValue::AsInt(v)) => *v += self.increase as i64,
+                                    Some(NDPValue::AsInt(v)) => {
+                                        #[expect(
+                                            clippy::cast_possible_truncation,
+                                            reason = "test transform f64 increase fits in i64"
+                                        )]
+                                        let inc = self.increase as i64;
+                                        *v += inc;
+                                    }
                                     None => dp.value = Some(NDPValue::AsDouble(self.increase)),
                                 }
                             }
@@ -97,7 +112,9 @@ impl FunctionTransform for BasicTransform {
                 }
             }
             Event::Trace(otel_span) => {
-                let message_key = sol_lib::lookup::OwnedTargetPath::event(sol_lib::lookup::owned_value_path!("body"));
+                let message_key = sol_lib::lookup::OwnedTargetPath::event(
+                    sol_lib::lookup::owned_value_path!("body"),
+                );
                 let mut v = otel_span
                     .get(&message_key)
                     .unwrap()

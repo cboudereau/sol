@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use tokio::time::{Duration, Instant};
 use sol_lib::codecs::decoding::DeserializerConfig;
+use tokio::time::{Duration, Instant};
 
 use super::{
     HttpClientConfig,
@@ -135,10 +135,7 @@ async fn collected_metrics_native_json() {
     // panics if not metric event
     let metric = events[0].as_metric();
     assert_eq!(
-        metric
-            .tags()
-            .unwrap()
-            .get("source_type"),
+        metric.tags().unwrap().get("source_type"),
         Some(&string_value(HttpClientConfig::NAME))
     );
 }

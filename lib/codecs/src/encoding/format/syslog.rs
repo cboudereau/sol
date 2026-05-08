@@ -1,17 +1,17 @@
 use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
 use lookup::lookup_v2::ConfigTargetPath;
-use std::collections::HashMap;
-use std::fmt::Write;
-use std::str::FromStr;
-use strum::{EnumString, FromRepr, VariantNames};
-use tokio_util::codec::Encoder;
 use sol_config::configurable_component;
 use sol_core::{
     config::DataType,
     event::{Event, OtelLog, Value},
     schema,
 };
+use std::collections::HashMap;
+use std::fmt::Write;
+use std::str::FromStr;
+use strum::{EnumString, FromRepr, VariantNames};
+use tokio_util::codec::Encoder;
 use vrl::value::ObjectMap;
 
 /// Config used to build a `SyslogSerializer`.
@@ -209,10 +209,19 @@ impl<'a> ConfigDecanter<'a> {
             if let Ok(val_from_name) = s.to_ascii_lowercase().parse::<T>() {
                 return val_from_name;
             }
-            if let Value::Integer(n) = value
-                && let Some(val_from_num) = from_repr_fn(n as usize)
-            {
-                return val_from_num;
+            if let Value::Integer(n) = value {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "syslog severity/facility codes are small non-negative integers"
+                )]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "syslog severity/facility codes fit within usize"
+                )]
+                let code = n as usize;
+                if let Some(val_from_num) = from_repr_fn(code) {
+                    return val_from_num;
+                }
             }
         }
         default_value
@@ -490,10 +499,8 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use chrono::NaiveDate;
+    use sol_core::event::{Event, MetricKind, OtelMetric};
     use std::sync::Arc;
-    use sol_core::event::{
-        Event, MetricKind, OtelMetric,
-    };
     use vrl::path::parse_target_path;
     use vrl::prelude::Kind;
     use vrl::{btreemap, event_path, value};
@@ -829,13 +836,11 @@ mod tests {
         let mut log = OtelLog::default();
         log.insert("syslog.service", "meaning-app");
 
-        let schema = schema::Definition::new_with_default_metadata(
-            Kind::object(btreemap! {
-                "syslog" => Kind::object(btreemap! {
-                    "service" => Kind::bytes(),
-                })
+        let schema = schema::Definition::new_with_default_metadata(Kind::object(btreemap! {
+            "syslog" => Kind::object(btreemap! {
+                "service" => Kind::bytes(),
             })
-        );
+        }));
         let schema = schema.with_meaning(parse_target_path("syslog.service").unwrap(), "service");
         let mut event = Event::Log(log);
         event

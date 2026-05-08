@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use metrics::{counter, histogram};
-use tokio::time::error::Elapsed;
 use sol_lib::{
     NamedInternalEvent,
     internal_event::{
@@ -9,6 +8,7 @@ use sol_lib::{
     },
     json_size::JsonSize,
 };
+use tokio::time::error::Elapsed;
 
 use super::prelude::io_error_code;
 

@@ -19,7 +19,12 @@ impl InternalEvent for WebSocketListenerConnectionEstablished {
             )
         );
         counter!("connection_established_total", &self.extra_tags).increment(1);
-        gauge!("active_clients", &self.extra_tags).set(self.client_count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "active client count gauge; precise for |v| <= 2^53"
+        )]
+        let client_count = self.client_count as f64;
+        gauge!("active_clients", &self.extra_tags).set(client_count);
     }
 }
 
@@ -68,7 +73,12 @@ impl InternalEvent for WebSocketListenerConnectionShutdown {
             )
         );
         counter!("connection_shutdown_total", &self.extra_tags).increment(1);
-        gauge!("active_clients", &self.extra_tags).set(self.client_count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "active client count gauge; precise for |v| <= 2^53"
+        )]
+        let client_count = self.client_count as f64;
+        gauge!("active_clients", &self.extra_tags).set(client_count);
     }
 }
 

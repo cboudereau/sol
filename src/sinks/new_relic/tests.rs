@@ -10,7 +10,7 @@ use vrl::value;
 use super::*;
 use crate::{
     config::{GenerateConfig, SinkConfig, SinkContext},
-    event::{Event, OtelLog, MetricKind, OtelMetric},
+    event::{Event, MetricKind, OtelLog, OtelMetric},
     test_util::{
         components::{
             DATA_VOLUME_SINK_TAGS, SINK_TAGS, run_and_assert_data_volume_sink_compliance,
@@ -240,7 +240,11 @@ fn generates_log_api_model_with_timestamp() {
 
 #[test]
 fn generates_metric_api_model_without_timestamp() {
-    let event = Event::Metric(OtelMetric::new_counter("my_metric", MetricKind::Absolute, 100.0));
+    let event = Event::Metric(OtelMetric::new_counter(
+        "my_metric",
+        MetricKind::Absolute,
+        100.0,
+    ));
     let model =
         MetricsApiModel::try_from(vec![event]).expect("Failed mapping metrics into API model");
     let metrics = &model.0[0].metrics;

@@ -1,9 +1,9 @@
 use std::ffi::OsStr;
 
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
 use sol_lib::configurable::configurable_component;
 #[cfg(target_os = "linux")]
 use sol_lib::otel_tags;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
 
 use super::{FilterList, HostMetrics, default_all_processes, example_processes};
 
@@ -23,6 +23,10 @@ const MEMORY_USAGE: &str = "process_memory_usage";
 const MEMORY_VIRTUAL_USAGE: &str = "process_memory_virtual_usage";
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn process_metrics(&mut self, output: &mut super::MetricsBuffer) {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,

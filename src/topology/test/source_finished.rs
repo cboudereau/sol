@@ -1,5 +1,5 @@
-use tokio::time::{Duration, timeout};
 use sol_lib::codecs::{TextSerializerConfig, encoding::FramingConfig};
+use tokio::time::{Duration, timeout};
 
 use crate::{
     config::Config,
@@ -13,8 +13,7 @@ async fn sources_finished() {
     trace_init();
 
     let mut old_config = Config::builder();
-    let demo_logs =
-        DemoLogsConfig::repeat(vec!["text".to_owned()], 1, Duration::from_secs(0));
+    let demo_logs = DemoLogsConfig::repeat(vec!["text".to_owned()], 1, Duration::from_secs(0));
     old_config.add_source("in", demo_logs);
     old_config.add_sink(
         "out",

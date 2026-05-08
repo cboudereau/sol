@@ -1,13 +1,13 @@
 use futures::FutureExt;
 use http::{Request, Uri, header::AUTHORIZATION};
 use hyper::Body;
-use tower::ServiceBuilder;
 use sol_lib::{
     config::{AcknowledgementsConfig, DataType, Input, proxy::ProxyConfig},
     configurable::configurable_component,
     sensitive_string::SensitiveString,
     tls::{MaybeTlsSettings, TlsEnableableConfig},
 };
+use tower::ServiceBuilder;
 
 use super::{
     service::{AppsignalResponse, AppsignalService},

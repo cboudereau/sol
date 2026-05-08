@@ -222,7 +222,6 @@ impl ConfigBuilder {
 
         self.schema.append(with.schema, &mut errors);
 
-
         self.healthchecks.merge(with.healthchecks);
 
         with.enrichment_tables.keys().for_each(|k| {

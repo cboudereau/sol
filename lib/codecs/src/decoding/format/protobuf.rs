@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use chrono::Utc;
 use derivative::Derivative;
+use lookup::owned_value_path;
 use prost_reflect::{DynamicMessage, MessageDescriptor};
 use smallvec::{SmallVec, smallvec};
 use sol_config::configurable_component;
-use lookup::owned_value_path;
 use sol_core::{
     config::DataType,
     event::{Event, EventMetadata, OtelLog},
@@ -44,16 +44,11 @@ impl ProtobufDeserializerConfig {
 
     /// The schema produced by the deserializer.
     pub fn schema_definition(&self) -> schema::Definition {
-        let mut definition =
-            schema::Definition::empty_definition().unknown_fields(Kind::any());
+        let mut definition = schema::Definition::empty_definition().unknown_fields(Kind::any());
 
         {
             let timestamp_key = owned_value_path!("time_unix_nano");
-            definition = definition.try_with_field(
-                &timestamp_key,
-                Kind::any(),
-                Some("timestamp"),
-            );
+            definition = definition.try_with_field(&timestamp_key, Kind::any(), Some("timestamp"));
         }
         definition
     }
@@ -132,10 +127,7 @@ fn extract_vrl_value(
 }
 
 impl Deserializer for ProtobufDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let vrl_value = extract_vrl_value(bytes, &self.message_descriptor, &self.options)?;
         let mut log = OtelLog::from_value_map(vrl_value, EventMetadata::default());
         log.try_set_timestamp(Utc::now());
@@ -209,7 +201,11 @@ mod tests {
                 log.parse_path_and_get_value("name").ok().flatten().unwrap(),
                 Value::from("someone")
             );
-            let phones = log.parse_path_and_get_value("phones").ok().flatten().unwrap();
+            let phones = log
+                .parse_path_and_get_value("phones")
+                .ok()
+                .flatten()
+                .unwrap();
             assert_eq!(
                 phones.as_array().unwrap()[0].as_object().unwrap()["number"]
                     .as_str()
@@ -236,7 +232,11 @@ mod tests {
                 log.parse_path_and_get_value("name").ok().flatten().unwrap(),
                 Value::from("someone")
             );
-            let phones = log.parse_path_and_get_value("phones").ok().flatten().unwrap();
+            let phones = log
+                .parse_path_and_get_value("phones")
+                .ok()
+                .flatten()
+                .unwrap();
             assert_eq!(
                 phones.as_array().unwrap()[0].as_object().unwrap()["number"]
                     .as_str()
@@ -244,10 +244,7 @@ mod tests {
                 "1234"
             );
             let data = log.parse_path_and_get_value("data").ok().flatten().unwrap();
-            assert_eq!(
-                data.as_object().unwrap()["data_phone"],
-                "HOME".into()
-            );
+            assert_eq!(data.as_object().unwrap()["data_phone"], "HOME".into());
         };
 
         parse_and_validate(
@@ -265,10 +262,25 @@ mod tests {
         let message_type = "test_protobuf.Person";
         let validate_log = |log: &OtelLog| {
             // No field will be set.
-            assert!(log.parse_path_and_get_value("name").ok().flatten().is_none());
+            assert!(
+                log.parse_path_and_get_value("name")
+                    .ok()
+                    .flatten()
+                    .is_none()
+            );
             assert!(log.parse_path_and_get_value("id").ok().flatten().is_none());
-            assert!(log.parse_path_and_get_value("email").ok().flatten().is_none());
-            assert!(log.parse_path_and_get_value("phones").ok().flatten().is_none());
+            assert!(
+                log.parse_path_and_get_value("email")
+                    .ok()
+                    .flatten()
+                    .is_none()
+            );
+            assert!(
+                log.parse_path_and_get_value("phones")
+                    .ok()
+                    .flatten()
+                    .is_none()
+            );
         };
 
         parse_and_validate(

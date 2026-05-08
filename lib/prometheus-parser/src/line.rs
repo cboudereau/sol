@@ -597,10 +597,10 @@ mod test {
         assert_eq!(left, tail);
         assert_eq!(r as u64, 2_u64.pow(53) - 1);
 
-        let input = wrap(&(u32::MAX as u64 + 1).to_string());
+        let input = wrap(&(u64::from(u32::MAX) + 1).to_string());
         let (left, r) = Metric::parse_value(&input).unwrap();
         assert_eq!(left, tail);
-        assert_eq!(r as u64, u32::MAX as u64 + 1);
+        assert_eq!(r as u64, u64::from(u32::MAX) + 1);
 
         let tests = [
             ("0", 0.0f64),

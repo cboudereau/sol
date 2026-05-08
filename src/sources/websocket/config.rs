@@ -124,7 +124,6 @@ pub struct WebSocketConfig {
     #[configurable(metadata(docs::advanced))]
     #[serde(default)]
     pub pong_message: Option<PongMessage>,
-
 }
 
 const fn default_connect_timeout_secs() -> Duration {
@@ -161,14 +160,9 @@ impl SourceConfig for WebSocketConfig {
         let connector =
             WebSocketConnector::new(self.common.uri.clone(), tls, self.common.auth.clone())?;
 
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
-        let params = WebSocketSourceParams {
-            connector,
-            decoder,
-        };
+        let params = WebSocketSourceParams { connector, decoder };
 
         let source = WebSocketSource::new(self.clone(), params);
 
@@ -213,25 +207,21 @@ mod test {
             ..Default::default()
         };
 
-        let definition = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definition = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = schema::Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        );
+        let expected_definition =
+            schema::Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                );
 
         assert_eq!(definition, Some(expected_definition));
     }

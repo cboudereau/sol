@@ -177,17 +177,12 @@ mod test {
     fn check_vrl() {
         let checks = vec![
             (
-                otel_event![],   // event
+                otel_event![],  // event
                 "true == true", // source
                 Ok(()),         // build result
                 Ok(()),         // check result
             ),
-            (
-                otel_event![],
-                "true || false",
-                Ok(()),
-                Ok(()),
-            ),
+            (otel_event![], "true || false", Ok(()), Ok(())),
             (
                 otel_event![],
                 "true == false",

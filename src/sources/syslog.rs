@@ -7,7 +7,6 @@ use chrono::Utc;
 use futures::StreamExt;
 use listenfd::ListenFd;
 use smallvec::SmallVec;
-use tokio_util::udp::UdpFramed;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -18,15 +17,14 @@ use sol_lib::{
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
     ipallowlist::IpAllowlistConfig,
 };
+use tokio_util::udp::UdpFramed;
 
 #[cfg(unix)]
 use crate::sources::util::build_unix_stream_source;
 use crate::{
     SourceSender,
     codecs::Decoder,
-    config::{
-        DataType, GenerateConfig, Resource, SourceConfig, SourceContext, SourceOutput,
-    },
+    config::{DataType, GenerateConfig, Resource, SourceConfig, SourceContext, SourceOutput},
     event::{Event, string_value},
     internal_events::{
         SocketBindError, SocketEventsReceived, SocketMode, SocketReceiveError, StreamClosedError,
@@ -51,7 +49,6 @@ pub struct SyslogConfig {
     #[serde(default = "crate::serde::default_max_length")]
     #[configurable(metadata(docs::type_unit = "bytes"))]
     max_length: usize,
-
 }
 
 /// Listener mode for the `syslog` source.
@@ -214,7 +211,7 @@ impl SourceConfig for SyslogConfig {
                     path,
                     socket_file_mode,
                     decoder,
-                    move |events, host| handle_events(events, host),
+                    handle_events,
                     cx.shutdown,
                     cx.out,
                 )
@@ -266,10 +263,7 @@ impl TcpSource for SyslogTcpSource {
     }
 
     fn handle_events(&self, events: &mut [Event], host: SocketAddr) {
-        handle_events(
-            events,
-            Some(host.ip().to_string().into()),
-        );
+        handle_events(events, Some(host.ip().to_string().into()));
     }
 
     fn build_acker(&self, _: &[Self::Item]) -> Self::Acker {
@@ -359,19 +353,13 @@ pub fn udp(
     })
 }
 
-fn handle_events(
-    events: &mut [Event],
-    default_host: Option<Bytes>,
-) {
+fn handle_events(events: &mut [Event], default_host: Option<Bytes>) {
     for event in events {
         enrich_syslog_event(event, default_host.clone());
     }
 }
 
-fn enrich_syslog_event(
-    event: &mut Event,
-    default_host: Option<Bytes>,
-) {
+fn enrich_syslog_event(event: &mut Event, default_host: Option<Bytes>) {
     if let Event::Log(otel_log) = event {
         let now = Utc::now();
         otel_log.set_source_metadata(SyslogConfig::NAME, now);
@@ -387,13 +375,12 @@ fn enrich_syslog_event(
             .get(vrl::path!("syslog", "hostname"))
             .and_then(|v| v.as_str().map(|s| s.into_owned()));
         let host_value = parsed_hostname.or_else(|| {
-            default_host.as_ref().map(|h| String::from_utf8_lossy(h).into_owned())
+            default_host
+                .as_ref()
+                .map(|h| String::from_utf8_lossy(h).into_owned())
         });
         if let Some(host) = host_value {
-            otel_log.set_resource_attribute(
-                "host.name".to_string(),
-                string_value(host),
-            );
+            otel_log.set_resource_attribute("host.name".to_string(), string_value(host));
         }
     }
 
@@ -410,15 +397,12 @@ mod test {
     use chrono::prelude::*;
     use rand::{Rng, rng};
     use serde::Deserialize;
+    use sol_lib::{
+        assert_event_data_eq, codecs::decoding::format::Deserializer, config::ComponentKey,
+        lookup::owned_value_path, schema::Definition,
+    };
     use tokio::time::{Duration, Instant, sleep};
     use tokio_util::codec::BytesCodec;
-    use sol_lib::{
-        assert_event_data_eq,
-        codecs::decoding::format::Deserializer,
-        config::{ComponentKey},
-        lookup::owned_value_path,
-        schema::Definition,
-    };
     use vrl::value::{Kind, Value, kind::Collection};
 
     use super::*;
@@ -432,16 +416,10 @@ mod test {
         },
     };
 
-    fn event_from_bytes(
-        default_host: Option<Bytes>,
-        bytes: Bytes,
-    ) -> Option<Event> {
+    fn event_from_bytes(default_host: Option<Bytes>, bytes: Bytes) -> Option<Event> {
         let parser = SyslogDeserializerConfig::from_source(SyslogConfig::NAME).build();
         let mut events = parser.parse(bytes).ok()?;
-        handle_events(
-            &mut events,
-            default_host,
-        );
+        handle_events(&mut events, default_host);
         Some(events.remove(0))
     }
 
@@ -456,55 +434,47 @@ mod test {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .optional_field(
-            &owned_value_path!("time_unix_nano"),
-            Kind::integer(),
-            Some("timestamp"),
-        )
-        .optional_field(
-            &owned_value_path!("hostname"),
-            Kind::bytes(),
-            Some("host"),
-        )
-        .optional_field(
-            &owned_value_path!("severity"),
-            Kind::bytes(),
-            Some("severity"),
-        )
-        .optional_field(&owned_value_path!("facility"), Kind::bytes(), None)
-        .optional_field(&owned_value_path!("version"), Kind::integer(), None)
-        .optional_field(
-            &owned_value_path!("appname"),
-            Kind::bytes(),
-            Some("service"),
-        )
-        .optional_field(&owned_value_path!("msgid"), Kind::bytes(), None)
-        .optional_field(
-            &owned_value_path!("procid"),
-            Kind::integer().or_bytes(),
-            None,
-        )
-        .optional_field(&owned_value_path!("source_ip"), Kind::bytes(), None)
-        .unknown_fields(Kind::object(Collection::from_unknown(Kind::bytes())))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        );
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .optional_field(
+                    &owned_value_path!("time_unix_nano"),
+                    Kind::integer(),
+                    Some("timestamp"),
+                )
+                .optional_field(&owned_value_path!("hostname"), Kind::bytes(), Some("host"))
+                .optional_field(
+                    &owned_value_path!("severity"),
+                    Kind::bytes(),
+                    Some("severity"),
+                )
+                .optional_field(&owned_value_path!("facility"), Kind::bytes(), None)
+                .optional_field(&owned_value_path!("version"), Kind::integer(), None)
+                .optional_field(
+                    &owned_value_path!("appname"),
+                    Kind::bytes(),
+                    Some("service"),
+                )
+                .optional_field(&owned_value_path!("msgid"), Kind::bytes(), None)
+                .optional_field(
+                    &owned_value_path!("procid"),
+                    Kind::integer().or_bytes(),
+                    None,
+                )
+                .optional_field(&owned_value_path!("source_ip"), Kind::bytes(), None)
+                .unknown_fields(Kind::object(Collection::from_unknown(Kind::bytes())))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                );
 
         assert_eq!(definitions, Some(expected_definition));
     }
@@ -678,11 +648,7 @@ mod test {
         }
 
         assert_event_data_eq!(
-            event_from_bytes(
-                Some(Bytes::from("192.168.0.254")),
-                raw.into(),
-            )
-            .unwrap(),
+            event_from_bytes(Some(Bytes::from("192.168.0.254")), raw.into(),).unwrap(),
             expected
         );
     }
@@ -706,11 +672,7 @@ mod test {
             expected.insert("source_ip", "192.168.0.254");
         }
 
-        let event = event_from_bytes(
-            Some(Bytes::from("192.168.0.254")),
-            raw.into(),
-        )
-        .unwrap();
+        let event = event_from_bytes(Some(Bytes::from("192.168.0.254")), raw.into()).unwrap();
         assert_event_data_eq!(event, expected);
 
         let raw = format!(
@@ -718,11 +680,7 @@ mod test {
             r"[incorrect x=]", msg
         );
 
-        let event = event_from_bytes(
-            Some(Bytes::from("192.168.0.254")),
-            raw.into(),
-        )
-        .unwrap();
+        let event = event_from_bytes(Some(Bytes::from("192.168.0.254")), raw.into()).unwrap();
         assert_event_data_eq!(event, expected);
     }
 
@@ -784,11 +742,7 @@ mod test {
 
         assert_event_data_eq!(
             event_from_bytes(None, raw.to_owned().into()).unwrap(),
-            event_from_bytes(
-                None,
-                cleaned.to_owned().into(),
-            )
-            .unwrap()
+            event_from_bytes(None, cleaned.to_owned().into(),).unwrap()
         );
     }
 
@@ -797,12 +751,16 @@ mod test {
         use vrl::path;
         let raw =
             r#"<190>Feb 13 21:31:56 74794bfb6795 liblogging-stdlog:  [origin foo.bar="baz"] hello"#;
-        let event =
-            event_from_bytes(None, raw.to_owned().into()).unwrap();
+        let event = event_from_bytes(None, raw.to_owned().into()).unwrap();
         // In Vector namespace, structured data is stored in EventMetadata
         // under ["syslog"]["structured_data"]["<element_id>"]["<param_name>"]
         assert_eq!(
-            event.as_log().metadata().value().get(path!("syslog", "structured_data", "origin", "foo.bar")),
+            event.as_log().metadata().value().get(path!(
+                "syslog",
+                "structured_data",
+                "origin",
+                "foo.bar"
+            )),
             Some(&Value::from("baz"))
         );
     }
@@ -811,11 +769,7 @@ mod test {
     fn syslog_ng_default_network() {
         let msg = "i am foobar";
         let raw = format!(r#"<13>Feb 13 20:07:26 74794bfb6795 root[8539]: {msg}"#);
-        let event = event_from_bytes(
-            Some(Bytes::from("192.168.0.254")),
-            raw.into(),
-        )
-        .unwrap();
+        let event = event_from_bytes(Some(Bytes::from("192.168.0.254")), raw.into()).unwrap();
 
         let mut expected = Event::Log(OtelLog::from(msg));
         {
@@ -837,11 +791,7 @@ mod test {
         let raw = format!(
             r#"<190>Feb 13 21:31:56 74794bfb6795 liblogging-stdlog:  [origin software="rsyslogd" swVersion="8.24.0" x-pid="8979" x-info="http://www.rsyslog.com"] {msg}"#
         );
-        let event = event_from_bytes(
-            Some(Bytes::from("192.168.0.254")),
-            raw.into(),
-        )
-        .unwrap();
+        let event = event_from_bytes(Some(Bytes::from("192.168.0.254")), raw.into()).unwrap();
 
         let mut expected = Event::Log(OtelLog::from(msg));
         {
@@ -873,10 +823,7 @@ mod test {
             // No source_ip since no default_host passed to event_from_bytes
         }
 
-        assert_event_data_eq!(
-            event_from_bytes(None, raw.into()).unwrap(),
-            expected
-        );
+        assert_event_data_eq!(event_from_bytes(None, raw.into()).unwrap(), expected);
     }
 
     #[tokio::test]

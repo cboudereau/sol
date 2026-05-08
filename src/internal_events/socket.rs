@@ -46,7 +46,12 @@ impl InternalEvent for SocketBytesReceived {
             "protocol" => protocol,
         )
         .increment(self.byte_size as u64);
-        histogram!("component_received_bytes").record(self.byte_size as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "received bytes histogram; precise for |v| <= 2^53"
+        )]
+        let byte_size = self.byte_size as f64;
+        histogram!("component_received_bytes").record(byte_size);
     }
 }
 
@@ -69,7 +74,12 @@ impl InternalEvent for SocketEventsReceived {
         counter!("component_received_events_total", "mode" => mode).increment(self.count as u64);
         counter!("component_received_event_bytes_total", "mode" => mode)
             .increment(self.byte_size.get() as u64);
-        histogram!("component_received_bytes", "mode" => mode).record(self.byte_size.get() as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "received bytes histogram; precise for |v| <= 2^53"
+        )]
+        let byte_size = self.byte_size.get() as f64;
+        histogram!("component_received_bytes", "mode" => mode).record(byte_size);
     }
 }
 

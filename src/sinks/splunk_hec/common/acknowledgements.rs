@@ -1,6 +1,7 @@
 use http_body::{Body as _, Collected};
 use hyper::Body;
 use serde::{Deserialize, Serialize};
+use sol_lib::{configurable::configurable_component, event::EventStatus};
 use std::{
     collections::HashMap,
     io::Write,
@@ -9,7 +10,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc::Receiver, oneshot::Sender};
-use sol_lib::{configurable::configurable_component, event::EventStatus};
 
 use super::service::{HttpRequestBuilder, MetadataFields};
 use crate::{
@@ -266,9 +266,9 @@ pub async fn run_acknowledgements(
     http_request_builder: Arc<HttpRequestBuilder>,
     indexer_acknowledgements: HecClientAcknowledgementsConfig,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_secs(
-        indexer_acknowledgements.query_interval.get() as u64,
-    ));
+    let mut interval = tokio::time::interval(Duration::from_secs(u64::from(
+        indexer_acknowledgements.query_interval.get(),
+    )));
     let mut ack_client = HecAckClient::new(
         indexer_acknowledgements.retry_limit.get(),
         client,
@@ -298,8 +298,8 @@ mod tests {
     use std::sync::Arc;
 
     use futures_util::{StreamExt, stream::FuturesUnordered};
-    use tokio::sync::oneshot::{self, Receiver};
     use sol_lib::{config::proxy::ProxyConfig, event::EventStatus};
+    use tokio::sync::oneshot::{self, Receiver};
 
     use super::HecAckClient;
     use crate::{

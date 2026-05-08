@@ -1,8 +1,8 @@
 use bytes::{BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
-use tokio_util::codec::Encoder;
 use sol_config::configurable_component;
 use sol_core::{config::DataType, event::Event, schema};
+use tokio_util::codec::Encoder;
 
 use crate::encoding::BuildError;
 

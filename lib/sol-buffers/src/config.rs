@@ -7,9 +7,9 @@ use std::{
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use snafu::{ResultExt, Snafu};
-use tracing::Span;
 use sol_common::{config::ComponentKey, finalization::Finalizable};
 use sol_config::configurable_component;
+use tracing::Span;
 
 use crate::{
     Bufferable, WhenFull,

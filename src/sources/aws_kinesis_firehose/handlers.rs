@@ -6,7 +6,6 @@ use chrono::Utc;
 use flate2::read::MultiGzDecoder;
 use futures::StreamExt;
 use snafu::{ResultExt, Snafu};
-use tokio_util::codec::FramedRead;
 use sol_common::constants::GZIP_MAGIC;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
@@ -18,6 +17,7 @@ use sol_lib::{
     },
     source_sender::SendError,
 };
+use tokio_util::codec::FramedRead;
 use warp::reject;
 
 use super::{
@@ -25,7 +25,6 @@ use super::{
     errors::{ParseRecordsSnafu, RequestError},
     models::{EncodedFirehoseRecord, FirehoseRequest, FirehoseResponse},
 };
-use sol_lib::lookup;
 use crate::{
     SourceSender,
     codecs::Decoder,
@@ -35,6 +34,7 @@ use crate::{
     },
     sources::aws_kinesis_firehose::AwsKinesisFirehoseConfig,
 };
+use sol_lib::lookup;
 
 #[derive(Clone)]
 pub(super) struct Context {
@@ -90,30 +90,26 @@ pub(super) async fn firehose(
                             event.add_batch_notifier(batch.clone());
                         }
                         if let Event::Log(otel_log) = event {
-                                otel_log.set_source_metadata_vector_ns(
-                                    AwsKinesisFirehoseConfig::NAME,
-                                    now,
+                            otel_log
+                                .set_source_metadata_vector_ns(AwsKinesisFirehoseConfig::NAME, now);
+                            let meta = otel_log.metadata_mut().value_mut();
+                            meta.insert(
+                                lookup::path!(AwsKinesisFirehoseConfig::NAME, "request_id"),
+                                request_id.clone(),
+                            );
+                            meta.insert(
+                                lookup::path!(AwsKinesisFirehoseConfig::NAME, "source_arn"),
+                                source_arn.clone(),
+                            );
+                            meta.insert(
+                                lookup::path!(AwsKinesisFirehoseConfig::NAME, "timestamp"),
+                                vrl::value::Value::Timestamp(request_timestamp),
+                            );
+                            if store_access_key && let Some(ref key) = access_key {
+                                otel_log.metadata_mut().secrets_mut().insert(
+                                    "aws_kinesis_firehose_access_key",
+                                    std::sync::Arc::from(key.as_str()),
                                 );
-                                let meta = otel_log.metadata_mut().value_mut();
-                                meta.insert(
-                                    lookup::path!(AwsKinesisFirehoseConfig::NAME, "request_id"),
-                                    request_id.clone(),
-                                );
-                                meta.insert(
-                                    lookup::path!(AwsKinesisFirehoseConfig::NAME, "source_arn"),
-                                    source_arn.clone(),
-                                );
-                                meta.insert(
-                                    lookup::path!(AwsKinesisFirehoseConfig::NAME, "timestamp"),
-                                    vrl::value::Value::Timestamp(request_timestamp),
-                                );
-                            if store_access_key {
-                                if let Some(ref key) = access_key {
-                                    otel_log.metadata_mut().secrets_mut().insert(
-                                        "aws_kinesis_firehose_access_key",
-                                        std::sync::Arc::from(key.as_str()),
-                                    );
-                                }
                             }
                         }
                     }

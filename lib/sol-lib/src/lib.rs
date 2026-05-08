@@ -35,11 +35,9 @@ pub use vrl;
 pub mod config {
     pub use sol_common::config::ComponentKey;
     pub use sol_core::config::{
-        AcknowledgementsConfig, DataType, GlobalOptions, Input,
-        MEMORY_BUFFER_DEFAULT_MAX_EVENTS, OutputId,
-        SourceAcknowledgementsConfig, SourceOutput,
-        Tags, Telemetry, TransformOutput, WildcardMatching, clone_input_definitions,
-        get_source_metadata, get_vector_metadata,
+        AcknowledgementsConfig, DataType, GlobalOptions, Input, MEMORY_BUFFER_DEFAULT_MAX_EVENTS,
+        OutputId, SourceAcknowledgementsConfig, SourceOutput, Tags, Telemetry, TransformOutput,
+        WildcardMatching, clone_input_definitions, get_source_metadata, get_vector_metadata,
         init_telemetry, insert_source_metadata, insert_standard_vector_source_metadata,
         insert_vector_metadata, proxy, telemetry,
     };

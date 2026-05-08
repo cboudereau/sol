@@ -2,7 +2,6 @@ use async_nats::jetstream::consumer::pull::Stream as PullConsumerStream;
 use chrono::Utc;
 use futures::StreamExt;
 use snafu::ResultExt;
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::decoding::StreamDecodingError,
@@ -11,6 +10,7 @@ use sol_lib::{
         InternalEventHandle as _, Protocol,
     },
 };
+use tokio_util::codec::FramedRead;
 
 use crate::{
     SourceSender,
@@ -104,14 +104,7 @@ pub async fn run_nats_jetstream(
     while let Some(Ok(msg)) = message_stream.next().await {
         bytes_received.emit(ByteSize(msg.payload.len()));
 
-        let status = process_message(
-            &msg,
-            &config,
-            &decoder,
-            &mut out,
-            &events_received,
-        )
-        .await;
+        let status = process_message(&msg, &config, &decoder, &mut out, &events_received).await;
 
         match status {
             ProcessingStatus::Success => {

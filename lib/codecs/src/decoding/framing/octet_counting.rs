@@ -2,9 +2,9 @@ use std::io;
 
 use bytes::{Buf, Bytes, BytesMut};
 use derivative::Derivative;
+use sol_config::configurable_component;
 use tokio_util::codec::{LinesCodec, LinesCodecError};
 use tracing::trace;
-use sol_config::configurable_component;
 
 use super::BoxedFramingError;
 

@@ -3,14 +3,14 @@ use std::{convert::TryInto, path::PathBuf, time::Duration};
 use bytes::Bytes;
 use criterion::{BatchSize, Criterion, SamplingMode, Throughput, criterion_group};
 use futures::{SinkExt, StreamExt, stream};
-use tempfile::tempdir;
-use tokio::fs::OpenOptions;
-use tokio_util::codec::{BytesCodec, FramedWrite};
 use sol::{
     config, sinks, sources,
     test_util::{random_lines, runtime, start_topology},
 };
 use sol_lib::codecs::{TextSerializerConfig, encoding::FramingConfig};
+use tempfile::tempdir;
+use tokio::fs::OpenOptions;
+use tokio_util::codec::{BytesCodec, FramedWrite};
 
 fn benchmark_files_no_partitions(c: &mut Criterion) {
     let num_lines: usize = 10_000;

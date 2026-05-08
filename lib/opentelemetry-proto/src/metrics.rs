@@ -1,12 +1,7 @@
-use sol_core::event::{
-    Event, EventMetadata,
-    OtelMetric,
-};
+use sol_core::event::{Event, EventMetadata, OtelMetric};
 
 use super::proto::{
-    common::v1::InstrumentationScope,
-    metrics::v1::ResourceMetrics,
-    resource::v1::Resource,
+    common::v1::InstrumentationScope, metrics::v1::ResourceMetrics, resource::v1::Resource,
 };
 
 impl ResourceMetrics {
@@ -32,7 +27,6 @@ impl ResourceMetrics {
                 })
             })
     }
-
 }
 
 // --- Proto type conversion helpers (opentelemetry-proto ↔ otel-proto-types) ---
@@ -43,7 +37,8 @@ fn proto_convert_resource(
     use prost::Message;
     let r = r?;
     let bytes = r.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes))
+        .ok()
 }
 
 fn proto_convert_scope(
@@ -52,7 +47,10 @@ fn proto_convert_scope(
     use prost::Message;
     let s = s?;
     let bytes = s.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(
+        bytes::Bytes::from(bytes),
+    )
+    .ok()
 }
 
 fn proto_convert_metric(
@@ -66,13 +64,12 @@ fn proto_convert_metric(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::proto::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         metrics::v1::{
-            AggregationTemporality, Gauge, Histogram, HistogramDataPoint, NumberDataPoint,
-            ResourceMetrics, ScopeMetrics, Sum, metric,
-            number_data_point::Value as NDPValue,
+            AggregationTemporality, Gauge, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+            metric, number_data_point::Value as NDPValue,
         },
         resource::v1::Resource,
     };

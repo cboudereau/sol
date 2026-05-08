@@ -62,13 +62,13 @@ impl Default for StoreConfig {
     }
 }
 
-fn default_flush_interval() -> u64 {
+const fn default_flush_interval() -> u64 {
     15
 }
-fn default_ttl() -> u64 {
+const fn default_ttl() -> u64 {
     2
 }
-fn default_max_items() -> usize {
+const fn default_max_items() -> usize {
     1000
 }
 fn default_buckets() -> Vec<f64> {

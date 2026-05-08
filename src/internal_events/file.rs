@@ -34,7 +34,12 @@ pub struct FileOpen {
 
 impl InternalEvent for FileOpen {
     fn emit(self) {
-        gauge!("open_files").set(self.count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "open file count gauge; precise for |v| <= 2^53"
+        )]
+        let count = self.count as f64;
+        gauge!("open_files").set(count);
     }
 }
 
@@ -439,7 +444,11 @@ mod source {
             debug!(
                 message = "Files checkpointed.",
                 count = %self.count,
-                duration_ms = self.duration.as_millis() as u64,
+                duration_ms = {
+                    #[expect(clippy::cast_possible_truncation, reason = "checkpoint duration always fits in u64 ms")]
+                    let ms = self.duration.as_millis() as u64;
+                    ms
+                },
             );
             counter!("checkpoints_total").increment(self.count as u64);
         }

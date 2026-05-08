@@ -144,10 +144,7 @@ fn main() {
                     "proto/third-party/google/pubsub/v1/pubsub.proto",
                     "proto/third-party/google/rpc/status.proto",
                 ],
-                &[
-                    "proto/third-party",
-                    "proto/vector",
-                ],
+                &["proto/third-party", "proto/vector"],
             )
             .unwrap();
     }

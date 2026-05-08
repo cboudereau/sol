@@ -1,8 +1,6 @@
 use chrono::Utc;
 use greptimedb_ingester::{api::v1::*, helpers::values::*};
-use sol_lib::event::{
-    MetricView, OtelMetric, ValueAtQuantile,
-};
+use sol_lib::event::{MetricView, OtelMetric, ValueAtQuantile};
 
 pub(super) struct RequestBuilderOptions {
     pub(super) use_new_naming: bool,
@@ -79,7 +77,14 @@ pub fn metric_to_insert_request(
                 } else {
                     LEGACY_VALUE_COLUMN_NAME
                 },
-                values.len() as f64,
+                {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "set cardinality; precise for |v| <= 2^53"
+                    )]
+                    let v = values.len() as f64;
+                    v
+                },
                 &mut schema,
                 &mut columns,
             );
@@ -91,7 +96,12 @@ pub fn metric_to_insert_request(
             sum,
         } => {
             encode_histogram(bounds, counts, &mut schema, &mut columns);
-            encode_f64_value("count", count as f64, &mut schema, &mut columns);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "metric count to f64; precise for |v| <= 2^53"
+            )]
+            let count_f64 = count as f64;
+            encode_f64_value("count", count_f64, &mut schema, &mut columns);
             encode_f64_value("sum", sum, &mut schema, &mut columns);
         }
         MetricView::Summary {
@@ -100,11 +110,27 @@ pub fn metric_to_insert_request(
             sum,
         } => {
             encode_quantiles(quantiles, &mut schema, &mut columns);
-            encode_f64_value("count", count as f64, &mut schema, &mut columns);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "summary count to f64; precise for |v| <= 2^53"
+            )]
+            let count_f64 = count as f64;
+            encode_f64_value("count", count_f64, &mut schema, &mut columns);
             encode_f64_value("sum", sum, &mut schema, &mut columns);
         }
-        MetricView::ExponentialHistogram { count, sum, min, max, .. } => {
-            encode_f64_value("count", count as f64, &mut schema, &mut columns);
+        MetricView::ExponentialHistogram {
+            count,
+            sum,
+            min,
+            max,
+            ..
+        } => {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "exp-histogram count to f64; precise for |v| <= 2^53"
+            )]
+            let count_f64 = count as f64;
+            encode_f64_value("count", count_f64, &mut schema, &mut columns);
             encode_f64_value("sum", sum, &mut schema, &mut columns);
             if let Some(mn) = min {
                 encode_f64_value("min", mn, &mut schema, &mut columns);
@@ -124,10 +150,20 @@ pub fn metric_to_insert_request(
     }
 }
 
-fn encode_histogram(bounds: &[f64], counts: &[u64], schema: &mut Vec<ColumnSchema>, columns: &mut Vec<Value>) {
+fn encode_histogram(
+    bounds: &[f64],
+    counts: &[u64],
+    schema: &mut Vec<ColumnSchema>,
+    columns: &mut Vec<Value>,
+) {
     for (&limit, &cnt) in bounds.iter().zip(counts.iter()) {
         let column_name = format!("b{limit}");
-        encode_f64_value(&column_name, cnt as f64, schema, columns);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "bucket count to f64; precise for |v| <= 2^53"
+        )]
+        let cnt_f64 = cnt as f64;
+        encode_f64_value(&column_name, cnt_f64, schema, columns);
     }
 }
 
@@ -141,7 +177,6 @@ fn encode_quantiles(
         encode_f64_value(&column_name, q.value, schema, columns);
     }
 }
-
 
 fn f64_column(name: &str) -> ColumnSchema {
     ColumnSchema {
@@ -176,10 +211,7 @@ mod tests {
     use similar_asserts::assert_eq;
 
     use super::*;
-    use crate::event::{
-        OtelMetric,
-        metric::MetricKind,
-    };
+    use crate::event::{OtelMetric, metric::MetricKind};
 
     fn get_column(rows: &Rows, name: &str) -> f64 {
         let (col_index, _) = rows
@@ -204,7 +236,11 @@ mod tests {
     fn test_metric_data_to_insert_request() {
         let metric = OtelMetric::new_gauge("load1", 1.1)
             .with_namespace(Some("ns"))
-            .with_tags(Some(vec![("host".to_owned(), "my_host".to_owned())].into_iter().collect()))
+            .with_tags(Some(
+                vec![("host".to_owned(), "my_host".to_owned())]
+                    .into_iter()
+                    .collect(),
+            ))
             .with_timestamp(Some(Utc::now()));
 
         let options = RequestBuilderOptions {
@@ -238,7 +274,11 @@ mod tests {
     fn test_metric_data_to_insert_request_new_naming() {
         let metric = OtelMetric::new_gauge("load1", 1.1)
             .with_namespace(Some("ns"))
-            .with_tags(Some(vec![("host".to_owned(), "my_host".to_owned())].into_iter().collect()))
+            .with_tags(Some(
+                vec![("host".to_owned(), "my_host".to_owned())]
+                    .into_iter()
+                    .collect(),
+            ))
             .with_timestamp(Some(Utc::now()));
 
         let options = RequestBuilderOptions {
@@ -270,11 +310,7 @@ mod tests {
 
     #[test]
     fn test_counter() {
-        let metric = OtelMetric::new_counter(
-            "cpu_seconds_total",
-            MetricKind::Incremental,
-            1.1,
-        );
+        let metric = OtelMetric::new_counter("cpu_seconds_total", MetricKind::Incremental, 1.1);
         let options = RequestBuilderOptions {
             use_new_naming: false,
         };
@@ -306,10 +342,11 @@ mod tests {
 
     #[test]
     fn test_distribution_as_histogram() {
+        let samples = sol_lib::samples![1.0 => 2, 2.0 => 4, 3.0 => 2];
         let otel = OtelMetric::new_histogram_from_samples(
             "cpu_seconds_total",
             MetricKind::Incremental,
-            &sol_lib::samples![1.0 => 2, 2.0 => 4, 3.0 => 2],
+            &samples,
         );
         let options = RequestBuilderOptions {
             use_new_naming: false,
@@ -317,10 +354,7 @@ mod tests {
 
         let insert = metric_to_insert_request(otel, &options);
         let rows = insert.rows.expect("Empty insert request");
-        assert_eq!(
-            rows.rows[0].values.len(),
-            1 + SUMMARY_STAT_FIELD_COUNT + 3
-        );
+        assert_eq!(rows.rows[0].values.len(), 1 + SUMMARY_STAT_FIELD_COUNT + 3);
 
         assert_eq!(get_column(&rows, "b1"), 2.0);
         assert_eq!(get_column(&rows, "b2"), 4.0);
@@ -380,5 +414,4 @@ mod tests {
         assert_eq!(get_column(&rows, "count"), 6.0);
         assert_eq!(get_column(&rows, "sum"), 12.0);
     }
-
 }

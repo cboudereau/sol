@@ -1,7 +1,6 @@
 use chrono::Utc;
 use futures::StreamExt;
 use snafu::{ResultExt, Snafu};
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -14,6 +13,7 @@ use sol_lib::{
     },
     lookup::{OwnedValuePath, lookup_v2::OptionalValuePath, owned_value_path},
 };
+use tokio_util::codec::FramedRead;
 use vrl::value::Kind;
 
 use crate::{
@@ -127,7 +127,6 @@ pub struct RedisSourceConfig {
     #[serde(default = "default_decoding")]
     #[derivative(Default(value = "default_decoding()"))]
     decoding: DeserializerConfig,
-
 }
 
 impl GenerateConfig for RedisSourceConfig {
@@ -157,9 +156,7 @@ impl SourceConfig for RedisSourceConfig {
 
         let client = redis::Client::open(self.url.as_str()).context(ClientSnafu {})?;
         let connection_info = ConnectionInfo::from(client.get_connection_info());
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         let bytes_received = register!(BytesReceived::from(Protocol::from(
             connection_info.protocol
@@ -188,12 +185,7 @@ impl SourceConfig for RedisSourceConfig {
         let schema_definition = self
             .decoding
             .schema_definition()
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!("key"),
-                Kind::bytes(),
-                None,
-            )
+            .with_source_metadata(Self::NAME, &owned_value_path!("key"), Kind::bytes(), None)
             .with_standard_vector_source_metadata();
 
         vec![SourceOutput::new_maybe_logs(
@@ -235,10 +227,8 @@ impl InputHandler {
                     let events = events.into_iter().map(|mut event| {
                         if let Event::Log(ref mut otel_log) = event {
                             otel_log.set_source_metadata(RedisSourceConfig::NAME, now);
-                            otel_log.set_attribute(
-                                "key".to_string(),
-                                string_value(self.key.as_str()),
-                            );
+                            otel_log
+                                .set_attribute("key".to_string(), string_value(self.key.as_str()));
                         }
 
                         event
@@ -317,18 +307,9 @@ mod integration_test {
 
         let events = run_and_assert_source_compliance_n(config, 3, &SOURCE_TAGS).await;
 
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "3".into()
-        );
-        assert_eq!(
-            events[1].as_log().get("body").unwrap(),
-            "2".into()
-        );
-        assert_eq!(
-            events[2].as_log().get("body").unwrap(),
-            "1".into()
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "3".into());
+        assert_eq!(events[1].as_log().get("body").unwrap(), "2".into());
+        assert_eq!(events[2].as_log().get("body").unwrap(), "1".into());
     }
 
     #[tokio::test]
@@ -397,18 +378,9 @@ mod integration_test {
 
         let events = run_and_assert_source_compliance_n(config, 3, &SOURCE_TAGS).await;
 
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "1".into()
-        );
-        assert_eq!(
-            events[1].as_log().get("body").unwrap(),
-            "2".into()
-        );
-        assert_eq!(
-            events[2].as_log().get("body").unwrap(),
-            "3".into()
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "1".into());
+        assert_eq!(events[1].as_log().get("body").unwrap(), "2".into());
+        assert_eq!(events[2].as_log().get("body").unwrap(), "3".into());
     }
 
     #[tokio::test]
@@ -458,10 +430,7 @@ mod integration_test {
         assert_eq!(events.len(), 10000);
 
         for event in events {
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                text.into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), text.into());
             assert_eq!(
                 event.as_log().get_source_type().unwrap(),
                 RedisSourceConfig::NAME.into()

@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use sol_lib::configurable::configurable_component;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::net::UnixListener;
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
-use sol_lib::configurable::configurable_component;
 
 use super::{
-    ConversionUnit, default_convert_to, default_flush_interval_secs, default_gauge_ttl_secs,
-    default_is_monotonic, default_sanitize, flush_aggregator,
+    ConversionUnit,
     aggregator::{Aggregator, AggregatorConfig},
+    default_convert_to, default_flush_interval_secs, default_gauge_ttl_secs, default_is_monotonic,
+    default_sanitize, flush_aggregator,
     parser::Parser,
 };
 use crate::{

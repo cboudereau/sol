@@ -16,11 +16,11 @@ use aws_smithy_types::DateTime as AwsDateTime;
 use futures::{FutureExt, SinkExt, stream};
 use futures_util::{future, future::BoxFuture};
 use indexmap::IndexMap;
-use tower::Service;
 use sol_lib::{
-    ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component, sink::VectorSink,
-    event::OtelAttributes,
+    ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component,
+    event::OtelAttributes, sink::VectorSink,
 };
+use tower::Service;
 
 use super::util::service::TowerRequestConfigDefaults;
 use crate::{
@@ -28,9 +28,7 @@ use crate::{
         ClientBuilder, RegionOrEndpoint, auth::AwsAuthentication, create_client, is_retriable_error,
     },
     config::{AcknowledgementsConfig, Input, ProxyConfig, SinkConfig, SinkContext},
-    event::{
-        Event, MetricView, OtelMetric,
-    },
+    event::{Event, MetricView, OtelMetric},
     sinks::util::{
         Compression, EncodedEvent, PartitionBuffer, PartitionInnerBuffer, SinkBatchSettings,
         TowerRequestConfig,
@@ -303,7 +301,11 @@ impl CloudWatchMetricsSvc {
                     MetricView::Set { values } => Some(
                         MetricDatum::builder()
                             .metric_name(metric_name)
-                            .value(values.len() as f64)
+                            .value({
+                            #[expect(clippy::cast_precision_loss, reason = "set cardinality; precise for |v| <= 2^53")]
+                            let v = values.len() as f64;
+                            v
+                        })
                             .set_timestamp(timestamp)
                             .set_dimensions(dimensions)
                             .set_storage_resolution(resolution)
@@ -321,9 +323,13 @@ impl CloudWatchMetricsSvc {
                     MetricView::Histogram { bounds, counts, .. } => Some(
                         MetricDatum::builder()
                             .metric_name(metric_name)
-                            .set_values(Some(bounds.iter().copied().collect()))
+                            .set_values(Some(bounds.to_vec()))
                             .set_counts(Some(
-                                bounds.iter().zip(counts.iter()).map(|(_, &c)| c as f64).collect()
+                                bounds.iter().zip(counts.iter()).map(|(_, &c)| {
+                                    #[expect(clippy::cast_precision_loss, reason = "bucket count to f64 for CloudWatch; precise for |v| <= 2^53")]
+                                    let v = c as f64;
+                                    v
+                                }).collect()
                             ))
                             .set_timestamp(timestamp)
                             .set_dimensions(dimensions)
@@ -338,7 +344,11 @@ impl CloudWatchMetricsSvc {
                                 .metric_name(metric_name)
                                 .statistic_values(
                                     StatisticSet::builder()
-                                        .sample_count(count as f64)
+                                        .sample_count({
+                                            #[expect(clippy::cast_precision_loss, reason = "metric sample count; precise for |v| <= 2^53")]
+                                            let v = count as f64;
+                                            v
+                                        })
                                         .sum(sum)
                                         .minimum(mn)
                                         .maximum(mx)

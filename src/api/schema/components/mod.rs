@@ -10,8 +10,8 @@ use std::{
 };
 
 use async_graphql::{Enum, InputObject, Interface, Object, Subscription};
-use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 use sol_lib::internal_event::DEFAULT_OUTPUT;
+use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 
 use crate::{
     api::schema::{
@@ -272,12 +272,7 @@ pub fn update_config(config: &Config) {
                 // TODO(#10745): This is obviously wrong, but there are a lot of assumptions in the
                 // API modules about `output_type` as it's a sortable field, etc. This is a stopgap
                 // until we decide how we want to change the rest of the usages.
-                output_type: source
-                    .inner
-                    .outputs()
-                    .pop()
-                    .unwrap()
-                    .ty,
+                output_type: source.inner.outputs().pop().unwrap().ty,
                 outputs: source
                     .inner
                     .outputs()
@@ -296,12 +291,9 @@ pub fn update_config(config: &Config) {
                 component_key: component_key.clone(),
                 component_type: transform.inner.get_component_name().to_string(),
                 inputs: transform.inputs.clone(),
-                outputs: get_transform_output_ids(
-                    transform.inner.as_ref(),
-                    "".into(),
-                )
-                .map(|output| output.port.unwrap_or_else(|| DEFAULT_OUTPUT.to_string()))
-                .collect(),
+                outputs: get_transform_output_ids(transform.inner.as_ref(), "".into())
+                    .map(|output| output.port.unwrap_or_else(|| DEFAULT_OUTPUT.to_string()))
+                    .collect(),
             })),
         );
     }

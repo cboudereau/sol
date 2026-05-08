@@ -97,17 +97,27 @@ impl MetricSplit for AggregatedSummarySplitter {
 
         let mut metrics = VecDeque::new();
 
-        let count_metric =
-            OtelMetric::new_counter(format!("{name}_count"), kind, count as f64)
-                .with_namespace(namespace.clone())
-                .with_tags(tags.clone())
-                .with_timestamp(timestamp)
-                .with_metadata(metadata.clone());
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "summary count to f64 for split metric; precise for |v| <= 2^53"
+        )]
+        let count_f64 = count as f64;
+        let count_metric = OtelMetric::new_counter(format!("{name}_count"), kind, count_f64)
+            .with_namespace(namespace.clone())
+            .with_tags(tags.clone())
+            .with_timestamp(timestamp)
+            .with_metadata(metadata.clone());
         metrics.push_back(count_metric);
 
         for q in quantiles {
             let mut qtags = tags.clone().unwrap_or_default();
-            let quantile_str: String = q.quantile.clamp(0.0, 1.0).to_string().chars().take(6).collect();
+            let quantile_str: String = q
+                .quantile
+                .clamp(0.0, 1.0)
+                .to_string()
+                .chars()
+                .take(6)
+                .collect();
             qtags.replace_string(String::from("quantile"), quantile_str);
             let q_metric = if kind == MetricKind::Incremental {
                 OtelMetric::new_gauge_delta(&name, q.value)
@@ -121,12 +131,11 @@ impl MetricSplit for AggregatedSummarySplitter {
             metrics.push_back(q_metric);
         }
 
-        let sum_metric =
-            OtelMetric::new_counter(format!("{name}_sum"), kind, sum)
-                .with_namespace(namespace)
-                .with_tags(tags)
-                .with_timestamp(timestamp)
-                .with_metadata(metadata);
+        let sum_metric = OtelMetric::new_counter(format!("{name}_sum"), kind, sum)
+            .with_namespace(namespace)
+            .with_tags(tags)
+            .with_timestamp(timestamp)
+            .with_metadata(metadata);
         metrics.push_back(sum_metric);
 
         SplitIterator::multiple(metrics)

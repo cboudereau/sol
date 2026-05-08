@@ -3,7 +3,6 @@ use std::{convert::TryFrom, iter, num::NonZeroU8};
 use chrono::{TimeZone, Timelike, Utc};
 use futures::{future::ready, stream};
 use serde_json::Value as JsonValue;
-use tokio::time::{Duration, sleep};
 use sol_lib::{
     codecs::{JsonSerializerConfig, TextSerializerConfig},
     config::{Tags, Telemetry, init_telemetry},
@@ -11,6 +10,7 @@ use sol_lib::{
     lookup,
     lookup::lookup_v2::{ConfigValuePath, OptionalTargetPath},
 };
+use tokio::time::{Duration, sleep};
 use vrl::path::OwnedTargetPath;
 
 use crate::{

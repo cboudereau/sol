@@ -6,8 +6,6 @@ use futures::StreamExt;
 use rand::prelude::IndexedRandom;
 use serde_with::serde_as;
 use snafu::Snafu;
-use tokio::time::{self, Duration};
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -19,6 +17,8 @@ use sol_lib::{
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol},
     lookup::owned_value_path,
 };
+use tokio::time::{self, Duration};
+use tokio_util::codec::FramedRead;
 use vrl::value::Kind;
 
 use crate::{
@@ -73,7 +73,6 @@ pub struct DemoLogsConfig {
     #[derivative(Default(value = "default_decoding()"))]
     #[serde(default = "default_decoding")]
     pub decoding: DeserializerConfig,
-
 }
 
 const fn default_interval() -> Duration {
@@ -184,11 +183,7 @@ impl OutputFormat {
 
 impl DemoLogsConfig {
     #[cfg(test)]
-    pub fn repeat(
-        lines: Vec<String>,
-        count: usize,
-        interval: Duration,
-    ) -> Self {
+    pub fn repeat(lines: Vec<String>, count: usize, interval: Duration) -> Self {
         Self {
             count,
             interval,
@@ -240,10 +235,7 @@ async fn demo_logs_source(
                     let events = events.into_iter().map(|mut event| {
                         if let Event::Log(ref mut otel_log) = event {
                             otel_log.set_source_metadata(DemoLogsConfig::NAME, now);
-                            otel_log.set_attribute(
-                                "service".to_string(),
-                                string_value("vector"),
-                            );
+                            otel_log.set_attribute("service".to_string(), string_value("vector"));
                             otel_log.set_resource_attribute(
                                 "host.name".to_string(),
                                 string_value("localhost"),
@@ -277,9 +269,7 @@ impl_generate_config_from_default!(DemoLogsConfig);
 impl SourceConfig for DemoLogsConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         self.format.validate()?;
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
         Ok(Box::pin(demo_logs_source(
             self.interval,
             self.count,
@@ -336,12 +326,9 @@ mod tests {
         assert_source_compliance(&SOURCE_TAGS, async {
             let (tx, rx) = SourceSender::new_test();
             let config: DemoLogsConfig = toml::from_str(config).unwrap();
-            let decoder = DecodingConfig::new(
-                default_framing_message_based(),
-                default_decoding(),
-            )
-            .build()
-            .unwrap();
+            let decoder = DecodingConfig::new(default_framing_message_based(), default_decoding())
+                .build()
+                .unwrap();
             demo_logs_source(
                 config.interval,
                 config.count,
@@ -477,7 +464,8 @@ mod tests {
         let log = event.as_log();
         // Host is stored as OTLP resource attribute "host.name"
         use opentelemetry_proto::tonic::common::v1::any_value::Value as V;
-        let host_av = log.resource_attribute("host.name")
+        let host_av = log
+            .resource_attribute("host.name")
             .expect("resource attribute host.name must be set");
         match host_av.value.as_ref() {
             Some(V::StringValue(s)) => assert_eq!(s, "localhost"),

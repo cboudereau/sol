@@ -1,10 +1,10 @@
 use std::{io::Cursor, time::Duration};
 
 use futures::{StreamExt, stream};
+use sol_common::finalization::Finalizable;
 use tokio::{select, time::sleep};
 use tokio_test::{assert_pending, task::spawn};
 use tracing::Instrument;
-use sol_common::finalization::Finalizable;
 
 use super::{create_default_buffer_v2, read_next, read_next_some};
 use crate::{

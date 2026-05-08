@@ -16,6 +16,10 @@ pub struct Stats {
 }
 
 impl Stats {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "EventStoreDB metric counters (memory, disk bytes/ops); precise for |v| <= 2^53"
+    )]
     pub fn metrics(&self, namespace: Option<String>) -> Vec<OtelMetric> {
         let mut result = Vec::new();
         let mut tags = OtelAttributes::default();

@@ -15,17 +15,10 @@ use openssl::{
     error::ErrorStack,
     ssl::{SslConnector, SslMethod},
 };
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use postgres_openssl::MakeTlsConnector;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
-use tokio::time;
-use tokio_postgres::{
-    Client, Config, Error as PgError, NoTls, Row,
-    config::{ChannelBinding, Host, SslMode, TargetSessionAttrs},
-    types::FromSql,
-};
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
@@ -33,6 +26,13 @@ use sol_lib::{
     json_size::JsonSize,
     otel_tags,
 };
+use tokio::time;
+use tokio_postgres::{
+    Client, Config, Error as PgError, NoTls, Row,
+    config::{ChannelBinding, Host, SslMode, TargetSessionAttrs},
+    types::FromSql,
+};
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     config::{SourceConfig, SourceContext, SourceOutput},
@@ -58,11 +58,19 @@ macro_rules! tags {
 }
 
 macro_rules! counter {
-    ($value:expr_2021) => { $value as f64 };
+    ($value:expr_2021) => {{
+        #[allow(clippy::cast_lossless, clippy::cast_precision_loss)]
+        let v = $value as f64;
+        v
+    }};
 }
 
 macro_rules! gauge {
-    ($value:expr_2021) => { $value as f64 };
+    ($value:expr_2021) => {{
+        #[allow(clippy::cast_lossless, clippy::cast_precision_loss)]
+        let v = $value as f64;
+        v
+    }};
 }
 
 #[derive(Debug, Snafu)]
@@ -203,7 +211,8 @@ impl SourceConfig for PostgresqlMetricsConfig {
             self.exclude_databases.clone().unwrap_or_default(),
         );
         let namespace = Some(self.namespace.clone()).filter(|namespace| !namespace.is_empty());
-        let resource = source_otel::build_source_resource("postgresql_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("postgresql_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("postgresql_metrics");
 
         let mut sources = try_join_all(self.endpoints.iter().map(|endpoint| {
@@ -233,7 +242,7 @@ impl SourceConfig for PostgresqlMetricsConfig {
                 let metrics: Vec<OtelMetric> = metrics.into_iter().flatten().collect();
                 let count = metrics.len();
 
-                let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+                let events: Vec<Event> = metrics.into_iter().map(Event::Metric).collect();
                 if (cx.out.send_batch(events).await).is_err() {
                     emit!(StreamClosedError { count });
                     return Err(());
@@ -567,7 +576,9 @@ impl PostgresqlMetrics {
         }
     }
 
-    async fn collect_metrics(&mut self) -> Result<impl Iterator<Item = OtelMetric> + use<>, String> {
+    async fn collect_metrics(
+        &mut self,
+    ) -> Result<impl Iterator<Item = OtelMetric> + use<>, String> {
         let (client, client_version) = self
             .client
             .take()
@@ -1106,7 +1117,10 @@ mod integration_tests {
                     metric.tags().unwrap().get("endpoint"),
                     Some(&string_value(&tags_endpoint))
                 );
-                assert_eq!(metric.tags().unwrap().get("host"), Some(&string_value(&tags_host)));
+                assert_eq!(
+                    metric.tags().unwrap().get("host"),
+                    Some(&string_value(&tags_host))
+                );
             }
 
             // test metrics from different queries

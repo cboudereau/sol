@@ -1,16 +1,16 @@
 use bytes::BytesMut;
 use futures::{StreamExt, stream::BoxStream};
 use futures_util::stream::Peekable;
+use sol_lib::{
+    codecs::encoding::{Chunker, Chunking},
+    internal_event::{ByteSize, BytesSent, InternalEventHandle, RegisterInternalEvent},
+};
 #[cfg(unix)]
 use std::path::PathBuf;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
 use tokio_util::codec::Encoder;
-use sol_lib::{
-    codecs::encoding::{Chunker, Chunking},
-    internal_event::{ByteSize, BytesSent, InternalEventHandle, RegisterInternalEvent},
-};
 
 #[cfg(unix)]
 use crate::internal_events::{UnixSendIncompleteError, UnixSocketSendError};

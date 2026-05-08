@@ -9,13 +9,13 @@ use clap::Parser;
 use colored::*;
 use indexmap::IndexMap;
 use serde::Serialize;
-use toml::{Value, map::Map};
 use sol_lib::{
     buffers::BufferConfig,
     config::GlobalOptions,
     configurable::component::{SinkDescription, SourceDescription, TransformDescription},
     default_data_dir,
 };
+use toml::{Value, map::Map};
 
 use crate::config::{Format, SinkHealthcheckOptions, format};
 

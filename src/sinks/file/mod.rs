@@ -12,11 +12,6 @@ use futures::{
     stream::{BoxStream, StreamExt},
 };
 use serde_with::serde_as;
-use tokio::{
-    fs::{self, File},
-    io::AsyncWriteExt,
-};
-use tokio_util::{codec::Encoder as _, time::delay_queue::Expired};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, TimeZone,
     codecs::{
@@ -26,6 +21,11 @@ use sol_lib::{
     configurable::configurable_component,
     internal_event::{CountByteSize, EventsSent, InternalEventHandle as _, Output, Registered},
 };
+use tokio::{
+    fs::{self, File},
+    io::AsyncWriteExt,
+};
+use tokio_util::{codec::Encoder as _, time::delay_queue::Expired};
 
 use crate::{
     codecs::{Encoder, EncodingConfigWithFraming, SinkType, Transformer},
@@ -537,13 +537,11 @@ mod tests {
     use vrl::value::Value;
 
     use super::*;
-    use crate::{
-        test_util::{
-            components::{FILE_SINK_TAGS, assert_sink_compliance},
-            lines_from_file, lines_from_gzip_file, lines_from_zstd_file, random_events_with_stream,
-            random_lines_with_stream, random_metrics_with_stream,
-            random_metrics_with_stream_timestamp, temp_dir, temp_file, trace_init,
-        },
+    use crate::test_util::{
+        components::{FILE_SINK_TAGS, assert_sink_compliance},
+        lines_from_file, lines_from_gzip_file, lines_from_zstd_file, random_events_with_stream,
+        random_lines_with_stream, random_metrics_with_stream, random_metrics_with_stream_timestamp,
+        temp_dir, temp_file, trace_init,
     };
 
     #[test]
@@ -840,7 +838,9 @@ mod tests {
         run_assert_sink(&config, input.clone().into_iter()).await;
 
         let output = (0..metric_count).map(|index| {
-            let expected_timestamp = timestamp + (timestamp_offset * index as u32);
+            #[expect(clippy::cast_possible_truncation, reason = "test index fits in u32")]
+            let idx = index as u32;
+            let expected_timestamp = timestamp + (timestamp_offset * idx);
             let expected_filename =
                 directory.join(format!("{}.log", expected_timestamp.format(format)));
 

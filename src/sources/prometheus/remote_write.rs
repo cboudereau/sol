@@ -2,9 +2,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use bytes::Bytes;
 use prost::Message;
-use sol_lib::{
-    configurable::configurable_component, prometheus::parser::proto,
-};
+use sol_lib::{configurable::configurable_component, prometheus::parser::proto};
 use warp::http::{HeaderMap, StatusCode};
 
 use super::parser;
@@ -292,9 +290,7 @@ mod test {
                 OtelMetric::new_counter("counter_1", MetricKind::Absolute, 42.0)
                     .with_timestamp(Some(timestamp())),
             ),
-            Event::Metric(
-                OtelMetric::new_gauge("gauge_2", 41.0).with_timestamp(Some(timestamp())),
-            ),
+            Event::Metric(OtelMetric::new_gauge("gauge_2", 41.0).with_timestamp(Some(timestamp()))),
             Event::Metric({
                 let buckets = sol_lib::buckets![ 2.3 => 11, 4.2 => 85 ];
                 OtelMetric::new_histogram("histogram_3", MetricKind::Absolute, &buckets, 96, 156.2)
@@ -445,26 +441,22 @@ mod test {
 
         let timestamp = Utc::now().trunc_subsecs(3);
 
-        let events = vec![
-            Event::Metric(
-                OtelMetric::new_gauge("gauge_2", 41.0)
-                    .with_timestamp(Some(timestamp))
-                    .with_tags(Some(otel_tags! {
-                        "code" => "200".to_string(),
-                        "code" => "success".to_string(),
-                    })),
-            ),
-        ];
+        let events = vec![Event::Metric(
+            OtelMetric::new_gauge("gauge_2", 41.0)
+                .with_timestamp(Some(timestamp))
+                .with_tags(Some(otel_tags! {
+                    "code" => "200".to_string(),
+                    "code" => "success".to_string(),
+                })),
+        )];
 
-        let expected = vec![
-            Event::Metric(
-                OtelMetric::new_gauge("gauge_2", 41.0)
-                    .with_timestamp(Some(timestamp))
-                    .with_tags(Some(otel_tags! {
-                        "code" => "success".to_string(),
-                    })),
-            ),
-        ];
+        let expected = vec![Event::Metric(
+            OtelMetric::new_gauge("gauge_2", 41.0)
+                .with_timestamp(Some(timestamp))
+                .with_tags(Some(otel_tags! {
+                    "code" => "success".to_string(),
+                })),
+        )];
 
         let output = test_util::spawn_collect_ready(
             async move {
@@ -631,7 +623,10 @@ mod test {
         // Check the valid metric
         let valid_metric = output[1].as_metric();
         assert_eq!(valid_metric.name(), "test_metric_valid");
-        assert!(matches!(valid_metric.view(), MetricView::Gauge { value: 42.0 }));
+        assert!(matches!(
+            valid_metric.view(),
+            MetricView::Gauge { value: 42.0 }
+        ));
     }
 
     #[tokio::test]

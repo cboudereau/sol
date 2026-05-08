@@ -93,11 +93,19 @@ pub struct DimensionConfig {
     pub default: Option<String>,
 }
 
-fn default_namespace() -> String { "traces.span.metrics".to_string() }
-fn default_flush_interval() -> u64 { 60 }
-fn default_unit() -> String { "s".to_string() }
+fn default_namespace() -> String {
+    "traces.span.metrics".to_string()
+}
+const fn default_flush_interval() -> u64 {
+    60
+}
+fn default_unit() -> String {
+    "s".to_string()
+}
 fn default_buckets() -> Vec<f64> {
-    vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+    vec![
+        0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+    ]
 }
 
 impl GenerateConfig for SpanMetricsConfig {

@@ -24,7 +24,7 @@ pub struct OpenTelemetryConfig {
 }
 
 impl OpenTelemetryConfig {
-    pub fn from_protocol(protocol: Protocol) -> Self {
+    pub const fn from_protocol(protocol: Protocol) -> Self {
         Self { protocol }
     }
 }

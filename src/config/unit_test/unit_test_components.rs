@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use futures::{Sink, Stream, stream};
 use futures_util::{FutureExt, StreamExt, future, stream::BoxStream};
-use tokio::sync::{Mutex, oneshot};
 use sol_lib::{
     config::{DataType, Input},
     configurable::configurable_component,
@@ -10,6 +9,7 @@ use sol_lib::{
     schema,
     sink::{StreamSink, VectorSink},
 };
+use tokio::sync::{Mutex, oneshot};
 
 use crate::{
     conditions::Condition,

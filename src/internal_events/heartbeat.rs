@@ -14,7 +14,12 @@ pub struct Heartbeat {
 impl InternalEvent for Heartbeat {
     fn emit(self) {
         trace!(target: "vector", message = "Beep.");
-        gauge!("uptime_seconds").set(self.since.elapsed().as_secs() as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "uptime seconds gauge; precise for |v| <= 2^53"
+        )]
+        let uptime = self.since.elapsed().as_secs() as f64;
+        gauge!("uptime_seconds").set(uptime);
         gauge!(
             "build_info",
             "debug" => built_info::DEBUG,

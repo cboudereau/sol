@@ -93,9 +93,7 @@ mod tests {
     use sol_lib::{
         event::{
             OtelMetric,
-            metric::{
-                MetricKind, MetricKind::*,
-            },
+            metric::{MetricKind, MetricKind::*},
         },
         otel_tags,
     };
@@ -129,11 +127,8 @@ mod tests {
     }
 
     pub fn sample_distribution_histogram(num: u32, kind: MetricKind, rate: u32) -> OtelMetric {
-        OtelMetric::new_histogram_from_samples(
-            format!("dist-{num}"),
-            kind,
-            &sol_lib::samples![num as f64 => rate],
-        )
+        let samples = sol_lib::samples![f64::from(num) => rate];
+        OtelMetric::new_histogram_from_samples(format!("dist-{num}"), kind, &samples)
     }
 
     pub fn sample_aggregated_histogram(
@@ -148,13 +143,7 @@ mod tests {
             bpower.exp2() => cfactor * 2,
             4.0f64.powf(bpower) => cfactor * 4
         ];
-        OtelMetric::new_histogram(
-            format!("buckets-{num}"),
-            kind,
-            &buckets,
-            7 * cfactor,
-            sum,
-        )
+        OtelMetric::new_histogram(format!("buckets-{num}"), kind, &buckets, 7 * cfactor, sum)
     }
 
     pub fn sample_aggregated_summary(num: u32, _kind: MetricKind, factor: f64) -> OtelMetric {
@@ -166,12 +155,13 @@ mod tests {
             0.5 => factor * 2.0,
             1.0 => factor * 4.0
         ];
-        OtelMetric::new_summary(
-            format!("quantiles-{num}"),
-            &quantiles,
-            factor as u64 * 10,
-            factor * 7.0,
-        )
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test factor is a small f64"
+        )]
+        #[expect(clippy::cast_sign_loss, reason = "test factor is non-negative")]
+        let count = factor as u64 * 10;
+        OtelMetric::new_summary(format!("quantiles-{num}"), &quantiles, count, factor * 7.0)
     }
 
     fn rebuffer<State: MetricNormalize + Default>(metrics: Vec<OtelMetric>) -> Buffer {
@@ -211,11 +201,12 @@ mod tests {
             .collect()
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn rebuffer_incremental_counters<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         for i in 0..4 {
             // counter-0 is repeated 5 times
-            events.push(sample_counter(0, "production", Incremental, i as f64));
+            events.push(sample_counter(0, "production", Incremental, f64::from(i)));
         }
 
         for i in 0..4 {
@@ -285,6 +276,7 @@ mod tests {
         assert_eq!(buffer.len(), 2);
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn rebuffer_absolute_counters<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // counter-0 and -1 only emitted once
@@ -335,6 +327,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn rebuffer_incremental_gauges<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // gauge-1 emitted once
@@ -387,6 +380,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn rebuffer_absolute_gauges<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         // gauge-2 emitted once
@@ -529,6 +523,7 @@ mod tests {
         assert_eq!(buffer.len(), 1);
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn rebuffer_absolute_aggregated_histograms<State: MetricNormalize + Default>() -> Buffer {
         let mut events = Vec::new();
         for _ in 2..5 {
@@ -617,7 +612,7 @@ mod tests {
                 events.push(sample_aggregated_summary(
                     num,
                     Absolute,
-                    (factor + num) as f64,
+                    f64::from(factor + num),
                 ));
             }
         }

@@ -3,6 +3,11 @@ use std::{fs::remove_file, path::PathBuf, time::Duration};
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};
 use smallvec::SmallVec;
+use sol_lib::{
+    EstimatedJsonEncodedSizeOf,
+    codecs::StreamDecodingError,
+    internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
+};
 use tokio::{
     io::AsyncWriteExt,
     net::{UnixListener, UnixStream},
@@ -11,11 +16,6 @@ use tokio::{
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::codec::FramedRead;
 use tracing::{Instrument, field};
-use sol_lib::{
-    EstimatedJsonEncodedSizeOf,
-    codecs::StreamDecodingError,
-    internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
-};
 
 use super::AfterReadExt;
 use crate::{

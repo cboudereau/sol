@@ -16,10 +16,7 @@ pub(crate) fn check_is_trace_with_context(e: Event) -> (Result<(), String>, Even
 #[cfg(test)]
 mod test {
     use super::check_is_trace;
-    use crate::event::{
-        Event, EventMetadata, OtelMetric, OtelSpan,
-        metric::MetricKind,
-    };
+    use crate::event::{Event, EventMetadata, OtelMetric, OtelSpan, metric::MetricKind};
     use opentelemetry_proto::tonic::trace::v1::Span;
     use vrl::value::Value;
 
@@ -33,7 +30,11 @@ mod test {
             .0
         );
         assert!(
-            !check_is_trace(Event::Metric(OtelMetric::new_counter("test metric", MetricKind::Incremental, 1.0)))
+            !check_is_trace(Event::Metric(OtelMetric::new_counter(
+                "test metric",
+                MetricKind::Incremental,
+                1.0
+            )))
             .0,
         );
     }

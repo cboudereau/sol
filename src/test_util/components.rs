@@ -12,13 +12,13 @@ use std::{collections::HashSet, env, sync::LazyLock, time::Duration};
 use futures::{SinkExt, Stream, StreamExt, stream};
 use futures_util::Future;
 use itertools::Itertools as _;
-use tokio::{pin, select, time::sleep};
 use sol_lib::event_test_util;
+use tokio::{pin, select, time::sleep};
 
 use crate::{
     SourceSender,
     config::{SourceConfig, SourceContext},
-    event::{Event, EventArray, OtelMetric, MetricView},
+    event::{Event, EventArray, MetricView, OtelMetric},
     metrics::Controller,
     sinks::VectorSink,
 };
@@ -256,9 +256,7 @@ impl ComponentTester {
 
         for name in names {
             if !self.metrics.iter().any(|m| {
-                matches!(m.view(), MetricView::Sum { .. })
-                    && m.name() == *name
-                    && has_tags(m, tags)
+                matches!(m.view(), MetricView::Sum { .. }) && m.name() == *name && has_tags(m, tags)
             }) {
                 // If we didn't find a direct match, see if any other metrics exist which are counters of the same name,
                 // which could represent metrics being emitted but without the correct tag(s).

@@ -1,5 +1,9 @@
 use bytes::{Buf, BufMut};
 use memmap2::MmapMut;
+use sol_common::{
+    byte_size_of::ByteSizeOf,
+    finalization::{AddBatchNotifier, BatchNotifier},
+};
 use std::{
     io::{self, SeekFrom},
     path::PathBuf,
@@ -12,10 +16,6 @@ use tokio::{
 };
 use tracing::Instrument;
 use tracing_fluent_assertions::{Assertion, AssertionRegistry};
-use sol_common::{
-    byte_size_of::ByteSizeOf,
-    finalization::{AddBatchNotifier, BatchNotifier},
-};
 
 use super::{create_buffer_v2_with_max_data_file_size, create_default_buffer_v2};
 use crate::{

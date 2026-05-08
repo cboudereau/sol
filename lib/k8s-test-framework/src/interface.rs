@@ -20,8 +20,7 @@ impl Interface {
     pub fn from_env() -> Option<Self> {
         Some(Self {
             deploy_chart_command: env::var("KUBE_TEST_DEPLOY_COMMAND").ok()?,
-            kubectl_command: env::var("SOL_TEST_KUBECTL")
-                .unwrap_or_else(|_| "kubectl".to_owned()),
+            kubectl_command: env::var("SOL_TEST_KUBECTL").unwrap_or_else(|_| "kubectl".to_owned()),
         })
     }
 }

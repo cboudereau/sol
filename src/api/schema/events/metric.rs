@@ -12,7 +12,7 @@ pub struct Metric {
 }
 
 impl Metric {
-    pub fn new(output: TapOutput, event: event::OtelMetric) -> Self {
+    pub const fn new(output: TapOutput, event: event::OtelMetric) -> Self {
         Self { output, event }
     }
 }

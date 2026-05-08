@@ -40,7 +40,6 @@ pub struct InternalLogsConfig {
     /// Set to `""` to suppress this key.
     #[serde(default = "default_pid_key")]
     pid_key: OptionalValuePath,
-
 }
 
 fn default_pid_key() -> OptionalValuePath {
@@ -85,16 +84,11 @@ impl SourceConfig for InternalLogsConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         let subscription = TraceSubscription::subscribe();
 
-        Ok(Box::pin(run(
-            subscription,
-            cx.out,
-            cx.shutdown,
-        )))
+        Ok(Box::pin(run(subscription, cx.out, cx.shutdown)))
     }
 
     fn outputs(&self) -> Vec<SourceOutput> {
-        let schema_definition =
-            self.schema_definition();
+        let schema_definition = self.schema_definition();
 
         vec![SourceOutput::new_maybe_logs(
             DataType::Log,
@@ -140,18 +134,9 @@ async fn run(
             log.set_host(hostname.to_owned());
         }
 
-        insert_source_metadata(
-            InternalLogsConfig::NAME,
-            &mut log,
-            path!("pid"),
-            pid,
-        );
+        insert_source_metadata(InternalLogsConfig::NAME, &mut log, path!("pid"), pid);
 
-        insert_standard_vector_source_metadata(
-            &mut log,
-            InternalLogsConfig::NAME,
-            Utc::now(),
-        );
+        insert_standard_vector_source_metadata(&mut log, InternalLogsConfig::NAME, Utc::now());
 
         if (out.send_event(Event::Log(log)).await).is_err() {
             // this wont trigger any infinite loop considering it stops the component
@@ -166,8 +151,8 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use futures::Stream;
-    use tokio::time::{Duration, sleep};
     use sol_lib::event::Value;
+    use tokio::time::{Duration, sleep};
     use vrl::value::kind::Collection;
 
     use serial_test::serial;
@@ -258,7 +243,10 @@ mod tests {
             events[2].as_log().get("body").unwrap(),
             "After source started.".into()
         );
-        assert_eq!(events[3].as_log().get("body").unwrap(), "In a nested span.".into());
+        assert_eq!(
+            events[3].as_log().get("body").unwrap(),
+            "In a nested span.".into()
+        );
 
         for (i, event) in events.iter().enumerate() {
             let log = event.as_log();
@@ -279,13 +267,22 @@ mod tests {
             } else if i < 3 {
                 assert_eq!(log.get("vector.component_id").unwrap(), "foo".into());
                 assert_eq!(log.get("vector.component_kind").unwrap(), "source".into());
-                assert_eq!(log.get("vector.component_type").unwrap(), "internal_logs".into());
+                assert_eq!(
+                    log.get("vector.component_type").unwrap(),
+                    "internal_logs".into()
+                );
             } else {
                 assert_eq!(log.get("vector.component_id").unwrap(), "foo".into());
                 assert_eq!(log.get("vector.component_kind").unwrap(), "bar".into());
-                assert_eq!(log.get("vector.component_type").unwrap(), "internal_logs".into());
+                assert_eq!(
+                    log.get("vector.component_type").unwrap(),
+                    "internal_logs".into()
+                );
                 assert_eq!(log.get("vector.component_new_field").unwrap(), "baz".into());
-                assert_eq!(log.get("vector.component_numerical_field").unwrap(), 1.into());
+                assert_eq!(
+                    log.get("vector.component_numerical_field").unwrap(),
+                    1.into()
+                );
                 assert!(log.get("vector.ignored_field").is_none());
             }
         }
@@ -345,35 +342,31 @@ mod tests {
     fn output_schema_definition_vector_namespace() {
         let config = InternalLogsConfig::default();
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(InternalLogsConfig::NAME, "pid"),
-            Kind::integer(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(InternalLogsConfig::NAME, "host"),
-            Kind::bytes().or_undefined(),
-            Some("host"),
-        );
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(InternalLogsConfig::NAME, "pid"),
+                    Kind::integer(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(InternalLogsConfig::NAME, "host"),
+                    Kind::bytes().or_undefined(),
+                    Some("host"),
+                );
 
         assert_eq!(definitions, Some(expected_definition))
     }

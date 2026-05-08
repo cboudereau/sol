@@ -3,11 +3,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use tokio::time::Duration;
 use sol_lib::{
     buffers::{BufferConfig, BufferType, MemoryBufferSize, WhenFull},
     config::MEMORY_BUFFER_DEFAULT_MAX_EVENTS,
 };
+use tokio::time::Duration;
 
 use crate::{
     config::{Config, SinkOuter},

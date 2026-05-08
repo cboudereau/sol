@@ -213,7 +213,9 @@ mod test {
     #[test]
     fn route_pass_all_route_conditions() {
         let output_names = vec!["first", "second", "third", UNMATCHED_ROUTE];
-        let event = Event::from_json_value(serde_json::json!({"body": "hello world", "second": "second", "third": "third"}))
+        let event = Event::from_json_value(
+            serde_json::json!({"body": "hello world", "second": "second", "third": "third"}),
+        )
         .unwrap();
         let config = toml::from_str::<RouteConfig>(
             r#"
@@ -256,8 +258,7 @@ mod test {
     #[test]
     fn route_pass_one_route_condition() {
         let output_names = vec!["first", "second", "third", UNMATCHED_ROUTE];
-        let event = Event::from_json_value(serde_json::json!({"body": "hello world"}))
-            .unwrap();
+        let event = Event::from_json_value(serde_json::json!({"body": "hello world"})).unwrap();
         let config = toml::from_str::<RouteConfig>(
             r#"
             route.first.type = "vrl"

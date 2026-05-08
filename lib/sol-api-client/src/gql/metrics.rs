@@ -105,6 +105,7 @@ pub struct ComponentSentEventsThroughputsSubscription;
 pub struct ComponentSentEventsTotalsSubscription;
 
 impl component_sent_events_totals_subscription::ComponentSentEventsTotalsSubscriptionComponentSentEventsTotals {
+    #[expect(clippy::cast_possible_truncation, reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64")]
     pub fn outputs(&self) -> Vec<(String, i64)> {
         self.outputs
             .iter()

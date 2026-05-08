@@ -1,6 +1,4 @@
-use sol_lib::{
-    event::EventStatus, request_metadata::GroupedCountByteSize, stream::DriverResponse,
-};
+use sol_lib::{event::EventStatus, request_metadata::GroupedCountByteSize, stream::DriverResponse};
 
 pub struct HecResponse {
     pub event_status: EventStatus,

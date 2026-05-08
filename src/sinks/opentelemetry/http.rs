@@ -1,11 +1,13 @@
-use std::{num::NonZeroUsize, task::{Context, Poll}};
+use std::{
+    num::NonZeroUsize,
+    task::{Context, Poll},
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
-use http::{header, Method, Request};
+use http::{Method, Request, header};
 use hyper::Body;
-use tower::{Service, ServiceBuilder};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     config::telemetry,
@@ -13,6 +15,7 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::{BatcherSettings, DriverResponse, batcher::data::BatchReduce},
 };
+use tower::{Service, ServiceBuilder};
 
 use snafu::Snafu;
 
@@ -24,9 +27,8 @@ use crate::{
     sinks::{
         Healthcheck, VectorSink,
         util::{
-            BatchConfig, RealtimeEventBasedDefaultBatchSettings, ServiceBuilderExt,
-            SinkBuilderExt, StreamSink, TowerRequestConfig, metadata::RequestMetadataBuilder,
-            retries::RetryLogic,
+            BatchConfig, RealtimeEventBasedDefaultBatchSettings, ServiceBuilderExt, SinkBuilderExt,
+            StreamSink, TowerRequestConfig, metadata::RequestMetadataBuilder, retries::RetryLogic,
         },
     },
     tls::TlsSettings,
@@ -153,7 +155,7 @@ impl OtlpHttpConfig {
         Input::all()
     }
 
-    pub fn acknowledgements(&self) -> &AcknowledgementsConfig {
+    pub const fn acknowledgements(&self) -> &AcknowledgementsConfig {
         &self.acknowledgements
     }
 }
@@ -242,11 +244,12 @@ impl Service<OtlpHttpRequest> for OtlpHttpService {
                     message: e.to_string(),
                 })?;
 
-            let response = client.send(http_req).await.map_err(|e| {
-                OtlpHttpError::HttpRequest {
+            let response = client
+                .send(http_req)
+                .await
+                .map_err(|e| OtlpHttpError::HttpRequest {
                     message: e.to_string(),
-                }
-            })?;
+                })?;
 
             let status = response.status();
             if !status.is_success() {
@@ -330,8 +333,7 @@ where
             .batched(self.batch_settings.as_reducer_config(
                 |(event, _, _, _): &(Event, _, _, _)| event.size_of().max(1),
                 BatchReduce::new(
-                    |col: &mut EventCollection,
-                     (event, finalizers, byte_size, json_size)| {
+                    |col: &mut EventCollection, (event, finalizers, byte_size, json_size)| {
                         col.finalizers.merge(finalizers);
                         col.events.push(event);
                         col.byte_size += byte_size;
@@ -371,8 +373,7 @@ fn collection_into_http_requests(
 ) -> Vec<OtlpHttpRequest> {
     use sol_lib::opentelemetry::proto::{
         collector::{
-            logs::v1::ExportLogsServiceRequest,
-            metrics::v1::ExportMetricsServiceRequest,
+            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
             trace::v1::ExportTraceServiceRequest,
         },
         logs::v1::ResourceLogs,
@@ -403,7 +404,9 @@ fn collection_into_http_requests(
     let builder = RequestMetadataBuilder::new(n, col.byte_size, col.json_byte_size);
 
     if !log_resources.is_empty() {
-        let request = ExportLogsServiceRequest { resource_logs: log_resources };
+        let request = ExportLogsServiceRequest {
+            resource_logs: log_resources,
+        };
         let body = encode_otlp(&request, encoding, OtlpSignal::Logs);
         let bytes_len = NonZeroUsize::new(body.len().max(1)).unwrap();
         requests.push(OtlpHttpRequest {
@@ -415,7 +418,9 @@ fn collection_into_http_requests(
     }
 
     if !metric_resources.is_empty() {
-        let request = ExportMetricsServiceRequest { resource_metrics: metric_resources };
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: metric_resources,
+        };
         let body = encode_otlp(&request, encoding, OtlpSignal::Metrics);
         let bytes_len = NonZeroUsize::new(body.len().max(1)).unwrap();
         requests.push(OtlpHttpRequest {
@@ -427,7 +432,9 @@ fn collection_into_http_requests(
     }
 
     if !trace_resources.is_empty() {
-        let request = ExportTraceServiceRequest { resource_spans: trace_resources };
+        let request = ExportTraceServiceRequest {
+            resource_spans: trace_resources,
+        };
         let body = encode_otlp(&request, encoding, OtlpSignal::Traces);
         let bytes_len = NonZeroUsize::new(body.len().max(1)).unwrap();
         requests.push(OtlpHttpRequest {
@@ -447,7 +454,11 @@ enum OtlpSignal {
     Traces,
 }
 
-fn encode_otlp(msg: &(impl prost::Message + Default), encoding: OtlpHttpEncoding, signal: OtlpSignal) -> Bytes {
+fn encode_otlp(
+    msg: &(impl prost::Message + Default),
+    encoding: OtlpHttpEncoding,
+    signal: OtlpSignal,
+) -> Bytes {
     match encoding {
         OtlpHttpEncoding::Protobuf => Bytes::from(msg.encode_to_vec()),
         OtlpHttpEncoding::Json => Bytes::from(proto_to_json(msg, signal)),

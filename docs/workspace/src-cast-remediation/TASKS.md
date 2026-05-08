@@ -80,9 +80,9 @@ Prod: 385 | Test: 72 | Files: 122
 **Verify**: `cargo clippy -p sol --all-targets --all-features -- -D clippy::cast_lossless 2>&1 | grep "^error" | wc -l` (must be 0)
 
 **Acceptance criteria**:
-- [ ] Zero `cast_lossless` warnings across `src/`
-- [ ] All tests pass
-- [ ] No behavioral change (`.into()` produces identical machine code)
+- [x] Zero `cast_lossless` warnings across `src/`
+- [x] All tests pass
+- [x] No behavioral change (`.into()` produces identical machine code)
 
 **Depends on**: (none)
 **Time-box**: ~30 min
@@ -105,9 +105,9 @@ Prod: 385 | Test: 72 | Files: 122
 **Verify**: grep for remaining bare `as f64` in macro definitions under `src/sources/`
 
 **Acceptance criteria**:
-- [ ] `counter!` and `gauge!` macros no longer produce `cast_precision_loss`
+- [x] `counter!` and `gauge!` macros no longer produce `cast_precision_loss`
   warnings at expansion sites
-- [ ] All mongodb_metrics and postgresql_metrics tests pass
+- [x] All mongodb_metrics and postgresql_metrics tests pass
 
 **Depends on**: (none)
 **Time-box**: ~15 min
@@ -133,9 +133,9 @@ casts in `src/sources/`.
 **Verify**: `cargo clippy -p sol --all-targets --all-features -- -D clippy::cast_precision_loss 2>&1 | grep "src/sources" | wc -l` (must be 0)
 
 **Acceptance criteria**:
-- [ ] Zero `cast_precision_loss` warnings in `src/sources/`
-- [ ] Every `#[expect]` has a `reason` argument
-- [ ] All source tests pass
+- [x] Zero `cast_precision_loss` warnings in `src/sources/`
+- [x] Every `#[expect]` has a `reason` argument
+- [x] All source tests pass
 
 **Depends on**: task 2
 **Time-box**: ~60 min
@@ -158,9 +158,9 @@ casts in `src/sources/`.
 **Verify**: `cargo clippy -p sol --all-targets --all-features -- -D clippy::cast_precision_loss 2>&1 | grep -E "src/(sinks|transforms)" | wc -l` (must be 0)
 
 **Acceptance criteria**:
-- [ ] Zero `cast_precision_loss` warnings in `src/sinks/` and `src/transforms/`
-- [ ] Every `#[expect]` has a `reason` argument
-- [ ] All sink and transform tests pass
+- [x] Zero `cast_precision_loss` warnings in `src/sinks/` and `src/transforms/`
+- [x] Every `#[expect]` has a `reason` argument
+- [x] All sink and transform tests pass
 
 **Depends on**: (none — independent of task 3)
 **Time-box**: ~60 min
@@ -189,12 +189,12 @@ and `cast_possible_wrap` sites across `src/`.
 **Verify**: `cargo clippy -p sol --all-targets --all-features -- -D clippy::cast_possible_truncation -D clippy::cast_sign_loss -D clippy::cast_possible_wrap 2>&1 | grep "^error" | wc -l` (must be 0)
 
 **Acceptance criteria**:
-- [ ] Zero `cast_possible_truncation` warnings across `src/`
-- [ ] Zero `cast_sign_loss` warnings across `src/`
-- [ ] Zero `cast_possible_wrap` warnings across `src/`
-- [ ] Every `#[expect]` has a `reason` argument
-- [ ] OTLP timestamp conversions reuse `OtlpTimestamp` from sol-core
-- [ ] All tests pass
+- [x] Zero `cast_possible_truncation` warnings across `src/`
+- [x] Zero `cast_sign_loss` warnings across `src/`
+- [x] Zero `cast_possible_wrap` warnings across `src/`
+- [x] Every `#[expect]` has a `reason` argument
+- [x] OTLP timestamp conversions reuse `OtlpTimestamp` from sol-core
+- [x] All tests pass
 
 **Depends on**: clippy-lint-remediation Task 0 (boundary types must exist)
 **Time-box**: ~90 min
@@ -220,9 +220,9 @@ and `cast_possible_wrap` sites across `src/`.
 **Verify**: `cargo clippy --workspace --all-targets --all-features -- -D warnings` (full workspace)
 
 **Acceptance criteria**:
-- [ ] 5 `#![deny]` lines added to `src/lib.rs`
-- [ ] Full workspace clippy passes
-- [ ] Full test suite passes
+- [x] 5 `#![deny]` lines added to `src/lib.rs`
+- [x] Full workspace clippy passes
+- [x] Full test suite passes
 
 **Depends on**: tasks 1, 2, 3, 4, 5
 **Time-box**: ~15 min
@@ -251,11 +251,11 @@ Tasks: 5, 6
 
 ## Quality gates (post-session review)
 
-- [ ] Acceptance criteria: all green above
-- [ ] Code review: every `#[expect]` has a meaningful `reason`
-- [ ] Code review: no bare `as` casts remain in sinks/sources/transforms
-- [ ] Code organization: 5 cast lints enforced in `src/lib.rs`
-- [ ] Code quality: lossless widening uses `.into()`, not `#[expect]`
-- [ ] Security review: no silent truncation of metric values or timestamps
-- [ ] Performance: zero runtime cost (annotations only, identical machine code)
-- [ ] CI coherence: `make check-clippy` passes locally
+- [x] Acceptance criteria: all green above
+- [x] Code review: every `#[expect]` has a meaningful `reason`
+- [x] Code review: no bare `as` casts remain in sinks/sources/transforms
+- [x] Code organization: 5 cast lints enforced in `src/lib.rs`
+- [x] Code quality: lossless widening uses `.into()`, not `#[expect]`
+- [x] Security review: no silent truncation of metric values or timestamps
+- [x] Performance: zero runtime cost (annotations only, identical machine code)
+- [x] CI coherence: `make check-clippy` passes locally

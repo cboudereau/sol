@@ -6,8 +6,8 @@ use hyper::Body;
 use indoc::indoc;
 use serde_json::{Value, json};
 use snafu::{ResultExt, Snafu};
-use tokio_util::codec::Encoder as _;
 use sol_lib::configurable::configurable_component;
+use tokio_util::codec::Encoder as _;
 
 use crate::{
     codecs::{Encoder, EncodingConfig, Transformer},

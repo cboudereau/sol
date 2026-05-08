@@ -1,6 +1,4 @@
 #![allow(clippy::print_stdout)]
-use async_nats::jetstream::stream::StorageType;
-use bytes::Bytes;
 use crate::{
     SourceSender,
     codecs::DecodingConfig,
@@ -21,6 +19,8 @@ use crate::{
     },
     tls::{TlsConfig, TlsEnableableConfig},
 };
+use async_nats::jetstream::stream::StorageType;
+use bytes::Bytes;
 
 fn generate_source_config(url: &str, subject: &str) -> NatsSourceConfig {
     NatsSourceConfig {
@@ -80,10 +80,7 @@ async fn run_jetstream_test(conf: NatsSourceConfig) -> Result<(), crate::Error> 
     })
     .await;
 
-    assert_eq!(
-        events[0].as_log().get("body").unwrap(),
-        msg.into()
-    );
+    assert_eq!(events[0].as_log().get("body").unwrap(), msg.into());
 
     Ok(())
 }
@@ -96,12 +93,9 @@ async fn publish_and_check(conf: NatsSourceConfig) -> Result<(), BuildError> {
 
     let events = assert_source_compliance(&SOURCE_TAGS, async move {
         let (tx, rx) = SourceSender::new_test();
-        let decoder = DecodingConfig::new(
-            conf.framing.clone(),
-            conf.decoding.clone(),
-        )
-        .build()
-        .unwrap();
+        let decoder = DecodingConfig::new(conf.framing.clone(), conf.decoding.clone())
+            .build()
+            .unwrap();
         tokio::spawn(run_nats_core(
             conf.clone(),
             nc,
@@ -120,10 +114,7 @@ async fn publish_and_check(conf: NatsSourceConfig) -> Result<(), BuildError> {
     .await;
 
     println!("Received event  {:?}", events[0].as_log());
-    assert_eq!(
-        events[0].as_log().get("body").unwrap(),
-        msg.into()
-    );
+    assert_eq!(events[0].as_log().get("body").unwrap(), msg.into());
     Ok(())
 }
 
@@ -529,12 +520,9 @@ async fn nats_shutdown_drain_messages() {
     let (nc, sub) = create_subscription(&conf).await.unwrap();
     let nc_pub = nc.clone();
     let (tx, mut rx) = SourceSender::new_test();
-    let decoder = DecodingConfig::new(
-        conf.framing.clone(),
-        conf.decoding.clone(),
-    )
-    .build()
-    .unwrap();
+    let decoder = DecodingConfig::new(conf.framing.clone(), conf.decoding.clone())
+        .build()
+        .unwrap();
 
     let source_handle = tokio::spawn(run_nats_core(
         conf.clone(),

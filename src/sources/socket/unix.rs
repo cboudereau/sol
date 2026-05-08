@@ -58,7 +58,6 @@ pub struct UnixConfig {
     #[configurable(derived)]
     #[serde(default = "default_decoding")]
     pub decoding: DeserializerConfig,
-
 }
 
 impl UnixConfig {
@@ -91,17 +90,14 @@ fn handle_events(
     let now = Utc::now();
 
     for event in events {
-        match event {
-            Event::Log(otel_log) => {
-                otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
-                if let Some(ref host) = received_from {
-                    otel_log.metadata_mut().value_mut().insert(
-                        lookup::path!(SocketConfig::NAME, "host"),
-                        String::from_utf8_lossy(host).into_owned(),
-                    );
-                }
+        if let Event::Log(otel_log) = event {
+            otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
+            if let Some(ref host) = received_from {
+                otel_log.metadata_mut().value_mut().insert(
+                    lookup::path!(SocketConfig::NAME, "host"),
+                    String::from_utf8_lossy(host).into_owned(),
+                );
             }
-            _ => {}
         }
     }
 }
@@ -127,9 +123,7 @@ pub(super) fn unix_datagram(
         config.socket_file_mode,
         max_length,
         decoder,
-        move |events, received_from| {
-            handle_events(events, &config.host_key, received_from)
-        },
+        move |events, received_from| handle_events(events, &config.host_key, received_from),
         shutdown,
         out,
     )
@@ -145,9 +139,7 @@ pub(super) fn unix_stream(
         config.path,
         config.socket_file_mode,
         decoder,
-        move |events, received_from| {
-            handle_events(events, &config.host_key, received_from)
-        },
+        move |events, received_from| handle_events(events, &config.host_key, received_from),
         shutdown,
         out,
     )

@@ -1,12 +1,12 @@
-use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use serde_json::Value as JsonValue;
-use snafu::Snafu;
 use crate::{
     event::{self, Event},
     internal_events::KubernetesLogsDockerFormatParseError,
     transforms::{FunctionTransform, OutputBuffer},
 };
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
+use snafu::Snafu;
 
 pub const MESSAGE_KEY: &str = "log";
 pub const STREAM_KEY: &str = "stream";
@@ -67,14 +67,18 @@ fn parse_json_otel(otel_log: &mut crate::event::OtelLog) -> Result<(), ParsingEr
                             JsonValue::String(s) => s,
                             other => other.to_string(),
                         };
-                        otel_log.set_attribute(STREAM_KEY.to_string(), crate::event::string_value(s));
+                        otel_log
+                            .set_attribute(STREAM_KEY.to_string(), crate::event::string_value(s));
                     }
                     TIMESTAMP_KEY => {
                         let s = match value {
                             JsonValue::String(s) => s,
                             other => other.to_string(),
                         };
-                        otel_log.set_attribute(TIMESTAMP_KEY.to_string(), crate::event::string_value(s));
+                        otel_log.set_attribute(
+                            TIMESTAMP_KEY.to_string(),
+                            crate::event::string_value(s),
+                        );
                     }
                     _ => {}
                 };
@@ -106,7 +110,12 @@ fn normalize_event_otel(otel_log: &mut crate::event::OtelLog) -> Result<(), Norm
     };
     let dt = DateTime::parse_from_rfc3339(&time_str)
         .map_err(|source| NormalizationError::TimeParsing { source })?;
-    otel_log.record_mut().time_unix_nano = dt.with_timezone(&Utc).timestamp_nanos_opt().unwrap_or(0) as u64;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "timestamp nanos are non-negative for post-epoch dates; 0 fallback is safe"
+    )]
+    let nanos = dt.with_timezone(&Utc).timestamp_nanos_opt().unwrap_or(0) as u64;
+    otel_log.record_mut().time_unix_nano = nanos;
 
     let body = otel_log.body_string();
     if body.is_empty() {
@@ -118,15 +127,17 @@ fn normalize_event_otel(otel_log: &mut crate::event::OtelLog) -> Result<(), Norm
         message.truncate(message.len() - 1);
         is_partial = false;
     }
-    otel_log.set_body(crate::event::string_value(
-        String::from_utf8_lossy(&message),
-    ));
+    otel_log.set_body(crate::event::string_value(String::from_utf8_lossy(
+        &message,
+    )));
 
     if is_partial {
         otel_log.set_attribute(
             event::PARTIAL.to_string(),
             opentelemetry_proto::tonic::common::v1::AnyValue {
-                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(true)),
+                value: Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(true),
+                ),
             },
         );
     }
@@ -168,7 +179,7 @@ pub mod tests {
     use vrl::value;
 
     use super::{super::test_util, *};
-    use crate::{event::{OtelLog}, test_util::trace_init};
+    use crate::{event::OtelLog, test_util::trace_init};
 
     fn make_long_string(base: &str, len: usize) -> String {
         base.chars().cycle().take(len).collect()

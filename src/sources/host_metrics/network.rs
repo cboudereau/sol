@@ -21,6 +21,10 @@ pub struct NetworkConfig {
 }
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn network_metrics(&self, output: &mut super::MetricsBuffer) {
         output.name = "network";
         match heim::net::io_counters().await {

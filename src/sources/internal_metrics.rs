@@ -1,16 +1,16 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use futures::StreamExt;
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
-use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol},
     lookup::{lookup_v2::OptionalValuePath, owned_value_path},
 };
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     SourceSender,
@@ -203,7 +203,7 @@ impl InternalMetrics<'_> {
                 metric
             });
 
-            let events: Vec<Event> = batch.map(|m| Event::Metric(m)).collect();
+            let events: Vec<Event> = batch.map(Event::Metric).collect();
             if (self.out.send_batch(events).await).is_err() {
                 emit!(StreamClosedError { count });
                 return Err(());
@@ -219,13 +219,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use metrics::{counter, gauge, histogram};
-    use sol_lib::{otel_tags, metrics::Controller};
+    use sol_lib::{metrics::Controller, otel_tags};
 
     use super::*;
     use crate::{
-        event::{
-            Event, MetricView, OtelMetric,
-        },
+        event::{Event, MetricView, OtelMetric},
         test_util::{
             self,
             components::{SOURCE_TAGS, run_and_assert_source_compliance},
@@ -264,15 +262,18 @@ mod tests {
             .map(|metric| (metric.name().to_string(), metric))
             .collect::<BTreeMap<String, OtelMetric>>();
 
-        assert!(matches!(output["sol_foo"].view(), MetricView::Gauge { value: 2.0 }));
-        assert!(matches!(output["sol_bar"].view(), MetricView::Sum { value: 7.0 }));
+        assert!(matches!(
+            output["sol_foo"].view(),
+            MetricView::Gauge { value: 2.0 }
+        ));
+        assert!(matches!(
+            output["sol_bar"].view(),
+            MetricView::Sum { value: 7.0 }
+        ));
 
         match output["sol_baz"].view() {
             MetricView::Histogram {
-                counts,
-                count,
-                sum,
-                ..
+                counts, count, sum, ..
             } => {
                 // This index is _only_ stable so long as the offsets in
                 // [`metrics::handle::Histogram::new`] are hard-coded. If this
@@ -287,10 +288,7 @@ mod tests {
 
         match output["sol_quux"].view() {
             MetricView::Histogram {
-                counts,
-                count,
-                sum,
-                ..
+                counts, count, sum, ..
             } => {
                 // This index is _only_ stable so long as the offsets in
                 // [`metrics::handle::Histogram::new`] are hard-coded. If this

@@ -6,9 +6,6 @@ use http::StatusCode;
 use hyper::{Server, service::make_service_fn};
 use prost::Message;
 use snafu::Snafu;
-use tokio::net::TcpStream;
-use tower::ServiceBuilder;
-use tracing::Span;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus},
@@ -16,17 +13,22 @@ use sol_lib::{
         ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered,
     },
     opentelemetry::proto::collector::{
-        logs::v1::ExportLogsServiceRequest,
-        metrics::v1::ExportMetricsServiceRequest,
+        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         trace::v1::ExportTraceServiceRequest,
     },
     tls::MaybeTlsIncomingStream,
 };
+use tokio::net::TcpStream;
+use tower::ServiceBuilder;
+use tracing::Span;
 use warp::{
     Filter, Reply, filters::BoxedFilter, http::HeaderMap, reject::Rejection, reply::Response,
 };
 
-use super::{reply::{json, protobuf}, status::Status};
+use super::{
+    reply::{json, protobuf},
+    status::Status,
+};
 use crate::{
     SourceSender,
     common::http::ErrorMessage,
@@ -123,12 +125,7 @@ fn enrich_events(
     headers_config: &[HttpConfigParamKind],
     headers: &HeaderMap,
 ) {
-    add_headers(
-        events,
-        headers_config,
-        headers,
-        OpentelemetryConfig::NAME,
-    );
+    add_headers(events, headers_config, headers, OpentelemetryConfig::NAME);
 }
 
 fn emit_decode_error(error: impl std::fmt::Display) -> ErrorMessage {
@@ -215,33 +212,32 @@ fn build_warp_log_filter(
     events_received: Registered<EventsReceived>,
     headers_cfg: Vec<HttpConfigParamKind>,
 ) -> BoxedFilter<(Response,)> {
-    let make_events =
-        move |content_type: Option<String>,
-              encoding_header: Option<String>,
-              headers: HeaderMap,
-              body: Bytes| {
-            decompress_body(encoding_header.as_deref(), body)
-                .inspect_err(|err| {
-                    if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                        emit!(HttpBadRequest::new(
-                            err.status_code().as_u16(),
-                            err.message()
-                        ));
-                    }
+    let make_events = move |content_type: Option<String>,
+                            encoding_header: Option<String>,
+                            headers: HeaderMap,
+                            body: Bytes| {
+        decompress_body(encoding_header.as_deref(), body)
+            .inspect_err(|err| {
+                if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+                    emit!(HttpBadRequest::new(
+                        err.status_code().as_u16(),
+                        err.message()
+                    ));
+                }
+            })
+            .and_then(|decoded_body| {
+                bytes_received.emit(ByteSize(decoded_body.len()));
+                decode_log_body(
+                    decoded_body,
+                    &events_received,
+                    is_json_content_type(content_type.as_deref()),
+                )
+                .map(|mut events| {
+                    enrich_events(&mut events, &headers_cfg, &headers);
+                    events
                 })
-                .and_then(|decoded_body| {
-                    bytes_received.emit(ByteSize(decoded_body.len()));
-                    decode_log_body(
-                        decoded_body,
-                        &events_received,
-                        is_json_content_type(content_type.as_deref()),
-                    )
-                    .map(|mut events| {
-                        enrich_events(&mut events, &headers_cfg, &headers);
-                        events
-                    })
-                })
-        };
+            })
+    };
 
     build_ingest_filter::<otel::collector::logs::v1::ExportLogsServiceResponse, _>(
         LOGS,
@@ -257,29 +253,28 @@ fn build_warp_metrics_filter(
     bytes_received: Registered<BytesReceived>,
     events_received: Registered<EventsReceived>,
 ) -> BoxedFilter<(Response,)> {
-    let make_events =
-        move |content_type: Option<String>,
-              encoding_header: Option<String>,
-              _headers: HeaderMap,
-              body: Bytes| {
-            decompress_body(encoding_header.as_deref(), body)
-                .inspect_err(|err| {
-                    if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                        emit!(HttpBadRequest::new(
-                            err.status_code().as_u16(),
-                            err.message()
-                        ));
-                    }
-                })
-                .and_then(|decoded_body| {
-                    bytes_received.emit(ByteSize(decoded_body.len()));
-                    decode_metrics_body(
-                        decoded_body,
-                        &events_received,
-                        is_json_content_type(content_type.as_deref()),
-                    )
-                })
-        };
+    let make_events = move |content_type: Option<String>,
+                            encoding_header: Option<String>,
+                            _headers: HeaderMap,
+                            body: Bytes| {
+        decompress_body(encoding_header.as_deref(), body)
+            .inspect_err(|err| {
+                if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+                    emit!(HttpBadRequest::new(
+                        err.status_code().as_u16(),
+                        err.message()
+                    ));
+                }
+            })
+            .and_then(|decoded_body| {
+                bytes_received.emit(ByteSize(decoded_body.len()));
+                decode_metrics_body(
+                    decoded_body,
+                    &events_received,
+                    is_json_content_type(content_type.as_deref()),
+                )
+            })
+    };
 
     build_ingest_filter::<otel::collector::metrics::v1::ExportMetricsServiceResponse, _>(
         METRICS,
@@ -295,29 +290,28 @@ fn build_warp_trace_filter(
     bytes_received: Registered<BytesReceived>,
     events_received: Registered<EventsReceived>,
 ) -> BoxedFilter<(Response,)> {
-    let make_events =
-        move |content_type: Option<String>,
-              encoding_header: Option<String>,
-              _headers: HeaderMap,
-              body: Bytes| {
-            decompress_body(encoding_header.as_deref(), body)
-                .inspect_err(|err| {
-                    if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                        emit!(HttpBadRequest::new(
-                            err.status_code().as_u16(),
-                            err.message()
-                        ));
-                    }
-                })
-                .and_then(|decoded_body| {
-                    bytes_received.emit(ByteSize(decoded_body.len()));
-                    decode_trace_body(
-                        decoded_body,
-                        &events_received,
-                        is_json_content_type(content_type.as_deref()),
-                    )
-                })
-        };
+    let make_events = move |content_type: Option<String>,
+                            encoding_header: Option<String>,
+                            _headers: HeaderMap,
+                            body: Bytes| {
+        decompress_body(encoding_header.as_deref(), body)
+            .inspect_err(|err| {
+                if err.status_code() == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+                    emit!(HttpBadRequest::new(
+                        err.status_code().as_u16(),
+                        err.message()
+                    ));
+                }
+            })
+            .and_then(|decoded_body| {
+                bytes_received.emit(ByteSize(decoded_body.len()));
+                decode_trace_body(
+                    decoded_body,
+                    &events_received,
+                    is_json_content_type(content_type.as_deref()),
+                )
+            })
+    };
 
     build_ingest_filter::<otel::collector::trace::v1::ExportTraceServiceResponse, _>(
         TRACES,

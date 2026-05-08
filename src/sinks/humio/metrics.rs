@@ -232,10 +232,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        event::{
-            Event, OtelMetric,
-            metric::MetricKind,
-        },
+        event::{Event, OtelMetric, metric::MetricKind},
         sinks::util::test::{build_test_server, load_sink},
         test_util::{
             self,
@@ -287,6 +284,7 @@ mod tests {
         tokio::spawn(server);
 
         // Make our test metrics.
+        let samples = sol_lib::samples![1.0 => 100, 2.0 => 200, 3.0 => 300];
         let metrics = vec![
             Event::Metric(
                 OtelMetric::new_counter("metric1", MetricKind::Incremental, 42.0)
@@ -298,17 +296,13 @@ mod tests {
                     )),
             ),
             Event::Metric(
-                OtelMetric::new_histogram_from_samples(
-                    "metric2",
-                    MetricKind::Absolute,
-                    &sol_lib::samples![1.0 => 100, 2.0 => 200, 3.0 => 300],
-                )
-                .with_tags(Some(otel_tags!("os.host" => "somehost")))
-                .with_timestamp(Some(
-                    Utc.with_ymd_and_hms(2020, 8, 18, 21, 0, 2)
-                        .single()
-                        .expect("invalid timestamp"),
-                )),
+                OtelMetric::new_histogram_from_samples("metric2", MetricKind::Absolute, &samples)
+                    .with_tags(Some(otel_tags!("os.host" => "somehost")))
+                    .with_timestamp(Some(
+                        Utc.with_ymd_and_hms(2020, 8, 18, 21, 0, 2)
+                            .single()
+                            .expect("invalid timestamp"),
+                    )),
             ),
         ];
 
@@ -338,7 +332,10 @@ mod tests {
             find_body_kv(&m1["event"], "name"),
             serde_json::json!({"stringValue": "metric1"})
         );
-        assert!(!find_body_kv(&m1["event"], "sum").is_null(), "counter should be in body as OTLP sum");
+        assert!(
+            !find_body_kv(&m1["event"], "sum").is_null(),
+            "counter should be in body as OTLP sum"
+        );
         assert_eq!(m1["time"], 1597784401.0);
 
         let m2: serde_json::Value = serde_json::from_str(s1).expect("valid JSON");
@@ -346,7 +343,10 @@ mod tests {
             find_body_kv(&m2["event"], "name"),
             serde_json::json!({"stringValue": "metric2"})
         );
-        assert!(!find_body_kv(&m2["event"], "histogram").is_null(), "distribution should be in body as OTLP histogram");
+        assert!(
+            !find_body_kv(&m2["event"], "histogram").is_null(),
+            "distribution should be in body as OTLP histogram"
+        );
         assert_eq!(m2["time"], 1597784402.0);
     }
 
@@ -408,7 +408,10 @@ mod tests {
             find_body_kv(&m["event"], "name"),
             serde_json::json!({"stringValue": "metric1"})
         );
-        assert!(!find_body_kv(&m["event"], "sum").is_null(), "counter should be in body as OTLP sum");
+        assert!(
+            !find_body_kv(&m["event"], "sum").is_null(),
+            "counter should be in body as OTLP sum"
+        );
         assert_eq!(m["time"], 1597784401.0);
         let sum_val = find_body_kv(&m["event"], "sum");
         assert!(!sum_val.is_null(), "sum body key should exist");

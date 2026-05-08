@@ -3,10 +3,10 @@ mod integration_tests;
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod ddsketch;
 pub mod logs;
 pub mod metrics;
 pub mod traces;
-pub(crate) mod ddsketch;
 
 #[allow(warnings, clippy::pedantic, clippy::nursery)]
 pub(crate) mod ddmetric_proto {
@@ -18,7 +18,10 @@ pub(crate) mod ddtrace_proto {
     include!(concat!(env!("OUT_DIR"), "/dd_trace.rs"));
 }
 
-use std::{collections::BTreeMap, convert::Infallible, fmt::Debug, io::Read, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap, convert::Infallible, fmt::Debug, io::Read, net::SocketAddr, sync::Arc,
+    time::Duration,
+};
 
 use bytes::{Buf, Bytes};
 use chrono::{DateTime, Utc, serde::ts_milliseconds};
@@ -30,9 +33,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use snafu::Snafu;
-use tokio::net::TcpStream;
-use tower::ServiceBuilder;
-use tracing::Span;
 use sol_lib::{
     codecs::decoding::{DeserializerConfig, FramingConfig},
     configurable::configurable_component,
@@ -43,9 +43,10 @@ use sol_lib::{
     source_sender::SendError,
     tls::MaybeTlsIncomingStream,
 };
-use vrl::{
-    value::{Kind, kind::Collection},
-};
+use tokio::net::TcpStream;
+use tower::ServiceBuilder;
+use tracing::Span;
+use vrl::value::{Kind, kind::Collection};
 use warp::{Filter, Reply, filters::BoxedFilter, reject::Rejection, reply::Response};
 
 use crate::{
@@ -200,9 +201,7 @@ impl SourceConfig for DatadogAgentConfig {
             .or_else(|| cx.schema_definitions.get(&None))
             .cloned();
 
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         let tls = MaybeTlsSettings::from_config(self.tls.as_ref(), true)?;
         let source = DatadogAgentSource::new(

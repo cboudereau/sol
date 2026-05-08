@@ -14,14 +14,8 @@ pub struct DecodingConfig {
 impl DecodingConfig {
     /// Creates a new `DecodingConfig` with the provided `FramingConfig` and
     /// `DeserializerConfig`.
-    pub const fn new(
-        framing: FramingConfig,
-        decoding: DeserializerConfig,
-    ) -> Self {
-        Self {
-            framing,
-            decoding,
-        }
+    pub const fn new(framing: FramingConfig, decoding: DeserializerConfig) -> Self {
+        Self { framing, decoding }
     }
 
     /// Get the decoding configuration.

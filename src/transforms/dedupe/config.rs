@@ -84,16 +84,16 @@ impl TransformConfig for DedupeConfig {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
     use sol_lib::{
         config::{ComponentKey, OutputId},
         lookup::lookup_v2::ConfigTargetPath,
     };
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
 
     use crate::{
         config::schema::Definition,
-        event::{Event, OtelLog, ObjectMap, Value},
+        event::{Event, ObjectMap, OtelLog, Value},
         test_util::components::assert_transform_compliance,
         transforms::{
             dedupe::{

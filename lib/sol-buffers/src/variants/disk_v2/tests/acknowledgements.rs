@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use tokio_test::{assert_pending, assert_ready, task::spawn};
 use sol_common::finalization::{BatchNotifier, EventFinalizer, EventStatus};
+use tokio_test::{assert_pending, assert_ready, task::spawn};
 
 use crate::{
     buffer_usage_data::BufferUsageHandle,

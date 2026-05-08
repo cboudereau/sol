@@ -115,8 +115,21 @@ impl Resolver for EventFilter {
             // but inline it since normalize_fields is private
             let field = match attr.replace('@', ".") {
                 v if attr.starts_with('@') => Field::Attribute(v),
-                v if ["body", "custom.error.message", "custom.error.stack", "custom.title"].contains(&v.as_ref()) => Field::Default(v),
-                v if ["host", "source", "status", "service", "trace_id", "tags"].contains(&v.as_ref()) => Field::Reserved(v),
+                v if [
+                    "body",
+                    "custom.error.message",
+                    "custom.error.stack",
+                    "custom.title",
+                ]
+                .contains(&v.as_ref()) =>
+                {
+                    Field::Default(v)
+                }
+                v if ["host", "source", "status", "service", "trace_id", "tags"]
+                    .contains(&v.as_ref()) =>
+                {
+                    Field::Reserved(v)
+                }
                 v => Field::Tag(v),
             };
             vec![field]
@@ -291,11 +304,16 @@ impl Filter<OtelLog> for EventFilter {
                         }
                         // Integer value - Float boundary
                         (Some(Value::Integer(lhs)), ComparisonValue::Float(rhs)) => {
+                            #[expect(
+                                clippy::cast_precision_loss,
+                                reason = "integer-to-float comparison for Datadog search; precise for |v| <= 2^53"
+                            )]
+                            let lhs_f = lhs as f64;
                             match comparator {
-                                Comparison::Lt => (lhs as f64) < *rhs,
-                                Comparison::Lte => lhs as f64 <= *rhs,
-                                Comparison::Gt => lhs as f64 > *rhs,
-                                Comparison::Gte => lhs as f64 >= *rhs,
+                                Comparison::Lt => lhs_f < *rhs,
+                                Comparison::Lte => lhs_f <= *rhs,
+                                Comparison::Gt => lhs_f > *rhs,
+                                Comparison::Gte => lhs_f >= *rhs,
                             }
                         }
                         // Floats.
@@ -309,11 +327,16 @@ impl Filter<OtelLog> for EventFilter {
                         }
                         // Float value - Integer boundary
                         (Some(Value::Float(lhs)), ComparisonValue::Integer(rhs)) => {
+                            #[expect(
+                                clippy::cast_precision_loss,
+                                reason = "integer-to-float comparison for Datadog search; precise for |v| <= 2^53"
+                            )]
+                            let rhs_f = *rhs as f64;
                             match comparator {
-                                Comparison::Lt => lhs.into_inner() < *rhs as f64,
-                                Comparison::Lte => lhs.into_inner() <= *rhs as f64,
-                                Comparison::Gt => lhs.into_inner() > *rhs as f64,
-                                Comparison::Gte => lhs.into_inner() >= *rhs as f64,
+                                Comparison::Lt => lhs.into_inner() < rhs_f,
+                                Comparison::Lte => lhs.into_inner() <= rhs_f,
+                                Comparison::Gt => lhs.into_inner() > rhs_f,
+                                Comparison::Gte => lhs.into_inner() >= rhs_f,
                             }
                         }
                         // Where the rhs is a string ref, the lhs is coerced into a string.
@@ -511,13 +534,13 @@ mod test {
         vec![
             // Tag exists.
             (
-                "_exists_:a",                        // Source
+                "_exists_:a",                         // Source
                 otel_event!["tags" => vec!["a:foo"]], // Pass
                 otel_event!["tags" => vec!["b:foo"]], // Fail
             ),
             // Tag exists with - in name.
             (
-                "_exists_:a-b",                        // Source
+                "_exists_:a-b",                         // Source
                 otel_event!["tags" => vec!["a-b:foo"]], // Pass
                 otel_event!["tags" => vec!["ab:foo"]],  // Fail
             ),
@@ -741,7 +764,11 @@ mod test {
                 otel_event!["tags" => vec!["a:bla"]],
             ),
             // Boolean attribute match.
-            ("@a:true", otel_event!["a" => true], otel_event!["a" => false]),
+            (
+                "@a:true",
+                otel_event!["a" => true],
+                otel_event!["a" => false],
+            ),
             // Boolean attribute match (negate).
             (
                 "NOT @a:false",
@@ -857,7 +884,11 @@ mod test {
                 otel_event!["tags" => vec!["a:0.75"]],
             ),
             // Float attribute match (negate w/-).
-            ("-@a:0.75", otel_event!["a" => 0.74], otel_event!["a" => 0.75]),
+            (
+                "-@a:0.75",
+                otel_event!["a" => 0.74],
+                otel_event!["a" => 0.75],
+            ),
             // Attribute match with dot in name
             (
                 "@a.b:x",
@@ -909,11 +940,7 @@ mod test {
             // Multiple wildcards.
             ("*b*la*", otel_event!["body" => "foobla"], otel_event![]),
             // Multiple wildcards (negate).
-            (
-                "NOT *b*la*",
-                otel_event![],
-                otel_event!["body" => "foobla"],
-            ),
+            ("NOT *b*la*", otel_event![], otel_event!["body" => "foobla"]),
             // Multiple wildcards (negate w/-).
             ("-*b*la*", otel_event![], otel_event!["body" => "foobla"]),
             // Wildcard prefix - tag.
@@ -1175,7 +1202,11 @@ mod test {
                 otel_event!["tags" => vec!["a:test"]],
             ),
             // Range - numeric, inclusive, attribute.
-            ("@b:[1 TO 10]", otel_event!["b" => 5], otel_event!["b" => 11]),
+            (
+                "@b:[1 TO 10]",
+                otel_event!["b" => 5],
+                otel_event!["b" => 11],
+            ),
             (
                 "@b:[1 TO 100]",
                 otel_event!["b" => "10"],
@@ -1193,14 +1224,22 @@ mod test {
                 otel_event!["b" => "10"],
             ),
             // Range - numeric, inclusive, attribute (negate w/-).
-            ("-@b:[1 TO 10]", otel_event!["b" => 11], otel_event!["b" => 5]),
+            (
+                "-@b:[1 TO 10]",
+                otel_event!["b" => 11],
+                otel_event!["b" => 5],
+            ),
             (
                 "NOT @b:[1 TO 100]",
                 otel_event!["b" => "2"],
                 otel_event!["b" => "10"],
             ),
             // Range - alpha, inclusive, attribute.
-            ("@b:[a TO z]", otel_event!["b" => "c"], otel_event!["b" => 5]),
+            (
+                "@b:[a TO z]",
+                otel_event!["b" => "c"],
+                otel_event!["b" => 5],
+            ),
             // Range - alphanumeric, inclusive, attribute.
             (
                 r#"@b:["1" TO "100"]"#,
@@ -1253,7 +1292,11 @@ mod test {
                 otel_event!["tags" => vec!["f:10"]],
             ),
             // Range - attribute, exclusive.
-            ("@f:{1 TO 100}", otel_event!["f" => 50], otel_event!["f" => 1]),
+            (
+                "@f:{1 TO 100}",
+                otel_event!["f" => 50],
+                otel_event!["f" => 1],
+            ),
             (
                 "@f:{1 TO 100}",
                 otel_event!["f" => 50],
@@ -1321,13 +1364,13 @@ mod test {
 
             // Tag exists.
             (
-                "_exists_:a",                          // Source
+                "_exists_:a",                           // Source
                 otel_event!["ddtags" => vec!["a:foo"]], // Pass
                 otel_event!["ddtags" => vec!["b:foo"]], // Fail
             ),
             // Tag exists with - in name.
             (
-                "_exists_:a-b",                          // Source
+                "_exists_:a-b",                           // Source
                 otel_event!["ddtags" => vec!["a-b:foo"]], // Pass
                 otel_event!["ddtags" => vec!["ab:foo"]],  // Fail
             ),

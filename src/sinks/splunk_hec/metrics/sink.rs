@@ -165,12 +165,10 @@ pub fn process_metric(
         HecMetricsProcessedEventMetadata::extract_metric_name(&metric, default_namespace);
     let metric_value = HecMetricsProcessedEventMetadata::extract_metric_value(&metric)?;
 
-    let sourcetype = sourcetype
-        .and_then(|sourcetype| render_template_string(sourcetype, &metric, "sourcetype"));
-    let source =
-        source.and_then(|source| render_template_string(source, &metric, "source"));
-    let index =
-        index.and_then(|index| render_template_string(index, &metric, "index"));
+    let sourcetype =
+        sourcetype.and_then(|sourcetype| render_template_string(sourcetype, &metric, "sourcetype"));
+    let source = source.and_then(|source| render_template_string(source, &metric, "source"));
+    let index = index.and_then(|index| render_template_string(index, &metric, "index"));
     let host = host_key.and_then(|key| metric.tag_value(key.to_string().as_str()));
 
     let metadata = HecMetricsProcessedEventMetadata {

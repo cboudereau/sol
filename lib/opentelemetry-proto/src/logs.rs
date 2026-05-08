@@ -47,7 +47,8 @@ fn proto_convert_resource(
 ) -> Option<upstream_opentelemetry_proto::tonic::resource::v1::Resource> {
     let r = r?;
     let bytes = r.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes))
+        .ok()
 }
 
 fn proto_convert_scope(
@@ -55,10 +56,15 @@ fn proto_convert_scope(
 ) -> Option<upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope> {
     let s = s?;
     let bytes = s.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(
+        bytes::Bytes::from(bytes),
+    )
+    .ok()
 }
 
-fn proto_convert_log_record(r: LogRecord) -> upstream_opentelemetry_proto::tonic::logs::v1::LogRecord {
+fn proto_convert_log_record(
+    r: LogRecord,
+) -> upstream_opentelemetry_proto::tonic::logs::v1::LogRecord {
     let bytes = r.encode_to_vec();
     upstream_opentelemetry_proto::tonic::logs::v1::LogRecord::decode(bytes::Bytes::from(bytes))
         .expect("LogRecord proto decode failed on same-schema message")
@@ -66,7 +72,7 @@ fn proto_convert_log_record(r: LogRecord) -> upstream_opentelemetry_proto::tonic
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::proto::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -98,9 +104,7 @@ mod tests {
                         severity_number: SeverityNumber::Info as i32,
                         severity_text: "INFO".to_string(),
                         body: Some(AnyValue {
-                            value: Some(any_value::Value::StringValue(
-                                "hello world".to_string(),
-                            )),
+                            value: Some(any_value::Value::StringValue("hello world".to_string())),
                         }),
                         attributes: vec![KeyValue {
                             key: "http.status".to_string(),
@@ -115,9 +119,7 @@ mod tests {
                     },
                     LogRecord {
                         body: Some(AnyValue {
-                            value: Some(any_value::Value::StringValue(
-                                "second record".to_string(),
-                            )),
+                            value: Some(any_value::Value::StringValue("second record".to_string())),
                         }),
                         ..Default::default()
                     },
@@ -144,7 +146,9 @@ mod tests {
 
         let body = log_a.body().expect("body must exist");
         match &body.value {
-            Some(upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => {
+            Some(
+                upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s),
+            ) => {
                 assert_eq!(s, "hello world")
             }
             other => panic!("unexpected body: {:?}", other),
@@ -184,7 +188,9 @@ mod tests {
         let log = events[0].as_otel_log();
         let attr = log.attribute("http.status").expect("attribute must exist");
         match &attr.value {
-            Some(upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(v)) => {
+            Some(upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(
+                v,
+            )) => {
                 assert_eq!(*v, 200)
             }
             other => panic!("unexpected attribute value: {:?}", other),

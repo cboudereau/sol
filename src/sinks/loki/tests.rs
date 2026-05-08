@@ -1,4 +1,7 @@
-use sol_lib::{config::proxy::ProxyConfig, lookup::{OwnedTargetPath, owned_value_path}};
+use sol_lib::{
+    config::proxy::ProxyConfig,
+    lookup::{OwnedTargetPath, owned_value_path},
+};
 
 use super::{config::LokiConfig, healthcheck::healthcheck, sink::LokiSink};
 use crate::{
@@ -171,7 +174,10 @@ async fn timestamp_out_of_range() {
         .unwrap()
         .and_local_timezone(chrono::Utc)
         .unwrap();
-    e1.insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), date);
+    e1.insert(
+        &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+        date,
+    );
     let e1 = Event::from(e1);
 
     // Pre-epoch timestamps can't be represented as time_unix_nano;

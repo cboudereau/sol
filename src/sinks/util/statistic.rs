@@ -38,8 +38,8 @@ impl DistributionStatistic {
                     max: val,
                     median: val,
                     avg: val,
-                    sum: val * count as f64,
-                    count: count as u64,
+                    sum: val * f64::from(count),
+                    count: u64::from(count),
                     quantiles: quantiles.iter().map(|&p| (p, val)).collect(),
                 }
             }),
@@ -50,7 +50,7 @@ impl DistributionStatistic {
                 let max = bins.last().unwrap().value;
                 let sum = bins
                     .iter()
-                    .map(|sample| sample.value * sample.rate as f64)
+                    .map(|sample| sample.value * f64::from(sample.rate))
                     .sum::<f64>();
 
                 for i in 1..bins.len() {
@@ -58,7 +58,7 @@ impl DistributionStatistic {
                 }
 
                 let count = bins.last().unwrap().rate;
-                let avg = sum / count as f64;
+                let avg = sum / f64::from(count);
 
                 let median = find_quantile(&bins, 0.5);
                 let quantiles = quantiles
@@ -72,7 +72,7 @@ impl DistributionStatistic {
                     median,
                     avg,
                     sum,
-                    count: count as u64,
+                    count: u64::from(count),
                     quantiles,
                 }
             }),
@@ -88,7 +88,13 @@ impl DistributionStatistic {
 /// <https://en.wikipedia.org/wiki/Quantile#Estimating_quantiles_from_a_sample>
 fn find_quantile(bins: &[Sample], p: f64) -> f64 {
     let count = bins.last().expect("bins is empty").rate;
-    find_sample(bins, (p * count as f64).round() as u32)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "quantile index fits in u32"
+    )]
+    #[expect(clippy::cast_sign_loss, reason = "quantile * count is non-negative")]
+    let idx = (p * f64::from(count)).round() as u32;
+    find_sample(bins, idx)
 }
 
 /// `bins` is a cumulative histogram
@@ -225,7 +231,7 @@ mod test {
 
     #[test]
     fn sort_unstable_doesnt_panic() {
-        let to_float = |v: i32| -> f64 { v as f64 };
+        let to_float = |v: i32| -> f64 { f64::from(v) };
 
         let v: Vec<f64> = (0..=15)
             .map(to_float)

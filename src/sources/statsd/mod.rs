@@ -6,15 +6,15 @@ use std::{
 
 use futures::TryFutureExt;
 use listenfd::ListenFd;
-use tokio::io::AsyncBufReadExt;
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{CountByteSize, InternalEventHandle as _, Registered},
     ipallowlist::IpAllowlistConfig,
 };
+use tokio::io::AsyncBufReadExt;
 
 use self::aggregator::{Aggregator, AggregatorConfig};
 use super::util::net::{SocketListenAddr, try_bind_udp_socket};
@@ -240,16 +240,28 @@ impl SourceConfig for StatsdConfig {
         let scope = source_otel::build_source_scope("statsd");
 
         match self {
-            StatsdConfig::Udp(config) => {
-                Ok(Box::pin(statsd_udp(config.clone(), cx.shutdown, cx.out, resource, scope)))
-            }
-            StatsdConfig::Tcp(config) => {
-                Ok(Box::pin(statsd_tcp(config.clone(), cx.shutdown, cx.out, resource, scope)))
-            }
+            StatsdConfig::Udp(config) => Ok(Box::pin(statsd_udp(
+                config.clone(),
+                cx.shutdown,
+                cx.out,
+                resource,
+                scope,
+            ))),
+            StatsdConfig::Tcp(config) => Ok(Box::pin(statsd_tcp(
+                config.clone(),
+                cx.shutdown,
+                cx.out,
+                resource,
+                scope,
+            ))),
             #[cfg(unix)]
-            StatsdConfig::Unix(config) => {
-                Ok(Box::pin(statsd_unix_aggregated(config.clone(), cx.shutdown, cx.out, resource, scope)))
-            }
+            StatsdConfig::Unix(config) => Ok(Box::pin(statsd_unix_aggregated(
+                config.clone(),
+                cx.shutdown,
+                cx.out,
+                resource,
+                scope,
+            ))),
         }
     }
 
@@ -270,7 +282,6 @@ impl SourceConfig for StatsdConfig {
         false
     }
 }
-
 
 async fn statsd_udp(
     config: UdpConfig,
@@ -402,14 +413,12 @@ async fn statsd_tcp(
             return Err(());
         }
     };
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|error| {
-            emit!(SocketBindError {
-                mode: SocketMode::Tcp,
-                error,
-            });
-        })?;
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|error| {
+        emit!(SocketBindError {
+            mode: SocketMode::Tcp,
+            error,
+        });
+    })?;
 
     info!(
         message = "Listening.",
@@ -493,17 +502,14 @@ async fn statsd_tcp(
 
 #[cfg(test)]
 mod test {
+    use futures::StreamExt;
     use futures::channel::mpsc;
-    use futures::{StreamExt};
     use futures_util::SinkExt;
+    use sol_lib::{config::ComponentKey, event::EventContainer};
     use tokio::{
         io::AsyncWriteExt,
         net::UdpSocket,
         time::{Duration, Instant, sleep},
-    };
-    use sol_lib::{
-        config::ComponentKey,
-        event::EventContainer,
     };
 
     use super::*;
@@ -522,10 +528,7 @@ mod test {
         },
     };
 
-    fn statsd_series(
-        name: &str,
-        tags: &[(&str, &str)],
-    ) -> sol_lib::event::metric::MetricIdentity {
+    fn statsd_series(name: &str, tags: &[(&str, &str)]) -> sol_lib::event::metric::MetricIdentity {
         use sol_lib::event::{OtelAttributes, string_value};
 
         let mut attrs = OtelAttributes::new();

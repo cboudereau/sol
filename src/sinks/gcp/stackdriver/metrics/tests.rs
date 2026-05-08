@@ -62,9 +62,8 @@ async fn sends_metric() {
     let (sink, _healthcheck) = config.build(context).await.unwrap();
     let timestamp = Utc::now();
 
-    let event = Event::Metric(
-        OtelMetric::new_gauge("gauge-test", 1_f64).with_timestamp(Some(timestamp)),
-    );
+    let event =
+        Event::Metric(OtelMetric::new_gauge("gauge-test", 1_f64).with_timestamp(Some(timestamp)));
     run_and_assert_sink_compliance(sink, stream::once(ready(event)), &SINK_TAGS).await;
 
     drop(trigger);
@@ -121,12 +120,8 @@ async fn sends_multiple_metrics() {
     let timestamp2 = Utc::now();
 
     let event = vec![
-        Event::Metric(
-            OtelMetric::new_gauge("gauge1", 1_f64).with_timestamp(Some(timestamp1)),
-        ),
-        Event::Metric(
-            OtelMetric::new_gauge("gauge2", 5_f64).with_timestamp(Some(timestamp2)),
-        ),
+        Event::Metric(OtelMetric::new_gauge("gauge1", 1_f64).with_timestamp(Some(timestamp1))),
+        Event::Metric(OtelMetric::new_gauge("gauge2", 5_f64).with_timestamp(Some(timestamp2))),
     ];
     run_and_assert_sink_compliance(sink, stream::iter(event), &SINK_TAGS).await;
 
@@ -198,12 +193,8 @@ async fn does_not_aggregate_metrics() {
     let timestamp2 = Utc::now();
 
     let event = vec![
-        Event::Metric(
-            OtelMetric::new_gauge("gauge", 1_f64).with_timestamp(Some(timestamp1)),
-        ),
-        Event::Metric(
-            OtelMetric::new_gauge("gauge", 5_f64).with_timestamp(Some(timestamp2)),
-        ),
+        Event::Metric(OtelMetric::new_gauge("gauge", 1_f64).with_timestamp(Some(timestamp1))),
+        Event::Metric(OtelMetric::new_gauge("gauge", 5_f64).with_timestamp(Some(timestamp2))),
     ];
     run_and_assert_sink_compliance(sink, stream::iter(event), &SINK_TAGS).await;
 

@@ -3,8 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use tokio::time::Duration;
 use sol_lib::event::Event;
+use tokio::time::Duration;
 use warp::Filter;
 
 use crate::{
@@ -169,8 +169,14 @@ async fn okta_follows_rel() {
             OktaConfig::NAME.into()
         );
     }
-    assert_eq!(events[0].as_log().get("data").unwrap().as_str().unwrap(), "foo");
-    assert_eq!(events[1].as_log().get("data").unwrap().as_str().unwrap(), "bar");
+    assert_eq!(
+        events[0].as_log().get("data").unwrap().as_str().unwrap(),
+        "foo"
+    );
+    assert_eq!(
+        events[1].as_log().get("data").unwrap().as_str().unwrap(),
+        "bar"
+    );
 }
 
 #[tokio::test]

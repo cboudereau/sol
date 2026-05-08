@@ -9,13 +9,6 @@ use std::{
 use futures::{FutureExt, StreamExt, TryStreamExt, stream::FuturesOrdered};
 use futures_util::stream::FuturesUnordered;
 use metrics::gauge;
-use stream_cancel::{StreamExt as StreamCancelExt, Trigger, Tripwire};
-use tokio::{
-    select,
-    sync::{mpsc::UnboundedSender, oneshot},
-    time::timeout,
-};
-use tracing::Instrument;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     buffers::{
@@ -32,6 +25,13 @@ use sol_lib::{
     transform::update_runtime_schema_definition,
 };
 use sol_vrl_metrics::MetricsStorage;
+use stream_cancel::{StreamExt as StreamCancelExt, Trigger, Tripwire};
+use tokio::{
+    select,
+    sync::{mpsc::UnboundedSender, oneshot},
+    time::timeout,
+};
+use tracing::Instrument;
 
 use super::{
     BuiltBuffer, ConfigDiff,
@@ -414,10 +414,7 @@ impl<'a> Builder<'a> {
         source_tasks
     }
 
-    async fn build_transforms(
-        &mut self,
-        enrichment_tables: &sol_lib::enrichment::TableRegistry,
-    ) {
+    async fn build_transforms(&mut self, enrichment_tables: &sol_lib::enrichment::TableRegistry) {
         let mut definition_cache = HashMap::default();
 
         for (key, transform) in self

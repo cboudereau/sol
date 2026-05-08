@@ -10,11 +10,7 @@ use kube::runtime::reflector::{ObjectRef, store::Store};
 use sol_lib::{
     config::insert_source_metadata,
     configurable::configurable_component,
-    lookup::{
-        OwnedTargetPath,
-        lookup_v2::OptionalTargetPath,
-        owned_value_path, path,
-    },
+    lookup::{OwnedTargetPath, lookup_v2::OptionalTargetPath, owned_value_path, path},
 };
 
 use super::{
@@ -182,10 +178,7 @@ pub struct PodMetadataAnnotator {
 
 impl PodMetadataAnnotator {
     /// Create a new [`PodMetadataAnnotator`].
-    pub const fn new(
-        pods_state_reader: Store<Pod>,
-        fields_spec: FieldsSpec,
-    ) -> Self {
+    pub const fn new(pods_state_reader: Store<Pod>, fields_spec: FieldsSpec) -> Self {
         Self {
             pods_state_reader,
             fields_spec,
@@ -216,13 +209,12 @@ impl PodMetadataAnnotator {
             }
             if let Some(ref pod_status) = pod.status {
                 annotate_otel_from_pod_status(otel_log, pod_status);
-                if let Some(ref container_statuses) = pod_status.container_statuses {
-                    if let Some(container_status) = container_statuses
+                if let Some(ref container_statuses) = pod_status.container_statuses
+                    && let Some(container_status) = container_statuses
                         .iter()
                         .find(|c| c.name == file_info.container_name)
-                    {
-                        annotate_otel_from_container_status(otel_log, container_status);
-                    }
+                {
+                    annotate_otel_from_container_status(otel_log, container_status);
                 }
             }
         }
@@ -231,10 +223,7 @@ impl PodMetadataAnnotator {
 }
 
 #[allow(dead_code)]
-fn annotate_from_file_info(
-    log: &mut OtelLog,
-    file_info: &LogFileInfo<'_>,
-) {
+fn annotate_from_file_info(log: &mut OtelLog, file_info: &LogFileInfo<'_>) {
     insert_source_metadata(
         Config::NAME,
         log,
@@ -244,27 +233,16 @@ fn annotate_from_file_info(
 }
 
 #[allow(dead_code)]
-fn annotate_from_metadata(
-    log: &mut OtelLog,
-    metadata: &ObjectMeta,
-) {
+fn annotate_from_metadata(log: &mut OtelLog, metadata: &ObjectMeta) {
     for (metadata_key, value) in [
         (path!("pod_name"), &metadata.name),
-        (
-            path!("pod_namespace"),
-            &metadata.namespace,
-        ),
+        (path!("pod_namespace"), &metadata.namespace),
         (path!("pod_uid"), &metadata.uid),
     ]
     .iter()
     {
         if let Some(value) = value {
-            insert_source_metadata(
-                Config::NAME,
-                log,
-                *metadata_key,
-                value.to_owned(),
-            );
+            insert_source_metadata(Config::NAME, log, *metadata_key, value.to_owned());
         }
     }
 
@@ -301,32 +279,16 @@ fn annotate_from_metadata(
 }
 
 #[allow(dead_code)]
-fn annotate_from_pod_spec(
-    log: &mut OtelLog,
-    pod_spec: &PodSpec,
-) {
+fn annotate_from_pod_spec(log: &mut OtelLog, pod_spec: &PodSpec) {
     if let Some(value) = &pod_spec.node_name {
-        insert_source_metadata(
-            Config::NAME,
-            log,
-            path!("pod_node_name"),
-            value.to_owned(),
-        )
+        insert_source_metadata(Config::NAME, log, path!("pod_node_name"), value.to_owned())
     }
 }
 
 #[allow(dead_code)]
-fn annotate_from_pod_status(
-    log: &mut OtelLog,
-    pod_status: &PodStatus,
-) {
+fn annotate_from_pod_status(log: &mut OtelLog, pod_status: &PodStatus) {
     if let Some(value) = &pod_status.pod_ip {
-        insert_source_metadata(
-            Config::NAME,
-            log,
-            path!("pod_ip"),
-            value.to_owned(),
-        )
+        insert_source_metadata(Config::NAME, log, path!("pod_ip"), value.to_owned())
     }
 
     if let Some(value) = &pod_status.pod_ips {
@@ -340,17 +302,9 @@ fn annotate_from_pod_status(
 }
 
 #[allow(dead_code)]
-fn annotate_from_container_status(
-    log: &mut OtelLog,
-    container_status: &ContainerStatus,
-) {
+fn annotate_from_container_status(log: &mut OtelLog, container_status: &ContainerStatus) {
     if let Some(value) = &container_status.container_id {
-        insert_source_metadata(
-            Config::NAME,
-            log,
-            path!("container_id"),
-            value.to_owned(),
-        )
+        insert_source_metadata(Config::NAME, log, path!("container_id"), value.to_owned())
     }
 
     insert_source_metadata(
@@ -362,10 +316,7 @@ fn annotate_from_container_status(
 }
 
 #[allow(dead_code)]
-fn annotate_from_container(
-    log: &mut OtelLog,
-    container: &Container,
-) {
+fn annotate_from_container(log: &mut OtelLog, container: &Container) {
     if let Some(value) = &container.image {
         insert_source_metadata(
             Config::NAME,
@@ -376,20 +327,14 @@ fn annotate_from_container(
     }
 }
 
-fn annotate_otel_from_file_info(
-    otel_log: &mut crate::event::OtelLog,
-    file_info: &LogFileInfo<'_>,
-) {
+fn annotate_otel_from_file_info(otel_log: &mut crate::event::OtelLog, file_info: &LogFileInfo<'_>) {
     otel_log.set_resource_attribute(
         "k8s.container.name".to_string(),
         string_value(file_info.container_name),
     );
 }
 
-fn annotate_otel_from_metadata(
-    otel_log: &mut crate::event::OtelLog,
-    metadata: &ObjectMeta,
-) {
+fn annotate_otel_from_metadata(otel_log: &mut crate::event::OtelLog, metadata: &ObjectMeta) {
     if let Some(name) = &metadata.name {
         otel_log.set_resource_attribute("k8s.pod.name".to_string(), string_value(name));
     }
@@ -410,45 +355,31 @@ fn annotate_otel_from_metadata(
     }
     if let Some(labels) = &metadata.labels {
         for (key, value) in labels.iter() {
-            otel_log.set_resource_attribute(
-                format!("k8s.pod.labels.{key}"),
-                string_value(value),
-            );
+            otel_log.set_resource_attribute(format!("k8s.pod.labels.{key}"), string_value(value));
         }
     }
     if let Some(annotations) = &metadata.annotations {
         for (key, value) in annotations.iter() {
-            otel_log.set_resource_attribute(
-                format!("k8s.pod.annotations.{key}"),
-                string_value(value),
-            );
+            otel_log
+                .set_resource_attribute(format!("k8s.pod.annotations.{key}"), string_value(value));
         }
     }
 }
 
-fn annotate_otel_from_pod_spec(
-    otel_log: &mut crate::event::OtelLog,
-    pod_spec: &PodSpec,
-) {
+fn annotate_otel_from_pod_spec(otel_log: &mut crate::event::OtelLog, pod_spec: &PodSpec) {
     if let Some(node_name) = &pod_spec.node_name {
         otel_log.set_resource_attribute("k8s.node.name".to_string(), string_value(node_name));
     }
 }
 
-fn annotate_otel_from_pod_status(
-    otel_log: &mut crate::event::OtelLog,
-    pod_status: &PodStatus,
-) {
+fn annotate_otel_from_pod_status(otel_log: &mut crate::event::OtelLog, pod_status: &PodStatus) {
     if let Some(pod_ip) = &pod_status.pod_ip {
         otel_log.set_resource_attribute("k8s.pod.ip".to_string(), string_value(pod_ip));
     }
     if let Some(pod_ips) = &pod_status.pod_ips {
         let ips: Vec<String> = pod_ips.iter().filter_map(|k| k.ip.clone()).collect();
         if !ips.is_empty() {
-            otel_log.set_resource_attribute(
-                "k8s.pod.ips".to_string(),
-                string_value(ips.join(",")),
-            );
+            otel_log.set_resource_attribute("k8s.pod.ips".to_string(), string_value(ips.join(",")));
         }
     }
 }
@@ -458,10 +389,7 @@ fn annotate_otel_from_container_status(
     container_status: &ContainerStatus,
 ) {
     if let Some(container_id) = &container_status.container_id {
-        otel_log.set_resource_attribute(
-            "k8s.container.id".to_string(),
-            string_value(container_id),
-        );
+        otel_log.set_resource_attribute("k8s.container.id".to_string(), string_value(container_id));
     }
     if !container_status.image_id.is_empty() {
         otel_log.set_resource_attribute(
@@ -471,15 +399,10 @@ fn annotate_otel_from_container_status(
     }
 }
 
-fn annotate_otel_from_container(
-    otel_log: &mut crate::event::OtelLog,
-    container: &Container,
-) {
+fn annotate_otel_from_container(otel_log: &mut crate::event::OtelLog, container: &Container) {
     if let Some(image) = &container.image {
-        otel_log.set_resource_attribute(
-            "k8s.container.image.name".to_string(),
-            string_value(image),
-        );
+        otel_log
+            .set_resource_attribute("k8s.container.image.name".to_string(), string_value(image));
     }
 }
 
@@ -593,8 +516,14 @@ mod tests {
                     // annotate_from_metadata uses insert_source_metadata
                     // which stores into EventMetadata["kubernetes_logs"][...].
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "pod_name"), "sandbox0-name");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_namespace"), "sandbox0-ns");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_name"),
+                        "sandbox0-name",
+                    );
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_namespace"),
+                        "sandbox0-ns",
+                    );
                     log.insert(metadata_path!("kubernetes_logs", "pod_uid"), "sandbox0-uid");
                     log.insert(
                         metadata_path!("kubernetes_logs", "pod_labels", "sandbox0-label0"),
@@ -605,11 +534,19 @@ mod tests {
                         "val1",
                     );
                     log.insert(
-                        metadata_path!("kubernetes_logs", "pod_annotations", "sandbox0-annotation0"),
+                        metadata_path!(
+                            "kubernetes_logs",
+                            "pod_annotations",
+                            "sandbox0-annotation0"
+                        ),
                         "val0",
                     );
                     log.insert(
-                        metadata_path!("kubernetes_logs", "pod_annotations", "sandbox0-annotation1"),
+                        metadata_path!(
+                            "kubernetes_logs",
+                            "pod_annotations",
+                            "sandbox0-annotation1"
+                        ),
                         "val1",
                     );
                     log
@@ -651,14 +588,40 @@ mod tests {
                     // annotate_from_metadata ignores FieldsSpec and always uses
                     // insert_source_metadata with fixed keys
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "pod_name"), "sandbox0-name");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_namespace"), "sandbox0-ns");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_name"),
+                        "sandbox0-name",
+                    );
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_namespace"),
+                        "sandbox0-ns",
+                    );
                     log.insert(metadata_path!("kubernetes_logs", "pod_uid"), "sandbox0-uid");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_labels", "sandbox0-label0"), "val0");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_labels", "sandbox0-label1"), "val1");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_labels", "sandbox0-label0"),
+                        "val0",
+                    );
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_labels", "sandbox0-label1"),
+                        "val1",
+                    );
                     // annotations are also stored since annotate_from_metadata doesn't filter
-                    log.insert(metadata_path!("kubernetes_logs", "pod_annotations", "sandbox0-annotation0"), "val0");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_annotations", "sandbox0-annotation1"), "val1");
+                    log.insert(
+                        metadata_path!(
+                            "kubernetes_logs",
+                            "pod_annotations",
+                            "sandbox0-annotation0"
+                        ),
+                        "val0",
+                    );
+                    log.insert(
+                        metadata_path!(
+                            "kubernetes_logs",
+                            "pod_annotations",
+                            "sandbox0-annotation1"
+                        ),
+                        "val1",
+                    );
                     log
                 },
             ),
@@ -732,8 +695,14 @@ mod tests {
                 {
                     // annotate_from_metadata stores in EventMetadata.
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "pod_name"), "sandbox0-name");
-                    log.insert(metadata_path!("kubernetes_logs", "pod_namespace"), "sandbox0-ns");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_name"),
+                        "sandbox0-name",
+                    );
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_namespace"),
+                        "sandbox0-ns",
+                    );
                     log.insert(metadata_path!("kubernetes_logs", "pod_uid"), "sandbox0-uid");
                     log.insert(
                         metadata_path!("kubernetes_logs", "pod_labels", "nested0.label0"),
@@ -785,18 +754,14 @@ mod tests {
         );
         let s_path = path.as_str();
         let cases = vec![
-            (
-                FieldsSpec::default(),
-                s_path,
-                {
-                    let mut log = OtelLog::default();
-                    log.insert(
-                        metadata_path!("kubernetes_logs", "container_name"),
-                        "sandbox0-container0-name",
-                    );
-                    log
-                },
-            ),
+            (FieldsSpec::default(), s_path, {
+                let mut log = OtelLog::default();
+                log.insert(
+                    metadata_path!("kubernetes_logs", "container_name"),
+                    "sandbox0-container0-name",
+                );
+                log
+            }),
             (
                 FieldsSpec {
                     container_name: OwnedTargetPath::event(owned_value_path!("container_name"))
@@ -807,7 +772,10 @@ mod tests {
                 {
                     // annotate_from_file_info ignores FieldsSpec; always stores in metadata
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "container_name"), "sandbox0-container0-name");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "container_name"),
+                        "sandbox0-container0-name",
+                    );
                     log
                 },
             ),
@@ -857,7 +825,10 @@ mod tests {
                 {
                     // annotate_from_pod_spec ignores FieldsSpec; always stores in metadata
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "pod_node_name"), "sandbox0-node-name");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "pod_node_name"),
+                        "sandbox0-node-name",
+                    );
                     log
                 },
             ),
@@ -980,15 +951,11 @@ mod tests {
     #[test]
     fn test_annotate_from_container_status() {
         let cases = vec![
-            (
-                FieldsSpec::default(),
-                ContainerStatus::default(),
-                {
-                    let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "container_image_id"), "");
-                    log
-                },
-            ),
+            (FieldsSpec::default(), ContainerStatus::default(), {
+                let mut log = OtelLog::default();
+                log.insert(metadata_path!("kubernetes_logs", "container_image_id"), "");
+                log
+            }),
             (
                 FieldsSpec {
                     ..FieldsSpec::default()
@@ -1014,10 +981,7 @@ mod tests {
         ];
         for (_fields_spec, container_status, expected) in cases.into_iter() {
             let mut log = OtelLog::default();
-            annotate_from_container_status(
-                &mut log,
-                &container_status,
-            );
+            annotate_from_container_status(&mut log, &container_status);
             let expected = expected;
             assert_eq!(log, expected);
         }
@@ -1058,7 +1022,10 @@ mod tests {
                 },
                 {
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "container_image"), "sandbox0-container-image");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "container_image"),
+                        "sandbox0-container-image",
+                    );
                     log
                 },
             ),

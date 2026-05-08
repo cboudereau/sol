@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use bytes::BytesMut;
 use futures::{StreamExt, stream::BoxStream};
-use tokio::{io, io::AsyncWriteExt};
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::encoding::Framer,
@@ -10,6 +8,8 @@ use sol_lib::{
         ByteSize, BytesSent, CountByteSize, EventsSent, InternalEventHandle as _, Output, Protocol,
     },
 };
+use tokio::{io, io::AsyncWriteExt};
+use tokio_util::codec::Encoder as _;
 
 use crate::{
     codecs::{Encoder, Transformer},

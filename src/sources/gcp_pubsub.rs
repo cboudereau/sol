@@ -16,13 +16,6 @@ use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream, stream::Future
 use http::uri::{InvalidUri, Scheme, Uri};
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
-use tokio::sync::{mpsc, watch};
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{
-    Code, Request, Status,
-    metadata::MetadataValue,
-    transport::{Certificate, ClientTlsConfig, Endpoint, Identity},
-};
 use sol_lib::{
     byte_size_of::ByteSizeOf,
     codecs::decoding::{DeserializerConfig, FramingConfig},
@@ -32,6 +25,13 @@ use sol_lib::{
         ByteSize, BytesReceived, EventsReceived, InternalEventHandle as _, Protocol, Registered,
     },
     lookup::owned_value_path,
+};
+use tokio::sync::{mpsc, watch};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{
+    Code, Request, Status,
+    metadata::MetadataValue,
+    transport::{Certificate, ClientTlsConfig, Endpoint, Identity},
 };
 use vrl::value::{Kind, kind::Collection};
 
@@ -201,7 +201,6 @@ pub struct PubsubConfig {
     #[configurable(metadata(docs::human_name = "Keepalive"))]
     pub keepalive_secs: Duration,
 
-
     #[configurable(derived)]
     #[serde(default = "default_framing_message_based")]
     #[derivative(Default(value = "default_framing_message_based()"))]
@@ -255,7 +254,7 @@ impl SourceConfig for PubsubConfig {
                 warn!(
                     "The `ack_deadline_seconds` setting is deprecated, use `ack_deadline_secs` instead."
                 );
-                Duration::from_secs(ads as u64)
+                Duration::from_secs(u64::from(ads))
             }
         };
         if !(MIN_ACK_DEADLINE_SECS..=MAX_ACK_DEADLINE_SECS).contains(&ack_deadline_secs.as_secs()) {
@@ -307,11 +306,7 @@ impl SourceConfig for PubsubConfig {
                 "projects/{}/subscriptions/{}",
                 self.project, self.subscription
             ),
-            decoder: DecodingConfig::new(
-                self.framing.clone(),
-                self.decoding.clone(),
-            )
-            .build()?,
+            decoder: DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?,
             acknowledgements: cx.do_acknowledgements(self.acknowledgements),
             shutdown: cx.shutdown,
             out: cx.out,
@@ -570,6 +565,10 @@ impl PubsubSource {
     ) -> impl Stream<Item = proto::StreamingPullRequest> + 'static + use<> {
         let subscription = self.subscription.clone();
         let client_id = CLIENT_ID.clone();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "GCP Pub/Sub ack deadline is a small config value (seconds) that fits i32"
+        )]
         let stream_ack_deadline_seconds = self.ack_deadline_secs.as_secs() as i32;
         let ack_ids = ReceiverStream::new(ack_ids).ready_chunks(ACK_QUEUE_SIZE);
 
@@ -667,7 +666,12 @@ impl PubsubSource {
             "gcp_pubsub",
             &message.data,
             message.publish_time.map(|dt| {
-                DateTime::from_timestamp(dt.seconds, dt.nanos as u32).expect("invalid timestamp")
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "protobuf Timestamp.nanos is 0..999_999_999, always non-negative"
+                )]
+                let nanos = dt.nanos as u32;
+                DateTime::from_timestamp(dt.seconds, nanos).expect("invalid timestamp")
             }),
             batch,
             &self.events_received,
@@ -742,40 +746,36 @@ mod tests {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("gcp_pubsub", "timestamp"),
-            Kind::timestamp().or_undefined(),
-            Some("timestamp"),
-        )
-        .with_metadata_field(
-            &owned_value_path!("gcp_pubsub", "attributes"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("gcp_pubsub", "message_id"),
-            Kind::bytes(),
-            None,
-        );
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("gcp_pubsub", "timestamp"),
+                    Kind::timestamp().or_undefined(),
+                    Some("timestamp"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("gcp_pubsub", "attributes"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("gcp_pubsub", "message_id"),
+                    Kind::bytes(),
+                    None,
+                );
 
         assert_eq!(definitions, Some(expected_definition));
     }

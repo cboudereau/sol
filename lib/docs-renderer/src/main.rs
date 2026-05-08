@@ -3,9 +3,9 @@ mod renderer;
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use tracing::debug;
 use sol_config::schema::parser::{component::ComponentSchema, query::SchemaQuerier};
 use sol_config_common::constants::{self, ComponentType};
+use tracing::debug;
 
 use crate::renderer::SchemaRenderer;
 

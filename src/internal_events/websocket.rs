@@ -6,13 +6,13 @@ use std::{
 };
 
 use metrics::{counter, histogram};
-use tokio_tungstenite::tungstenite::error::Error as TungsteniteError;
 use sol_common::{
     internal_event::{error_stage, error_type},
     json_size::JsonSize,
 };
 use sol_lib::NamedInternalEvent;
 use sol_lib::internal_event::InternalEvent;
+use tokio_tungstenite::tungstenite::error::Error as TungsteniteError;
 
 pub const PROTOCOL: &str = "websocket";
 
@@ -151,7 +151,12 @@ impl InternalEvent for WebSocketMessageReceived<'_> {
         );
 
         let histogram = histogram!("component_received_events_count");
-        histogram.record(self.count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "event counter value; precise for |v| <= 2^53"
+        )]
+        let count = self.count as f64;
+        histogram.record(count);
         let counter = counter!(
             "component_received_events_total",
             "uri" => self.url.to_string(),

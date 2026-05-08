@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use tokio::sync::oneshot::{Receiver, channel};
 use sol_lib::{
     config::{ComponentKey, OutputId},
     event::{Event, EventArray, EventContainer, OtelLog},
 };
+use tokio::sync::oneshot::{Receiver, channel};
 
 use crate::{
     config::{ConfigBuilder, schema::Definition, unit_test::UnitTestSourceConfig},

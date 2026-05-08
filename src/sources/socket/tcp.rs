@@ -83,7 +83,6 @@ pub struct TcpConfig {
     #[configurable(derived)]
     #[serde(default = "default_decoding")]
     pub(super) decoding: DeserializerConfig,
-
 }
 
 const fn default_shutdown_timeout_secs() -> Duration {
@@ -172,7 +171,6 @@ impl TcpConfig {
         self.decoding = val;
         self
     }
-
 }
 
 #[derive(Clone)]
@@ -184,10 +182,7 @@ pub struct RawTcpSource {
 
 impl RawTcpSource {
     pub const fn new(config: TcpConfig, decoder: Decoder) -> Self {
-        Self {
-            config,
-            decoder,
-        }
+        Self { config, decoder }
     }
 }
 
@@ -205,20 +200,17 @@ impl TcpSource for RawTcpSource {
         let now = Utc::now();
 
         for event in events {
-            match event {
-                Event::Log(otel_log) => {
-                    otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
-                    let meta = otel_log.metadata_mut().value_mut();
-                    meta.insert(
-                        lookup::path!(SocketConfig::NAME, "host"),
-                        host.ip().to_string(),
-                    );
-                    meta.insert(
-                        lookup::path!(SocketConfig::NAME, "port"),
-                        Value::Integer(host.port() as i64),
-                    );
-                }
-                _ => {}
+            if let Event::Log(otel_log) = event {
+                otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
+                let meta = otel_log.metadata_mut().value_mut();
+                meta.insert(
+                    lookup::path!(SocketConfig::NAME, "host"),
+                    host.ip().to_string(),
+                );
+                meta.insert(
+                    lookup::path!(SocketConfig::NAME, "port"),
+                    Value::Integer(i64::from(host.port())),
+                );
             }
         }
     }

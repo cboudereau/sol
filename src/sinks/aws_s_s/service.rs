@@ -5,10 +5,10 @@ use std::{
 
 use aws_smithy_runtime_api::client::{orchestrator::HttpResponse, result::SdkError};
 use futures::future::BoxFuture;
-use tower::Service;
 use sol_lib::{
     ByteSizeOf, event::EventStatus, request_metadata::GroupedCountByteSize, stream::DriverResponse,
 };
+use tower::Service;
 
 use super::{client::Client, request_builder::SendMessageEntry};
 

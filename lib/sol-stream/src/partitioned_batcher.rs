@@ -9,10 +9,10 @@ use std::{
 
 use futures::stream::{Fuse, Stream, StreamExt};
 use pin_project::pin_project;
-use tokio_util::time::{DelayQueue, delay_queue::Key};
-use twox_hash::XxHash64;
 use sol_common::byte_size_of::ByteSizeOf;
 use sol_core::{partition::Partitioner, time::KeyedTimer};
+use tokio_util::time::{DelayQueue, delay_queue::Key};
+use twox_hash::XxHash64;
 
 use crate::batcher::{
     BatchConfig,
@@ -359,8 +359,8 @@ mod test {
     use futures::{Stream, stream};
     use pin_project::pin_project;
     use proptest::prelude::*;
-    use tokio::time::advance;
     use sol_core::{partition::Partitioner, time::KeyedTimer};
+    use tokio::time::advance;
 
     use crate::{
         BatcherSettings,

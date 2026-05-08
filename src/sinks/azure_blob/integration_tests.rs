@@ -370,6 +370,8 @@ fn random_lines_with_stream_with_group_key(
         .enumerate()
         .map(move |(i, line)| {
             let mut log = OtelLog::from(line);
+            #[expect(clippy::cast_possible_truncation, reason = "test index fits in i32")]
+            #[expect(clippy::cast_possible_wrap, reason = "test index fits in i32")]
             let i = ((i / key) + 1) as i32;
             log.insert("key", i);
             Event::from(log)

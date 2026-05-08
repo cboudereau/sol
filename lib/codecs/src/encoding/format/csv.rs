@@ -2,13 +2,13 @@ use bytes::BytesMut;
 use chrono::SecondsFormat;
 use csv_core::{WriteResult, Writer, WriterBuilder};
 use lookup::lookup_v2::ConfigTargetPath;
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
 use sol_core::{
     config::DataType,
     event::{Event, Value},
     schema,
 };
+use tokio_util::codec::Encoder;
 
 use crate::encoding::BuildError;
 
@@ -311,7 +311,7 @@ mod tests {
     use chrono::DateTime;
     use ordered_float::NotNan;
     use sol_common::btreemap;
-    use sol_core::event::{OtelLog, ObjectMap, Value};
+    use sol_core::event::{ObjectMap, OtelLog, Value};
 
     use super::*;
 

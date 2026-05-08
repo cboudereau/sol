@@ -143,6 +143,10 @@ pub fn parse(
         .into_iter()
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Apache status counters (uptime, accesses, workers, connections) are precise for |v| <= 2^53"
+)]
 fn line_to_metrics<'a>(
     key: &str,
     value: &str,
@@ -153,24 +157,16 @@ fn line_to_metrics<'a>(
     StatusFieldStatistic::from_key_value(key, value).map(move |result| {
         result.map(move |statistic| match statistic {
             StatusFieldStatistic::ServerUptimeSeconds(value) => Box::new(iter::once(
-                OtelMetric::new_counter(
-                    "uptime_seconds_total",
-                    MetricKind::Absolute,
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags(tags.cloned())
-                .with_timestamp(Some(now)),
+                OtelMetric::new_counter("uptime_seconds_total", MetricKind::Absolute, value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags(tags.cloned())
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::TotalAccesses(value) => Box::new(iter::once(
-                OtelMetric::new_counter(
-                    "access_total",
-                    MetricKind::Absolute,
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags(tags.cloned())
-                .with_timestamp(Some(now)),
+                OtelMetric::new_counter("access_total", MetricKind::Absolute, value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags(tags.cloned())
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::TotalKBytes(value) => Box::new(iter::once(
                 OtelMetric::new_counter(
@@ -193,149 +189,116 @@ fn line_to_metrics<'a>(
                 .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::CpuUser(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    value,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("type".to_string(), "user".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", value)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("type".to_string(), "user".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::CpuSystem(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    value,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("type".to_string(), "system".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", value)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("type".to_string(), "system".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::CpuChildrenUser(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    value,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("type".to_string(), "children_user".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", value)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("type".to_string(), "children_user".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::CpuChildrenSystem(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    value,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("type".to_string(), "children_system".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", value)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("type".to_string(), "children_system".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::CpuLoad(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "cpu_load",
-                    value,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags(tags.cloned())
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_load", value)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags(tags.cloned())
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::IdleWorkers(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "workers",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "idle".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "idle".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             ))
                 as Box<dyn Iterator<Item = OtelMetric>>,
             StatusFieldStatistic::BusyWorkers(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "workers",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "busy".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "busy".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::ConnsTotal(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "connections",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "total".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "total".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::ConnsAsyncWriting(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "connections",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "writing".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "writing".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::ConnsAsyncClosing(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "connections",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "closing".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "closing".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::ConnsAsyncKeepAlive(value) => Box::new(iter::once(
-                OtelMetric::new_gauge(
-                    "connections",
-                    value as f64,
-                )
-                .with_namespace(namespace.map(str::to_string))
-                .with_tags({
-                    let mut tags = tags.cloned().unwrap_or_default();
-                    tags.insert_string("state".to_string(), "keepalive".to_string());
-                    Some(tags)
-                })
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", value as f64)
+                    .with_namespace(namespace.map(str::to_string))
+                    .with_tags({
+                        let mut tags = tags.cloned().unwrap_or_default();
+                        tags.insert_string("state".to_string(), "keepalive".to_string());
+                        Some(tags)
+                    })
+                    .with_timestamp(Some(now)),
             )),
             StatusFieldStatistic::Scoreboard(value) => {
                 let scores = value.chars().fold(HashMap::new(), |mut m, c| {
@@ -374,17 +337,14 @@ fn score_to_metric(
     state: &str,
     count: u32,
 ) -> OtelMetric {
-    OtelMetric::new_gauge(
-        "scoreboard",
-        f64::from(count),
-    )
-    .with_namespace(namespace.map(str::to_string))
-    .with_tags({
-        let mut tags = tags.cloned().unwrap_or_default();
-        tags.insert_string("state".to_string(), state.to_string());
-        Some(tags)
-    })
-    .with_timestamp(Some(now))
+    OtelMetric::new_gauge("scoreboard", f64::from(count))
+        .with_namespace(namespace.map(str::to_string))
+        .with_tags({
+            let mut tags = tags.cloned().unwrap_or_default();
+            tags.insert_string("state".to_string(), state.to_string());
+            Some(tags)
+        })
+        .with_timestamp(Some(now))
 }
 
 #[derive(Debug)]
@@ -448,8 +408,8 @@ mod test {
     use sol_lib::{assert_event_data_eq, otel_tags};
 
     use super::*;
-    use crate::event::metric::MetricKind;
     use crate::event::OtelMetric;
+    use crate::event::metric::MetricKind;
 
     // Test ExtendedStatus: Off
     // https://httpd.apache.org/docs/2.4/mod/core.html#extendedstatus
@@ -487,132 +447,77 @@ Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W___________
         assert_event_data_eq!(
             metrics,
             vec![
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "closing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "keepalive")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "total")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "writing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "closing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "dnslookup")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "finishing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    2.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "idle_cleanup")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    2.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "keepalive")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "logging")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    325.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "open")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "reading")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "sending")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "starting")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    64.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "waiting")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_counter(
-                    "uptime_seconds_total",
-                    MetricKind::Absolute,
-                    12.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "workers",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "busy")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "workers",
-                    74.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "idle")))
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "closing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "keepalive")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "total")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "writing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "closing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "dnslookup")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "finishing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 2.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "idle_cleanup")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 2.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "keepalive")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "logging")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 325.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "open")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "reading")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "sending")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "starting")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 64.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "waiting")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_counter("uptime_seconds_total", MetricKind::Absolute, 12.0,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "busy")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", 74.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "idle")))
+                    .with_timestamp(Some(now)),
             ]
         );
         assert_eq!(errors.len(), 0);
@@ -667,187 +572,105 @@ Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W___________
         assert_event_data_eq!(
             metrics,
             vec![
-                OtelMetric::new_counter(
-                    "access_total",
-                    MetricKind::Absolute,
-                    30.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "closing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "keepalive")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "total")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "connections",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "writing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "cpu_load",
-                    0.846154,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("type" => "children_system")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    0.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("type" => "children_user")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    0.02,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("type" => "system")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "cpu_seconds_total",
-                    0.2,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("type" => "user")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_counter(
-                    "duration_seconds_total",
-                    MetricKind::Absolute,
-                    11.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "closing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "dnslookup")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "finishing")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    2.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "idle_cleanup")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    2.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "keepalive")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "logging")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    325.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "open")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "reading")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "sending")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "starting")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "scoreboard",
-                    64.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "waiting")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_counter(
-                    "sent_bytes_total",
-                    MetricKind::Absolute,
-                    222208.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_counter(
-                    "uptime_seconds_total",
-                    MetricKind::Absolute,
-                    26.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "workers",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "busy")))
-                .with_timestamp(Some(now)),
-                OtelMetric::new_gauge(
-                    "workers",
-                    74.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "idle")))
-                .with_timestamp(Some(now)),
+                OtelMetric::new_counter("access_total", MetricKind::Absolute, 30.0,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "closing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "keepalive")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "total")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "writing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_load", 0.846154,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("type" => "children_system")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", 0.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("type" => "children_user")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", 0.02,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("type" => "system")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("cpu_seconds_total", 0.2,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("type" => "user")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_counter("duration_seconds_total", MetricKind::Absolute, 11.0,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "closing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "dnslookup")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "finishing")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 2.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "idle_cleanup")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 2.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "keepalive")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "logging")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 325.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "open")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "reading")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "sending")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "starting")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("scoreboard", 64.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "waiting")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_counter("sent_bytes_total", MetricKind::Absolute, 222208.0,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_counter("uptime_seconds_total", MetricKind::Absolute, 26.0,)
+                    .with_namespace(Some("apache"))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "busy")))
+                    .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("workers", 74.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "idle")))
+                    .with_timestamp(Some(now)),
             ]
         );
         assert_eq!(errors.len(), 0);
@@ -865,13 +688,10 @@ ConnsTotal: 1
         assert_event_data_eq!(
             metrics,
             vec![
-                OtelMetric::new_gauge(
-                    "connections",
-                    1.0,
-                )
-                .with_namespace(Some("apache"))
-                .with_tags(Some(otel_tags!("state" => "total")))
-                .with_timestamp(Some(now)),
+                OtelMetric::new_gauge("connections", 1.0,)
+                    .with_namespace(Some("apache"))
+                    .with_tags(Some(otel_tags!("state" => "total")))
+                    .with_timestamp(Some(now)),
             ]
         );
         assert_eq!(errors.len(), 1);
@@ -890,7 +710,14 @@ ConnsTotal: 1
             },
         );
 
-        metrics.sort_by_key(|metric| format!("{}_{}{:?}", metric.namespace().unwrap_or(""), metric.name(), metric.tags()));
+        metrics.sort_by_key(|metric| {
+            format!(
+                "{}_{}{:?}",
+                metric.namespace().unwrap_or(""),
+                metric.name(),
+                metric.tags()
+            )
+        });
 
         (now, metrics, errors)
     }

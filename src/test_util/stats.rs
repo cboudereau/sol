@@ -35,6 +35,7 @@ impl Histogram {
         self.totals[index] += amount;
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub fn stats(&self) -> Option<HistogramStats> {
         let (min, max, mode, sum) = self.totals.iter().enumerate().fold(
             (None, None, None, WeightedSum::default()),
@@ -124,7 +125,14 @@ pub struct LevelTimeHistogram {
 impl LevelTimeHistogram {
     pub fn adjust(&mut self, adjustment: isize, instant: Instant) -> usize {
         self.histogram.add(self.level, instant);
-        self.level = ((self.level as isize) + adjustment) as usize;
+        #[expect(
+            clippy::cast_possible_wrap,
+            clippy::cast_sign_loss,
+            reason = "level gauge arithmetic: usize ↔ isize wrapping is intentional"
+        )]
+        {
+            self.level = ((self.level as isize) + adjustment) as usize;
+        }
         self.level
     }
 

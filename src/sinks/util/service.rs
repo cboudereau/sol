@@ -2,6 +2,7 @@ use std::{hash::Hash, marker::PhantomData, num::NonZeroU64, pin::Pin, sync::Arc,
 
 use futures_util::stream::{self, BoxStream};
 use serde_with::serde_as;
+use sol_lib::configurable::configurable_component;
 use tower::{
     Service, ServiceBuilder,
     balance::p2c::Balance,
@@ -12,7 +13,6 @@ use tower::{
     retry::Retry,
     timeout::Timeout,
 };
-use sol_lib::configurable::configurable_component;
 
 pub use crate::sinks::util::service::{
     concurrency::Concurrency,
@@ -412,8 +412,8 @@ mod tests {
     };
 
     use futures::{FutureExt, SinkExt, StreamExt, future, stream};
-    use tokio::time::Duration;
     use sol_lib::json_size::JsonSize;
+    use tokio::time::Duration;
 
     use super::*;
     use crate::sinks::util::{

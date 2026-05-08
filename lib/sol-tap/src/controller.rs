@@ -4,6 +4,12 @@ use std::{
 };
 
 use futures::{FutureExt, future::try_join_all};
+use sol_buffers::{WhenFull, topology::builder::TopologyBuilder};
+use sol_common::config::ComponentKey;
+use sol_core::{
+    event::{EventArray, LogArray, MetricArray, TraceArray},
+    fanout,
+};
 use tokio::sync::{
     mpsc as tokio_mpsc,
     mpsc::error::{SendError, TrySendError},
@@ -11,12 +17,6 @@ use tokio::sync::{
 };
 use tracing::{Instrument, Span};
 use uuid::Uuid;
-use sol_buffers::{WhenFull, topology::builder::TopologyBuilder};
-use sol_common::config::ComponentKey;
-use sol_core::{
-    event::{EventArray, LogArray, MetricArray, TraceArray},
-    fanout,
-};
 
 use crate::{
     notification::{InvalidMatch, Matched, NotMatched, Notification},

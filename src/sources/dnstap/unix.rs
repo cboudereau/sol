@@ -98,18 +98,14 @@ impl<T: FrameHandler + Clone> FrameHandler for DnstapFrameHandler<T> {
     fn handle_event(&self, received_from: Option<Bytes>, frame: Bytes) -> Option<Event> {
         self.frame_handler
             .handle_event(received_from, frame)
-            .map(|event| {
-                match &event {
-                    Event::Log(otel_log) => {
-                        emit!(SocketEventsReceived {
-                            mode: SocketMode::Unix,
-                            byte_size: otel_log.estimated_json_encoded_size_of(),
-                            count: 1
-                        });
-                    }
-                    _ => {}
+            .inspect(|event| {
+                if let Event::Log(otel_log) = event {
+                    emit!(SocketEventsReceived {
+                        mode: SocketMode::Unix,
+                        byte_size: otel_log.estimated_json_encoded_size_of(),
+                        count: 1
+                    });
                 }
-                event
             })
     }
 

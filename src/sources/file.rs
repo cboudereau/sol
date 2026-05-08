@@ -6,8 +6,6 @@ use futures::{FutureExt, Stream, StreamExt, TryFutureExt};
 use regex::bytes::Regex;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
-use tokio::sync::oneshot;
-use tracing::{Instrument, Span};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{BytesDeserializer, BytesDeserializerConfig},
@@ -22,16 +20,16 @@ use sol_lib::{
     finalizer::OrderedFinalizer,
     lookup::{lookup_v2::OptionalValuePath, owned_value_path},
 };
+use tokio::sync::oneshot;
+use tracing::{Instrument, Span};
 use vrl::value::Kind;
 
 use super::util::{EncodingConfig, MultilineConfig};
 use crate::{
     SourceSender,
-    config::{
-        DataType, SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput,
-    },
+    config::{DataType, SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput},
     encoding_transcode::{Decoder, Encoder},
-    event::{BatchNotifier, BatchStatus, OtelLog, string_value, int_value},
+    event::{BatchNotifier, BatchStatus, OtelLog, int_value, string_value},
     internal_events::{
         FileBytesReceived, FileEventsReceived, FileInternalMetricsConfig, FileOpen,
         FileSourceInternalEventsEmitter, StreamClosedError,
@@ -216,7 +214,6 @@ pub struct FileConfig {
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
 
-
     #[configurable(derived)]
     #[serde(default)]
     internal_metrics: FileInternalMetricsConfig,
@@ -229,6 +226,10 @@ pub struct FileConfig {
     pub rotate_wait: Duration,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "100 KiB constant fits usize on all supported platforms"
+)]
 fn default_max_line_bytes() -> usize {
     bytesize::kib(100u64) as usize
 }
@@ -424,12 +425,7 @@ impl SourceConfig for FileConfig {
                 Kind::integer(),
                 None,
             )
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!("path"),
-                Kind::bytes(),
-                None,
-            );
+            .with_source_metadata(Self::NAME, &owned_value_path!("path"), Kind::bytes(), None);
 
         vec![SourceOutput::new_maybe_logs(
             DataType::Log,
@@ -739,13 +735,15 @@ fn create_event(
     event.set_source_metadata(FileConfig::NAME, Utc::now());
 
     if let Some(hostname) = &meta.hostname {
-        event.set_resource_attribute(
-            "host.name".to_string(),
-            string_value(hostname.clone()),
-        );
+        event.set_resource_attribute("host.name".to_string(), string_value(hostname.clone()));
     }
     if let Some(offset_key) = offset_key {
-        event.set_attribute(offset_key.to_string(), int_value(offset as i64));
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "file byte offset (u64) fits i64 for any practical file size"
+        )]
+        let offset_i64 = offset as i64;
+        event.set_attribute(offset_key.to_string(), int_value(offset_i64));
     }
     event.set_attribute(file_key.to_string(), string_value(file));
 
@@ -768,12 +766,6 @@ mod tests {
         io::{Seek, Write},
     };
 
-    use encoding_rs::UTF_16LE;
-    use similar_asserts::assert_eq;
-    use tempfile::tempdir;
-    use tokio::time::{Duration, sleep, timeout};
-    use sol_lib::schema::Definition;
-    use vrl::value::kind::Collection;
     use super::*;
     use crate::{
         config::Config,
@@ -782,6 +774,12 @@ mod tests {
         sources::file,
         test_util::components::{FILE_SOURCE_TAGS, assert_source_compliance},
     };
+    use encoding_rs::UTF_16LE;
+    use similar_asserts::assert_eq;
+    use sol_lib::schema::Definition;
+    use tempfile::tempdir;
+    use tokio::time::{Duration, sleep, timeout};
+    use vrl::value::kind::Collection;
 
     #[test]
     fn generate_config() {
@@ -916,31 +914,29 @@ mod tests {
         assert_eq!(
             definitions,
             Some(
-                Definition::new_with_default_metadata(
-                    Kind::object(Collection::empty())
-                )
-                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-                .with_metadata_field(
-                    &owned_value_path!("vector", "source_type"),
-                    Kind::bytes(),
-                    None
-                )
-                .with_metadata_field(
-                    &owned_value_path!("vector", "ingest_timestamp"),
-                    Kind::timestamp(),
-                    None
-                )
-                .with_metadata_field(
-                    &owned_value_path!("file", "host"),
-                    Kind::bytes().or_undefined(),
-                    Some("host")
-                )
-                .with_metadata_field(
-                    &owned_value_path!("file", "offset"),
-                    Kind::integer(),
-                    None
-                )
-                .with_metadata_field(&owned_value_path!("file", "path"), Kind::bytes(), None)
+                Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                    .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                    .with_metadata_field(
+                        &owned_value_path!("vector", "source_type"),
+                        Kind::bytes(),
+                        None
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("vector", "ingest_timestamp"),
+                        Kind::timestamp(),
+                        None
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("file", "host"),
+                        Kind::bytes().or_undefined(),
+                        Some("host")
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("file", "offset"),
+                        Kind::integer(),
+                        None
+                    )
+                    .with_metadata_field(&owned_value_path!("file", "path"), Kind::bytes(), None)
             )
         )
     }
@@ -995,7 +991,10 @@ mod tests {
             "expected offset=0"
         );
 
-        assert!(otel_log.observed_time_unix_nano() > 0, "expected ingest timestamp");
+        assert!(
+            otel_log.observed_time_unix_nano() > 0,
+            "expected ingest timestamp"
+        );
     }
 
     #[tokio::test]
@@ -1209,6 +1208,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_sign_loss)]
     async fn file_multiple_paths() {
         let n = 5;
 
@@ -1262,6 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_sign_loss)]
     async fn file_exclude_paths() {
         let n = 5;
 
@@ -1366,7 +1367,11 @@ mod tests {
 
             assert_eq!(received.len(), 1);
             assert_eq!(
-                received[0].as_log().get("source").unwrap().to_string_lossy(),
+                received[0]
+                    .as_log()
+                    .get("source")
+                    .unwrap()
+                    .to_string_lossy(),
                 path.to_str().unwrap()
             );
         }
@@ -1398,7 +1403,10 @@ mod tests {
                     "missing key {expected_key}, actual keys: {actual_keys:?}"
                 );
             }
-            assert!(received[0].as_log().get_source_type().is_some(), "missing source_type in resource");
+            assert!(
+                received[0].as_log().get_source_type().is_some(),
+                "missing source_type in resource"
+            );
         }
     }
 
@@ -1491,24 +1499,14 @@ mod tests {
         // 10s (up from 5s) — the file source needs time to discover the file
         // and emit compliance events; under parallel test load 5s was not
         // always sufficient, causing missing BytesReceived/EventsReceived.
-        let received = run_file_source(
-            &config,
-            false,
-            Unfinalized,
-            sleep(Duration::from_secs(10)),
-        )
-        .await;
+        let received =
+            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(10))).await;
         let lines = extract_messages_string(received);
         assert_eq!(lines, vec!["the line"]);
 
         // Restart server, it re-reads file since the events were not acknowledged before shutdown
-        let received = run_file_source(
-            &config,
-            false,
-            Unfinalized,
-            sleep(Duration::from_secs(10)),
-        )
-        .await;
+        let received =
+            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(10))).await;
         let lines = extract_messages_string(received);
         assert_eq!(lines, vec!["the line"]);
     }
@@ -1546,13 +1544,7 @@ mod tests {
         assert!(lines.len() < line_count);
 
         // Restart the server, and it should read the rest without duplicating any
-        let received = run_file_source(
-            &config,
-            true,
-            Acks,
-            sleep(Duration::from_secs(5)),
-        )
-        .await;
+        let received = run_file_source(&config, true, Acks, sleep(Duration::from_secs(5))).await;
         let lines2 = extract_messages_string(received);
 
         // Between both runs, we should have the expected number of lines
@@ -1611,6 +1603,7 @@ mod tests {
 
     #[cfg(unix)] // this test uses unix-specific function `futimes` during test time
     #[tokio::test]
+    #[allow(clippy::cast_possible_wrap)]
     async fn file_start_position_ignore_old_files() {
         use std::{
             os::unix::io::AsRawFd,
@@ -1677,16 +1670,40 @@ mod tests {
 
         let before_lines: Vec<String> = received
             .iter()
-            .filter(|event| event.as_log().get("file").unwrap().to_string_lossy().ends_with("before"))
+            .filter(|event| {
+                event
+                    .as_log()
+                    .get("file")
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("before")
+            })
             .map(|event| {
-                event.as_log().get("body").unwrap().to_string_lossy().into_owned()
+                event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
             })
             .collect();
         let after_lines: Vec<String> = received
             .iter()
-            .filter(|event| event.as_log().get("file").unwrap().to_string_lossy().ends_with("after"))
+            .filter(|event| {
+                event
+                    .as_log()
+                    .get("file")
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("after")
+            })
             .map(|event| {
-                event.as_log().get("body").unwrap().to_string_lossy().into_owned()
+                event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
             })
             .collect();
         assert_eq!(before_lines, vec!["second line"]);
@@ -1874,13 +1891,7 @@ mod tests {
         file.sync_all().unwrap();
 
         // Read and aggregate existing lines
-        let received = run_file_source(
-            &config,
-            false,
-            Acks,
-            sleep_500_millis(),
-        )
-        .await;
+        let received = run_file_source(&config, false, Acks, sleep_500_millis()).await;
 
         assert_eq!(received[0].as_log().get("offset").unwrap(), 0.into());
 
@@ -1888,13 +1899,12 @@ mod tests {
         assert_eq!(lines, vec!["INFO hello\npart of hello"]);
 
         // After restart, we should not see any part of the previously aggregated lines
-        let received_after_restart =
-            run_file_source(&config, false, Acks, async {
-                writeln!(&mut file, "INFO goodbye").unwrap();
-                file.flush().unwrap();
-                sleep_500_millis().await;
-            })
-            .await;
+        let received_after_restart = run_file_source(&config, false, Acks, async {
+            writeln!(&mut file, "INFO goodbye").unwrap();
+            file.flush().unwrap();
+            sleep_500_millis().await;
+        })
+        .await;
         assert_eq!(
             received_after_restart[0].as_log().get("offset").unwrap(),
             (lines[0].len() + 1).into()
@@ -1929,13 +1939,7 @@ mod tests {
         writeln!(&mut newer, "which is fine because we want fairness").unwrap();
         newer.sync_all().unwrap();
 
-        let received = run_file_source(
-            &config,
-            false,
-            NoAcks,
-            sleep_500_millis(),
-        )
-        .await;
+        let received = run_file_source(&config, false, NoAcks, sleep_500_millis()).await;
 
         let received = extract_messages_value(received);
 
@@ -1990,13 +1994,7 @@ mod tests {
         writeln!(&mut newer, "because otherwise i'm not going to make sense").unwrap();
         newer.flush().unwrap();
 
-        let received = run_file_source(
-            &config,
-            false,
-            NoAcks,
-            sleep_500_millis(),
-        )
-        .await;
+        let received = run_file_source(&config, false, NoAcks, sleep_500_millis()).await;
 
         let received = extract_messages_value(received);
 
@@ -2070,13 +2068,7 @@ mod tests {
             ..test_default_file_config(&dir)
         };
 
-        let received = run_file_source(
-            &config,
-            false,
-            NoAcks,
-            sleep_500_millis(),
-        )
-        .await;
+        let received = run_file_source(&config, false, NoAcks, sleep_500_millis()).await;
 
         let received = extract_messages_value(received);
 
@@ -2101,13 +2093,7 @@ mod tests {
             ..test_default_file_config(&dir)
         };
 
-        let received = run_file_source(
-            &config,
-            false,
-            NoAcks,
-            sleep_500_millis(),
-        )
-        .await;
+        let received = run_file_source(&config, false, NoAcks, sleep_500_millis()).await;
 
         let received = extract_messages_value(received);
 
@@ -2297,7 +2283,6 @@ mod tests {
     }
     use AckingMode::*;
 
-
     async fn run_file_source(
         config: &FileConfig,
         wait_shutdown: bool,
@@ -2317,13 +2302,7 @@ mod tests {
             let data_dir = config.data_dir.clone().unwrap();
             let acks = !matches!(acking_mode, NoAcks);
 
-            tokio::spawn(file::file_source(
-                config,
-                data_dir,
-                shutdown,
-                tx,
-                acks,
-            ));
+            tokio::spawn(file::file_source(config, data_dir, shutdown, tx, acks));
 
             inner.await;
 

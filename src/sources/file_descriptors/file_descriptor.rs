@@ -44,7 +44,6 @@ pub struct FileDescriptorSourceConfig {
     #[configurable(metadata(docs::examples = 10))]
     #[configurable(metadata(docs::human_name = "File Descriptor Number"))]
     pub fd: u32,
-
 }
 
 impl FileDescriptorConfig for FileDescriptorSourceConfig {
@@ -91,7 +90,12 @@ pub(crate) fn null_fd() -> crate::Result<RawFd> {
 #[typetag::serde(name = "file_descriptor")]
 impl SourceConfig for FileDescriptorSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<crate::sources::Source> {
-        let pipe = io::BufReader::new(unsafe { File::from_raw_fd(self.fd as i32) });
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "file descriptor number fits i32 (Unix FDs are non-negative ints)"
+        )]
+        let raw_fd = self.fd as i32;
+        let pipe = io::BufReader::new(unsafe { File::from_raw_fd(raw_fd) });
 
         self.source(pipe, cx.shutdown, cx.out)
     }
@@ -130,6 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_sign_loss)]
     async fn file_descriptor_decodes_line() {
         assert_source_compliance(&SOURCE_TAGS, async {
             let (tx, rx) = SourceSender::new_test();
@@ -153,13 +158,23 @@ mod tests {
             let event = stream.next().await;
             assert_eq!(
                 Some("hello world".into()),
-                event.map(|event| event.as_log().get("body").unwrap().to_string_lossy().into_owned())
+                event.map(|event| event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned())
             );
 
             let event = stream.next().await;
             assert_eq!(
                 Some("hello world again".into()),
-                event.map(|event| event.as_log().get("body").unwrap().to_string_lossy().into_owned())
+                event.map(|event| event
+                    .as_log()
+                    .get("body")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned())
             );
 
             let event = stream.next().await;
@@ -169,6 +184,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_sign_loss)]
     async fn file_descriptor_decodes_line_vector_namespace() {
         assert_source_compliance(&SOURCE_TAGS, async {
             let (tx, rx) = SourceSender::new_test();
@@ -218,6 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_sign_loss)]
     async fn file_descriptor_handles_invalid_fd() {
         assert_source_error(&COMPONENT_ERROR_TAGS, async {
             let (tx, rx) = SourceSender::new_test();

@@ -7,6 +7,7 @@ use std::{
 };
 
 use snafu::{ResultExt, Snafu};
+use sol_config_macros::configurable_component;
 use tokio::{net::TcpStream, time};
 use tokio_tungstenite::{
     WebSocketStream, client_async_with_config,
@@ -18,7 +19,6 @@ use tokio_tungstenite::{
         stream::Mode as UriMode,
     },
 };
-use sol_config_macros::configurable_component;
 
 use crate::{
     common::backoff::ExponentialBackoff,

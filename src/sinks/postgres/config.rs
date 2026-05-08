@@ -1,11 +1,11 @@
 use futures::FutureExt;
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
-use tower::ServiceBuilder;
 use sol_lib::{
     config::AcknowledgementsConfig,
     configurable::{component::GenerateConfig, configurable_component},
     sink::VectorSink,
 };
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use tower::ServiceBuilder;
 
 use super::{
     service::{PostgresRetryLogic, PostgresService},

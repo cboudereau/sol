@@ -15,11 +15,6 @@ use bytes::{BufMut as _, BytesMut};
 use http::{Method, Request, StatusCode, Uri};
 use http_body::{Body as _, Collected};
 use hyper::{Body, Client, Server};
-use tokio::{
-    select,
-    sync::{Mutex, Notify, mpsc, oneshot},
-};
-use tokio_util::codec::Decoder;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -28,6 +23,11 @@ use sol_lib::{
     },
     event::Event,
 };
+use tokio::{
+    select,
+    sync::{Mutex, Notify, mpsc, oneshot},
+};
+use tokio_util::codec::Decoder;
 
 use super::{ResourceCodec, ResourceDirection, TestEvent, encode_test_event};
 use crate::components::validation::{

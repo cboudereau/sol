@@ -1,8 +1,8 @@
-use tracing::warn;
 use sol_common::{
     NamedInternalEvent,
     internal_event::{InternalEvent, error_stage, error_type},
 };
+use tracing::warn;
 
 #[derive(Debug, NamedInternalEvent)]
 pub(crate) struct DnstapParseWarning<E> {

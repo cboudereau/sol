@@ -23,6 +23,7 @@ use hyper_proxy::ProxyConnector;
 use rand::Rng;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
+use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
 use tokio::time::Instant;
 use tower::{Layer, Service};
 use tower_http::{
@@ -30,7 +31,6 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::{Instrument, Span};
-use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
 
 #[cfg(feature = "aws-core")]
 use crate::aws::AwsAuthentication;

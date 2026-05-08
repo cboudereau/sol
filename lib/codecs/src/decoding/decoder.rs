@@ -120,7 +120,10 @@ mod tests {
 
         let next = stream.next().await.unwrap();
         let log = next.unwrap().0.pop().unwrap().into_log();
-        assert_eq!(log.parse_path_and_get_value("foo").ok().flatten().unwrap(), Value::from(1));
+        assert_eq!(
+            log.parse_path_and_get_value("foo").ok().flatten().unwrap(),
+            Value::from(1)
+        );
 
         let next = stream.next().await.unwrap();
         let error = next.unwrap_err();
@@ -128,6 +131,9 @@ mod tests {
 
         let next = stream.next().await.unwrap();
         let log = next.unwrap().0.pop().unwrap().into_log();
-        assert_eq!(log.parse_path_and_get_value("bar").ok().flatten().unwrap(), Value::from(2));
+        assert_eq!(
+            log.parse_path_and_get_value("bar").ok().flatten().unwrap(),
+            Value::from(2)
+        );
     }
 }

@@ -1,5 +1,4 @@
 use futures::{FutureExt, future};
-use tokio::io;
 use sol_lib::{
     codecs::{
         JsonSerializerConfig,
@@ -7,6 +6,7 @@ use sol_lib::{
     },
     configurable::configurable_component,
 };
+use tokio::io;
 
 use crate::{
     codecs::{Encoder, EncodingConfigWithFraming, SinkType},

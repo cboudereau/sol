@@ -15,8 +15,8 @@ use fslock::LockFile;
 use futures::StreamExt;
 use rkyv::{Archive, Serialize, with::Atomic};
 use snafu::{ResultExt, Snafu};
-use tokio::{fs, io::AsyncWriteExt, sync::Notify};
 use sol_common::finalizer::OrderedFinalizer;
+use tokio::{fs, io::AsyncWriteExt, sync::Notify};
 
 use super::{
     Filesystem,

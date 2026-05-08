@@ -99,10 +99,7 @@ fn parse_bytes(bytes: Bytes) -> Event {
 }
 
 impl Deserializer for VrlDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let event = parse_bytes(bytes);
         match self.run_vrl(event) {
             Ok(events) => Ok(events),
@@ -112,10 +109,7 @@ impl Deserializer for VrlDeserializer {
 }
 
 impl VrlDeserializer {
-    fn run_vrl(
-        &self,
-        event: Event,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn run_vrl(&self, event: Event) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let mut runtime = Runtime::default();
         let mut target = VrlTarget::new(event, self.program.info(), true);
         match runtime.resolve(&mut target, &self.program, &self.timezone) {
@@ -296,10 +290,7 @@ mod tests {
     fn test_abort() {
         let decoder = make_decoder("abort");
         let log_bytes = Bytes::from(r#"{ "message": "Hello VRL" }"#);
-        let error = decoder
-            .parse(log_bytes)
-            .unwrap_err()
-            .to_string();
+        let error = decoder.parse(log_bytes).unwrap_err().to_string();
         assert!(error.contains("aborted"));
     }
 }

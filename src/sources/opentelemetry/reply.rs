@@ -77,18 +77,14 @@ impl Reply for Json {
         match self.inner {
             Ok(body) => {
                 let mut res = Response::new(body.into());
-                res.headers_mut().insert(
-                    CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
+                res.headers_mut()
+                    .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 res
             }
             Err(()) => {
                 let mut res = Response::new(b"{}".to_vec().into());
-                res.headers_mut().insert(
-                    CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
+                res.headers_mut()
+                    .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 res
             }
         }

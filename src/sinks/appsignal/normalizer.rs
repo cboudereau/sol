@@ -26,9 +26,7 @@ impl MetricNormalize for AppsignalMetricsNormalizer {
 mod tests {
     use super::AppsignalMetricsNormalizer;
     use crate::{
-        event::{
-            MetricKind, OtelMetric,
-        },
+        event::{MetricKind, OtelMetric},
         test_util::metrics::{assert_normalize, tests},
     };
 
@@ -64,11 +62,8 @@ mod tests {
 
     #[test]
     fn other_metrics() {
-        let metric = OtelMetric::new_set_from_values(
-            "set",
-            MetricKind::Incremental,
-            Vec::<String>::new(),
-        );
+        let metric =
+            OtelMetric::new_set_from_values("set", MetricKind::Incremental, Vec::<String>::new());
 
         assert_normalize(
             AppsignalMetricsNormalizer,

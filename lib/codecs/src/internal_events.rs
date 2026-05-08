@@ -1,11 +1,11 @@
 //! Internal events for codecs.
 
 use metrics::counter;
-use tracing::error;
 use sol_common::internal_event::{
     ComponentEventsDropped, InternalEvent, UNINTENTIONAL, emit, error_stage, error_type,
 };
 use sol_common_macros::NamedInternalEvent;
+use tracing::error;
 
 #[derive(Debug, NamedInternalEvent)]
 /// Emitted when a decoder framing error occurs.

@@ -65,9 +65,9 @@ where
 
                 // Filter unsupported types before normalization
                 future::ready(match otel.view() {
-                    MetricView::Sum { .. } | MetricView::Gauge { .. } => {
-                        normalizer.normalize_otel(otel).and_then(|e| e.try_into_otel_metric())
-                    }
+                    MetricView::Sum { .. } | MetricView::Gauge { .. } => normalizer
+                        .normalize_otel(otel)
+                        .and_then(|e| e.try_into_otel_metric()),
                     not_supported => {
                         warn!("Unsupported metric type: {:?}.", not_supported);
                         None

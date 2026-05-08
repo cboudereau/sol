@@ -1,7 +1,7 @@
+use sol_common::shutdown::ShutdownSignal;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::time::interval;
 use tokio_stream::{wrappers::IntervalStream, StreamExt};
-use sol_common::shutdown::ShutdownSignal;
 use vrl::{
     diagnostic::Label,
     prelude::{expression::Expr, *},
@@ -63,7 +63,11 @@ impl MetricsStorage {
             .cloned()
     }
 
-    pub(crate) fn find_metrics(&self, metric: &str, tags: BTreeMap<String, String>) -> Vec<OtelMetric> {
+    pub(crate) fn find_metrics(
+        &self,
+        metric: &str,
+        tags: BTreeMap<String, String>,
+    ) -> Vec<OtelMetric> {
         self.cache
             .load()
             .iter()
@@ -280,10 +284,9 @@ mod tests {
     #[test]
     fn test_get_vector_metric() {
         let storage = MetricsStorage::default();
-        storage.cache.store(
-            vec![OtelMetric::new_gauge("test", 1.0)]
-            .into(),
-        );
+        storage
+            .cache
+            .store(vec![OtelMetric::new_gauge("test", 1.0)].into());
 
         let result = compile_and_run(
             storage,
@@ -302,16 +305,12 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "a".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "b".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "a".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "b".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -344,16 +343,12 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "a".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "b".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "a".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "b".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -375,16 +370,12 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "a".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "b".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "a".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "b".to_string()),
+                ])))),
                 (OtelMetric::new_gauge("test", 1.0)),
             ]
             .into(),
@@ -420,21 +411,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "prefix.a".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "prefix.c".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "prefix.a".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "prefix.c".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -468,21 +453,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "a.suffix".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "c.suffix".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "a.suffix".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "c.suffix".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -516,21 +495,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.a.end".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.c.end".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.a.end".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.c.end".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -564,21 +537,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 6.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.a.end".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 3.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.c.end".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 6.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.a.end".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 3.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.c.end".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -600,21 +567,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 6.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.a.end".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 3.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.c.end".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 6.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.a.end".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 3.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.c.end".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -636,21 +597,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 6.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.a.end".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 3.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.c.end".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 6.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.a.end".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 3.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.c.end".to_string()),
+                ])))),
             ]
             .into(),
         );
@@ -672,21 +627,15 @@ mod tests {
         let storage = MetricsStorage::default();
         storage.cache.store(
             vec![
-                (OtelMetric::new_gauge("test", 6.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.a.end".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 1.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "something_else".to_string(),
-                )])))),
-                (OtelMetric::new_gauge("test", 3.0)
-                .with_tags(Some(OtelAttributes::from_iter([(
-                    "component_id".to_string(),
-                    "start.c.end".to_string(),
-                )])))),
+                (OtelMetric::new_gauge("test", 6.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.a.end".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 1.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "something_else".to_string()),
+                ])))),
+                (OtelMetric::new_gauge("test", 3.0).with_tags(Some(OtelAttributes::from_iter([
+                    ("component_id".to_string(), "start.c.end".to_string()),
+                ])))),
             ]
             .into(),
         );

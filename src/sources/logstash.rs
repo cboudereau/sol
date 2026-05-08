@@ -10,7 +10,6 @@ use bytes::{Buf, Bytes, BytesMut};
 use flate2::read::ZlibDecoder;
 use smallvec::{SmallVec, smallvec};
 use snafu::{ResultExt, Snafu};
-use tokio_util::codec::Decoder;
 use sol_lib::{
     codecs::{BytesDeserializerConfig, StreamDecodingError},
     configurable::configurable_component,
@@ -18,6 +17,7 @@ use sol_lib::{
     lookup::owned_value_path,
     schema::Definition,
 };
+use tokio_util::codec::Decoder;
 use vrl::value::{KeyString, Kind, kind::Collection};
 
 use super::util::net::{SocketListenAddr, TcpSource, TcpSourceAck, TcpSourceAcker};
@@ -64,7 +64,6 @@ pub struct LogstashConfig {
     #[configurable(derived)]
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
-
 }
 
 impl LogstashConfig {
@@ -624,7 +623,7 @@ impl From<LogstashEventFrame> for Event {
         let map: vrl::value::ObjectMap = frame
             .fields
             .into_iter()
-            .map(|(key, value)| (key.into(), Value::from(value)))
+            .map(|(key, value)| (key, Value::from(value)))
             .collect();
         Event::Log(OtelLog::from_value_map(
             Value::Object(map),
@@ -721,6 +720,7 @@ mod test {
         assert!(log.get_timestamp().is_some());
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn encode_req(seq: u32, pairs: &[(&str, &str)]) -> Bytes {
         let mut req = BytesMut::new();
         req.put_u8(b'2');
@@ -772,40 +772,36 @@ mod test {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogstashConfig::NAME, "timestamp"),
-            Kind::timestamp().or_undefined(),
-            Some("timestamp"),
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogstashConfig::NAME, "host"),
-            Kind::bytes(),
-            Some("host"),
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogstashConfig::NAME, "tls_client_metadata"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        );
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogstashConfig::NAME, "timestamp"),
+                    Kind::timestamp().or_undefined(),
+                    Some("timestamp"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogstashConfig::NAME, "host"),
+                    Kind::bytes(),
+                    Some("host"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogstashConfig::NAME, "tls_client_metadata"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                );
 
         assert_eq!(definitions, Some(expected_definition))
     }

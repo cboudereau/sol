@@ -25,8 +25,8 @@ use std::{
 };
 
 use futures::{Future, FutureExt};
-use tokio::sync::mpsc;
 use sol_lib::buffers::topology::channel::{BufferReceiverStream, BufferSender};
+use tokio::sync::mpsc;
 
 use self::task::{Task, TaskError, TaskResult};
 pub use self::{

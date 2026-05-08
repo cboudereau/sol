@@ -178,7 +178,6 @@ impl TransformContext {
             ..Default::default()
         }
     }
-
 }
 
 /// Generalized interface for describing and building transform components.

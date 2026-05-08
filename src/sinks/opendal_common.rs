@@ -13,8 +13,8 @@ use std::{fmt, task::Poll};
 use bytes::Bytes;
 use opendal::Operator;
 use snafu::Snafu;
-use tracing::Instrument;
 use sol_lib::codecs::encoding::Framer;
+use tracing::Instrument;
 
 use crate::sinks::{prelude::*, util::partitioner::KeyPartitioner};
 

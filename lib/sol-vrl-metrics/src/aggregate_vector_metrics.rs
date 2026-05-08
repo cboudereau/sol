@@ -1,6 +1,6 @@
+use sol_vrl_category::Category;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
-use sol_vrl_category::Category;
 use vrl::prelude::expression::Expr;
 use vrl::prelude::function::EnumVariant;
 use vrl::value;
@@ -62,7 +62,12 @@ fn aggregate_metrics(
         b"sum" => metric_values.sum::<NotNan<f64>>().into(),
         b"avg" => {
             let len = metric_values.clone().collect::<Vec<_>>().len();
-            (metric_values.sum::<NotNan<f64>>() / len as f64).into()
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "metric collection length fits in f64 mantissa"
+            )]
+            let divisor = len as f64;
+            (metric_values.sum::<NotNan<f64>>() / divisor).into()
         }
         b"max" => metric_values.max().map(Into::into).unwrap_or(Value::Null),
         b"min" => metric_values.min().map(Into::into).unwrap_or(Value::Null),

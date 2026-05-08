@@ -46,7 +46,20 @@ impl SampleMode {
             // To do one option would be to convert the hash to a number between 0 and 1 and compare
             // to the ratio. However to address issues with precision, here the ratio is scaled to
             // meet the width of the type of the hash.
-            hash_ratio_threshold: (ratio * (u64::MAX as u128) as f64) as u64,
+            hash_ratio_threshold: {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "sampling hash threshold; u64::MAX as f64 is the closest representable value"
+                )]
+                let max_f = u128::from(u64::MAX) as f64;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "sampling threshold: ratio in [0,1] × u64::MAX is non-negative and fits in u64"
+                )]
+                let threshold = (ratio * max_f) as u64;
+                threshold
+            },
         }
     }
 
@@ -133,6 +146,10 @@ impl Sample {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "test-only helper; sample rates are small enough for f64"
+    )]
     pub fn ratio(&self) -> f64 {
         match self.rate {
             SampleMode::Rate { rate, .. } => 1.0f64 / rate as f64,
@@ -158,16 +175,14 @@ impl FunctionTransform for Sample {
         };
 
         let value = self.key_field.as_ref().and_then(|key_field| match &event {
-            Event::Log(otel_log) => {
-                otel_log.parse_path_and_get_value(key_field.as_str())
-                    .ok()
-                    .flatten()
-            }
-            Event::Trace(otel_span) => {
-                otel_span.parse_path_and_get_value(key_field.as_str())
-                    .ok()
-                    .flatten()
-            }
+            Event::Log(otel_log) => otel_log
+                .parse_path_and_get_value(key_field.as_str())
+                .ok()
+                .flatten(),
+            Event::Trace(otel_span) => otel_span
+                .parse_path_and_get_value(key_field.as_str())
+                .ok()
+                .flatten(),
             Event::Metric(_) => {
                 panic!("component can never receive metric events")
             }
@@ -196,16 +211,12 @@ impl FunctionTransform for Sample {
             if let Some(path) = &self.sample_rate_key.path {
                 match event {
                     Event::Log(ref mut otel_log) => {
-                        otel_log.set_attribute(
-                            path.to_string(),
-                            string_value(self.rate.to_string()),
-                        );
+                        otel_log
+                            .set_attribute(path.to_string(), string_value(self.rate.to_string()));
                     }
                     Event::Trace(ref mut otel_span) => {
-                        otel_span.set_attribute(
-                            path.to_string(),
-                            string_value(self.rate.to_string()),
-                        );
+                        otel_span
+                            .set_attribute(path.to_string(), string_value(self.rate.to_string()));
                     }
                     Event::Metric(_) => {
                         panic!("component can never receive metric events")

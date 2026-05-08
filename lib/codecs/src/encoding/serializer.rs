@@ -431,9 +431,7 @@ impl Serializer {
     /// while text serializers produce UTF-8 encoded strings.
     pub const fn is_binary(&self) -> bool {
         match self {
-            Serializer::RawMessage(_)
-            | Serializer::Avro(_)
-            | Serializer::Protobuf(_) => true,
+            Serializer::RawMessage(_) | Serializer::Avro(_) | Serializer::Protobuf(_) => true,
             #[cfg(feature = "opentelemetry")]
             Serializer::Otlp(_) => true,
             #[cfg(feature = "syslog")]

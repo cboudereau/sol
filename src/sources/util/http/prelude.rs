@@ -3,14 +3,14 @@ use std::{collections::HashMap, convert::Infallible, fmt, net::SocketAddr, time:
 use bytes::Bytes;
 use futures::{FutureExt, TryFutureExt};
 use hyper::{Server, service::make_service_fn};
-use tokio::net::TcpStream;
-use tower::ServiceBuilder;
-use tracing::Span;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     config::SourceAcknowledgementsConfig,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
 };
+use tokio::net::TcpStream;
+use tower::ServiceBuilder;
+use tracing::Span;
 use warp::{
     Filter,
     filters::{

@@ -6,12 +6,12 @@ use aws_sdk_sqs::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use futures::{FutureExt, StreamExt};
-use tokio::{pin, select};
-use tracing_futures::Instrument;
 use sol_lib::{
     finalizer::UnorderedFinalizer,
     internal_event::{EventsReceived, Registered},
 };
+use tokio::{pin, select};
+use tracing_futures::Instrument;
 
 use crate::{
     SourceSender,
@@ -101,13 +101,23 @@ impl SqsSource {
         finalizer: Option<&Arc<Finalizer>>,
         events_received: Registered<EventsReceived>,
     ) {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SQS poll_secs config value is small enough to fit i32"
+        )]
+        let poll_secs = self.poll_secs as i32;
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SQS visibility_timeout_secs config value fits i32 (AWS limit is 43200)"
+        )]
+        let visibility_timeout_secs = self.visibility_timeout_secs as i32;
         let result = self
             .client
             .receive_message()
             .queue_url(&self.queue_url)
             .max_number_of_messages(MAX_BATCH_SIZE)
-            .wait_time_seconds(self.poll_secs as i32)
-            .visibility_timeout(self.visibility_timeout_secs as i32)
+            .wait_time_seconds(poll_secs)
+            .visibility_timeout(visibility_timeout_secs)
             .message_system_attribute_names(MessageSystemAttributeName::from("SentTimestamp"))
             // I think this should be a known attribute
             // https://github.com/awslabs/aws-sdk-rust/issues/411
@@ -223,31 +233,21 @@ mod tests {
     use sol_lib::lookup::path;
 
     use super::*;
-    use crate::{
-        codecs::DecodingConfig,
-        config::SourceConfig,
-        sources::aws_sqs::AwsSqsConfig,
-    };
+    use crate::{codecs::DecodingConfig, config::SourceConfig, sources::aws_sqs::AwsSqsConfig};
 
     #[tokio::test]
     async fn test_decode_vector_namespace() {
         let config = AwsSqsConfig {
             ..Default::default()
         };
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
         let message = "test";
         let now = Utc::now();
         let events: Vec<_> = util::decode_message(
-            DecodingConfig::new(
-                config.framing.clone(),
-                config.decoding,
-            )
-            .build()
-            .unwrap(),
+            DecodingConfig::new(config.framing.clone(), config.decoding)
+                .build()
+                .unwrap(),
             "aws_sqs",
             b"test",
             Some(now),
@@ -257,11 +257,7 @@ mod tests {
         .collect();
         assert_eq!(events.len(), 1);
         assert_eq!(
-            events[0]
-                .clone()
-                .as_log()
-                .value()
-                .to_string_lossy(),
+            events[0].clone().as_log().value().to_string_lossy(),
             message
         );
         assert_eq!(
@@ -295,7 +291,10 @@ mod tests {
             )
             .with_event_field(
                 &sol_lib::lookup::owned_value_path!("resource"),
-                vrl::value::Kind::object(vrl::value::kind::Collection::empty().with_unknown(vrl::value::Kind::bytes())).or_undefined(),
+                vrl::value::Kind::object(
+                    vrl::value::kind::Collection::empty().with_unknown(vrl::value::Kind::bytes()),
+                )
+                .or_undefined(),
                 None,
             );
         def.assert_valid_for_event(&events[0]);
@@ -306,20 +305,14 @@ mod tests {
         let config = AwsSqsConfig {
             ..Default::default()
         };
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
         let message = "test";
         let now = Utc::now();
         let events: Vec<_> = util::decode_message(
-            DecodingConfig::new(
-                config.framing.clone(),
-                config.decoding,
-            )
-            .build()
-            .unwrap(),
+            DecodingConfig::new(config.framing.clone(), config.decoding)
+                .build()
+                .unwrap(),
             "aws_sqs",
             b"test",
             Some(now),
@@ -346,7 +339,8 @@ mod tests {
                 .to_string_lossy(),
             now.to_rfc3339_opts(SecondsFormat::AutoSi, true)
         );
-        let def = definitions.unwrap()
+        let def = definitions
+            .unwrap()
             .with_event_field(
                 &sol_lib::lookup::owned_value_path!("observed_time_unix_nano"),
                 vrl::value::Kind::integer().or_undefined(),
@@ -365,7 +359,10 @@ mod tests {
             )
             .with_event_field(
                 &sol_lib::lookup::owned_value_path!("resource"),
-                vrl::value::Kind::object(vrl::value::kind::Collection::empty().with_unknown(vrl::value::Kind::bytes())).or_undefined(),
+                vrl::value::Kind::object(
+                    vrl::value::kind::Collection::empty().with_unknown(vrl::value::Kind::bytes()),
+                )
+                .or_undefined(),
                 None,
             );
         def.assert_valid_for_event(&events[0]);

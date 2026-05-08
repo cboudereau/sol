@@ -513,7 +513,14 @@ async fn checkpoint_writer(
 }
 
 pub fn calculate_ignore_before(ignore_older_secs: Option<u64>) -> Option<DateTime<Utc>> {
-    ignore_older_secs.map(|secs| Utc::now() - chrono::Duration::seconds(secs as i64))
+    ignore_older_secs.map(|secs| {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "ignore_older_secs is a user-configured retention window, well within i64::MAX seconds"
+        )]
+        let signed_secs = secs as i64;
+        Utc::now() - chrono::Duration::seconds(signed_secs)
+    })
 }
 
 /// A sentinel type to signal that file server was gracefully shut down.
@@ -569,6 +576,10 @@ impl TimingStats {
 
 fn scale(bytes: u64) -> String {
     let units = ["", "k", "m", "g"];
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "byte throughput display value — precision loss is irrelevant for human-readable formatting"
+    )]
     let mut bytes = bytes as f32;
     let mut i = 0;
     while bytes > 1000.0 && i <= 3 {

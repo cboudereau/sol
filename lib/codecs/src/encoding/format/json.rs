@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
 use sol_core::{config::DataType, event::Event, schema};
+use tokio_util::codec::Encoder;
 
 use crate::MetricTagValues;
 
@@ -137,7 +137,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let attrs = v["attributes"].as_array().expect("attributes array");
         let find_attr = |key: &str| -> &serde_json::Value {
-            &attrs.iter().find(|a| a["key"] == key).unwrap_or_else(|| panic!("key {key} not found"))["value"]
+            &attrs
+                .iter()
+                .find(|a| a["key"] == key)
+                .unwrap_or_else(|| panic!("key {key} not found"))["value"]
         };
         assert_eq!(find_attr("a")["stringValue"], "0");
         assert_eq!(find_attr("x")["stringValue"], "23");
@@ -222,17 +225,20 @@ mod tests {
         let array_tag = AnyValue {
             value: Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![
-                    AnyValue { value: Some(any_value::Value::StringValue("first".into())) },
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("first".into())),
+                    },
                     AnyValue { value: None },
-                    AnyValue { value: Some(any_value::Value::StringValue("second".into())) },
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("second".into())),
+                    },
                 ],
             })),
         };
         let mut tags = OtelAttributes::default();
         tags.insert("a".into(), array_tag);
         Event::Metric(
-            OtelMetric::new_counter("counter", MetricKind::Incremental, 1.0)
-                .with_tags(Some(tags))
+            OtelMetric::new_counter("counter", MetricKind::Incremental, 1.0).with_tags(Some(tags)),
         )
     }
 
@@ -261,13 +267,17 @@ mod tests {
         #[test]
         fn serialize_json_log() {
             let event = Event::Log(OtelLog::from(
-                btreemap! {"x" => Value::from("23"),"z" => Value::from(25),"a" => Value::from("0"),} as ObjectMap,
+                btreemap! {"x" => Value::from("23"),"z" => Value::from(25),"a" => Value::from("0"),}
+                    as ObjectMap,
             ));
             let bytes = serialize(get_pretty_json_config(), event);
             let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             let attrs = v["attributes"].as_array().expect("attributes array");
             let find_attr = |key: &str| -> &serde_json::Value {
-                &attrs.iter().find(|a| a["key"] == key).unwrap_or_else(|| panic!("key {key} not found"))["value"]
+                &attrs
+                    .iter()
+                    .find(|a| a["key"] == key)
+                    .unwrap_or_else(|| panic!("key {key} not found"))["value"]
             };
             assert_eq!(find_attr("a")["stringValue"], "0");
             assert_eq!(find_attr("x")["stringValue"], "23");
@@ -338,7 +348,9 @@ mod tests {
         }
         #[test]
         fn serialize_equals_to_json_value() {
-            let event = Event::Log(OtelLog::from(btreemap! {"foo" => Value::from("bar")} as ObjectMap));
+            let event = Event::Log(OtelLog::from(
+                btreemap! {"foo" => Value::from("bar")} as ObjectMap
+            ));
             let mut serializer = get_pretty_json_config().build();
             let mut bytes = BytesMut::new();
             serializer.encode(event.clone(), &mut bytes).unwrap();
@@ -426,9 +438,13 @@ mod tests {
             let array_tag = AnyValue {
                 value: Some(any_value::Value::ArrayValue(ArrayValue {
                     values: vec![
-                        AnyValue { value: Some(any_value::Value::StringValue("first".into())) },
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("first".into())),
+                        },
                         AnyValue { value: None },
-                        AnyValue { value: Some(any_value::Value::StringValue("second".into())) },
+                        AnyValue {
+                            value: Some(any_value::Value::StringValue("second".into())),
+                        },
                     ],
                 })),
             };
@@ -436,7 +452,7 @@ mod tests {
             tags.insert("a".into(), array_tag);
             Event::Metric(
                 OtelMetric::new_counter("counter", MetricKind::Incremental, 1.0)
-                    .with_tags(Some(tags))
+                    .with_tags(Some(tags)),
             )
         }
         fn serialize(config: JsonSerializerConfig, input: Event) -> Bytes {

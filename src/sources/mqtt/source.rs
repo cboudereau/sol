@@ -1,9 +1,6 @@
 use itertools::Itertools;
 use rumqttc::{Event as MqttEvent, Incoming, Publish, QoS, SubscribeFilter};
-use sol_lib::{
-    codecs::Decoder,
-    internal_event::EventsReceived,
-};
+use sol_lib::{codecs::Decoder, internal_event::EventsReceived};
 
 use chrono::Utc;
 

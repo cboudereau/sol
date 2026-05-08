@@ -9,16 +9,16 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt, stream::BoxStream, task::noop_waker_ref};
 use snafu::{ResultExt, Snafu};
+use sol_lib::{
+    ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component,
+    json_size::JsonSize,
+};
 use tokio::{
     io::{AsyncRead, ReadBuf},
     net::TcpStream,
     time::sleep,
 };
 use tokio_util::codec::Encoder;
-use sol_lib::{
-    ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component,
-    json_size::JsonSize,
-};
 
 use crate::{
     codecs::Transformer,

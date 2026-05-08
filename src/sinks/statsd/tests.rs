@@ -1,15 +1,13 @@
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use futures_util::stream;
+use sol_lib::{
+    event::{AnyValue, Event, MetricKind, OtelAttributes, OtelMetric},
+    otel_tags,
+};
 use tokio::{net::UdpSocket, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::{codec::BytesCodec, udp::UdpFramed};
-use sol_lib::{
-    event::{
-        AnyValue, Event, MetricKind, OtelAttributes, OtelMetric,
-    },
-    otel_tags,
-};
 
 use super::StatsdSinkConfig;
 use crate::{
@@ -50,6 +48,7 @@ async fn test_send_to_statsd() {
         resource_to_tags: vec![],
     };
 
+    let samples = sol_lib::samples![2.0 => 100];
     let events = vec![
         Event::Metric(
             OtelMetric::new_counter("counter", MetricKind::Incremental, 1.5)
@@ -57,12 +56,8 @@ async fn test_send_to_statsd() {
                 .with_tags(Some(tags())),
         ),
         Event::Metric(
-            OtelMetric::new_histogram_from_samples(
-                "histogram",
-                MetricKind::Incremental,
-                &sol_lib::samples![2.0 => 100],
-            )
-            .with_namespace(Some("vector")),
+            OtelMetric::new_histogram_from_samples("histogram", MetricKind::Incremental, &samples)
+                .with_namespace(Some("vector")),
         ),
     ];
     let (tx, rx) = mpsc::channel(1);

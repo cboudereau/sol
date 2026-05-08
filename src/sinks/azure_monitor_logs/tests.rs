@@ -3,8 +3,8 @@ use std::time::Duration;
 use futures::{future::ready, stream};
 use http::Response;
 use openssl::{base64, hash, pkey, sign};
-use tokio::time::timeout;
 use sol_lib::lookup::{OwnedTargetPath, owned_value_path};
+use tokio::time::timeout;
 
 use super::{
     config::{AzureMonitorLogsConfig, default_host},
@@ -134,7 +134,10 @@ fn insert_timestamp_kv(log: &mut OtelLog) -> String {
     let now = chrono::Utc::now();
 
     let timestamp_value = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    log.insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), now);
+    log.insert(
+        &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+        now,
+    );
 
     timestamp_value
 }
@@ -210,16 +213,34 @@ async fn correct_request() {
 
     // OTLP JSON format: body is {"stringValue":"..."} and timestamp is in attributes
     let obj1 = arr[0].as_object().unwrap();
-    assert_eq!(obj1.get("body").unwrap(), &serde_json::json!({"stringValue": "hello"}));
+    assert_eq!(
+        obj1.get("body").unwrap(),
+        &serde_json::json!({"stringValue": "hello"})
+    );
     let attrs1 = obj1.get("attributes").unwrap().as_array().unwrap();
-    let ts_attr1 = attrs1.iter().find(|a| a["key"] == "time_unix_nano").unwrap();
-    assert_eq!(ts_attr1["value"]["stringValue"].as_str().unwrap(), &timestamp_value1);
+    let ts_attr1 = attrs1
+        .iter()
+        .find(|a| a["key"] == "time_unix_nano")
+        .unwrap();
+    assert_eq!(
+        ts_attr1["value"]["stringValue"].as_str().unwrap(),
+        &timestamp_value1
+    );
 
     let obj2 = arr[1].as_object().unwrap();
-    assert_eq!(obj2.get("body").unwrap(), &serde_json::json!({"stringValue": "world"}));
+    assert_eq!(
+        obj2.get("body").unwrap(),
+        &serde_json::json!({"stringValue": "world"})
+    );
     let attrs2 = obj2.get("attributes").unwrap().as_array().unwrap();
-    let ts_attr2 = attrs2.iter().find(|a| a["key"] == "time_unix_nano").unwrap();
-    assert_eq!(ts_attr2["value"]["stringValue"].as_str().unwrap(), &timestamp_value2);
+    let ts_attr2 = attrs2
+        .iter()
+        .find(|a| a["key"] == "time_unix_nano")
+        .unwrap();
+    assert_eq!(
+        ts_attr2["value"]["stringValue"].as_str().unwrap(),
+        &timestamp_value2
+    );
 
     let headers = parts.headers;
 
@@ -239,10 +260,7 @@ async fn correct_request() {
     assert_eq!(log_type.to_str().unwrap(), "Vector");
 
     let time_generated_field = headers.get("time-generated-field").unwrap();
-    assert_eq!(
-        time_generated_field.to_str().unwrap(),
-        "time_unix_nano"
-    );
+    assert_eq!(time_generated_field.to_str().unwrap(), "time_unix_nano");
 
     let azure_resource_id = headers.get("x-ms-azureresourceid").unwrap();
     assert_eq!(
@@ -263,7 +281,10 @@ fn encode_valid() {
     let timestamp_value = insert_timestamp_kv(&mut log);
 
     let event = Event::from(log);
-    let encoder = JsonEncoding::new(Default::default(), Some(owned_value_path!("time_unix_nano")));
+    let encoder = JsonEncoding::new(
+        Default::default(),
+        Some(owned_value_path!("time_unix_nano")),
+    );
     let mut encoded = vec![];
     encoder.encode_input(vec![event], &mut encoded).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
@@ -272,8 +293,14 @@ fn encode_valid() {
 
     // OTLP JSON format: body is {"stringValue":"..."} and timestamp is in attributes
     let obj = arr[0].as_object().unwrap();
-    assert_eq!(obj.get("body").unwrap(), &serde_json::json!({"stringValue": "hello world"}));
+    assert_eq!(
+        obj.get("body").unwrap(),
+        &serde_json::json!({"stringValue": "hello world"})
+    );
     let attrs = obj.get("attributes").unwrap().as_array().unwrap();
     let ts_attr = attrs.iter().find(|a| a["key"] == "time_unix_nano").unwrap();
-    assert_eq!(ts_attr["value"]["stringValue"].as_str().unwrap(), &timestamp_value);
+    assert_eq!(
+        ts_attr["value"]["stringValue"].as_str().unwrap(),
+        &timestamp_value
+    );
 }

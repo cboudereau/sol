@@ -83,9 +83,7 @@ pub use self::message_decoding::decode_message;
 /// Thus Vector expects only one colon character to be present per chunk, so the find()
 /// operation locating the first position is sufficient.
 #[cfg(any(feature = "sources-statsd", feature = "sources-datadog_agent"))]
-pub fn extract_tag_key_and_value<S: AsRef<str>>(
-    tag_chunk: S,
-) -> (String, Option<String>) {
+pub fn extract_tag_key_and_value<S: AsRef<str>>(tag_chunk: S) -> (String, Option<String>) {
     let tag_chunk = tag_chunk.as_ref();
 
     match tag_chunk.split_once(':') {

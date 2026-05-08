@@ -4,10 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::OwnedSemaphorePermit;
-use tower::timeout::error::Elapsed;
 use sol_lib::internal_event::{InternalEventHandle as _, Registered};
 use sol_lib::stats::{EwmaVar, Mean, MeanVariance};
+use tokio::sync::OwnedSemaphorePermit;
+use tower::timeout::error::Elapsed;
 
 use super::{AdaptiveConcurrencySettings, instant_now, semaphore::ShrinkableSemaphore};
 #[cfg(test)]
@@ -99,7 +99,17 @@ impl<L> Controller<L> {
     pub(super) fn load(&self) -> f64 {
         let inner = self.inner.lock().expect("Controller mutex is poisoned");
         if inner.current_limit > 0 {
-            inner.in_flight as f64 / inner.current_limit as f64
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "in-flight count for load ratio; concurrency limits are small"
+            )]
+            let in_flight = inner.in_flight as f64;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "concurrency limit for load ratio; concurrency limits are small"
+            )]
+            let limit = inner.current_limit as f64;
+            in_flight / limit
         } else {
             1.0
         }
@@ -247,8 +257,20 @@ impl<L> Controller<L> {
             // Decrease (multiplicative) the current concurrency limit. The floor rounding in the
             // `usize` conversion guarantees the new limit is smaller than the current limit, and
             // the `.max` ensures the new limit is above zero.
-            let new_limit =
-                ((inner.current_limit as f64 * self.settings.decrease_ratio) as usize).max(1);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "concurrency limit to f64 for multiplicative decrease; limits are small"
+            )]
+            let scaled = inner.current_limit as f64 * self.settings.decrease_ratio;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "scaled f64 to usize; value is bounded by current_limit"
+            )]
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "scaled is always positive after multiplicative decrease"
+            )]
+            let new_limit = (scaled as usize).max(1);
             self.semaphore
                 .forget_permits(inner.current_limit - new_limit);
             inner.current_limit = new_limit;

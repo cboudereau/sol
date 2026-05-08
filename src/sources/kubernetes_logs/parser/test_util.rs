@@ -1,7 +1,7 @@
 #![cfg(test)]
 use chrono::{DateTime, Utc};
-use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
+use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
 use similar_asserts::assert_eq;
 use sol_lib::event;
 
@@ -29,7 +29,10 @@ pub fn make_log_event(
         other => other.to_string(),
     };
     let mut otel_log = OtelLog::from_bytes(msg_str.as_bytes());
-    otel_log.record_mut().time_unix_nano = timestamp.timestamp_nanos_opt().unwrap_or(0) as u64;
+    #[allow(clippy::cast_sign_loss)]
+    {
+        otel_log.record_mut().time_unix_nano = timestamp.timestamp_nanos_opt().unwrap_or(0) as u64;
+    }
     otel_log.set_attribute("stream".to_string(), string_value(stream));
     if is_partial {
         otel_log.set_attribute(

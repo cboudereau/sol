@@ -8,16 +8,16 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
-use tokio::{
-    select,
-    sync::watch,
-    time::{interval, sleep_until},
-};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     internal_event::{
         ByteSize, BytesSent, CountByteSize, EventsSent, InternalEventHandle as _, Output, Protocol,
     },
+};
+use tokio::{
+    select,
+    sync::watch,
+    time::{interval, sleep_until},
 };
 
 use crate::{
@@ -84,7 +84,15 @@ impl StreamSink<EventArray> for BlackholeSink {
 
         while let Some(mut events) = input.next().await {
             if let Some(rate) = self.config.rate {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "throttle rate from config; practical values are small"
+                )]
                 let factor: f32 = 1.0 / rate as f32;
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "batch size to f32 for duration calculation; practical values are small"
+                )]
                 let secs: f32 = factor * (events.len() as f32);
                 let until = self.last.unwrap_or_else(Instant::now) + Duration::from_secs_f32(secs);
                 sleep_until(until.into()).await;

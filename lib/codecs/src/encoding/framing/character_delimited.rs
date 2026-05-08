@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
-use tokio_util::codec::Encoder;
 use sol_config::configurable_component;
+use tokio_util::codec::Encoder;
 
 use super::BoxedFramingError;
 

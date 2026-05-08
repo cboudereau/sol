@@ -8,7 +8,10 @@ use snafu::{ResultExt, Snafu};
 use sol_lib::{
     config::proxy::ProxyConfig,
     event::EventRef,
-    lookup::{lookup_v2::{OptionalTargetPath, OptionalValuePath}, owned_value_path},
+    lookup::{
+        lookup_v2::{OptionalTargetPath, OptionalValuePath},
+        owned_value_path,
+    },
 };
 
 use super::{
@@ -145,7 +148,9 @@ pub fn config_host_key() -> OptionalValuePath {
 
 pub fn config_timestamp_key_target_path() -> OptionalTargetPath {
     OptionalTargetPath {
-        path: Some(sol_lib::lookup::OwnedTargetPath::event(owned_value_path!("time_unix_nano"))),
+        path: Some(sol_lib::lookup::OwnedTargetPath::event(owned_value_path!(
+            "time_unix_nano"
+        ))),
     }
 }
 
@@ -397,8 +402,8 @@ mod integration_tests {
     use std::net::SocketAddr;
 
     use http::StatusCode;
-    use tokio::time::Duration;
     use sol_lib::config::proxy::ProxyConfig;
+    use tokio::time::Duration;
     use warp::Filter;
 
     use super::{

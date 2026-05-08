@@ -16,14 +16,14 @@ use crate::{
 use async_trait::async_trait;
 use bytes::BytesMut;
 use futures::{Sink, Stream, StreamExt, pin_mut, sink::SinkExt, stream::BoxStream};
-use tokio_tungstenite::tungstenite::{error::Error as TungsteniteError, protocol::Message};
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, emit,
     internal_event::{
         ByteSize, BytesSent, CountByteSize, EventsSent, InternalEventHandle as _, Output, Protocol,
     },
 };
+use tokio_tungstenite::tungstenite::{error::Error as TungsteniteError, protocol::Message};
+use tokio_util::codec::Encoder as _;
 
 pub struct WebSocketSink {
     transformer: Transformer,
@@ -209,6 +209,7 @@ mod tests {
 
     use futures::{FutureExt, StreamExt, future};
     use serde_json::Value as JsonValue;
+    use sol_lib::codecs::JsonSerializerConfig;
     use tokio::{time, time::timeout};
     use tokio_tungstenite::{
         accept_async, accept_hdr_async,
@@ -217,7 +218,6 @@ mod tests {
             handshake::server::{Request, Response},
         },
     };
-    use sol_lib::codecs::JsonSerializerConfig;
 
     use super::*;
     use crate::{

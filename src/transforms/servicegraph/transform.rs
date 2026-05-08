@@ -7,8 +7,8 @@ use metrics::counter;
 use opentelemetry_proto::tonic::{
     common::v1::KeyValue,
     metrics::v1::{
-        self as otel_metrics, metric, number_data_point::Value as NDPValue, AggregationTemporality,
-        Metric as OtelMetricProto,
+        self as otel_metrics, AggregationTemporality, Metric as OtelMetricProto, metric,
+        number_data_point::Value as NDPValue,
     },
     trace::v1::span::SpanKind,
     trace::v1::status::StatusCode as OtelStatusCode,
@@ -39,7 +39,7 @@ pub struct Edge {
 }
 
 impl Edge {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             client_service: None,
             server_service: None,
@@ -52,7 +52,7 @@ impl Edge {
         }
     }
 
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.client_service.is_some() && self.server_service.is_some()
     }
 }
@@ -135,7 +135,7 @@ impl ServiceGraph {
                 };
                 self.upsert_server(&key, otel_span);
             }
-            _ => return,
+            _ => (),
         }
     }
 
@@ -290,6 +290,10 @@ impl ServiceGraph {
 
     fn flush(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "nanosecond timestamp fits in u64 until year 2554"
+        )]
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -332,7 +336,14 @@ impl ServiceGraph {
                         time_unix_nano: now_nanos,
                         exemplars: vec![],
                         flags: 0,
-                        value: Some(NDPValue::AsInt(bucket.request_count as i64)),
+                        value: Some(NDPValue::AsInt({
+                            #[expect(
+                                clippy::cast_possible_wrap,
+                                reason = "request count fits in i64 for proto encoding"
+                            )]
+                            let v = bucket.request_count as i64;
+                            v
+                        })),
                     }],
                     aggregation_temporality: temporality,
                     is_monotonic: true,
@@ -352,7 +363,14 @@ impl ServiceGraph {
                         time_unix_nano: now_nanos,
                         exemplars: vec![],
                         flags: 0,
-                        value: Some(NDPValue::AsInt(bucket.failed_count as i64)),
+                        value: Some(NDPValue::AsInt({
+                            #[expect(
+                                clippy::cast_possible_wrap,
+                                reason = "failed count fits in i64 for proto encoding"
+                            )]
+                            let v = bucket.failed_count as i64;
+                            v
+                        })),
                     }],
                     aggregation_temporality: temporality,
                     is_monotonic: true,
@@ -440,13 +458,16 @@ impl ServiceGraph {
             .unwrap_or_default()
     }
 
-    fn extract_latency_sec(
-        span: &opentelemetry_proto::tonic::trace::v1::Span,
-    ) -> f64 {
+    fn extract_latency_sec(span: &opentelemetry_proto::tonic::trace::v1::Span) -> f64 {
         let nanos = span
             .end_time_unix_nano
             .saturating_sub(span.start_time_unix_nano);
-        nanos as f64 / 1_000_000_000.0
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "nanosecond span duration to seconds; precise for |v| <= 2^53"
+        )]
+        let nanos_f = nanos as f64;
+        nanos_f / 1_000_000_000.0
     }
 
     fn is_failed(span: &opentelemetry_proto::tonic::trace::v1::Span) -> bool {
@@ -558,7 +579,9 @@ mod tests {
                 max_items: 1000,
             },
             metrics_flush_interval_secs: 15,
-            latency_histogram_buckets: vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+            latency_histogram_buckets: vec![
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ],
             dimensions: vec![],
         }
     }
@@ -690,10 +713,7 @@ mod tests {
 
         sg.on_span(&client_span("svc-a", &trace_id, &span_id));
 
-        let key = EdgeKey {
-            trace_id,
-            span_id,
-        };
+        let key = EdgeKey { trace_id, span_id };
         let edge = sg.store.get(&key).unwrap();
         assert_eq!(edge.client_service.as_deref(), Some("svc-a"));
         assert!(edge.server_service.is_none());
@@ -763,7 +783,10 @@ mod tests {
         sg.on_span(&event);
 
         let key = EdgeKey { trace_id, span_id };
-        assert_eq!(sg.store.get(&key).unwrap().connection_type, "messaging_system");
+        assert_eq!(
+            sg.store.get(&key).unwrap().connection_type,
+            "messaging_system"
+        );
     }
 
     #[tokio::test]
@@ -906,10 +929,7 @@ mod tests {
         sg.on_span(&server_span("svc-b", &trace_id, &server_sid, &client_sid));
 
         let events = sg.flush();
-        let names: Vec<&str> = events
-            .iter()
-            .map(|e| e.as_metric().name())
-            .collect();
+        let names: Vec<&str> = events.iter().map(|e| e.as_metric().name()).collect();
         assert_eq!(
             names,
             vec![
@@ -1066,10 +1086,20 @@ mod tests {
             let proto = event.as_metric().metric_proto();
             match &proto.data {
                 Some(metric::Data::Sum(sum)) => {
-                    assert_eq!(sum.aggregation_temporality, AggregationTemporality::Cumulative as i32, "{}", proto.name);
+                    assert_eq!(
+                        sum.aggregation_temporality,
+                        AggregationTemporality::Cumulative as i32,
+                        "{}",
+                        proto.name
+                    );
                 }
                 Some(metric::Data::Histogram(h)) => {
-                    assert_eq!(h.aggregation_temporality, AggregationTemporality::Cumulative as i32, "{}", proto.name);
+                    assert_eq!(
+                        h.aggregation_temporality,
+                        AggregationTemporality::Cumulative as i32,
+                        "{}",
+                        proto.name
+                    );
                 }
                 _ => panic!("unexpected metric data type"),
             }
@@ -1090,7 +1120,11 @@ mod tests {
         sg.on_span(&server_span("svc-b", &[2; 16], &[12; 8], &[2; 8]));
 
         let events = sg.flush();
-        assert_eq!(events.len(), 4, "same edge key → aggregated into one set of 4 metrics");
+        assert_eq!(
+            events.len(),
+            4,
+            "same edge key → aggregated into one set of 4 metrics"
+        );
 
         // request_total should be 2.
         let metric = events[0].as_metric();

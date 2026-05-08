@@ -4,9 +4,7 @@ use sol_lib::otel_tags;
 
 use super::*;
 use crate::{
-    event::{
-        Event, MetricKind, OtelMetric,
-    },
+    event::{Event, MetricKind, OtelMetric},
     test_util::{
         components::{AWS_SINK_TAGS, run_and_assert_sink_compliance},
         random_string,
@@ -46,12 +44,16 @@ async fn cloudwatch_metrics_put_data() {
 
     for i in 0..100 {
         let event = Event::Metric(
-            OtelMetric::new_counter(format!("counter-{}", 0), MetricKind::Incremental, i as f64)
-                .with_tags(Some(otel_tags!(
-                    "region" => "us-west-1",
-                    "production" => "true",
-                    "e" => "",
-                ))),
+            OtelMetric::new_counter(
+                format!("counter-{}", 0),
+                MetricKind::Incremental,
+                f64::from(i),
+            )
+            .with_tags(Some(otel_tags!(
+                "region" => "us-west-1",
+                "production" => "true",
+                "e" => "",
+            ))),
         );
         events.push(event);
     }
@@ -60,18 +62,19 @@ async fn cloudwatch_metrics_put_data() {
     for i in 0..10 {
         let event = Event::Metric(OtelMetric::new_gauge(
             format!("gauge-{gauge_name}"),
-            i as f64,
+            f64::from(i),
         ));
         events.push(event);
     }
 
     let distribution_name = random_string(10);
     for i in 0..10 {
+        let samples = sol_lib::samples![f64::from(i) => 100];
         let event = Event::Metric(
             OtelMetric::new_histogram_from_samples(
                 format!("distribution-{distribution_name}"),
                 MetricKind::Incremental,
-                &sol_lib::samples![i as f64 => 100],
+                &samples,
             )
             .with_timestamp(Some(
                 Utc.with_ymd_and_hms(2018, 11, 14, 8, 9, 10)

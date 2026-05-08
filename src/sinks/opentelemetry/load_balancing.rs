@@ -69,7 +69,7 @@ pub struct DnsResolverConfig {
     pub interval: String,
 }
 
-fn default_dns_port() -> u16 {
+const fn default_dns_port() -> u16 {
     4317
 }
 
@@ -124,7 +124,13 @@ pub fn start_resolver(
             ),
             ResolverConfig::Dns(cfg) => {
                 let interval = parse_duration(&cfg.interval).unwrap_or(Duration::from_secs(5));
-                (Box::new(DnsResolver { hostname: cfg.hostname, port: cfg.port }), interval)
+                (
+                    Box::new(DnsResolver {
+                        hostname: cfg.hostname,
+                        port: cfg.port,
+                    }),
+                    interval,
+                )
             }
             #[cfg(feature = "kubernetes")]
             ResolverConfig::K8s(cfg) => {
@@ -133,7 +139,15 @@ pub fn start_resolver(
                     None => (cfg.service, None),
                 };
                 let port = cfg.ports.first().copied().unwrap_or(4317);
-                (Box::new(K8sResolver { service, namespace, port, client: None }), Duration::from_secs(5))
+                (
+                    Box::new(K8sResolver {
+                        service,
+                        namespace,
+                        port,
+                        client: None,
+                    }),
+                    Duration::from_secs(5),
+                )
             }
         };
 
@@ -144,7 +158,10 @@ pub fn start_resolver(
                     endpoints.sort();
                     let current: BTreeSet<String> = endpoints.iter().cloned().collect();
                     if current != last {
-                        debug!(message = "Load balancer backends updated.", count = endpoints.len());
+                        debug!(
+                            message = "Load balancer backends updated.",
+                            count = endpoints.len()
+                        );
                         last = current;
                         let _ = tx.send(endpoints);
                     }
@@ -166,7 +183,9 @@ fn parse_duration(s: &str) -> Option<Duration> {
     if let Some(secs) = s.strip_suffix('s') {
         secs.parse::<u64>().ok().map(Duration::from_secs)
     } else if let Some(mins) = s.strip_suffix('m') {
-        mins.parse::<u64>().ok().map(|m| Duration::from_secs(m * 60))
+        mins.parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60))
     } else {
         s.parse::<u64>().ok().map(Duration::from_secs)
     }
@@ -317,12 +336,12 @@ impl ConsistentHashRing {
     }
 
     /// Number of endpoints in the ring.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.endpoints.len()
     }
 
     /// Whether the ring is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.endpoints.is_empty()
     }
 
@@ -348,8 +367,12 @@ pub fn extract_routing_key(event: &Event, routing_key: &RoutingKey) -> Vec<u8> {
     match routing_key {
         RoutingKey::TraceID => match event {
             Event::Trace(span) => span.span().trace_id.clone(),
-            Event::Log(log) => service_name_from_resource(log.resource_proto().as_ref()).into_bytes(),
-            Event::Metric(metric) => service_name_from_resource(metric.resource_proto().as_ref()).into_bytes(),
+            Event::Log(log) => {
+                service_name_from_resource(log.resource_proto().as_ref()).into_bytes()
+            }
+            Event::Metric(metric) => {
+                service_name_from_resource(metric.resource_proto().as_ref()).into_bytes()
+            }
         },
         RoutingKey::Service => {
             let resource = match event {
@@ -368,15 +391,23 @@ fn service_name_from_resource(
 ) -> String {
     resource
         .and_then(|r| {
-            r.attributes.iter().find(|kv| kv.key == "service.name").and_then(|kv| {
-                kv.value.as_ref().and_then(|v| {
-                    if let Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) = &v.value {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
+            r.attributes
+                .iter()
+                .find(|kv| kv.key == "service.name")
+                .and_then(|kv| {
+                    kv.value.as_ref().and_then(|v| {
+                        if let Some(
+                            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                                s,
+                            ),
+                        ) = &v.value
+                        {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
                 })
-            })
         })
         .unwrap_or_default()
 }
@@ -478,10 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn static_resolver_returns_hostnames() {
-        let mut resolver = StaticResolver(vec![
-            "backend-0:4317".into(),
-            "backend-1:4317".into(),
-        ]);
+        let mut resolver = StaticResolver(vec!["backend-0:4317".into(), "backend-1:4317".into()]);
         let result = resolver.resolve().await.unwrap();
         assert_eq!(result, vec!["backend-0:4317", "backend-1:4317"]);
     }
@@ -494,9 +522,15 @@ mod tests {
             port: 4317,
         };
         let result = resolver.resolve().await.unwrap();
-        assert!(!result.is_empty(), "localhost should resolve to at least one address");
+        assert!(
+            !result.is_empty(),
+            "localhost should resolve to at least one address"
+        );
         for addr in &result {
-            assert!(addr.contains("4317"), "resolved address should contain port: {addr}");
+            assert!(
+                addr.contains("4317"),
+                "resolved address should contain port: {addr}"
+            );
         }
     }
 

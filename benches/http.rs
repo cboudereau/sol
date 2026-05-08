@@ -6,7 +6,6 @@ use hyper::{
     Body, Response, Server,
     service::{make_service_fn, service_fn},
 };
-use tokio::runtime::Runtime;
 use sol::{
     Error, config,
     sinks::{
@@ -18,6 +17,7 @@ use sol::{
     test_util::{addr::next_addr, random_lines, runtime, send_lines, start_topology, wait_for_tcp},
 };
 use sol_lib::codecs::{TextSerializerConfig, encoding::FramingConfig};
+use tokio::runtime::Runtime;
 
 fn benchmark_http(c: &mut Criterion) {
     let num_lines: usize = 1_000;

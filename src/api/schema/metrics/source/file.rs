@@ -87,6 +87,10 @@ pub enum FileSourceMetricFilesSortFieldName {
 }
 
 impl sort::SortableByField<FileSourceMetricFilesSortFieldName> for FileSourceMetricFile<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64 metric totals → i64 for GraphQL sort comparison"
+    )]
     fn sort(&self, rhs: &Self, field: &FileSourceMetricFilesSortFieldName) -> Ordering {
         match field {
             FileSourceMetricFilesSortFieldName::Name => Ord::cmp(&self.name, &rhs.name),
@@ -195,10 +199,7 @@ impl FileSourceMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        api::schema::sort::SortField,
-        event::MetricKind,
-    };
+    use crate::{api::schema::sort::SortField, event::MetricKind};
 
     struct FileSourceMetricTest {
         name: &'static str,

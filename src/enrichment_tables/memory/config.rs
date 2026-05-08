@@ -2,7 +2,6 @@ use std::{num::NonZeroU64, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{FutureExt, future};
-use tokio::sync::Mutex;
 use sol_lib::{
     config::{AcknowledgementsConfig, DataType, Input},
     configurable::configurable_component,
@@ -12,6 +11,7 @@ use sol_lib::{
     schema::{self},
     sink::VectorSink,
 };
+use tokio::sync::Mutex;
 use vrl::{path::OwnedTargetPath, value::Kind};
 
 use super::{Memory, internal_events::InternalMetricsConfig, source::EXPIRED_ROUTE};
@@ -196,10 +196,9 @@ impl SourceConfig for MemoryConfig {
     }
 
     fn outputs(&self) -> Vec<SourceOutput> {
-        let schema_definition =
-            schema::Definition::new_with_default_metadata(Kind::any_object())
-                .with_meaning(OwnedTargetPath::event_root(), "message")
-                .with_standard_vector_source_metadata();
+        let schema_definition = schema::Definition::new_with_default_metadata(Kind::any_object())
+            .with_meaning(OwnedTargetPath::event_root(), "message")
+            .with_standard_vector_source_metadata();
 
         if self
             .source_config

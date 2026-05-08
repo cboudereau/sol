@@ -6,8 +6,8 @@ use futures::{Stream, StreamExt};
 use opentelemetry_proto::tonic::{
     common::v1::KeyValue,
     metrics::v1::{
-        self as otel_metrics, metric, number_data_point::Value as NDPValue, AggregationTemporality,
-        Metric as OtelMetricProto,
+        self as otel_metrics, AggregationTemporality, Metric as OtelMetricProto, metric,
+        number_data_point::Value as NDPValue,
     },
 };
 use sol_lib::transform::TaskTransform;
@@ -63,10 +63,17 @@ impl SpanMetrics {
         let span = otel_span.span();
 
         // Extract duration in the configured unit.
-        let duration_nanos = span.end_time_unix_nano.saturating_sub(span.start_time_unix_nano);
+        let duration_nanos = span
+            .end_time_unix_nano
+            .saturating_sub(span.start_time_unix_nano);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "nanosecond span duration to time unit; precise for |v| <= 2^53"
+        )]
+        let duration_nanos_f = duration_nanos as f64;
         let duration = match self.config.histogram.unit.as_str() {
-            "ms" => duration_nanos as f64 / 1_000_000.0,
-            _ => duration_nanos as f64 / 1_000_000_000.0, // seconds
+            "ms" => duration_nanos_f / 1_000_000.0,
+            _ => duration_nanos_f / 1_000_000_000.0, // seconds
         };
 
         // Build dimension key.
@@ -74,7 +81,10 @@ impl SpanMetrics {
 
         // Get or create aggregation bucket.
         let num_buckets = self.config.histogram.buckets.len();
-        let bucket = self.aggregations.entry(dims).or_insert_with(|| AggBucket::new(num_buckets));
+        let bucket = self
+            .aggregations
+            .entry(dims)
+            .or_insert_with(|| AggBucket::new(num_buckets));
         bucket.calls += 1;
         bucket.duration_sum += duration;
 
@@ -109,14 +119,17 @@ impl SpanMetrics {
                 continue;
             }
             let value = match dim_name {
-                "service.name" => {
-                    resource_attrs.get("service.name")
-                        .and_then(|av| match &av.value {
-                            Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default()
-                }
+                "service.name" => resource_attrs
+                    .get("service.name")
+                    .and_then(|av| match &av.value {
+                        Some(
+                            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                                s,
+                            ),
+                        ) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
                 "span.name" => span.name.clone(),
                 "span.kind" => match SpanKind::try_from(span.kind) {
                     Ok(SpanKind::Client) => "SPAN_KIND_CLIENT".to_string(),
@@ -126,13 +139,15 @@ impl SpanMetrics {
                     Ok(SpanKind::Internal) => "SPAN_KIND_INTERNAL".to_string(),
                     _ => "SPAN_KIND_UNSPECIFIED".to_string(),
                 },
-                "status.code" => {
-                    span.status.as_ref().map(|s| match s.code {
+                "status.code" => span
+                    .status
+                    .as_ref()
+                    .map(|s| match s.code {
                         1 => "OK".to_string(),
                         2 => "ERROR".to_string(),
                         _ => "UNSET".to_string(),
-                    }).unwrap_or_else(|| "UNSET".to_string())
-                }
+                    })
+                    .unwrap_or_else(|| "UNSET".to_string()),
                 _ => String::new(),
             };
             dims.push((dim_name.to_string(), value));
@@ -171,16 +186,23 @@ impl SpanMetrics {
             Temporality::Cumulative => AggregationTemporality::Cumulative as i32,
             Temporality::Delta => AggregationTemporality::Delta as i32,
         };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "nanosecond timestamp fits in u64 until year 2554"
+        )]
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
 
         for (dims, bucket) in self.aggregations.drain() {
-            let attributes: Vec<KeyValue> = dims.iter().map(|(k, v)| KeyValue {
-                key: k.clone(),
-                value: Some(string_value(v)),
-            }).collect();
+            let attributes: Vec<KeyValue> = dims
+                .iter()
+                .map(|(k, v)| KeyValue {
+                    key: k.clone(),
+                    value: Some(string_value(v)),
+                })
+                .collect();
 
             // --- calls metric (Sum) ---
             let calls_metric = OtelMetricProto {
@@ -195,7 +217,14 @@ impl SpanMetrics {
                         time_unix_nano: now_nanos,
                         exemplars: vec![],
                         flags: 0,
-                        value: Some(NDPValue::AsInt(bucket.calls as i64)),
+                        value: Some(NDPValue::AsInt({
+                            #[expect(
+                                clippy::cast_possible_wrap,
+                                reason = "call count fits in i64 for proto encoding"
+                            )]
+                            let v = bucket.calls as i64;
+                            v
+                        })),
                     }],
                     aggregation_temporality: temporality,
                     is_monotonic: true,
@@ -278,9 +307,9 @@ impl TaskTransform<Event> for SpanMetrics {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::DimensionConfig;
     use super::*;
     use crate::event::{EventMetadata, OtelSpan};
-    use super::super::config::DimensionConfig;
     use opentelemetry_proto::tonic::{
         resource::v1::Resource,
         trace::v1::{Span, Status, status::StatusCode as OtelStatusCode},
@@ -323,7 +352,12 @@ mod tests {
             dropped_links_count: 0,
             flags: 0,
         };
-        Event::Trace(OtelSpan::from_parts(span, Some(resource), None, EventMetadata::default()))
+        Event::Trace(OtelSpan::from_parts(
+            span,
+            Some(resource),
+            None,
+            EventMetadata::default(),
+        ))
     }
 
     fn default_config() -> SpanMetricsConfig {
@@ -343,8 +377,14 @@ mod tests {
     #[test]
     fn single_span_produces_calls_and_duration() {
         let mut sm = SpanMetrics::new(default_config());
-        let span = make_test_span("my-svc", "GET /api", OtelStatusCode::Ok as i32,
-            1_000_000_000, 1_500_000_000, vec![]); // 500ms
+        let span = make_test_span(
+            "my-svc",
+            "GET /api",
+            OtelStatusCode::Ok as i32,
+            1_000_000_000,
+            1_500_000_000,
+            vec![],
+        ); // 500ms
 
         sm.on_span(&span);
         let events = sm.flush();
@@ -365,10 +405,22 @@ mod tests {
         let mut sm = SpanMetrics::new(default_config());
 
         // Two spans with same dimensions.
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Ok as i32,
-            1_000_000_000, 1_200_000_000, vec![])); // 200ms
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Ok as i32,
-            2_000_000_000, 2_800_000_000, vec![])); // 800ms
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Ok as i32,
+            1_000_000_000,
+            1_200_000_000,
+            vec![],
+        )); // 200ms
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Ok as i32,
+            2_000_000_000,
+            2_800_000_000,
+            vec![],
+        )); // 800ms
 
         let events = sm.flush();
         assert_eq!(events.len(), 2, "same dims → one calls + one duration");
@@ -378,7 +430,9 @@ mod tests {
             if let Some(metric::Data::Sum(sum)) = &m.metric().data {
                 let dp = &sum.data_points[0];
                 assert_eq!(dp.value, Some(NDPValue::AsInt(2)));
-            } else { panic!("expected Sum"); }
+            } else {
+                panic!("expected Sum");
+            }
         }
 
         // Duration sum should be 0.2 + 0.8 = 1.0.
@@ -387,7 +441,9 @@ mod tests {
                 let dp = &h.data_points[0];
                 assert_eq!(dp.count, 2);
                 assert!((dp.sum.unwrap() - 1.0).abs() < 0.001);
-            } else { panic!("expected Histogram"); }
+            } else {
+                panic!("expected Histogram");
+            }
         }
     }
 
@@ -395,13 +451,29 @@ mod tests {
     fn different_dimensions_separate() {
         let mut sm = SpanMetrics::new(default_config());
 
-        sm.on_span(&make_test_span("svc-a", "op", OtelStatusCode::Ok as i32,
-            0, 100_000_000, vec![]));
-        sm.on_span(&make_test_span("svc-b", "op", OtelStatusCode::Ok as i32,
-            0, 100_000_000, vec![]));
+        sm.on_span(&make_test_span(
+            "svc-a",
+            "op",
+            OtelStatusCode::Ok as i32,
+            0,
+            100_000_000,
+            vec![],
+        ));
+        sm.on_span(&make_test_span(
+            "svc-b",
+            "op",
+            OtelStatusCode::Ok as i32,
+            0,
+            100_000_000,
+            vec![],
+        ));
 
         let events = sm.flush();
-        assert_eq!(events.len(), 4, "two different service.name → 2×(calls+duration)");
+        assert_eq!(
+            events.len(),
+            4,
+            "two different service.name → 2×(calls+duration)"
+        );
     }
 
     #[test]
@@ -419,8 +491,14 @@ mod tests {
             key: "http.method".to_string(),
             value: Some(string_value("POST")),
         };
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Ok as i32,
-            0, 100_000_000, vec![attr]));
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Ok as i32,
+            0,
+            100_000_000,
+            vec![attr],
+        ));
 
         let events = sm.flush();
         assert_eq!(events.len(), 2);
@@ -438,8 +516,14 @@ mod tests {
     #[test]
     fn flush_resets_aggregations() {
         let mut sm = SpanMetrics::new(default_config());
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Ok as i32,
-            0, 100_000_000, vec![]));
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Ok as i32,
+            0,
+            100_000_000,
+            vec![],
+        ));
 
         let events1 = sm.flush();
         assert_eq!(events1.len(), 2);
@@ -451,10 +535,22 @@ mod tests {
     #[test]
     fn error_status_dimension() {
         let mut sm = SpanMetrics::new(default_config());
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Ok as i32,
-            0, 100_000_000, vec![]));
-        sm.on_span(&make_test_span("svc", "op", OtelStatusCode::Error as i32,
-            0, 100_000_000, vec![]));
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Ok as i32,
+            0,
+            100_000_000,
+            vec![],
+        ));
+        sm.on_span(&make_test_span(
+            "svc",
+            "op",
+            OtelStatusCode::Error as i32,
+            0,
+            100_000_000,
+            vec![],
+        ));
 
         let events = sm.flush();
         // OK and ERROR are different dimension keys → 4 events (2 calls + 2 duration).

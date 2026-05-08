@@ -1,11 +1,12 @@
-use std::{num::NonZeroUsize, task::{Context, Poll}};
+use std::{
+    num::NonZeroUsize,
+    task::{Context, Poll},
+};
 
 use async_trait::async_trait;
 use futures::{StreamExt, TryFutureExt, future::BoxFuture, stream::BoxStream};
 use http_1::Uri;
 use prost::Message as _;
-use tonic::{IntoRequest, transport::Channel};
-use tower::{Service, ServiceBuilder};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     config::telemetry,
@@ -13,6 +14,8 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::{BatcherSettings, DriverResponse, batcher::data::BatchReduce},
 };
+use tonic::{IntoRequest, transport::Channel};
+use tower::{Service, ServiceBuilder};
 
 use snafu::Snafu;
 
@@ -23,9 +26,8 @@ use crate::{
     sinks::{
         Healthcheck, VectorSink,
         util::{
-            BatchConfig, RealtimeEventBasedDefaultBatchSettings, ServiceBuilderExt,
-            SinkBuilderExt, StreamSink, TowerRequestConfig, metadata::RequestMetadataBuilder,
-            retries::RetryLogic,
+            BatchConfig, RealtimeEventBasedDefaultBatchSettings, ServiceBuilderExt, SinkBuilderExt,
+            StreamSink, TowerRequestConfig, metadata::RequestMetadataBuilder, retries::RetryLogic,
         },
     },
     tls::TlsEnableableConfig,
@@ -104,10 +106,7 @@ impl GenerateConfig for GrpcConfig {
 }
 
 impl GrpcConfig {
-    pub async fn build(
-        &self,
-        _cx: SinkContext,
-    ) -> crate::Result<(VectorSink, Healthcheck)> {
+    pub async fn build(&self, _cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         if let Some(lb_config) = &self.load_balancing {
             return self.build_load_balanced(lb_config.clone()).await;
         }
@@ -168,7 +167,7 @@ impl GrpcConfig {
         Input::all()
     }
 
-    pub fn acknowledgements(&self) -> &AcknowledgementsConfig {
+    pub const fn acknowledgements(&self) -> &AcknowledgementsConfig {
         &self.acknowledgements
     }
 }
@@ -265,11 +264,7 @@ impl OtlpGrpcService {
             metrics = metrics.send_compressed(tonic::codec::CompressionEncoding::Gzip);
             traces = traces.send_compressed(tonic::codec::CompressionEncoding::Gzip);
         }
-        let protocol = endpoint
-            .split("://")
-            .next()
-            .unwrap_or("http")
-            .to_string();
+        let protocol = endpoint.split("://").next().unwrap_or("http").to_string();
         Self {
             logs_client: logs,
             metrics_client: metrics,
@@ -370,8 +365,7 @@ where
             .batched(self.batch_settings.as_reducer_config(
                 |(event, _, _, _): &(Event, _, _, _)| event.size_of().max(1),
                 BatchReduce::new(
-                    |col: &mut EventCollection,
-                     (event, finalizers, byte_size, json_size)| {
+                    |col: &mut EventCollection, (event, finalizers, byte_size, json_size)| {
                         col.finalizers.merge(finalizers);
                         col.events.push(event);
                         col.byte_size += byte_size;
@@ -379,7 +373,7 @@ where
                     },
                 ),
             ))
-            .map(|col| collection_into_request(col))
+            .map(collection_into_request)
             .into_driver(self.service)
             .run()
             .await
@@ -402,16 +396,16 @@ where
 // Load-balanced sink
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
-use metrics::{counter, gauge};
 use super::load_balancing::{ConsistentHashRing, RoutingKey, extract_routing_key};
+use metrics::{counter, gauge};
+use std::collections::HashMap;
 
 /// Parse an endpoint string into a URI, prepending `http://` if no scheme is present.
 fn parse_endpoint_uri(ep: &str) -> Option<Uri> {
-    if let Ok(uri) = ep.parse::<Uri>() {
-        if uri.scheme().is_some() {
-            return Some(uri);
-        }
+    if let Ok(uri) = ep.parse::<Uri>()
+        && uri.scheme().is_some()
+    {
+        return Some(uri);
     }
     format!("http://{ep}").parse::<Uri>().ok()
 }
@@ -454,9 +448,17 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
                 continue;
             };
             let channel = Channel::builder(uri).connect_lazy();
-            services.insert(ep.clone(), OtlpGrpcService::new(channel, ep.clone(), self.compression));
+            services.insert(
+                ep.clone(),
+                OtlpGrpcService::new(channel, ep.clone(), self.compression),
+            );
         }
-        gauge!("lb_num_backends").set(ring.len() as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "backend count for metrics gauge; practical values are small"
+        )]
+        let num_backends = ring.len() as f64;
+        gauge!("lb_num_backends").set(num_backends);
 
         // Collect events, route by key, batch per backend, send.
         let routing_key = self.routing_key.clone();
@@ -467,7 +469,12 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
             if self.backends_rx.has_changed().unwrap_or(false) {
                 let new_endpoints = self.backends_rx.borrow_and_update().clone();
                 ring = ConsistentHashRing::new(&new_endpoints);
-                gauge!("lb_num_backends").set(ring.len() as f64);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "backend count for metrics gauge; practical values are small"
+                )]
+                let num_backends = ring.len() as f64;
+                gauge!("lb_num_backends").set(num_backends);
                 counter!("lb_num_resolutions", "outcome" => "success").increment(1);
                 // Add new backends, remove old ones.
                 let new_set: std::collections::HashSet<&String> = new_endpoints.iter().collect();
@@ -498,6 +505,10 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
             let max_events = self.batch_settings.item_limit;
 
             // Drain available events up to batch limits.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "batch timeout millis fits in u64"
+            )]
             let batch_timeout = tokio::time::sleep(std::time::Duration::from_millis(
                 self.batch_settings.timeout.as_millis() as u64,
             ));
@@ -519,7 +530,7 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
                                 json_byte_size.add_event(&event, event.estimated_json_encoded_size_of());
                                 let finalizers = event.take_finalizers();
 
-                                let col = per_backend.entry(endpoint).or_insert_with(EventCollection::default);
+                                let col = per_backend.entry(endpoint).or_default();
                                 col.finalizers.merge(finalizers);
                                 col.events.push(event);
                                 col.byte_size += byte_size;
@@ -595,8 +606,8 @@ pub(crate) fn otel_metric_event_to_resource_metrics(
     };
 
     let metric_bytes = metric_event.metric_proto().encode_to_vec();
-    let sink_metric = SinkMetric::decode(bytes::Bytes::from(metric_bytes))
-        .expect("Metric proto roundtrip");
+    let sink_metric =
+        SinkMetric::decode(bytes::Bytes::from(metric_bytes)).expect("Metric proto roundtrip");
 
     let resource = metric_event.resource_proto().map(|r| {
         let b = r.encode_to_vec();
@@ -633,8 +644,8 @@ pub(crate) fn otel_log_event_to_resource_logs(
 
     let proto_record = log_event.record_to_proto();
     let record_bytes = proto_record.encode_to_vec();
-    let sink_record = SinkLogRecord::decode(bytes::Bytes::from(record_bytes))
-        .expect("LogRecord proto roundtrip");
+    let sink_record =
+        SinkLogRecord::decode(bytes::Bytes::from(record_bytes)).expect("LogRecord proto roundtrip");
 
     let resource = log_event.resource_proto().map(|r| {
         let b = r.encode_to_vec();
@@ -670,8 +681,7 @@ pub(crate) fn otel_span_event_to_resource_spans(
     };
 
     let span_bytes = span_event.span_to_proto().encode_to_vec();
-    let sink_span =
-        SinkSpan::decode(bytes::Bytes::from(span_bytes)).expect("Span proto roundtrip");
+    let sink_span = SinkSpan::decode(bytes::Bytes::from(span_bytes)).expect("Span proto roundtrip");
 
     let resource = span_event.resource_proto().map(|r| {
         let b = r.encode_to_vec();
@@ -697,8 +707,7 @@ pub(crate) fn otel_span_event_to_resource_spans(
 fn collection_into_request(col: EventCollection) -> OtlpRequest {
     use sol_lib::opentelemetry::proto::{
         collector::{
-            logs::v1::ExportLogsServiceRequest,
-            metrics::v1::ExportMetricsServiceRequest,
+            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
             trace::v1::ExportTraceServiceRequest,
         },
         logs::v1::ResourceLogs,
@@ -775,28 +784,29 @@ mod tests {
             AnyValue, KeyValue, any_value::Value as OtelValueKind,
         };
         use opentelemetry_proto::tonic::metrics::v1::{
-            Metric as OtelMetricProto, Sum, NumberDataPoint,
-            number_data_point::Value as NDPValue,
+            Metric as OtelMetricProto, NumberDataPoint, Sum, number_data_point::Value as NDPValue,
         };
         use opentelemetry_proto::tonic::resource::v1::Resource;
         use sol_lib::event::OtelMetric;
 
         let mut event = OtelMetric::new(OtelMetricProto {
             name: "http.requests".to_string(),
-            data: Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(Sum {
-                data_points: vec![NumberDataPoint {
-                    value: Some(NDPValue::AsInt(42)),
-                    attributes: vec![KeyValue {
-                        key: "http.method".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(OtelValueKind::StringValue("GET".to_string())),
-                        }),
+            data: Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(
+                Sum {
+                    data_points: vec![NumberDataPoint {
+                        value: Some(NDPValue::AsInt(42)),
+                        attributes: vec![KeyValue {
+                            key: "http.method".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(OtelValueKind::StringValue("GET".to_string())),
+                            }),
+                        }],
+                        ..Default::default()
                     }],
-                    ..Default::default()
-                }],
-                aggregation_temporality: 2,
-                is_monotonic: true,
-            })),
+                    aggregation_temporality: 2,
+                    is_monotonic: true,
+                },
+            )),
             ..Default::default()
         });
         event.set_resource(Resource {
@@ -821,7 +831,12 @@ mod tests {
 
         // Verify resource is preserved
         let resource = rm.resource.expect("resource must exist");
-        assert!(resource.attributes.iter().any(|kv| kv.key == "service.name"));
+        assert!(
+            resource
+                .attributes
+                .iter()
+                .any(|kv| kv.key == "service.name")
+        );
 
         // Verify data point attributes are preserved (this was the bug)
         let metric = &rm.scope_metrics[0].metrics[0];

@@ -100,12 +100,12 @@ impl FunctionTransform for Filter {
 mod test {
     use std::sync::Arc;
 
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
     use sol_lib::{
         config::ComponentKey,
         event::{MetricKind, OtelMetric},
     };
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
 
     use super::*;
     use crate::{
@@ -150,7 +150,11 @@ mod test {
 
             assert_eq!(out.recv().await.unwrap(), log);
 
-            let metric = Event::Metric(OtelMetric::new_counter("test metric", MetricKind::Incremental, 1.0));
+            let metric = Event::Metric(OtelMetric::new_counter(
+                "test metric",
+                MetricKind::Incremental,
+                1.0,
+            ));
             tx.send(metric).await.unwrap();
 
             drop(tx);

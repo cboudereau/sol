@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use bytes::BytesMut;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use sol_lib::configurable::{component::GenerateConfig, configurable_component};
 use tokio::{io::AsyncWriteExt, process::Command, time};
 use tokio_util::codec;
-use sol_lib::configurable::{component::GenerateConfig, configurable_component};
 use vrl::value::Value;
 
 use crate::{config::SecretBackend, signal};

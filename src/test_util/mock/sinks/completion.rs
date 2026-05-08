@@ -2,13 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::{FutureExt, StreamExt, future, stream::BoxStream};
-use tokio::sync::oneshot::Sender;
 use sol_lib::{
     config::{AcknowledgementsConfig, Input},
     configurable::configurable_component,
     event::Event,
     sink::{StreamSink, VectorSink},
 };
+use tokio::sync::oneshot::Sender;
 
 use crate::{
     config::{SinkConfig, SinkContext},

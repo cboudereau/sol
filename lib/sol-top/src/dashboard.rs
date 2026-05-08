@@ -87,10 +87,17 @@ impl HumanFormatter for i64 {
     fn human_format(&self) -> String {
         match self {
             0 => "--".into(),
-            n => match NumberPrefix::decimal(*n as f64) {
-                NumberPrefix::Standalone(n) => n.to_string(),
-                NumberPrefix::Prefixed(p, n) => format!("{n:.2} {p}"),
-            },
+            n => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "metric display value — precision loss is acceptable for human-readable formatting"
+                )]
+                let val = *n as f64;
+                match NumberPrefix::decimal(val) {
+                    NumberPrefix::Standalone(n) => n.to_string(),
+                    NumberPrefix::Prefixed(p, n) => format!("{n:.2} {p}"),
+                }
+            }
         }
     }
 
@@ -99,10 +106,17 @@ impl HumanFormatter for i64 {
     fn human_format_bytes(&self) -> String {
         match self {
             0 => "--".into(),
-            n => match NumberPrefix::binary(*n as f64) {
-                NumberPrefix::Standalone(n) => n.to_string(),
-                NumberPrefix::Prefixed(p, n) => format!("{n:.2} {p}B"),
-            },
+            n => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "byte metric display value — precision loss is acceptable for human-readable formatting"
+                )]
+                let val = *n as f64;
+                match NumberPrefix::binary(val) {
+                    NumberPrefix::Standalone(n) => n.to_string(),
+                    NumberPrefix::Prefixed(p, n) => format!("{n:.2} {p}B"),
+                }
+            }
         }
     }
 }
@@ -541,10 +555,12 @@ impl<'a> Widgets<'a> {
             ),
             bottom,
         );
-        f.set_cursor_position(Position::new(
-            bottom.x + 1 + filter_menu_state.input.len() as u16,
-            bottom.y + 1,
-        ));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "filter input length is limited by terminal width, which fits in u16"
+        )]
+        let cursor_offset = filter_menu_state.input.len() as u16;
+        f.set_cursor_position(Position::new(bottom.x + 1 + cursor_offset, bottom.y + 1));
     }
 
     /// Renders a box showing instructions on how to exit from `vector top`.

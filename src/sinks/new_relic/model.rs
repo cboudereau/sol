@@ -69,20 +69,21 @@ impl TryFrom<Vec<Event>> for MetricsApiModel {
                     return None;
                 };
 
-                let (value, metric_type, interval_ms) = if otel_metric.is_sum() && otel_metric.kind() == MetricKind::Incremental {
-                    let Some(interval_ms) = otel_metric.interval_ms() else {
-                        num_missing_interval += 1;
+                let (value, metric_type, interval_ms) =
+                    if otel_metric.is_sum() && otel_metric.kind() == MetricKind::Incremental {
+                        let Some(interval_ms) = otel_metric.interval_ms() else {
+                            num_missing_interval += 1;
+                            return None;
+                        };
+                        let v = otel_metric.first_value_as_f64().unwrap_or(0.0);
+                        (v, "count", Some(i64::from(interval_ms.get())))
+                    } else if otel_metric.is_sum() || otel_metric.is_gauge() {
+                        let v = otel_metric.first_value_as_f64().unwrap_or(0.0);
+                        (v, "gauge", None)
+                    } else {
+                        num_unsupported_metric_type += 1;
                         return None;
                     };
-                    let v = otel_metric.first_value_as_f64().unwrap_or(0.0);
-                    (v, "count", Some(interval_ms.get() as i64))
-                } else if otel_metric.is_sum() || otel_metric.is_gauge() {
-                    let v = otel_metric.first_value_as_f64().unwrap_or(0.0);
-                    (v, "gauge", None)
-                } else {
-                    num_unsupported_metric_type += 1;
-                    return None;
-                };
 
                 if value.is_nan() {
                     num_nan_value += 1;
@@ -96,7 +97,9 @@ impl TryFrom<Vec<Event>> for MetricsApiModel {
                     r#type: metric_type,
                     value,
                     timestamp: timestamp.timestamp_millis(),
-                    attributes: otel_metric.tags().map(|tags| tags.into_iter_single().collect()),
+                    attributes: otel_metric
+                        .tags()
+                        .map(|tags| tags.into_iter_single().collect()),
                 })
             })
             .collect();
@@ -326,6 +329,10 @@ fn map_timestamp_value(value: Value) -> Option<Timestamp> {
     match value {
         Value::Timestamp(t) => Some(Timestamp::Numeric(t.timestamp_millis())),
         Value::Integer(n) => Some(Timestamp::Numeric(n)),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "timestamp milliseconds f64 to i64"
+        )]
         Value::Float(f) => Some(Timestamp::Numeric((f.into_inner() * MILLISECONDS) as i64)),
         Value::Bytes(b) => Some(Timestamp::String(
             String::from_utf8_lossy(b.as_ref()).into(),

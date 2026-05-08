@@ -1,5 +1,5 @@
-use tokio_util::codec::LengthDelimitedCodec;
 use sol_config::configurable_component;
+use tokio_util::codec::LengthDelimitedCodec;
 
 /// Options for building a `LengthDelimitedDecoder` or `LengthDelimitedEncoder`.
 #[configurable_component]

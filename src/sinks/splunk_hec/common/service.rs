@@ -9,11 +9,11 @@ use futures_util::future::BoxFuture;
 use http::Request;
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
+use sol_lib::{event::EventStatus, request_metadata::MetaDescriptive};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::PollSemaphore;
 use tower::Service;
 use uuid::Uuid;
-use sol_lib::{event::EventStatus, request_metadata::MetaDescriptive};
 
 use super::{
     EndpointTarget,
@@ -69,6 +69,10 @@ where
             None
         };
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "max_pending_acks u64 to usize; truncation acceptable on 32-bit"
+        )]
         let ack_slots = PollSemaphore::new(Arc::new(Semaphore::new(max_pending_acks as usize)));
         Self {
             inner,
@@ -281,12 +285,12 @@ mod tests {
 
     use bytes::Bytes;
     use futures_util::{StreamExt, poll, stream::FuturesUnordered};
-    use tower::{Service, ServiceExt, util::BoxService};
     use sol_lib::{
         config::proxy::ProxyConfig,
         event::{EventFinalizers, EventStatus},
         internal_event::CountByteSize,
     };
+    use tower::{Service, ServiceExt, util::BoxService};
     use wiremock::{
         Mock, MockServer, Request, Respond, ResponseTemplate,
         matchers::{header, header_exists, method, path},

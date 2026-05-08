@@ -5,11 +5,11 @@ use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
     measurement::WallTime,
 };
-use tokio_util::codec::Decoder;
 use sol_lib::codecs::{
     BytesDeserializer, NewlineDelimitedDecoder,
     decoding::{Deserializer, Framer},
 };
+use tokio_util::codec::Decoder;
 
 #[derive(Debug)]
 struct Param {

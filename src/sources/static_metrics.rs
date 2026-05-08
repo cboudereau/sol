@@ -2,22 +2,20 @@ use std::{collections::BTreeMap, time::Duration};
 
 use chrono::Utc;
 use futures::StreamExt;
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
-use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol},
 };
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     SourceSender,
     config::{SourceConfig, SourceContext, SourceOutput},
-    event::{
-        Event, MetricKind, OtelMetric,
-    },
+    event::{Event, MetricKind, OtelMetric},
     internal_events::{EventsReceived, StreamClosedError},
     shutdown::ShutdownSignal,
     sources::source_otel,
@@ -126,7 +124,8 @@ impl SourceConfig for StaticMetricsConfig {
         let namespace = self.namespace.clone();
 
         let metrics = self.metrics.clone();
-        let resource = source_otel::build_source_resource("static_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("static_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("static_metrics");
 
         Ok(Box::pin(
@@ -209,7 +208,7 @@ impl StaticMetrics {
                 .into_iter()
                 .map(|metric| metric.with_timestamp(Some(Utc::now())));
 
-            let events: Vec<Event> = batch.map(|m| Event::Metric(m)).collect();
+            let events: Vec<Event> = batch.map(Event::Metric).collect();
             if (self.out.send_batch(events).await).is_err() {
                 emit!(StreamClosedError { count });
                 return Err(());

@@ -96,7 +96,6 @@ pub struct AwsSqsConfig {
 
     #[configurable(derived)]
     pub tls: Option<TlsConfig>,
-
 }
 
 #[async_trait::async_trait]
@@ -104,9 +103,7 @@ pub struct AwsSqsConfig {
 impl SourceConfig for AwsSqsConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<crate::sources::Source> {
         let client = self.build_client(&cx).await?;
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
         let acknowledgements = cx.do_acknowledgements(self.acknowledgements);
 
         Ok(Box::pin(

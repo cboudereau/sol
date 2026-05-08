@@ -5,12 +5,12 @@ use http::Uri;
 use http_body::Collected;
 use hyper::{Body, Request};
 use serde_with::serde_as;
-use tokio_stream::wrappers::IntervalStream;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol},
 };
+use tokio_stream::wrappers::IntervalStream;
 
 use self::types::Stats;
 use crate::{
@@ -73,7 +73,8 @@ impl_generate_config_from_default!(EventStoreDbConfig);
 #[typetag::serde(name = "eventstoredb_metrics")]
 impl SourceConfig for EventStoreDbConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
-        let resource = source_otel::build_source_resource("eventstoredb_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("eventstoredb_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("eventstoredb_metrics");
         eventstoredb(
             self.endpoint.clone(),
@@ -148,7 +149,8 @@ fn eventstoredb(
                             }
 
                             Ok(stats) => {
-                                let metrics = stats.metrics(namespace.clone())
+                                let metrics = stats
+                                    .metrics(namespace.clone())
                                     .into_iter()
                                     .map(|mut m| {
                                         m.set_resource(resource.clone());
@@ -161,7 +163,8 @@ fn eventstoredb(
 
                                 events_received.emit(CountByteSize(count, byte_size));
 
-                                let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+                                let events: Vec<Event> =
+                                    metrics.into_iter().map(Event::Metric).collect();
                                 if (cx.out.send_batch(events).await).is_err() {
                                     emit!(StreamClosedError { count });
                                     break;

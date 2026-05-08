@@ -424,7 +424,9 @@ mod integration_test {
         let (low, high) = consumer
             .fetch_watermarks(&topic, 0, Duration::from_secs(3))
             .unwrap();
-        assert_eq!((0, num_events as i64), (low, high));
+        #[expect(clippy::cast_possible_wrap, reason = "test event count fits in i64")]
+        let expected_high = num_events as i64;
+        assert_eq!((0, expected_high), (low, high));
 
         // loop instead of iter so we can set a timeout
         let mut failures = 0;

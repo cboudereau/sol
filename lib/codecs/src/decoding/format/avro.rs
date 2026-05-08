@@ -56,8 +56,8 @@ impl AvroDeserializerConfig {
 
     /// The schema required by the serializer.
     pub fn schema_definition(&self) -> schema::Definition {
-        let mut definition = schema::Definition::empty_definition()
-            .unknown_fields(vrl::value::Kind::any());
+        let mut definition =
+            schema::Definition::empty_definition().unknown_fields(vrl::value::Kind::any());
 
         {
             let timestamp_key = owned_value_path!("time_unix_nano");
@@ -119,10 +119,7 @@ impl AvroDeserializer {
 }
 
 impl Deserializer for AvroDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         // Avro has a `null` type which indicates no value.
         if bytes.is_empty() {
             return Ok(smallvec![]);
@@ -171,9 +168,7 @@ pub fn try_from(value: AvroValue) -> sol_common::Result<VrlValue> {
         }
         AvroValue::Boolean(boolean) => Ok(VrlValue::from(boolean)),
         AvroValue::Bytes(bytes) => Ok(VrlValue::from(bytes)),
-        AvroValue::Date(_) => Err(sol_common::Error::from(
-            "AvroValue::Date is not supported",
-        )),
+        AvroValue::Date(_) => Err(sol_common::Error::from("AvroValue::Date is not supported")),
         AvroValue::Decimal(_) => Err(sol_common::Error::from(
             "AvroValue::Decimal is not supported",
         )),
@@ -182,10 +177,8 @@ pub fn try_from(value: AvroValue) -> sol_common::Result<VrlValue> {
             "AvroValue::Duration is not supported",
         )),
         AvroValue::Enum(_, string) => Ok(VrlValue::from(string)),
-        AvroValue::Fixed(_, _) => Err(sol_common::Error::from(
-            "AvroValue::Fixed is not supported",
-        )),
-        AvroValue::Float(float) => Ok(VrlValue::from_f64_or_zero(float as f64)),
+        AvroValue::Fixed(_, _) => Err(sol_common::Error::from("AvroValue::Fixed is not supported")),
+        AvroValue::Float(float) => Ok(VrlValue::from_f64_or_zero(f64::from(float))),
         AvroValue::Int(int) => Ok(VrlValue::from(int)),
         AvroValue::Long(long) => Ok(VrlValue::from(long)),
         AvroValue::Map(items) => items
@@ -265,9 +258,7 @@ mod tests {
         let record_bytes = Bytes::from(record_datum);
 
         let deserializer = AvroDeserializer::new(schema, false);
-        let events = deserializer
-            .parse(record_bytes)
-            .unwrap();
+        let events = deserializer.parse(record_bytes).unwrap();
         assert_eq!(events.len(), 1);
 
         let log = events[0].as_log();
@@ -292,9 +283,7 @@ mod tests {
         bytes.extend(record_datum);
 
         let deserializer = AvroDeserializer::new(schema, true);
-        let events = deserializer
-            .parse(bytes.freeze())
-            .unwrap();
+        let events = deserializer.parse(bytes.freeze()).unwrap();
         assert_eq!(events.len(), 1);
 
         let log = events[0].as_log();
@@ -321,14 +310,9 @@ mod tests {
         bytes.extend(datum);
 
         let deserializer = AvroDeserializer::new(schema, true);
-        let events = deserializer
-            .parse(bytes.freeze())
-            .unwrap();
+        let events = deserializer.parse(bytes.freeze()).unwrap();
         assert_eq!(events.len(), 1);
         let log = events[0].as_log();
-        assert_eq!(
-            log.get("message").unwrap(),
-            VrlValue::from(uuid)
-        );
+        assert_eq!(log.get("message").unwrap(), VrlValue::from(uuid));
     }
 }

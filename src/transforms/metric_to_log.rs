@@ -161,11 +161,7 @@ pub struct MetricToLog {
 }
 
 impl MetricToLog {
-    pub fn new(
-        host_tag: Option<&str>,
-        timezone: TimeZone,
-        tag_values: MetricTagValues,
-    ) -> Self {
+    pub fn new(host_tag: Option<&str>, timezone: TimeZone, tag_values: MetricTagValues) -> Self {
         Self {
             host_tag_key: Some(host_tag.unwrap_or("host").to_string()),
             timezone,
@@ -232,16 +228,13 @@ mod tests {
 
     use chrono::{DateTime, Timelike, Utc, offset::TimeZone};
     use similar_asserts::assert_eq;
+    use sol_lib::{config::ComponentKey, event::EventMetadata, otel_tags};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::{config::ComponentKey, event::EventMetadata, otel_tags};
 
     use super::*;
     use crate::{
-        event::{
-            KeyString, OtelAttributes, OtelLog, OtelMetric, Value,
-            metric::MetricKind,
-        },
+        event::{KeyString, OtelAttributes, OtelLog, OtelMetric, Value, metric::MetricKind},
         test_util::components::assert_transform_compliance,
         transforms::test::create_topology,
     };
@@ -315,14 +308,38 @@ mod tests {
             collected,
             vec![
                 (KeyString::from("body.name"), Value::from("counter")),
-                (KeyString::from("body.sum.aggregationTemporality"), Value::Integer(2)),
-                (KeyString::from("body.sum.dataPoints[0].asDouble"), Value::from(1.0)),
-                (KeyString::from("body.sum.dataPoints[0].attributes[0].key"), Value::from("some_tag")),
-                (KeyString::from("body.sum.dataPoints[0].attributes[0].value"), Value::from("some_value")),
-                (KeyString::from("body.sum.dataPoints[0].timeUnixNano"), Value::from(ts().timestamp_nanos_opt().unwrap().to_string())),
-                (KeyString::from("body.sum.isMonotonic"), Value::Boolean(true)),
-                (KeyString::from("resource.\"host.name\""), Value::from("localhost")),
-                (KeyString::from("time_unix_nano"), Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)),
+                (
+                    KeyString::from("body.sum.aggregationTemporality"),
+                    Value::Integer(2)
+                ),
+                (
+                    KeyString::from("body.sum.dataPoints[0].asDouble"),
+                    Value::from(1.0)
+                ),
+                (
+                    KeyString::from("body.sum.dataPoints[0].attributes[0].key"),
+                    Value::from("some_tag")
+                ),
+                (
+                    KeyString::from("body.sum.dataPoints[0].attributes[0].value"),
+                    Value::from("some_value")
+                ),
+                (
+                    KeyString::from("body.sum.dataPoints[0].timeUnixNano"),
+                    Value::from(ts().timestamp_nanos_opt().unwrap().to_string())
+                ),
+                (
+                    KeyString::from("body.sum.isMonotonic"),
+                    Value::Boolean(true)
+                ),
+                (
+                    KeyString::from("resource.\"host.name\""),
+                    Value::from("localhost")
+                ),
+                (
+                    KeyString::from("time_unix_nano"),
+                    Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)
+                ),
             ]
         );
         assert_eq!(log.metadata(), &metadata);
@@ -348,10 +365,19 @@ mod tests {
         assert_eq!(
             collected,
             vec![
-                (KeyString::from("body.gauge.dataPoints[0].asDouble"), Value::from(1.0)),
-                (KeyString::from("body.gauge.dataPoints[0].timeUnixNano"), Value::from(ts().timestamp_nanos_opt().unwrap().to_string())),
+                (
+                    KeyString::from("body.gauge.dataPoints[0].asDouble"),
+                    Value::from(1.0)
+                ),
+                (
+                    KeyString::from("body.gauge.dataPoints[0].timeUnixNano"),
+                    Value::from(ts().timestamp_nanos_opt().unwrap().to_string())
+                ),
                 (KeyString::from("body.name"), Value::from("gauge")),
-                (KeyString::from("time_unix_nano"), Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)),
+                (
+                    KeyString::from("time_unix_nano"),
+                    Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)
+                ),
             ]
         );
         assert_eq!(log.metadata(), &metadata);
@@ -359,9 +385,13 @@ mod tests {
 
     #[tokio::test]
     async fn transform_set() {
-        let set = OtelMetric::new_set_from_values("set", MetricKind::Absolute, vec![String::from("one"), String::from("two")])
-            .with_metadata(event_metadata())
-            .with_timestamp(Some(ts()));
+        let set = OtelMetric::new_set_from_values(
+            "set",
+            MetricKind::Absolute,
+            vec![String::from("one"), String::from("two")],
+        )
+        .with_metadata(event_metadata())
+        .with_timestamp(Some(ts()));
         let mut metadata = set.metadata().clone();
         metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -385,9 +415,13 @@ mod tests {
 
     #[tokio::test]
     async fn transform_distribution() {
-        let distro = OtelMetric::new_histogram_from_samples("distro", MetricKind::Absolute, &sol_lib::samples![1.0 => 10, 2.0 => 20])
-            .with_metadata(event_metadata())
-            .with_timestamp(Some(ts()));
+        let distro = OtelMetric::new_histogram_from_samples(
+            "distro",
+            MetricKind::Absolute,
+            &sol_lib::samples![1.0 => 10, 2.0 => 20],
+        )
+        .with_metadata(event_metadata())
+        .with_timestamp(Some(ts()));
         let mut metadata = distro.metadata().clone();
         metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -405,16 +439,26 @@ mod tests {
             collected.iter().find(|(k, _)| k == "body.name").unwrap().1,
             Value::from("distro")
         );
-        assert!(collected.iter().any(|(k, _)| k.starts_with("body.histogram.")));
+        assert!(
+            collected
+                .iter()
+                .any(|(k, _)| k.starts_with("body.histogram."))
+        );
         assert!(collected.iter().any(|(k, _)| k == "time_unix_nano"));
         assert_eq!(log.metadata(), &metadata);
     }
 
     #[tokio::test]
     async fn transform_histogram() {
-        let histo = OtelMetric::new_histogram("histo", MetricKind::Absolute, &sol_lib::buckets![1.0 => 10, 2.0 => 20], 30, 50.0)
-            .with_metadata(event_metadata())
-            .with_timestamp(Some(ts()));
+        let histo = OtelMetric::new_histogram(
+            "histo",
+            MetricKind::Absolute,
+            &sol_lib::buckets![1.0 => 10, 2.0 => 20],
+            30,
+            50.0,
+        )
+        .with_metadata(event_metadata())
+        .with_timestamp(Some(ts()));
         let mut metadata = histo.metadata().clone();
         metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -430,17 +474,47 @@ mod tests {
         assert_eq!(
             collected,
             vec![
-                (KeyString::from("body.histogram.aggregationTemporality"), Value::Integer(2)),
-                (KeyString::from("body.histogram.dataPoints[0].bucketCounts[0]"), Value::from("10")),
-                (KeyString::from("body.histogram.dataPoints[0].bucketCounts[1]"), Value::from("20")),
-                (KeyString::from("body.histogram.dataPoints[0].bucketCounts[2]"), Value::from("0")),
-                (KeyString::from("body.histogram.dataPoints[0].count"), Value::from("30")),
-                (KeyString::from("body.histogram.dataPoints[0].explicitBounds[0]"), Value::from(1.0)),
-                (KeyString::from("body.histogram.dataPoints[0].explicitBounds[1]"), Value::from(2.0)),
-                (KeyString::from("body.histogram.dataPoints[0].sum"), Value::from(50.0)),
-                (KeyString::from("body.histogram.dataPoints[0].timeUnixNano"), Value::from(ts().timestamp_nanos_opt().unwrap().to_string())),
+                (
+                    KeyString::from("body.histogram.aggregationTemporality"),
+                    Value::Integer(2)
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].bucketCounts[0]"),
+                    Value::from("10")
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].bucketCounts[1]"),
+                    Value::from("20")
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].bucketCounts[2]"),
+                    Value::from("0")
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].count"),
+                    Value::from("30")
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].explicitBounds[0]"),
+                    Value::from(1.0)
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].explicitBounds[1]"),
+                    Value::from(2.0)
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].sum"),
+                    Value::from(50.0)
+                ),
+                (
+                    KeyString::from("body.histogram.dataPoints[0].timeUnixNano"),
+                    Value::from(ts().timestamp_nanos_opt().unwrap().to_string())
+                ),
                 (KeyString::from("body.name"), Value::from("histo")),
-                (KeyString::from("time_unix_nano"), Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)),
+                (
+                    KeyString::from("time_unix_nano"),
+                    Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)
+                ),
             ]
         );
         assert_eq!(log.metadata(), &metadata);
@@ -448,9 +522,14 @@ mod tests {
 
     #[tokio::test]
     async fn transform_summary() {
-        let summary = OtelMetric::new_summary("summary", &sol_lib::quantiles![50.0 => 10.0, 90.0 => 20.0], 30, 50.0)
-            .with_metadata(event_metadata())
-            .with_timestamp(Some(ts()));
+        let summary = OtelMetric::new_summary(
+            "summary",
+            &sol_lib::quantiles![50.0 => 10.0, 90.0 => 20.0],
+            30,
+            50.0,
+        )
+        .with_metadata(event_metadata())
+        .with_timestamp(Some(ts()));
         let mut metadata = summary.metadata().clone();
         metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -467,14 +546,38 @@ mod tests {
             collected,
             vec![
                 (KeyString::from("body.name"), Value::from("summary")),
-                (KeyString::from("body.summary.dataPoints[0].count"), Value::from("30")),
-                (KeyString::from("body.summary.dataPoints[0].quantileValues[0].quantile"), Value::from(50.0)),
-                (KeyString::from("body.summary.dataPoints[0].quantileValues[0].value"), Value::from(10.0)),
-                (KeyString::from("body.summary.dataPoints[0].quantileValues[1].quantile"), Value::from(90.0)),
-                (KeyString::from("body.summary.dataPoints[0].quantileValues[1].value"), Value::from(20.0)),
-                (KeyString::from("body.summary.dataPoints[0].sum"), Value::from(50.0)),
-                (KeyString::from("body.summary.dataPoints[0].timeUnixNano"), Value::from(ts().timestamp_nanos_opt().unwrap().to_string())),
-                (KeyString::from("time_unix_nano"), Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)),
+                (
+                    KeyString::from("body.summary.dataPoints[0].count"),
+                    Value::from("30")
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].quantileValues[0].quantile"),
+                    Value::from(50.0)
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].quantileValues[0].value"),
+                    Value::from(10.0)
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].quantileValues[1].quantile"),
+                    Value::from(90.0)
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].quantileValues[1].value"),
+                    Value::from(20.0)
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].sum"),
+                    Value::from(50.0)
+                ),
+                (
+                    KeyString::from("body.summary.dataPoints[0].timeUnixNano"),
+                    Value::from(ts().timestamp_nanos_opt().unwrap().to_string())
+                ),
+                (
+                    KeyString::from("time_unix_nano"),
+                    Value::Integer(ts().timestamp_nanos_opt().unwrap() as i64)
+                ),
             ]
         );
         assert_eq!(log.metadata(), &metadata);
@@ -500,10 +603,20 @@ mod tests {
         assert_eq!(output.len(), 1);
         let log = output.into_events().next().unwrap().into_log();
         let collected: Vec<_> = log.all_event_fields().unwrap();
-        let has_single_key = collected.iter().any(|(k, v)| k.starts_with("body.") && *v == Value::from("single"));
-        let has_single_val = collected.iter().any(|(k, v)| k.starts_with("body.") && *v == Value::from("value"));
-        assert!(has_single_key, "attribute key 'single' not found in OTLP body output");
-        assert!(has_single_val, "attribute value 'value' not found in OTLP body output");
+        let has_single_key = collected
+            .iter()
+            .any(|(k, v)| k.starts_with("body.") && *v == Value::from("single"));
+        let has_single_val = collected
+            .iter()
+            .any(|(k, v)| k.starts_with("body.") && *v == Value::from("value"));
+        assert!(
+            has_single_key,
+            "attribute key 'single' not found in OTLP body output"
+        );
+        assert!(
+            has_single_val,
+            "attribute value 'value' not found in OTLP body output"
+        );
     }
 
     #[tokio::test]
@@ -527,7 +640,12 @@ mod tests {
         assert_eq!(output.len(), 1);
         let log = output.into_events().next().unwrap().into_log();
         let collected: Vec<_> = log.all_event_fields().unwrap();
-        let has_multi_key = collected.iter().any(|(k, v)| k.starts_with("body.") && *v == Value::from("multi"));
-        assert!(has_multi_key, "attribute key 'multi' not found in OTLP body output");
+        let has_multi_key = collected
+            .iter()
+            .any(|(k, v)| k.starts_with("body.") && *v == Value::from("multi"));
+        assert!(
+            has_multi_key,
+            "attribute key 'multi' not found in OTLP body output"
+        );
     }
 }

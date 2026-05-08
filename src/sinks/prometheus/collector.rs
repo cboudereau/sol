@@ -8,10 +8,7 @@ use sol_lib::{
 };
 
 use crate::{
-    event::{
-        MetricView, OtelMetric,
-        metric::MetricKind,
-    },
+    event::{MetricView, OtelMetric, metric::MetricKind},
     sinks::util::encode_namespace,
 };
 
@@ -20,7 +17,13 @@ pub(super) trait MetricCollector {
 
     fn new() -> Self;
 
-    fn emit_metadata(&mut self, name: &str, fullname: &str, view: &MetricView<'_>, metric: &OtelMetric);
+    fn emit_metadata(
+        &mut self,
+        name: &str,
+        fullname: &str,
+        view: &MetricView<'_>,
+        metric: &OtelMetric,
+    );
 
     fn emit_value(
         &mut self,
@@ -34,6 +37,10 @@ pub(super) trait MetricCollector {
 
     fn finish(self) -> Self::Output;
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "metric counter/bucket values to f64 for Prometheus exposition; precise for |v| <= 2^53"
+    )]
     fn encode_metric(
         &mut self,
         default_namespace: Option<&str>,
@@ -126,7 +133,11 @@ pub(super) trait MetricCollector {
 
                     if let Some(neg) = negative {
                         for (i, &c) in neg.bucket_counts.iter().enumerate().rev() {
-                            let idx = neg.offset as i64 + i as i64;
+                            #[expect(
+                                clippy::cast_possible_wrap,
+                                reason = "bucket index fits in i64"
+                            )]
+                            let idx = i64::from(neg.offset) + i as i64;
                             let upper = -base.powf(idx as f64);
                             explicit.push((upper, c as f64));
                         }
@@ -138,7 +149,11 @@ pub(super) trait MetricCollector {
 
                     if let Some(pos) = positive {
                         for (i, &c) in pos.bucket_counts.iter().enumerate() {
-                            let idx = pos.offset as i64 + i as i64 + 1;
+                            #[expect(
+                                clippy::cast_possible_wrap,
+                                reason = "bucket index fits in i64"
+                            )]
+                            let idx = i64::from(pos.offset) + i as i64 + 1;
                             let upper = base.powf(idx as f64);
                             explicit.push((upper, c as f64));
                         }
@@ -185,7 +200,13 @@ impl MetricCollector for StringCollector {
         Self { processed }
     }
 
-    fn emit_metadata(&mut self, name: &str, fullname: &str, view: &MetricView<'_>, metric: &OtelMetric) {
+    fn emit_metadata(
+        &mut self,
+        name: &str,
+        fullname: &str,
+        view: &MetricView<'_>,
+        metric: &OtelMetric,
+    ) {
         if !self.processed.contains_key(fullname) {
             let header = Self::encode_header(name, fullname, view, metric);
             self.processed.insert(fullname.into(), header);
@@ -221,7 +242,11 @@ impl MetricCollector for StringCollector {
 }
 
 impl StringCollector {
-    fn encode_tags(result: &mut String, tags: Option<&OtelAttributes>, extra: Option<(&str, String)>) {
+    fn encode_tags(
+        result: &mut String,
+        tags: Option<&OtelAttributes>,
+        extra: Option<(&str, String)>,
+    ) {
         match (tags, extra) {
             (None, None) => Ok(()),
             (None, Some(tag)) => write!(result, "{{{}}}", Self::format_tag(tag.0, &tag.1)),
@@ -242,7 +267,12 @@ impl StringCollector {
         .ok();
     }
 
-    fn encode_header(name: &str, fullname: &str, view: &MetricView<'_>, metric: &OtelMetric) -> String {
+    fn encode_header(
+        name: &str,
+        fullname: &str,
+        view: &MetricView<'_>,
+        metric: &OtelMetric,
+    ) -> String {
         let r#type = prometheus_metric_type(view, metric).as_str();
         format!("# HELP {fullname} {name}\n# TYPE {fullname} {type}\n")
     }
@@ -318,7 +348,13 @@ impl MetricCollector for TimeSeries {
         }
     }
 
-    fn emit_metadata(&mut self, name: &str, fullname: &str, view: &MetricView<'_>, metric: &OtelMetric) {
+    fn emit_metadata(
+        &mut self,
+        name: &str,
+        fullname: &str,
+        view: &MetricView<'_>,
+        metric: &OtelMetric,
+    ) {
         if !self.metadata.contains_key(name) {
             let r#type = prometheus_metric_type(view, metric);
             let metadata = proto::MetricMetadata {
@@ -365,12 +401,14 @@ impl MetricCollector for TimeSeries {
     }
 }
 
-fn prometheus_metric_type(view: &MetricView<'_>, _metric: &OtelMetric) -> proto::MetricType {
+const fn prometheus_metric_type(view: &MetricView<'_>, _metric: &OtelMetric) -> proto::MetricType {
     use proto::MetricType;
     match view {
         MetricView::Sum { .. } => MetricType::Counter,
         MetricView::Gauge { .. } | MetricView::Set { .. } => MetricType::Gauge,
-        MetricView::Histogram { .. } | MetricView::ExponentialHistogram { .. } => MetricType::Histogram,
+        MetricView::Histogram { .. } | MetricView::ExponentialHistogram { .. } => {
+            MetricType::Histogram
+        }
         MetricView::Summary { .. } => MetricType::Summary,
     }
 }
@@ -384,9 +422,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        event::metric::MetricKind,
-        event::OtelMetric,
-        test_util::stats::VariableHistogram,
+        event::OtelMetric, event::metric::MetricKind, test_util::stats::VariableHistogram,
     };
 
     fn encode_one<T: MetricCollector>(
@@ -545,8 +581,9 @@ mod tests {
     }
 
     fn encode_expired_set<T: MetricCollector>() -> T::Output {
-        let otel = OtelMetric::new_set_from_values("users", MetricKind::Absolute, Vec::<String>::new())
-            .with_timestamp(Some(timestamp()));
+        let otel =
+            OtelMetric::new_set_from_values("users", MetricKind::Absolute, Vec::<String>::new())
+                .with_timestamp(Some(timestamp()));
         encode_one::<T>(Some("vector"), &[], &[], otel)
     }
 
@@ -586,8 +623,9 @@ mod tests {
 
     fn encode_histogram_from_samples<T: MetricCollector>() -> T::Output {
         let samples = sol_lib::samples![1.0 => 3, 2.0 => 3, 3.0 => 2];
-        let otel = OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
-            .with_timestamp(Some(timestamp()));
+        let otel =
+            OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
+                .with_timestamp(Some(timestamp()));
         encode_one::<T>(Some("vector"), &[], &[], otel)
     }
 
@@ -723,9 +761,10 @@ mod tests {
     #[test]
     fn encodes_histogram_from_samples_with_tags_text() {
         let samples = sol_lib::samples![1.0 => 3, 2.0 => 3, 3.0 => 2];
-        let otel = OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
-            .with_tags(Some(tags()))
-            .with_timestamp(Some(timestamp()));
+        let otel =
+            OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
+                .with_tags(Some(tags()))
+                .with_timestamp(Some(timestamp()));
         assert_eq!(
             encode_one::<StringCollector>(Some("ns"), &[], &[], otel),
             indoc! {r#"
@@ -744,9 +783,10 @@ mod tests {
     #[test]
     fn encodes_histogram_from_samples_with_tags_request() {
         let samples = sol_lib::samples![1.0 => 3, 2.0 => 3, 3.0 => 2];
-        let otel = OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
-            .with_tags(Some(tags()))
-            .with_timestamp(Some(timestamp()));
+        let otel =
+            OtelMetric::new_histogram_from_samples("requests", MetricKind::Absolute, &samples)
+                .with_tags(Some(tags()))
+                .with_timestamp(Some(timestamp()));
         assert_eq!(
             encode_one::<TimeSeries>(Some("ns"), &[], &[], otel),
             write_request!(
@@ -810,8 +850,8 @@ mod tests {
             "quoted" => r#"host"1""#,
             "path" => r"c:\Windows",
         );
-        let otel = OtelMetric::new_counter("something", MetricKind::Absolute, 1.0)
-            .with_tags(Some(tags));
+        let otel =
+            OtelMetric::new_counter("something", MetricKind::Absolute, 1.0).with_tags(Some(tags));
         let encoded = encode_one::<StringCollector>(None, &[], &[], otel);
         assert_eq!(
             encoded,
@@ -835,8 +875,8 @@ mod tests {
             "code" => "200",
             "code" => "success",
         );
-        let otel = OtelMetric::new_counter("something", MetricKind::Absolute, 1.0)
-            .with_tags(Some(tags));
+        let otel =
+            OtelMetric::new_counter("something", MetricKind::Absolute, 1.0).with_tags(Some(tags));
         let encoded = encode_one::<StringCollector>(None, &[], &[], otel);
         assert_eq!(
             encoded,

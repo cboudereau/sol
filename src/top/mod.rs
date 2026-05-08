@@ -5,8 +5,8 @@ use clap::Parser;
 use glob::Pattern;
 
 pub use cmd::{cmd, top};
-use url::Url;
 use sol_lib::top::state::{FilterColumn, SortColumn};
+use url::Url;
 
 use crate::config::api::default_graphql_url;
 

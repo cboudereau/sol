@@ -9,10 +9,7 @@ use sol_config_common::{
 };
 use sol_config_macros::configurable_component;
 use sol_lib::{
-    config::{
-        AcknowledgementsConfig, GlobalOptions, SourceAcknowledgementsConfig,
-        SourceOutput,
-    },
+    config::{AcknowledgementsConfig, GlobalOptions, SourceAcknowledgementsConfig, SourceOutput},
     source::Source,
 };
 use sol_vrl_metrics::MetricsStorage;
@@ -213,5 +210,4 @@ impl SourceContext {
             .merge_default(&self.acknowledgements.into())
             .enabled()
     }
-
 }

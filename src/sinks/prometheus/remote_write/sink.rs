@@ -183,9 +183,7 @@ where
         let resource_to_labels = self.resource_to_labels.clone();
 
         input
-            .filter_map(|event| {
-                future::ready(event.try_into_otel_metric())
-            })
+            .filter_map(|event| future::ready(event.try_into_otel_metric()))
             .normalized_with_ttl::<PrometheusMetricNormalize>(expire_metrics_secs)
             .map(move |mut otel| {
                 otel.flatten_resource_to_tags(&resource_to_labels);

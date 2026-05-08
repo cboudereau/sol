@@ -1,9 +1,6 @@
 use std::{collections::VecDeque, fmt, future::poll_fn, task::Poll};
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, poll};
-use tokio::{pin, select};
-use tower::Service;
-use tracing::Instrument;
 use sol_common::{
     internal_event::{
         ByteSize, BytesSent, CallError, InternalEventHandle as _, PollReadyError, Registered,
@@ -12,6 +9,9 @@ use sol_common::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive},
 };
 use sol_core::event::{EventFinalizers, EventStatus, Finalizable};
+use tokio::{pin, select};
+use tower::Service;
+use tracing::Instrument;
 
 use super::FuturesUnorderedCount;
 
@@ -258,18 +258,18 @@ mod tests {
     use futures_util::stream;
     use rand::{SeedableRng, prelude::StdRng};
     use rand_distr::{Distribution, Pareto};
-    use tokio::{
-        sync::{OwnedSemaphorePermit, Semaphore},
-        time::sleep,
-    };
-    use tokio_util::sync::PollSemaphore;
-    use tower::Service;
     use sol_common::{
         finalization::{BatchNotifier, EventFinalizer, EventFinalizers, EventStatus, Finalizable},
         internal_event::CountByteSize,
         json_size::JsonSize,
         request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     };
+    use tokio::{
+        sync::{OwnedSemaphorePermit, Semaphore},
+        time::sleep,
+    };
+    use tokio_util::sync::PollSemaphore;
+    use tower::Service;
 
     use super::{Driver, DriverResponse};
 

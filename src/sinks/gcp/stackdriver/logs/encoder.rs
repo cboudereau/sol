@@ -156,6 +156,10 @@ pub(super) fn remap_severity(severity: Value) -> Value {
         Value::Bytes(s) => {
             let s = String::from_utf8_lossy(&s);
             match s.parse::<usize>() {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "severity values are small positive integers"
+                )]
                 Ok(n) => (n - n % 100) as i64,
                 Err(_) => match s.to_uppercase() {
                     s if s.starts_with("EMERG") || s.starts_with("FATAL") => 800,

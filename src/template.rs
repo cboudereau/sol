@@ -582,9 +582,7 @@ fn render_timestamp(
     tz_offset: Option<FixedOffset>,
 ) -> String {
     let timestamp = match event {
-        EventRef::Log(log) => log
-            .get_timestamp()
-            .and_then(|v| v.as_timestamp().copied()),
+        EventRef::Log(log) => log.get_timestamp().and_then(|v| v.as_timestamp().copied()),
         EventRef::Metric(metric) => metric.timestamp(),
         EventRef::Trace(trace) => {
             let timestamp_key = OwnedTargetPath::event(owned_value_path!("time_unix_nano"));
@@ -611,14 +609,11 @@ fn render_timestamp(
 mod tests {
     use chrono::{Offset, TimeZone, Utc};
     use chrono_tz::Tz;
-    use sol_lib::{
-        lookup::metadata_path,
-        otel_tags,
-    };
+    use sol_lib::{lookup::metadata_path, otel_tags};
     use vrl::path;
 
     use super::*;
-    use crate::event::{Event, OtelLog, MetricKind, OtelMetric};
+    use crate::event::{Event, MetricKind, OtelLog, OtelMetric};
 
     #[test]
     fn get_fields() {
@@ -774,9 +769,10 @@ mod tests {
             .expect("invalid timestamp");
 
         let mut event = Event::Log(OtelLog::from("hello world"));
-        event
-            .as_mut_log()
-            .insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), ts);
+        event.as_mut_log().insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            ts,
+        );
 
         let template = Template::try_from("abcd-%F").unwrap();
 
@@ -793,7 +789,11 @@ mod tests {
         let mut event = Event::Log(OtelLog::from("hello world"));
         event.as_mut_log().insert("@timestamp", ts);
         // use Vector namespace instead of legacy
-        event.as_mut_log().metadata_mut().value_mut().insert(path!("vector", "foo"), "bar");
+        event
+            .as_mut_log()
+            .metadata_mut()
+            .value_mut()
+            .insert(path!("vector", "foo"), "bar");
         let new_schema = event
             .as_mut_log()
             .metadata()
@@ -819,9 +819,10 @@ mod tests {
             .expect("invalid timestamp");
 
         let mut event = Event::Log(OtelLog::from("hello world"));
-        event
-            .as_mut_log()
-            .insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), ts);
+        event.as_mut_log().insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            ts,
+        );
 
         let template = Template::try_from("abcd-%F_%T").unwrap();
 
@@ -910,16 +911,18 @@ mod tests {
     #[test]
     fn render_metric_with_tags() {
         let template = Template::try_from("name={{name}} component={{tags.component}}").unwrap();
-        let metric = Event::Metric(OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1)
-            .with_timestamp(Some(
-                Utc.with_ymd_and_hms(2002, 3, 4, 5, 6, 7)
-                    .single()
-                    .expect("invalid timestamp"),
-            ))
-            .with_tags(Some(otel_tags!(
-                "test" => "true",
-                "component" => "template",
-            ))));
+        let metric = Event::Metric(
+            OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1)
+                .with_timestamp(Some(
+                    Utc.with_ymd_and_hms(2002, 3, 4, 5, 6, 7)
+                        .single()
+                        .expect("invalid timestamp"),
+                ))
+                .with_tags(Some(otel_tags!(
+                    "test" => "true",
+                    "component" => "template",
+                ))),
+        );
         assert_eq!(
             Ok(Bytes::from("name=a-counter component=template")),
             template.render(&metric)
@@ -940,13 +943,15 @@ mod tests {
     #[test]
     fn render_metric_with_namespace() {
         let template = Template::try_from("namespace={{namespace}} name={{name}}").unwrap();
-        let metric = Event::Metric(OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1)
-            .with_timestamp(Some(
-                Utc.with_ymd_and_hms(2002, 3, 4, 5, 6, 7)
-                    .single()
-                    .expect("invalid timestamp"),
-            ))
-            .with_namespace(Some("vector-test")));
+        let metric = Event::Metric(
+            OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1)
+                .with_timestamp(Some(
+                    Utc.with_ymd_and_hms(2002, 3, 4, 5, 6, 7)
+                        .single()
+                        .expect("invalid timestamp"),
+                ))
+                .with_namespace(Some("vector-test")),
+        );
         assert_eq!(
             Ok(Bytes::from("namespace=vector-test name=a-counter")),
             template.render(&metric)
@@ -1002,12 +1007,13 @@ mod tests {
     }
 
     fn sample_metric() -> Event {
-        Event::Metric(OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1)
-            .with_timestamp(Some(
+        Event::Metric(
+            OtelMetric::new_counter("a-counter", MetricKind::Absolute, 1.1).with_timestamp(Some(
                 Utc.with_ymd_and_hms(2002, 3, 4, 5, 6, 7)
                     .single()
                     .expect("invalid timestamp"),
-            )))
+            )),
+        )
     }
 
     #[test]

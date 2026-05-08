@@ -137,17 +137,14 @@ impl StreamSink<EventArray> for MapTimestampStream {
 
 /// Used to map `timestamp` to `@timestamp`.
 fn map_timestamp(mut events: EventArray) -> EventArray {
-    match &mut events {
-        EventArray::Logs(logs) => {
-            for log in logs {
-                if let Some(path) = log.timestamp_path().as_ref() {
-                    log.rename_key(path, event_path!("@timestamp"));
-                }
-
-                // host lives at resource.host.name, not top-level — no rename needed
+    if let EventArray::Logs(logs) = &mut events {
+        for log in logs {
+            if let Some(path) = log.timestamp_path().as_ref() {
+                log.rename_key(path, event_path!("@timestamp"));
             }
+
+            // host lives at resource.host.name, not top-level — no rename needed
         }
-        _ => {}
     }
 
     events

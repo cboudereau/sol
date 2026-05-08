@@ -18,10 +18,6 @@ use hyper::{
 use indexmap::{IndexMap, map::Entry};
 use serde_with::serde_as;
 use snafu::Snafu;
-use stream_cancel::{Trigger, Tripwire};
-use tower::ServiceBuilder;
-use tower_http::compression::CompressionLayer;
-use tracing::{Instrument, Span};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
@@ -30,6 +26,10 @@ use sol_lib::{
         Registered,
     },
 };
+use stream_cancel::{Trigger, Tripwire};
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tracing::{Instrument, Span};
 
 use super::collector::{MetricCollector, StringCollector};
 use crate::{
@@ -279,7 +279,7 @@ struct MetricRef {
     bounds: Option<Vec<f64>>,
 }
 
-fn metric_type_tag(view: &MetricView<'_>) -> &'static str {
+const fn metric_type_tag(view: &MetricView<'_>) -> &'static str {
     match view {
         MetricView::Sum { .. } => "sum",
         MetricView::Gauge { .. } => "gauge",
@@ -294,9 +294,7 @@ impl MetricRef {
     pub fn from_otel_metric(metric: &OtelMetric) -> Self {
         let view = metric.view();
         let bounds = match &view {
-            MetricView::Histogram { bounds, .. } => {
-                Some(bounds.to_vec())
-            }
+            MetricView::Histogram { bounds, .. } => Some(bounds.to_vec()),
             MetricView::Summary { quantiles, .. } => {
                 Some(quantiles.iter().map(|q| q.quantile).collect())
             }
@@ -318,7 +316,9 @@ impl MetricRef {
 
 impl PartialEq for MetricRef {
     fn eq(&self, other: &Self) -> bool {
-        self.series == other.series && self.metric_type == other.metric_type && self.bounds == other.bounds
+        self.series == other.series
+            && self.metric_type == other.metric_type
+            && self.bounds == other.bounds
     }
 }
 
@@ -610,21 +610,18 @@ mod tests {
     use futures::stream;
     use indoc::indoc;
     use similar_asserts::assert_eq;
-    use tokio::{sync::oneshot::error::TryRecvError, time};
     use sol_lib::{
         event::OtelAttributes,
         finalization::{BatchNotifier, BatchStatus},
         otel_tags, samples,
         sensitive_string::SensitiveString,
     };
+    use tokio::{sync::oneshot::error::TryRecvError, time};
 
     use super::*;
     use crate::{
         config::ProxyConfig,
-        event::{
-            OtelMetric,
-            metric::MetricKind,
-        },
+        event::{OtelMetric, metric::MetricKind},
         http::HttpClient,
         test_util::{
             addr::next_addr,
@@ -1128,9 +1125,18 @@ mod tests {
             .with_tags(Some(otel_tags!("tag1" => "value2")));
 
         let events = vec![
-            Event::Metric(OtelMetric::new_counter("absolute", MetricKind::Absolute, 32.).with_tags(Some(otel_tags!("tag1" => "value1")))),
-            Event::Metric(OtelMetric::new_counter("absolute", MetricKind::Absolute, 33.).with_tags(Some(otel_tags!("tag1" => "value2")))),
-            Event::Metric(OtelMetric::new_counter("absolute", MetricKind::Absolute, 40.).with_tags(Some(otel_tags!("tag1" => "value1")))),
+            Event::Metric(
+                OtelMetric::new_counter("absolute", MetricKind::Absolute, 32.)
+                    .with_tags(Some(otel_tags!("tag1" => "value1"))),
+            ),
+            Event::Metric(
+                OtelMetric::new_counter("absolute", MetricKind::Absolute, 33.)
+                    .with_tags(Some(otel_tags!("tag1" => "value2"))),
+            ),
+            Event::Metric(
+                OtelMetric::new_counter("absolute", MetricKind::Absolute, 40.)
+                    .with_tags(Some(otel_tags!("tag1" => "value1"))),
+            ),
         ];
 
         let metrics_handle = Arc::clone(&sink.metrics);
@@ -1182,7 +1188,13 @@ mod tests {
             .iter()
             .map(|s| {
                 let (buckets, count, sum) = samples_to_buckets(s, &bucket_bounds);
-                Event::Metric(OtelMetric::new_histogram("my_histo", MetricKind::Incremental, &buckets, count, sum))
+                Event::Metric(OtelMetric::new_histogram(
+                    "my_histo",
+                    MetricKind::Incremental,
+                    &buckets,
+                    count,
+                    sum,
+                ))
             })
             .collect();
 
@@ -1193,14 +1205,23 @@ mod tests {
         let metrics_after = metrics_handle.read().unwrap();
         assert_eq!(metrics_after.len(), 1);
 
-        let expected_otel = OtelMetric::new_histogram("my_histo", MetricKind::Absolute, &expected_buckets, expected_count, expected_sum);
+        let expected_otel = OtelMetric::new_histogram(
+            "my_histo",
+            MetricKind::Absolute,
+            &expected_buckets,
+            expected_count,
+            expected_sum,
+        );
         let actual = metrics_after
             .get(&MetricRef::from_otel_metric(&expected_otel))
             .expect("histogram metric should exist");
         match actual.0.view() {
             MetricView::Histogram { count, sum, .. } => {
                 assert_eq!(count, expected_count);
-                assert!((sum - expected_sum).abs() < 1e-10, "sum mismatch: {sum} vs {expected_sum}");
+                assert!(
+                    (sum - expected_sum).abs() < 1e-10,
+                    "sum mismatch: {sum} vs {expected_sum}"
+                );
             }
             other => panic!("expected Histogram view, got {:?}", other),
         }
@@ -1358,7 +1379,9 @@ mod integration_tests {
             data["metric"]["some_tag"],
             Value::String("some_value".into())
         );
-        assert!(data["value"][0].as_f64().unwrap() >= start as f64);
+        #[allow(clippy::cast_precision_loss)]
+        let start_f64 = start as f64;
+        assert!(data["value"][0].as_f64().unwrap() >= start_f64);
         assert_eq!(data["value"][1], Value::String("123.4".into()));
     }
 

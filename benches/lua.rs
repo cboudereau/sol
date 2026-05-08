@@ -3,12 +3,12 @@ use std::pin::Pin;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group};
 use futures::{SinkExt, Stream, StreamExt, stream};
 use indoc::indoc;
-use transforms::lua::v2::LuaConfig;
 use sol::{
     event::{Event, OtelLog},
     test_util::collect_ready,
     transforms::{self, OutputBuffer, Transform},
 };
+use transforms::lua::v2::LuaConfig;
 use vrl::event_path;
 
 fn bench_add_fields(c: &mut Criterion) {
@@ -74,7 +74,10 @@ fn bench_add_fields(c: &mut Criterion) {
                     futures::executor::block_on(tx.send(event)).unwrap();
                     let transformed = futures::executor::block_on(rx.next()).unwrap();
 
-                    debug_assert_eq!(transformed.as_log().get(event_path!("the_key")).unwrap(), value.to_owned().into());
+                    debug_assert_eq!(
+                        transformed.as_log().get(event_path!("the_key")).unwrap(),
+                        value.to_owned().into()
+                    );
 
                     transformed
                 },

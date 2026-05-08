@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use http_1::response::Response;
 use metrics::{counter, histogram};
-use tonic::Code;
 use sol_lib::NamedInternalEvent;
 use sol_lib::internal_event::{InternalEvent, error_stage, error_type};
+use tonic::Code;
 
 const GRPC_STATUS_LABEL: &str = "grpc_status";
 

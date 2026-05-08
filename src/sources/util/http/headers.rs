@@ -2,10 +2,7 @@ use opentelemetry_proto::tonic::common::v1::AnyValue;
 use sol_lib::event::Event;
 use warp::http::{HeaderMap, HeaderValue};
 
-use crate::{
-    event::string_value,
-    sources::http_server::HttpConfigParamKind,
-};
+use crate::{event::string_value, sources::http_server::HttpConfigParamKind};
 
 pub fn add_headers(
     events: &mut [Event],
@@ -48,18 +45,16 @@ pub fn add_headers(
                         let value = headers.get(header_name).map(HeaderValue::as_bytes);
 
                         for event in events.iter_mut() {
-                            if let Event::Log(otel_log) = event {
-                                if let Some(v) = value {
-                                    let key = header_name.as_str().to_string();
-                                    // Don't overwrite body fields — body values take precedence over headers.
-                                    if !otel_log.has_field(&key) {
-                                        otel_log.set_attribute(
-                                            key,
-                                            string_value(
-                                                String::from_utf8_lossy(v).into_owned(),
-                                            ),
-                                        );
-                                    }
+                            if let Event::Log(otel_log) = event
+                                && let Some(v) = value
+                            {
+                                let key = header_name.as_str().to_string();
+                                // Don't overwrite body fields — body values take precedence over headers.
+                                if !otel_log.has_field(&key) {
+                                    otel_log.set_attribute(
+                                        key,
+                                        string_value(String::from_utf8_lossy(v).into_owned()),
+                                    );
                                 }
                             }
                         }
@@ -92,15 +87,13 @@ mod tests {
         headers.insert("Content-Encoding", "gzip".parse().unwrap());
 
         let mut events = [OtelLog::from(value!({})).into()];
-        add_headers(
-            &mut events,
-            &header_names,
-            &headers,
-            "test",
-        );
+        add_headers(&mut events, &header_names, &headers, "test");
 
         let log = events[0].as_log();
-        assert_eq!(log.get("Content-Type").unwrap(), "application/x-protobuf".into());
+        assert_eq!(
+            log.get("Content-Type").unwrap(),
+            "application/x-protobuf".into()
+        );
         assert_eq!(log.get("User-Agent").unwrap(), "Test".into());
         assert!(log.get("Content-Encoding").is_none());
     }
@@ -116,12 +109,7 @@ mod tests {
         headers.insert("Content-Encoding", "gzip".parse().unwrap());
 
         let mut events = [OtelLog::from(value!({})).into()];
-        add_headers(
-            &mut events,
-            &header_names,
-            &headers,
-            "test",
-        );
+        add_headers(&mut events, &header_names, &headers, "test");
 
         let log = events[0].as_log();
         assert_eq!(

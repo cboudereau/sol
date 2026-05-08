@@ -8,8 +8,8 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use pin_project::pin_project;
 use snafu::Snafu;
-use tokio::task::JoinError;
 use sol_lib::{buffers::topology::channel::BufferReceiverStream, event::EventArray};
+use tokio::task::JoinError;
 
 use crate::{config::ComponentKey, utilization::Utilization};
 

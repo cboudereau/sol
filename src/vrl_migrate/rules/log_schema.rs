@@ -31,11 +31,21 @@ pub struct MigrateLogSchema {
     pub metadata_key: String,
 }
 
-fn default_message_key() -> String { "body".into() }
-fn default_timestamp_key() -> String { "time_unix_nano".into() }
-fn default_host_key() -> String { "host".into() }
-fn default_source_type_key() -> String { "source_type".into() }
-fn default_metadata_key() -> String { "metadata".into() }
+fn default_message_key() -> String {
+    "body".into()
+}
+fn default_timestamp_key() -> String {
+    "time_unix_nano".into()
+}
+fn default_host_key() -> String {
+    "host".into()
+}
+fn default_source_type_key() -> String {
+    "source_type".into()
+}
+fn default_metadata_key() -> String {
+    "metadata".into()
+}
 
 impl MigrateLogSchema {
     pub fn non_default_fields(&self) -> Vec<(&'static str, String, &'static str)> {
@@ -45,13 +55,25 @@ impl MigrateLogSchema {
             out.push(("message_key", self.message_key.clone(), ".body"));
         }
         if self.timestamp_key != "time_unix_nano" {
-            out.push(("timestamp_key", self.timestamp_key.clone(), ".time_unix_nano"));
+            out.push((
+                "timestamp_key",
+                self.timestamp_key.clone(),
+                ".time_unix_nano",
+            ));
         }
         if self.host_key != "host" {
-            out.push(("host_key", self.host_key.clone(), r#".resource.attributes."host.name""#));
+            out.push((
+                "host_key",
+                self.host_key.clone(),
+                r#".resource.attributes."host.name""#,
+            ));
         }
         if self.source_type_key != "source_type" {
-            out.push(("source_type_key", self.source_type_key.clone(), r#".attributes."pipeline.source_type""#));
+            out.push((
+                "source_type_key",
+                self.source_type_key.clone(),
+                r#".attributes."pipeline.source_type""#,
+            ));
         }
         if self.metadata_key != "metadata" {
             out.push(("metadata_key", self.metadata_key.clone(), ""));
@@ -90,7 +112,9 @@ impl LogSchemaRules {
             };
 
             let annotation = if canonical_path.is_empty() {
-                format!(".{custom_value} → REVIEW (metadata_key has no standard OTLP mapping) [{rule_id}]")
+                format!(
+                    ".{custom_value} → REVIEW (metadata_key has no standard OTLP mapping) [{rule_id}]"
+                )
             } else {
                 format!(".{custom_value} → {canonical_path} [{rule_id}]")
             };
@@ -135,7 +159,8 @@ impl LogSchemaRules {
                             break;
                         }
                     }
-                } else if let Some(new_text) = replace_field(&current, &re, mapping.canonical_path) {
+                } else if let Some(new_text) = replace_field(&current, &re, mapping.canonical_path)
+                {
                     output.applied.push(super::super::AppliedRule {
                         rule_id: mapping.rule_id,
                         line: line_idx + 1,

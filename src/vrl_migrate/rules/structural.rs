@@ -5,19 +5,49 @@ use regex::Regex;
 use super::{RewriteResult, Rule, RuleId};
 
 pub static RULES: [Rule; 10] = [
-    Rule { id: RuleId::Log07, apply: apply_log07 },
-    Rule { id: RuleId::Log04, apply: apply_log04 },
-    Rule { id: RuleId::Log03, apply: apply_log03 },
-    Rule { id: RuleId::Log06, apply: apply_log06 },
-    Rule { id: RuleId::Log05, apply: apply_log05 },
-    Rule { id: RuleId::Log02, apply: apply_log02 },
-    Rule { id: RuleId::Log01, apply: apply_log01 },
-    Rule { id: RuleId::Meta01, apply: apply_meta01 },
-    Rule { id: RuleId::Meta02, apply: apply_meta02 },
-    Rule { id: RuleId::Trc01, apply: apply_trc01 },
+    Rule {
+        id: RuleId::Log07,
+        apply: apply_log07,
+    },
+    Rule {
+        id: RuleId::Log04,
+        apply: apply_log04,
+    },
+    Rule {
+        id: RuleId::Log03,
+        apply: apply_log03,
+    },
+    Rule {
+        id: RuleId::Log06,
+        apply: apply_log06,
+    },
+    Rule {
+        id: RuleId::Log05,
+        apply: apply_log05,
+    },
+    Rule {
+        id: RuleId::Log02,
+        apply: apply_log02,
+    },
+    Rule {
+        id: RuleId::Log01,
+        apply: apply_log01,
+    },
+    Rule {
+        id: RuleId::Meta01,
+        apply: apply_meta01,
+    },
+    Rule {
+        id: RuleId::Meta02,
+        apply: apply_meta02,
+    },
+    Rule {
+        id: RuleId::Trc01,
+        apply: apply_trc01,
+    },
 ];
 
-pub(super) fn is_ident_char(b: u8) -> bool {
+pub(super) const fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -72,9 +102,7 @@ pub(super) fn replace_field(line: &str, re: &Regex, replacement: &str) -> Option
 }
 
 // LOG-01: .message → .body
-static RE_MESSAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.message\b").unwrap()
-});
+static RE_MESSAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.message\b").unwrap());
 
 fn apply_log01(line: &str) -> RewriteResult {
     match replace_field(line, &RE_MESSAGE, ".body") {
@@ -84,9 +112,7 @@ fn apply_log01(line: &str) -> RewriteResult {
 }
 
 // LOG-02: .timestamp → .time_unix_nano
-static RE_TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.timestamp\b").unwrap()
-});
+static RE_TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.timestamp\b").unwrap());
 
 fn apply_log02(line: &str) -> RewriteResult {
     match replace_field(line, &RE_TIMESTAMP, ".time_unix_nano") {
@@ -96,12 +122,14 @@ fn apply_log02(line: &str) -> RewriteResult {
 }
 
 // LOG-03: .source_type → .attributes."pipeline.source_type"
-static RE_SOURCE_TYPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.source_type\b").unwrap()
-});
+static RE_SOURCE_TYPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.source_type\b").unwrap());
 
 fn apply_log03(line: &str) -> RewriteResult {
-    match replace_field(line, &RE_SOURCE_TYPE, r#".attributes."pipeline.source_type""#) {
+    match replace_field(
+        line,
+        &RE_SOURCE_TYPE,
+        r#".attributes."pipeline.source_type""#,
+    ) {
         Some(new) => RewriteResult::Rewritten(
             new,
             r#".source_type → .attributes."pipeline.source_type" [LOG-03]"#.into(),
@@ -111,9 +139,7 @@ fn apply_log03(line: &str) -> RewriteResult {
 }
 
 // LOG-04: .host → .resource.attributes."host.name"
-static RE_HOST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.host\b").unwrap()
-});
+static RE_HOST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.host\b").unwrap());
 
 fn apply_log04(line: &str) -> RewriteResult {
     match replace_field(line, &RE_HOST, r#".resource.attributes."host.name""#) {
@@ -126,9 +152,7 @@ fn apply_log04(line: &str) -> RewriteResult {
 }
 
 // LOG-05: .tags (standalone) → .attributes
-static RE_TAGS_STANDALONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.tags\b").unwrap()
-});
+static RE_TAGS_STANDALONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.tags\b").unwrap());
 
 fn apply_log05(line: &str) -> RewriteResult {
     match replace_field(line, &RE_TAGS_STANDALONE, ".attributes") {
@@ -139,9 +163,8 @@ fn apply_log05(line: &str) -> RewriteResult {
 
 // LOG-06: .tags.<key> → .attributes."<key>"
 // Must run before LOG-05 to avoid double-rewriting.
-static RE_TAGS_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.tags\.([a-zA-Z_][a-zA-Z0-9_]*)").unwrap()
-});
+static RE_TAGS_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.tags\.([a-zA-Z_][a-zA-Z0-9_]*)").unwrap());
 
 fn apply_log06(line: &str) -> RewriteResult {
     let mut result = String::with_capacity(line.len());
@@ -162,31 +185,30 @@ fn apply_log06(line: &str) -> RewriteResult {
 
     if changed {
         result.push_str(&line[last..]);
-        RewriteResult::Rewritten(result, ".tags.<key> → .attributes.\"<key>\" [LOG-06]".into())
+        RewriteResult::Rewritten(
+            result,
+            ".tags.<key> → .attributes.\"<key>\" [LOG-06]".into(),
+        )
     } else {
         RewriteResult::NoMatch
     }
 }
 
 // LOG-07: .level / .severity → .severity_text
-static RE_LEVEL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.(level|severity)\b").unwrap()
-});
+static RE_LEVEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(level|severity)\b").unwrap());
 
 fn apply_log07(line: &str) -> RewriteResult {
     match replace_field(line, &RE_LEVEL, ".severity_text") {
-        Some(new) => RewriteResult::Rewritten(
-            new,
-            ".level/.severity → .severity_text [LOG-07]".into(),
-        ),
+        Some(new) => {
+            RewriteResult::Rewritten(new, ".level/.severity → .severity_text [LOG-07]".into())
+        }
         None => RewriteResult::NoMatch,
     }
 }
 
 // META-01: %vector.source_type → %pipeline.source_type
-static RE_META_SOURCE_TYPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"%vector\.source_type").unwrap()
-});
+static RE_META_SOURCE_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"%vector\.source_type").unwrap());
 
 fn apply_meta01(line: &str) -> RewriteResult {
     match super::replace_outside_strings(line, &RE_META_SOURCE_TYPE, "%pipeline.source_type") {
@@ -199,9 +221,8 @@ fn apply_meta01(line: &str) -> RewriteResult {
 }
 
 // META-02: %vector.source_id → %pipeline.source_id
-static RE_META_SOURCE_ID: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"%vector\.source_id").unwrap()
-});
+static RE_META_SOURCE_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"%vector\.source_id").unwrap());
 
 fn apply_meta02(line: &str) -> RewriteResult {
     match super::replace_outside_strings(line, &RE_META_SOURCE_ID, "%pipeline.source_id") {
@@ -214,6 +235,6 @@ fn apply_meta02(line: &str) -> RewriteResult {
 }
 
 // TRC-01/02/03: .span_id, .trace_id, .parent_span_id — unchanged in OTel. No-op.
-fn apply_trc01(_line: &str) -> RewriteResult {
+const fn apply_trc01(_line: &str) -> RewriteResult {
     RewriteResult::NoMatch
 }

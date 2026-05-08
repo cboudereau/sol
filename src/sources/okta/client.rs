@@ -8,9 +8,6 @@ use http::Uri;
 use hyper::{Body, Request};
 use percent_encoding::utf8_percent_encode;
 use serde_with::serde_as;
-use tokio::sync::Mutex;
-use tokio_stream::wrappers::IntervalStream;
-use tokio_util::codec::Decoder as _;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -24,6 +21,9 @@ use sol_lib::{
     shutdown::ShutdownSignal,
     tls::TlsConfig,
 };
+use tokio::sync::Mutex;
+use tokio_stream::wrappers::IntervalStream;
+use tokio_util::codec::Decoder as _;
 
 use crate::{
     SourceSender,
@@ -76,7 +76,6 @@ pub struct OktaConfig {
     /// TLS configuration.
     #[configurable(derived)]
     pub tls: Option<TlsConfig>,
-
 }
 
 impl Default for OktaConfig {
@@ -358,8 +357,7 @@ async fn run(
                             (new_url, response)
                         };
 
-                        handle_response(response, decoder, run_url)
-                            .map(|events| (events, ()))
+                        handle_response(response, decoder, run_url).map(|events| (events, ()))
                     }
                 })
                 .flatten()

@@ -11,13 +11,13 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use flate2::write::GzDecoder;
 use futures_util::FutureExt;
 use http_body_util::{BodyExt, StreamBody};
+use sol_lib::internal_event::{
+    ByteSize, BytesReceived, InternalEventHandle as _, Protocol, Registered,
+};
 use tokio::{pin, select};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Status, body::BoxBody, metadata::AsciiMetadataValue};
 use tower::{Layer, Service};
-use sol_lib::internal_event::{
-    ByteSize, BytesReceived, InternalEventHandle as _, Protocol, Registered,
-};
 
 use crate::internal_events::{GrpcError, GrpcInvalidCompressionSchemeError};
 
@@ -30,9 +30,7 @@ enum CompressionScheme {
 }
 
 impl CompressionScheme {
-    fn from_encoding_header(
-        req: &http_1::Request<BoxBody>,
-    ) -> Result<Option<Self>, Status> {
+    fn from_encoding_header(req: &http_1::Request<BoxBody>) -> Result<Option<Self>, Status> {
         req.headers()
             .get(GRPC_ENCODING_HEADER)
             .map(|s| {
@@ -167,12 +165,9 @@ async fn drive_body_decompression(
                             bytes_received += buf.len();
 
                             let message_len_actual = buf.len() - GRPC_MESSAGE_HEADER_LEN;
-                            let message_len =
-                                u32::try_from(message_len_actual).map_err(|_| {
-                                    Status::out_of_range(
-                                        "messages greater than 4GB are not supported",
-                                    )
-                                })?;
+                            let message_len = u32::try_from(message_len_actual).map_err(|_| {
+                                Status::out_of_range("messages greater than 4GB are not supported")
+                            })?;
 
                             let message_len_bytes = message_len.to_be_bytes();
                             let message_len_slot = &mut buf[1..GRPC_MESSAGE_HEADER_LEN];
@@ -185,14 +180,13 @@ async fn drive_body_decompression(
                 }
             };
 
-            if let Some(message) = maybe_message {
-                if destination
+            if let Some(message) = maybe_message
+                && destination
                     .send(Ok(http_body_1::Frame::data(message)))
                     .await
                     .is_err()
-                {
-                    return Err(Status::internal("destination body abnormally closed"));
-                }
+            {
+                return Err(Status::internal("destination body abnormally closed"));
             }
         }
     }

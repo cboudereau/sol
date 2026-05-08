@@ -10,8 +10,8 @@ use std::{
 use crc32fast::Hasher;
 use rkyv::{AlignedVec, archived_root};
 use snafu::{ResultExt, Snafu};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use sol_common::{finalization::BatchNotifier, finalizer::OrderedFinalizer};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use super::{
     Filesystem,

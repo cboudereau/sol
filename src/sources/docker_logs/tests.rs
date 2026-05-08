@@ -12,12 +12,8 @@ mod integration_tests {
     /// is not present even though it is not used.
     fn exclude_self() {
         let (tx, _rx) = SourceSender::new_test();
-        let mut source = DockerLogsSource::new(
-            DockerLogsConfig::default(),
-            tx,
-            ShutdownSignal::noop(),
-        )
-        .unwrap();
+        let mut source =
+            DockerLogsSource::new(DockerLogsConfig::default(), tx, ShutdownSignal::noop()).unwrap();
         source.hostname = Some("451062c59603".to_owned());
         assert!(
             source.exclude_self("451062c59603a1cf0c6af3e74a31c0ae63d8275aa16a5fc78ef31b923baaffc3")
@@ -281,10 +277,7 @@ mod integration_tests {
 
         // Wait for before message
         let events = collect_n(out, 1).await;
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "before".into()
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "before".into());
 
         id
     }
@@ -348,10 +341,7 @@ mod integration_tests {
             schema_definitions
                 .unwrap()
                 .assert_valid_for_event(&events[0]);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), message.into());
         })
         .await;
     }
@@ -520,10 +510,7 @@ mod integration_tests {
             schema_definitions
                 .unwrap()
                 .assert_valid_for_event(&events[0]);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), message.into());
         })
         .await;
     }
@@ -606,10 +593,7 @@ mod integration_tests {
             schema_definitions
                 .unwrap()
                 .assert_valid_for_event(&events[0]);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), message.into());
         })
         .await;
     }
@@ -685,10 +669,7 @@ mod integration_tests {
             schema_definitions
                 .unwrap()
                 .assert_valid_for_event(&events[0]);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), message.into());
         })
         .await;
     }

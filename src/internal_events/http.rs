@@ -79,7 +79,12 @@ impl InternalEvent for HttpEventsReceived<'_> {
             protocol = %self.protocol,
         );
 
-        histogram!("component_received_events_count").record(self.count as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "event counter value; precise for |v| <= 2^53"
+        )]
+        let count = self.count as f64;
+        histogram!("component_received_events_count").record(count);
         counter!(
             "component_received_events_total",
             "http_path" => self.http_path.to_string(),

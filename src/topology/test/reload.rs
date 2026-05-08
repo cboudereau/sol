@@ -6,12 +6,12 @@ use std::{
 };
 
 use futures::StreamExt;
-use tokio::time::sleep;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use sol_lib::{
     buffers::{BufferConfig, BufferType, WhenFull},
     config::ComponentKey,
 };
+use tokio::time::sleep;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::{
     config::Config,

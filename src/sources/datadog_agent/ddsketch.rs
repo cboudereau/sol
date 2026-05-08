@@ -4,12 +4,12 @@ use std::{
     mem,
 };
 
+use crate::event::metric::Bucket;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use serde_with::{DeserializeAs, SerializeAs, serde_as};
 use snafu::Snafu;
 use sol_lib::{ByteSizeOf, configurable::configurable_component};
-use crate::event::metric::Bucket;
 
 fn float_eq(l: f64, r: f64) -> bool {
     (l - r).abs() <= f64::EPSILON * l.abs().max(r.abs()).max(1.0)
@@ -53,6 +53,10 @@ fn lower_bound(gamma_v: f64, bias: i32, k: i16) -> f64 {
 }
 
 /// Converts a BTreeMap of OTel bucket indices → counts into contiguous OTel Buckets.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "index differences are non-negative: BTreeMap keys are sorted and idx >= min_idx"
+)]
 fn map_to_buckets(
     map: &std::collections::BTreeMap<i32, u64>,
 ) -> opentelemetry_proto::tonic::metrics::v1::exponential_histogram_data_point::Buckets {
@@ -313,16 +317,16 @@ impl AgentDDSketch {
         })
     }
 
-    pub fn gamma(&self) -> f64 {
+    pub const fn gamma(&self) -> f64 {
         self.config.gamma_v
     }
 
-    pub fn bin_index_offset(&self) -> i32 {
+    pub const fn bin_index_offset(&self) -> i32 {
         self.config.norm_bias
     }
 
     #[allow(dead_code)]
-    fn bin_count(&self) -> usize {
+    const fn bin_count(&self) -> usize {
         self.bins.len()
     }
 
@@ -334,24 +338,24 @@ impl AgentDDSketch {
         BinMap::from_bins(&self.bins)
     }
 
-    pub fn config(&self) -> &Config {
+    pub const fn config(&self) -> &Config {
         &self.config
     }
 
     /// Whether or not this sketch is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Number of samples currently represented by this sketch.
-    pub fn count(&self) -> u32 {
+    pub const fn count(&self) -> u32 {
         self.count
     }
 
     /// Minimum value seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
-    pub fn min(&self) -> Option<f64> {
+    pub const fn min(&self) -> Option<f64> {
         if self.is_empty() {
             None
         } else {
@@ -362,7 +366,7 @@ impl AgentDDSketch {
     /// Maximum value seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
-    pub fn max(&self) -> Option<f64> {
+    pub const fn max(&self) -> Option<f64> {
         if self.is_empty() {
             None
         } else {
@@ -373,7 +377,7 @@ impl AgentDDSketch {
     /// Sum of all values seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
-    pub fn sum(&self) -> Option<f64> {
+    pub const fn sum(&self) -> Option<f64> {
         if self.is_empty() {
             None
         } else {
@@ -384,7 +388,7 @@ impl AgentDDSketch {
     /// Average value seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
-    pub fn avg(&self) -> Option<f64> {
+    pub const fn avg(&self) -> Option<f64> {
         if self.is_empty() {
             None
         } else {
@@ -600,7 +604,7 @@ impl AgentDDSketch {
 
             // SAFETY: This integer cast is intentional: we want to get the non-fractional part, as
             // we've captured the fractional part in the above conditional.
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let mut kn = fkn as u32;
             if remainder > 1.0 {
                 kn += 1;
@@ -748,7 +752,11 @@ impl AgentDDSketch {
     /// have bounded relative error (inherited from the sketch's epsilon) but are not guaranteed to
     /// sum to exactly `count` due to floating-point rounding; a remainder is added to the last
     /// finite bucket.
-    pub fn to_aggregated_histogram(&self, name: impl Into<String>, bounds: &[f64]) -> crate::event::OtelMetric {
+    pub fn to_aggregated_histogram(
+        &self,
+        name: impl Into<String>,
+        bounds: &[f64],
+    ) -> crate::event::OtelMetric {
         use crate::event::metric::Bucket;
 
         if self.count == 0 || bounds.is_empty() {
@@ -785,8 +793,13 @@ impl AgentDDSketch {
                 self.cdf_approx(upper)
             };
             let fraction = (cdf - prev_cdf).max(0.0);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "histogram bin count; precise for |v| <= 2^53"
+            )]
+            let total_f = total as f64;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let bucket_count = (fraction * total as f64).round() as u64;
+            let bucket_count = (fraction * total_f).round() as u64;
             buckets.push(Bucket {
                 upper_limit: upper,
                 count: bucket_count,
@@ -856,8 +869,7 @@ impl AgentDDSketch {
         time_unix_nano: u64,
     ) -> opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint {
         use opentelemetry_proto::tonic::metrics::v1::{
-            ExponentialHistogramDataPoint,
-            exponential_histogram_data_point::Buckets,
+            ExponentialHistogramDataPoint, exponential_histogram_data_point::Buckets,
         };
 
         const OTEL_SCALE: i32 = 6;
@@ -892,8 +904,10 @@ impl AgentDDSketch {
         // DDSketch bin k represents values in [gamma^(k-bias), gamma^(k-bias+1)).
         // OTel bucket i represents values in (base^i, base^(i+1)].
         // We compute the OTel index for the geometric midpoint of each DDSketch bin.
-        let mut positive_map: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
-        let mut negative_map: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
+        let mut positive_map: std::collections::BTreeMap<i32, u64> =
+            std::collections::BTreeMap::new();
+        let mut negative_map: std::collections::BTreeMap<i32, u64> =
+            std::collections::BTreeMap::new();
         let mut zero_count: u64 = 0;
 
         for bin in &self.bins {
@@ -917,6 +931,10 @@ impl AgentDDSketch {
             let mid = lower * self.config.gamma_v.sqrt();
 
             // Map to OTel index: i = floor(ln(mid) / otel_base_ln)
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "OTel exponential histogram index fits i32 by spec"
+            )]
             let otel_index = (mid.ln() / otel_base_ln).floor() as i32;
 
             let target = if is_negative {
@@ -1006,7 +1024,6 @@ impl AgentDDSketch {
 
         Ok(())
     }
-
 }
 
 impl PartialEq for AgentDDSketch {
@@ -1204,7 +1221,7 @@ fn generate_bins(bins: &mut Vec<Bin>, k: i16, n: u32) {
 
 #[allow(clippy::cast_possible_truncation)]
 #[inline]
-fn capped_u64_shift(shift: u64) -> u32 {
+const fn capped_u64_shift(shift: u64) -> u32 {
     if shift >= 64 {
         u32::MAX
     } else {
@@ -1213,7 +1230,7 @@ fn capped_u64_shift(shift: u64) -> u32 {
     }
 }
 
-fn round_to_even(v: f64) -> f64 {
+const fn round_to_even(v: f64) -> f64 {
     // Taken from Go: src/math/floor.go
     //
     // Copyright (c) 2009 The Go Authors. All rights reserved.
@@ -1311,7 +1328,12 @@ mod tests {
         let bounds_input = vec![10.0, 50.0, 100.0];
         let otel = sketch.to_aggregated_histogram("test_hist", &bounds_input);
         match otel.view() {
-            MetricView::Histogram { bounds, counts, count, sum } => {
+            MetricView::Histogram {
+                bounds,
+                counts,
+                count,
+                sum,
+            } => {
                 assert_eq!(count, 100, "count must be exact");
                 let actual_sum: f64 = (1..=100).map(f64::from).sum();
                 assert!(
@@ -1335,7 +1357,9 @@ mod tests {
         let sketch = AgentDDSketch::with_agent_defaults();
         let otel = sketch.to_aggregated_histogram("test_hist", &[1.0, 10.0]);
         match otel.view() {
-            MetricView::Histogram { counts, count, sum, .. } => {
+            MetricView::Histogram {
+                counts, count, sum, ..
+            } => {
                 assert_eq!(count, 0);
                 assert_eq!(sum, 0.0);
                 assert!(counts.iter().all(|&c| c == 0));

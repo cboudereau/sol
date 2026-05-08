@@ -4,13 +4,10 @@ use std::{
 };
 
 use bytes::{BufMut, BytesMut};
-use tokio_util::codec::Encoder;
 use sol_lib::event::{MetricKind, MetricView, OtelAttributes, OtelMetric};
+use tokio_util::codec::Encoder;
 
-use crate::{
-    internal_events::StatsdInvalidMetricError,
-    sinks::util::encode_namespace,
-};
+use crate::{internal_events::StatsdInvalidMetricError, sinks::util::encode_namespace};
 
 /// Error type for errors that can never happen, but for use with `Encoder`.
 ///
@@ -74,7 +71,14 @@ impl<'a> Encoder<&'a OtelMetric> for StatsdEncoder {
                         tags.as_deref(),
                         val,
                         "h",
-                        Some(cnt.min(u32::MAX as u64) as u32),
+                        Some({
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "value is clamped to u32::MAX"
+                            )]
+                            let sample_count = cnt.min(u64::from(u32::MAX)) as u32;
+                            sample_count
+                        }),
                     );
                 }
             }
@@ -139,11 +143,9 @@ fn encode_and_write_single_event<V: Display>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "sources-statsd")]
-    use sol_lib::event::{
-        MetricKind, OtelMetric,
-    };
     use sol_lib::event::OtelAttributes;
+    #[cfg(feature = "sources-statsd")]
+    use sol_lib::event::{MetricKind, OtelMetric};
 
     use super::encode_tags;
 
@@ -223,8 +225,7 @@ mod tests {
     #[cfg(feature = "sources-statsd")]
     #[test]
     fn test_encode_gauge() {
-        let input = OtelMetric::new_gauge_delta("gauge", -1.5)
-            .with_tags(Some(tags()));
+        let input = OtelMetric::new_gauge_delta("gauge", -1.5).with_tags(Some(tags()));
         let frame = encode_metric(&input);
         assert_eq!(
             "gauge:-1.5|g|#bare_tag:,multi_value:true,normal_tag:value\n",
@@ -235,8 +236,7 @@ mod tests {
     #[cfg(feature = "sources-statsd")]
     #[test]
     fn test_encode_absolute_gauge() {
-        let input = OtelMetric::new_gauge("gauge", 1.5)
-            .with_tags(Some(tags()));
+        let input = OtelMetric::new_gauge("gauge", 1.5).with_tags(Some(tags()));
         let frame = encode_metric(&input);
         assert_eq!(
             "gauge:1.5|g|#bare_tag:,multi_value:true,normal_tag:value\n",
@@ -247,12 +247,10 @@ mod tests {
     #[cfg(feature = "sources-statsd")]
     #[test]
     fn test_encode_histogram() {
-        let input = OtelMetric::new_histogram_from_samples(
-            "histo",
-            MetricKind::Incremental,
-            &sol_lib::samples![1.5 => 1, 1.5 => 1],
-        )
-        .with_tags(Some(tags()));
+        let samples = sol_lib::samples![1.5 => 1, 1.5 => 1];
+        let input =
+            OtelMetric::new_histogram_from_samples("histo", MetricKind::Incremental, &samples)
+                .with_tags(Some(tags()));
 
         let frame = encode_metric(&input);
         let output = std::str::from_utf8(&frame).unwrap();
@@ -265,12 +263,9 @@ mod tests {
     #[cfg(feature = "sources-statsd")]
     #[test]
     fn test_encode_set() {
-        let input = OtelMetric::new_set_from_values(
-            "set",
-            MetricKind::Incremental,
-            vec!["abc".to_owned()],
-        )
-        .with_tags(Some(tags()));
+        let input =
+            OtelMetric::new_set_from_values("set", MetricKind::Incremental, vec!["abc".to_owned()])
+                .with_tags(Some(tags()));
 
         let frame = encode_metric(&input);
         assert_eq!(

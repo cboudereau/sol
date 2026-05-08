@@ -515,8 +515,7 @@ fn get_log_levels(default: &str) -> String {
         .or_else(|_| {
             std::env::var("LOG").inspect(|_log| {
                 warn!(
-                    message =
-                        "DEPRECATED: Use of $LOG is deprecated. Please use $SOL_LOG instead."
+                    message = "DEPRECATED: Use of $LOG is deprecated. Please use $SOL_LOG instead."
                 );
             })
         })
@@ -641,7 +640,6 @@ pub async fn load_configs(
 
     Ok(config)
 }
-
 
 pub fn init_logging(color: bool, format: LogFormat, log_level: &str, rate: u64) {
     let level = get_log_levels(log_level);

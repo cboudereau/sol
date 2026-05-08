@@ -4,8 +4,8 @@ use std::time::Duration;
 use chrono::Local;
 use futures_util::future::join_all;
 use regex::Regex;
-use tokio::sync::{mpsc, oneshot};
 use sol_lib::api_client::{Client, connect_subscription_client};
+use tokio::sync::{mpsc, oneshot};
 
 use sol_lib::top::{
     dashboard::{init_dashboard, is_tty},
@@ -132,7 +132,7 @@ async fn subscription(
         let finished = metrics::subscribe(
             subscription_client,
             tx.clone(),
-            opts.interval as i64,
+            i64::from(opts.interval),
             opts.components.clone(),
         );
 

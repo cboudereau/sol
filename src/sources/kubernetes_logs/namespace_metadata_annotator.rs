@@ -7,11 +7,7 @@ use kube::runtime::reflector::{ObjectRef, store::Store};
 use sol_lib::{
     config::insert_source_metadata,
     configurable::configurable_component,
-    lookup::{
-        OwnedTargetPath,
-        lookup_v2::OptionalTargetPath,
-        owned_value_path, path,
-    },
+    lookup::{OwnedTargetPath, lookup_v2::OptionalTargetPath, owned_value_path, path},
 };
 
 use super::Config;
@@ -52,10 +48,7 @@ pub struct NamespaceMetadataAnnotator {
 
 impl NamespaceMetadataAnnotator {
     /// Create a new [`NamespaceMetadataAnnotator`].
-    pub const fn new(
-        namespace_state_reader: Store<Namespace>,
-        fields_spec: FieldsSpec,
-    ) -> Self {
+    pub const fn new(namespace_state_reader: Store<Namespace>, fields_spec: FieldsSpec) -> Self {
         Self {
             namespace_state_reader,
             fields_spec,
@@ -78,11 +71,7 @@ impl NamespaceMetadataAnnotator {
 }
 
 #[allow(dead_code)]
-fn annotate_from_metadata(
-    log: &mut OtelLog,
-    fields_spec: &FieldsSpec,
-    metadata: &ObjectMeta,
-) {
+fn annotate_from_metadata(log: &mut OtelLog, fields_spec: &FieldsSpec, metadata: &ObjectMeta) {
     if let Some(labels) = &metadata.labels
         && fields_spec.namespace_labels.path.is_some()
     {
@@ -97,16 +86,11 @@ fn annotate_from_metadata(
     }
 }
 
-fn annotate_otel_from_metadata(
-    otel_log: &mut crate::event::OtelLog,
-    metadata: &ObjectMeta,
-) {
+fn annotate_otel_from_metadata(otel_log: &mut crate::event::OtelLog, metadata: &ObjectMeta) {
     if let Some(labels) = &metadata.labels {
         for (key, value) in labels.iter() {
-            otel_log.set_resource_attribute(
-                format!("k8s.namespace.labels.{key}"),
-                string_value(value),
-            );
+            otel_log
+                .set_resource_attribute(format!("k8s.namespace.labels.{key}"), string_value(value));
         }
     }
 }
@@ -204,8 +188,14 @@ mod tests {
                 {
                     // annotate_from_metadata ignores FieldsSpec; always stores in metadata
                     let mut log = OtelLog::default();
-                    log.insert(metadata_path!("kubernetes_logs", "namespace_labels", "sandbox0-label0"), "val0");
-                    log.insert(metadata_path!("kubernetes_logs", "namespace_labels", "sandbox0-label1"), "val1");
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "namespace_labels", "sandbox0-label0"),
+                        "val0",
+                    );
+                    log.insert(
+                        metadata_path!("kubernetes_logs", "namespace_labels", "sandbox0-label1"),
+                        "val1",
+                    );
                     log
                 },
             ),

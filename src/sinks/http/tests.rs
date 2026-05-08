@@ -112,7 +112,10 @@ fn http_encode_event_ndjson() {
 
     // body is now {"stringValue": "hello world"}
     let body = obj.get("body").unwrap();
-    assert_eq!(body.get("stringValue").unwrap().as_str().unwrap(), "hello world");
+    assert_eq!(
+        body.get("stringValue").unwrap().as_str().unwrap(),
+        "hello world"
+    );
 
     // timeUnixNano is now a camelCase string
     let time = obj.get("timeUnixNano").unwrap().as_str().unwrap();

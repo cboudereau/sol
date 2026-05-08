@@ -25,9 +25,9 @@ use rand_distr::Exp1;
 use rstest::*;
 use serde::Deserialize;
 use snafu::Snafu;
+use sol_lib::{configurable::configurable_component, json_size::JsonSize};
 use tokio::time::{self, Duration, Instant, sleep};
 use tower::Service;
-use sol_lib::{configurable::configurable_component, json_size::JsonSize};
 
 use super::{AdaptiveConcurrencySettings, controller::ControllerStatistics};
 use crate::{
@@ -90,6 +90,7 @@ impl LimitParams {
             .and_then(|limit| (level > limit).then_some(self.action))
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn scale(&self, level: usize) -> f64 {
         ((level - 1) as f64).mul_add(
             self.scale,
@@ -386,7 +387,7 @@ impl Statistics {
         self.prune_old_requests(now);
         self.rate.add(self.requests.len(), now.into());
         self.in_flight.adjust(-1, now.into());
-        self.completed += completed as usize;
+        self.completed += usize::from(completed);
     }
 
     /// Prune any requests that are more than one second old. The
@@ -488,7 +489,10 @@ async fn run_test(params: TestParams) -> TestResults {
     ));
     if params.concurrency == Concurrency::Adaptive {
         assert!(matches!(
-            metrics.get("sol_adaptive_concurrency_limit").unwrap().view(),
+            metrics
+                .get("sol_adaptive_concurrency_limit")
+                .unwrap()
+                .view(),
             MetricView::Histogram { .. }
         ));
     }
@@ -521,6 +525,12 @@ struct Failure {
 struct Range(f64, f64);
 
 impl Range {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test range bounds are small f64 values"
+    )]
+    #[expect(clippy::cast_sign_loss, reason = "test range bounds are non-negative")]
+    #[allow(clippy::cast_precision_loss)]
     fn assert_usize(&self, value: usize, name1: &str, name2: &str) -> Option<Failure> {
         if value < self.0 as usize {
             Some(Failure {

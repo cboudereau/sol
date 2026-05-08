@@ -50,14 +50,15 @@ impl Service<RedisRequest> for RedisService {
                 },
                 super::DataType::SortedSet(method) => match method {
                     SortedSetMethod::ZAdd => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "sorted-set score to f64 for Redis ZADD; precise for |v| <= 2^53"
+                        )]
+                        let score = kv.score.unwrap_or(0) as f64;
                         if count > 1 {
-                            pipe.atomic().zadd(
-                                kv.key,
-                                kv.value.as_ref(),
-                                kv.score.unwrap_or(0) as f64,
-                            );
+                            pipe.atomic().zadd(kv.key, kv.value.as_ref(), score);
                         } else {
-                            pipe.zadd(kv.key, kv.value.as_ref(), kv.score.unwrap_or(0) as f64);
+                            pipe.zadd(kv.key, kv.value.as_ref(), score);
                         }
                     }
                 },

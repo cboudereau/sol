@@ -9,18 +9,18 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt, stream::BoxStream};
 use snafu::{ResultExt, Snafu};
-use tokio::{
-    io::AsyncWriteExt,
-    net::{UnixDatagram, UnixStream},
-    time::sleep,
-};
-use tokio_util::codec::Encoder;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{BytesSent, Protocol},
     json_size::JsonSize,
 };
+use tokio::{
+    io::AsyncWriteExt,
+    net::{UnixDatagram, UnixStream},
+    time::sleep,
+};
+use tokio_util::codec::Encoder;
 
 use super::datagram::{DatagramSocket, send_datagrams};
 use crate::{
@@ -297,10 +297,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use tokio::net::UnixListener;
     use sol_lib::codecs::{
         BytesEncoder, NewlineDelimitedEncoder, TextSerializerConfig, encoding::Framer,
     };
+    use tokio::net::UnixListener;
 
     use super::*;
     use crate::{

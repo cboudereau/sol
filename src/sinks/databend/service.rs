@@ -12,12 +12,12 @@ use futures::future::BoxFuture;
 use rand::{Rng, rng};
 use rand_distr::Alphanumeric;
 use snafu::Snafu;
-use tower::Service;
 use sol_lib::{
     finalization::{EventFinalizers, EventStatus, Finalizable},
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
+use tower::Service;
 
 use crate::{internal_events::EndpointBytesSent, sinks::util::retries::RetryLogic};
 

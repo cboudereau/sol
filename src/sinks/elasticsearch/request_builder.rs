@@ -1,7 +1,5 @@
 use bytes::Bytes;
-use sol_lib::{
-    EstimatedJsonEncodedSizeOf, json_size::JsonSize, request_metadata::RequestMetadata,
-};
+use sol_lib::{EstimatedJsonEncodedSizeOf, json_size::JsonSize, request_metadata::RequestMetadata};
 
 use crate::{
     event::{EventFinalizers, Finalizable},

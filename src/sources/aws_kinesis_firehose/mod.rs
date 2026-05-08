@@ -2,9 +2,6 @@ use std::{convert::Infallible, fmt, net::SocketAddr, time::Duration};
 
 use futures::FutureExt;
 use hyper::{Server, service::make_service_fn};
-use tokio::net::TcpStream;
-use tower::ServiceBuilder;
-use tracing::Span;
 use sol_lib::{
     codecs::decoding::{DeserializerConfig, FramingConfig},
     configurable::configurable_component,
@@ -12,6 +9,9 @@ use sol_lib::{
     sensitive_string::SensitiveString,
     tls::MaybeTlsIncomingStream,
 };
+use tokio::net::TcpStream;
+use tower::ServiceBuilder;
+use tracing::Span;
 use vrl::value::Kind;
 
 use crate::{
@@ -95,7 +95,6 @@ pub struct AwsKinesisFirehoseConfig {
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
 
-
     #[configurable(derived)]
     #[serde(default)]
     keepalive: KeepaliveConfig,
@@ -146,9 +145,7 @@ impl fmt::Display for Compression {
 #[typetag::serde(name = "aws_kinesis_firehose")]
 impl SourceConfig for AwsKinesisFirehoseConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         let acknowledgements = cx.do_acknowledgements(self.acknowledgements);
 
@@ -271,8 +268,8 @@ mod tests {
     use flate2::read::GzEncoder;
     use futures::Stream;
     use similar_asserts::assert_eq;
-    use tokio::time::{Duration, sleep};
     use sol_lib::lookup::path;
+    use tokio::time::{Duration, sleep};
     use vrl::value;
 
     use super::*;
@@ -532,11 +529,15 @@ mod tests {
                     &value!("aws_kinesis_firehose")
                 );
                 assert_eq!(
-                    meta.value().get(path!("aws_kinesis_firehose", "request_id")).unwrap(),
+                    meta.value()
+                        .get(path!("aws_kinesis_firehose", "request_id"))
+                        .unwrap(),
                     &value!(REQUEST_ID)
                 );
                 assert_eq!(
-                    meta.value().get(path!("aws_kinesis_firehose", "source_arn")).unwrap(),
+                    meta.value()
+                        .get(path!("aws_kinesis_firehose", "source_arn"))
+                        .unwrap(),
                     &value!(SOURCE_ARN)
                 );
 
@@ -682,8 +683,7 @@ mod tests {
     #[tokio::test]
     async fn aws_kinesis_firehose_forwards_events_gzip_request() {
         assert_source_compliance(&SOURCE_TAGS, async move {
-            let (rx, addr, _guard) =
-                source(None, None, false, Default::default(), true).await;
+            let (rx, addr, _guard) = source(None, None, false, Default::default(), true).await;
 
             let timestamp: DateTime<Utc> = Utc::now();
 
@@ -710,11 +710,15 @@ mod tests {
                 &value!("aws_kinesis_firehose")
             );
             assert_eq!(
-                meta.value().get(path!("aws_kinesis_firehose", "request_id")).unwrap(),
+                meta.value()
+                    .get(path!("aws_kinesis_firehose", "request_id"))
+                    .unwrap(),
                 &value!(REQUEST_ID)
             );
             assert_eq!(
-                meta.value().get(path!("aws_kinesis_firehose", "source_arn")).unwrap(),
+                meta.value()
+                    .get(path!("aws_kinesis_firehose", "source_arn"))
+                    .unwrap(),
                 &value!(SOURCE_ARN)
             );
 
@@ -873,11 +877,15 @@ mod tests {
             &value!("aws_kinesis_firehose")
         );
         assert_eq!(
-            meta.value().get(path!("aws_kinesis_firehose", "request_id")).unwrap(),
+            meta.value()
+                .get(path!("aws_kinesis_firehose", "request_id"))
+                .unwrap(),
             &value!(REQUEST_ID)
         );
         assert_eq!(
-            meta.value().get(path!("aws_kinesis_firehose", "source_arn")).unwrap(),
+            meta.value()
+                .get(path!("aws_kinesis_firehose", "source_arn"))
+                .unwrap(),
             &value!(SOURCE_ARN)
         );
 

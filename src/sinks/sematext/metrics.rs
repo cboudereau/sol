@@ -5,11 +5,11 @@ use futures::{FutureExt, SinkExt, future::BoxFuture, stream};
 use http::{StatusCode, Uri};
 use hyper::{Body, Request};
 use indoc::indoc;
-use tower::Service;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component,
     sensitive_string::SensitiveString,
 };
+use tower::Service;
 
 use super::Region;
 use crate::{
@@ -348,12 +348,11 @@ mod tests {
     #[test]
     fn test_encode_counter_event_no_namespace() {
         let events = vec![
-            OtelMetric::new_counter("used", MetricKind::Incremental, 42.0)
-                .with_timestamp(Some(
-                    Utc.with_ymd_and_hms(2020, 8, 18, 21, 0, 0)
-                        .single()
-                        .expect("invalid timestamp"),
-                )),
+            OtelMetric::new_counter("used", MetricKind::Incremental, 42.0).with_timestamp(Some(
+                Utc.with_ymd_and_hms(2020, 8, 18, 21, 0, 0)
+                    .single()
+                    .expect("invalid timestamp"),
+            )),
         ];
 
         assert_eq!(
@@ -431,7 +430,11 @@ mod tests {
                     .with_namespace(Some(*namespace))
                     .with_tags(Some(otel_tags!("os.host" => "somehost")))
                     .with_timestamp(Some(Utc.with_ymd_and_hms(2020, 8, 18, 21, 0, 0).single()
-                                         .and_then(|t| t.with_nanosecond(i as u32))
+                                         .and_then(|t| {
+                                             #[expect(clippy::cast_possible_truncation, reason = "test index fits in u32")]
+                                             let ns = i as u32;
+                                             t.with_nanosecond(ns)
+                                         })
                                          .expect("invalid timestamp"))),
             );
             events.push(event);

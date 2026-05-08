@@ -69,11 +69,21 @@ impl Default for DecisionCacheConfig {
     }
 }
 
-fn default_decision_wait_secs() -> u64 { 30 }
-fn default_num_traces() -> usize { 50_000 }
-fn default_max_trace_size_bytes() -> usize { 10 * 1024 * 1024 } // 10 MiB
-fn default_sampled_cache_size() -> usize { 100_000 }
-fn default_non_sampled_cache_size() -> usize { 100_000 }
+const fn default_decision_wait_secs() -> u64 {
+    30
+}
+const fn default_num_traces() -> usize {
+    50_000
+}
+const fn default_max_trace_size_bytes() -> usize {
+    10 * 1024 * 1024
+} // 10 MiB
+const fn default_sampled_cache_size() -> usize {
+    100_000
+}
+const fn default_non_sampled_cache_size() -> usize {
+    100_000
+}
 
 impl GenerateConfig for TailSamplingConfig {
     fn generate_config() -> toml::Value {

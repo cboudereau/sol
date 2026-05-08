@@ -27,8 +27,7 @@ pub fn derive_impl_named_internal_event(item: TokenStream) -> TokenStream {
     let pkg_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
     let internal_event_path = if pkg_name == "sol-common" {
         quote! { crate::internal_event }
-    } else if pkg_name.starts_with("sol-") || pkg_name == "codecs" || pkg_name == "dnstap-parser"
-    {
+    } else if pkg_name.starts_with("sol-") || pkg_name == "codecs" || pkg_name == "dnstap-parser" {
         quote! { ::sol_common::internal_event }
     } else {
         quote! { ::sol_lib::internal_event }

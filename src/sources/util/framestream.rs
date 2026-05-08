@@ -23,6 +23,11 @@ use futures::{
 use futures_util::{Future, FutureExt, future::BoxFuture};
 use ipnet::IpNet;
 use listenfd::ListenFd;
+use sol_lib::{
+    lookup::OwnedValuePath,
+    tcp::TcpKeepaliveConfig,
+    tls::{CertificateMetadata, MaybeTlsIncomingStream, MaybeTlsSettings},
+};
 use tokio::{
     self,
     io::{AsyncRead, AsyncWrite},
@@ -33,11 +38,6 @@ use tokio::{
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::codec::{Framed, length_delimited};
 use tracing::{Instrument, Span, field};
-use sol_lib::{
-    lookup::OwnedValuePath,
-    tcp::TcpKeepaliveConfig,
-    tls::{CertificateMetadata, MaybeTlsIncomingStream, MaybeTlsSettings},
-};
 
 use super::net::{RequestLimiter, SocketListenAddr};
 use crate::{
@@ -352,7 +352,12 @@ impl FrameStreamReader {
         frame.extend(header.to_u32().to_be_bytes());
         if let Some(s) = content_type {
             frame.extend(ControlField::ContentType.to_u32().to_be_bytes()); //field type: ContentType
-            frame.extend((s.len() as u32).to_be_bytes()); //length of type
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "framestream content-type string length fits u32"
+            )]
+            let len = s.len() as u32;
+            frame.extend(len.to_be_bytes()); //length of type
             frame.extend(s.as_bytes());
         }
         Bytes::from(frame)
@@ -949,6 +954,12 @@ mod test {
     };
     use futures_util::Stream;
     use ipnet::IpNet;
+    use sol_lib::{
+        config::insert_source_metadata,
+        lookup::{OwnedValuePath, owned_value_path, path},
+        tcp::TcpKeepaliveConfig,
+        tls::{CertificateMetadata, MaybeTls, MaybeTlsSettings},
+    };
     use tokio::{
         self,
         net::{TcpStream, UnixStream},
@@ -956,12 +967,6 @@ mod test {
         time::{Duration, Instant},
     };
     use tokio_util::codec::{Framed, length_delimited};
-    use sol_lib::{
-        config::insert_source_metadata,
-        lookup::{OwnedValuePath, owned_value_path, path},
-        tcp::TcpKeepaliveConfig,
-        tls::{CertificateMetadata, MaybeTls, MaybeTlsSettings},
-    };
 
     use super::{
         ControlField, ControlHeader, FrameHandler, TcpFrameHandler, UnixFrameHandler,
@@ -1050,6 +1055,7 @@ mod test {
         pub fn new(content_type: String, multithreaded: bool, extra_routine: F) -> Self {
             Self {
                 content_type,
+                #[allow(clippy::cast_possible_truncation)]
                 max_frame_length: bytesize::kib(100u64) as usize,
                 multithreaded,
                 max_frame_handling_tasks: 0,
@@ -1074,12 +1080,7 @@ mod test {
 
             log_event.set_source_type("framestream");
             if let Some(host) = received_from {
-                insert_source_metadata(
-                    "framestream",
-                    &mut log_event,
-                    path!("host"),
-                    host,
-                )
+                insert_source_metadata("framestream", &mut log_event, path!("host"), host)
             }
 
             (self.extra_task_handling_routine.clone())();
@@ -1314,6 +1315,7 @@ mod test {
         Bytes::from(header.to_u32().to_be_bytes().to_vec())
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn create_control_frame_with_content(
         header: ControlHeader,
         content_types: Vec<Bytes>,
@@ -1327,6 +1329,7 @@ mod test {
         Bytes::from(frame)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn assert_accept_frame(frame: &mut BytesMut, expected_content_type: Bytes) {
         //frame should start with 4 bytes saying ACCEPT
 
@@ -1680,14 +1683,8 @@ mod test {
         //6 - send STOP frame
         send_control_frame(&mut sock_sink, create_control_frame(ControlHeader::Stop)).await;
 
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "hello".into(),
-        );
-        assert_eq!(
-            events[1].as_log().get("body").unwrap(),
-            "world".into(),
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "hello".into(),);
+        assert_eq!(events[1].as_log().get("body").unwrap(), "world".into(),);
 
         drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
@@ -1720,14 +1717,8 @@ mod test {
         //5 - send STOP frame
         send_control_frame(&mut sock_sink, create_control_frame(ControlHeader::Stop)).await;
 
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "hello".into(),
-        );
-        assert_eq!(
-            events[1].as_log().get("body").unwrap(),
-            "world".into(),
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "hello".into(),);
+        assert_eq!(events[1].as_log().get("body").unwrap(), "world".into(),);
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;

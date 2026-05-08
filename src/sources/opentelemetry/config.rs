@@ -19,7 +19,6 @@ use crate::{
 };
 use futures::FutureExt;
 use futures_util::{TryFutureExt, future::join};
-use tonic::{codec::CompressionEncoding, service::RoutesBuilder};
 use sol_lib::{
     configurable::configurable_component,
     internal_event::{BytesReceived, EventsReceived, Protocol},
@@ -38,6 +37,7 @@ use sol_lib::{
     schema::Definition,
     tls::{MaybeTlsSettings, TlsEnableableConfig},
 };
+use tonic::{codec::CompressionEncoding, service::RoutesBuilder};
 use vrl::value::{Kind, kind::Collection};
 
 pub use super::grpc::{LOGS, METRICS, TRACES};
@@ -56,7 +56,6 @@ pub struct OpentelemetryConfig {
     #[configurable(derived)]
     #[serde(default, deserialize_with = "bool_or_struct")]
     pub acknowledgements: SourceAcknowledgementsConfig,
-
 }
 
 /// Configuration for the `opentelemetry` gRPC server.

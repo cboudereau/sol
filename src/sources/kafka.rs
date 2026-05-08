@@ -26,6 +26,16 @@ use rdkafka::{
 };
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
+use sol_lib::{
+    EstimatedJsonEncodedSizeOf,
+    codecs::{
+        StreamDecodingError,
+        decoding::{DeserializerConfig, FramingConfig},
+    },
+    configurable::configurable_component,
+    finalizer::OrderedFinalizer,
+    lookup::{lookup_v2::OptionalValuePath, owned_value_path},
+};
 use tokio::{
     runtime::Handle,
     sync::{
@@ -37,25 +47,13 @@ use tokio::{
 };
 use tokio_util::codec::FramedRead;
 use tracing::{Instrument, Span};
-use sol_lib::{
-    EstimatedJsonEncodedSizeOf,
-    codecs::{
-        StreamDecodingError,
-        decoding::{DeserializerConfig, FramingConfig},
-    },
-    configurable::configurable_component,
-    finalizer::OrderedFinalizer,
-    lookup::{lookup_v2::OptionalValuePath, owned_value_path},
-};
 use vrl::value::{Kind, ObjectMap, kind::Collection};
 
 use crate::{
     SourceSender,
     codecs::{Decoder, DecodingConfig},
-    config::{
-        SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput,
-    },
-    event::{BatchNotifier, BatchStatus, Event, Value, string_value, int_value},
+    config::{SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput},
+    event::{BatchNotifier, BatchStatus, Event, Value, int_value, string_value},
     internal_events::{
         KafkaBytesReceived, KafkaEventsReceived, KafkaOffsetUpdateError, KafkaReadError,
         StreamClosedError,
@@ -242,7 +240,6 @@ pub struct KafkaSourceConfig {
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
 
-
     #[configurable(derived)]
     #[serde(default)]
     metrics: Metrics,
@@ -314,9 +311,7 @@ impl_generate_config_from_default!(KafkaSourceConfig);
 #[typetag::serde(name = "kafka")]
 impl SourceConfig for KafkaSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
         let acknowledgements = cx.do_acknowledgements(self.acknowledgements);
 
         if let Some(d) = self.drain_timeout_ms {
@@ -353,12 +348,7 @@ impl SourceConfig for KafkaSourceConfig {
                 Kind::timestamp(),
                 Some("timestamp"),
             )
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!("topic"),
-                Kind::bytes(),
-                None,
-            )
+            .with_source_metadata(Self::NAME, &owned_value_path!("topic"), Kind::bytes(), None)
             .with_source_metadata(
                 Self::NAME,
                 &owned_value_path!("partition"),
@@ -428,8 +418,7 @@ async fn kafka_source(
         let drain_timeout_ms = config
             .drain_timeout_ms
             .map_or(config.session_timeout_ms / 2, Duration::from_millis);
-        let consumer_state =
-            ConsumerStateInner::<Consuming>::new(config, decoder, out, span);
+        let consumer_state = ConsumerStateInner::<Consuming>::new(config, decoder, out, span);
         tokio::spawn(async move {
             coordinate_kafka_callbacks(
                 consumer,
@@ -1041,7 +1030,10 @@ impl ReceivedMessage {
         if let Event::Log(otel_log) = event {
             otel_log.set_source_metadata(KafkaSourceConfig::NAME, Utc::now());
             otel_log.set_attribute("topic".to_string(), string_value(&self.topic));
-            otel_log.set_attribute("partition".to_string(), int_value(self.partition as i64));
+            otel_log.set_attribute(
+                "partition".to_string(),
+                int_value(i64::from(self.partition)),
+            );
             otel_log.set_attribute("offset".to_string(), int_value(self.offset));
             if let Value::Bytes(key_bytes) = &self.key {
                 otel_log.set_attribute(
@@ -1058,8 +1050,12 @@ impl ReceivedMessage {
                 }
             }
             if let Some(ts) = self.timestamp {
-                otel_log.record_mut().time_unix_nano =
-                    ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "Kafka message timestamp nanos are non-negative for post-epoch dates"
+                )]
+                let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                otel_log.record_mut().time_unix_nano = nanos;
             }
         }
     }
@@ -1336,42 +1332,40 @@ mod test {
         assert_eq!(
             definitions,
             Some(
-                Definition::new_with_default_metadata(
-                    Kind::object(Collection::empty())
-                )
-                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-                .with_metadata_field(
-                    &owned_value_path!("kafka", "timestamp"),
-                    Kind::timestamp(),
-                    Some("timestamp")
-                )
-                .with_metadata_field(
-                    &owned_value_path!("kafka", "message_key"),
-                    Kind::bytes(),
-                    None
-                )
-                .with_metadata_field(&owned_value_path!("kafka", "topic"), Kind::bytes(), None)
-                .with_metadata_field(
-                    &owned_value_path!("kafka", "partition"),
-                    Kind::bytes(),
-                    None
-                )
-                .with_metadata_field(&owned_value_path!("kafka", "offset"), Kind::bytes(), None)
-                .with_metadata_field(
-                    &owned_value_path!("kafka", "headers"),
-                    Kind::object(Collection::empty().with_unknown(Kind::bytes())),
-                    None
-                )
-                .with_metadata_field(
-                    &owned_value_path!("vector", "ingest_timestamp"),
-                    Kind::timestamp(),
-                    None
-                )
-                .with_metadata_field(
-                    &owned_value_path!("vector", "source_type"),
-                    Kind::bytes(),
-                    None
-                )
+                Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                    .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                    .with_metadata_field(
+                        &owned_value_path!("kafka", "timestamp"),
+                        Kind::timestamp(),
+                        Some("timestamp")
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("kafka", "message_key"),
+                        Kind::bytes(),
+                        None
+                    )
+                    .with_metadata_field(&owned_value_path!("kafka", "topic"), Kind::bytes(), None)
+                    .with_metadata_field(
+                        &owned_value_path!("kafka", "partition"),
+                        Kind::bytes(),
+                        None
+                    )
+                    .with_metadata_field(&owned_value_path!("kafka", "offset"), Kind::bytes(), None)
+                    .with_metadata_field(
+                        &owned_value_path!("kafka", "headers"),
+                        Kind::object(Collection::empty().with_unknown(Kind::bytes())),
+                        None
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("vector", "ingest_timestamp"),
+                        Kind::timestamp(),
+                        None
+                    )
+                    .with_metadata_field(
+                        &owned_value_path!("vector", "source_type"),
+                        Kind::bytes(),
+                        None
+                    )
             )
         )
     }
@@ -1410,9 +1404,9 @@ mod integration_test {
         producer::{FutureProducer, FutureRecord},
         util::Timeout,
     };
+    use sol_lib::event::EventStatus;
     use stream_cancel::{Trigger, Tripwire};
     use tokio::time::sleep;
-    use sol_lib::event::EventStatus;
     use vrl::event_path;
 
     use super::{test::*, *};
@@ -1509,6 +1503,7 @@ mod integration_test {
         send_receive(true, |n| n >= 2, 2).await;
     }
 
+    #[allow(clippy::cast_possible_wrap)]
     async fn send_receive(
         acknowledgements: bool,
         error_at: impl Fn(usize) -> bool,
@@ -1546,11 +1541,11 @@ mod integration_test {
                 event.as_log().get("body").unwrap(),
                 format!("{TEXT} {i:03}").into()
             );
-            assert_eq!(event.as_log().get("message_key").unwrap(), format!("{KEY} {i}").into());
             assert_eq!(
-                event.as_log().get_source_type().unwrap(),
-                "kafka".into()
+                event.as_log().get("message_key").unwrap(),
+                format!("{KEY} {i}").into()
             );
+            assert_eq!(event.as_log().get_source_type().unwrap(), "kafka".into());
             assert_eq!(
                 event.as_log().get("time_unix_nano").unwrap(),
                 now.trunc_subsecs(3).into()
@@ -1560,7 +1555,10 @@ mod integration_test {
             assert!(event.as_log().contains("offset"));
             let mut expected_headers = ObjectMap::new();
             expected_headers.insert(HEADER_KEY.into(), Value::from(HEADER_VALUE));
-            assert_eq!(event.as_log().get("headers").unwrap(), Value::from(expected_headers));
+            assert_eq!(
+                event.as_log().get("headers").unwrap(),
+                Value::from(expected_headers)
+            );
         }
     }
 
@@ -1602,12 +1600,9 @@ mod integration_test {
     ) -> (Trigger, Tripwire) {
         let (trigger_shutdown, shutdown, shutdown_done) = ShutdownSignal::new_wired();
 
-        let decoder = DecodingConfig::new(
-            config.framing.clone(),
-            config.decoding.clone(),
-        )
-        .build()
-        .unwrap();
+        let decoder = DecodingConfig::new(config.framing.clone(), config.decoding.clone())
+            .build()
+            .unwrap();
 
         let (consumer, callback_rx) = create_consumer(&config, acknowledgements).unwrap();
 
@@ -1672,6 +1667,7 @@ mod integration_test {
     // - Consumer B skips receiving messages?
     #[ignore]
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     async fn handles_rebalance() {
         // The test plan here is to:
         // - Set up one source instance, feeding into a pipeline that delays acks.
@@ -1695,15 +1691,13 @@ mod integration_test {
         let _send_start = send_events(topic.clone(), 1, NEVENTS).await;
 
         let (tx, rx1) = delay_pipeline(1, Duration::from_millis(200), EventStatus::Delivered);
-        let (trigger_shutdown1, shutdown_done1) =
-            spawn_kafka(tx, config.clone(), true, false);
+        let (trigger_shutdown1, shutdown_done1) = spawn_kafka(tx, config.clone(), true, false);
         let events1 = tokio::spawn(collect_n(rx1, NEVENTS));
 
         sleep(Duration::from_secs(1)).await;
 
         let (tx, rx2) = delay_pipeline(2, Duration::from_millis(DELAY), EventStatus::Delivered);
-        let (trigger_shutdown2, shutdown_done2) =
-            spawn_kafka(tx, config, true, false);
+        let (trigger_shutdown2, shutdown_done2) = spawn_kafka(tx, config, true, false);
         let events2 = tokio::spawn(collect_n(rx2, NEVENTS));
 
         sleep(Duration::from_secs(5)).await;
@@ -1774,8 +1768,7 @@ mod integration_test {
         let events1 = {
             let config = make_config(&topic, &group_id, Some(opts.clone()));
             let (tx, rx) = SourceSender::new_test_errors(|_| false);
-            let (trigger_shutdown, shutdown_done) =
-                spawn_kafka(tx, config, true, false);
+            let (trigger_shutdown, shutdown_done) = spawn_kafka(tx, config, true, false);
             let (events, _) = tokio::join!(rx.collect::<Vec<Event>>(), async move {
                 sleep(Duration::from_millis(delay_ms)).await;
                 drop(trigger_shutdown);
@@ -1795,8 +1788,7 @@ mod integration_test {
         let events2 = {
             let config = make_config(&topic, &group_id, Some(opts));
             let (tx, rx) = SourceSender::new_test_errors(|_| false);
-            let (trigger_shutdown, shutdown_done) =
-                spawn_kafka(tx, config, true, true);
+            let (trigger_shutdown, shutdown_done) = spawn_kafka(tx, config, true, true);
             let events = rx.collect::<Vec<Event>>().await;
             drop(trigger_shutdown);
             shutdown_done.await;
@@ -1849,11 +1841,7 @@ mod integration_test {
         kafka_options.insert("enable.partition.eof".into(), "true".into());
         kafka_options.insert("fetch.message.max.bytes".into(), kafka_max_bytes());
         kafka_options.insert("partition.assignment.strategy".into(), rebalance_strategy);
-        let config1 = make_config(
-            &topic,
-            &group_id,
-            Some(kafka_options.clone()),
-        );
+        let config1 = make_config(&topic, &group_id, Some(kafka_options.clone()));
         let config2 = config1.clone();
         let config3 = config1.clone();
         let config4 = config1.clone();
@@ -1861,24 +1849,21 @@ mod integration_test {
         let (events1, events2, events3) = tokio::join!(
             async move {
                 let (tx, rx) = SourceSender::new_test_errors(|_| false);
-                let (_trigger_shutdown, _shutdown_done) =
-                    spawn_kafka(tx, config1, true, true);
+                let (_trigger_shutdown, _shutdown_done) = spawn_kafka(tx, config1, true, true);
 
                 rx.collect::<Vec<Event>>().await
             },
             async move {
                 sleep(Duration::from_millis(delay_ms)).await;
                 let (tx, rx) = SourceSender::new_test_errors(|_| false);
-                let (_trigger_shutdown, _shutdown_done) =
-                    spawn_kafka(tx, config2, true, true);
+                let (_trigger_shutdown, _shutdown_done) = spawn_kafka(tx, config2, true, true);
 
                 rx.collect::<Vec<Event>>().await
             },
             async move {
                 sleep(Duration::from_millis(delay_ms * 2)).await;
                 let (tx, rx) = SourceSender::new_test_errors(|_| false);
-                let (_trigger_shutdown, _shutdown_done) =
-                    spawn_kafka(tx, config3, true, true);
+                let (_trigger_shutdown, _shutdown_done) = spawn_kafka(tx, config3, true, true);
 
                 rx.collect::<Vec<Event>>().await
             }
@@ -1886,8 +1871,7 @@ mod integration_test {
 
         let unconsumed = async move {
             let (tx, rx) = SourceSender::new_test_errors(|_| false);
-            let (_trigger_shutdown, _shutdown_done) =
-                spawn_kafka(tx, config4, true, true);
+            let (_trigger_shutdown, _shutdown_done) = spawn_kafka(tx, config4, true, true);
 
             rx.collect::<Vec<Event>>().await
         }

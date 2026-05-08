@@ -4,9 +4,9 @@ mod rules;
 use std::fmt;
 use std::path::Path;
 
-pub use rules::{RewriteResult, Rule, RuleId};
-pub use rules::log_schema::MigrateLogSchema;
 use rules::log_schema::LogSchemaRules;
+pub use rules::log_schema::MigrateLogSchema;
+pub use rules::{RewriteResult, Rule, RuleId};
 
 /// Migrates a VRL program from Vector field semantics to OTel field semantics.
 ///
@@ -41,7 +41,11 @@ pub fn diff(source: &str, path: Option<&Path>) -> String {
 }
 
 /// Produces a unified diff with log_schema-aware rewriting.
-pub fn diff_with_log_schema(source: &str, path: Option<&Path>, schema: &MigrateLogSchema) -> String {
+pub fn diff_with_log_schema(
+    source: &str,
+    path: Option<&Path>,
+    schema: &MigrateLogSchema,
+) -> String {
     let output = migrate_with_log_schema(source, schema);
     let label = path.map_or("input.vrl", |p| p.to_str().unwrap_or("input.vrl"));
     unified_diff(source, &output.text, label)
@@ -183,7 +187,10 @@ fn unified_diff(original: &str, modified: &str, label: &str) -> String {
         let mut end_j = j;
 
         while end_i < orig_lines.len() || end_j < mod_lines.len() {
-            if end_i < orig_lines.len() && end_j < mod_lines.len() && orig_lines[end_i] == mod_lines[end_j] {
+            if end_i < orig_lines.len()
+                && end_j < mod_lines.len()
+                && orig_lines[end_i] == mod_lines[end_j]
+            {
                 let lookahead = (1..=3).all(|k| {
                     let oi = end_i + k;
                     let oj = end_j + k;
@@ -193,16 +200,24 @@ fn unified_diff(original: &str, modified: &str, label: &str) -> String {
                     break;
                 }
             }
-            if end_i < orig_lines.len() { end_i += 1; }
-            if end_j < mod_lines.len() { end_j += 1; }
+            if end_i < orig_lines.len() {
+                end_i += 1;
+            }
+            if end_j < mod_lines.len() {
+                end_j += 1;
+            }
         }
 
         let ctx_end_i = (end_i + 3).min(orig_lines.len());
         let ctx_end_j = (end_j + 3).min(mod_lines.len());
 
-        out.push_str(&format!("@@ -{},{} +{},{} @@\n",
-            ctx_start_i + 1, ctx_end_i - ctx_start_i,
-            ctx_start_j + 1, ctx_end_j - ctx_start_j));
+        out.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            ctx_start_i + 1,
+            ctx_end_i - ctx_start_i,
+            ctx_start_j + 1,
+            ctx_end_j - ctx_start_j
+        ));
 
         for k in ctx_start_i..i {
             out.push_str(&format!(" {}\n", orig_lines[k]));

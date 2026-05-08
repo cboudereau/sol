@@ -27,16 +27,16 @@ pub mod metric_to_log;
 pub mod remap;
 #[cfg(feature = "transforms-route")]
 pub mod route;
-#[cfg(feature = "transforms-tag_cardinality_limit")]
-pub mod tag_cardinality_limit;
-#[cfg(feature = "transforms-throttle")]
-pub mod throttle;
 #[cfg(feature = "transforms-servicegraph")]
 pub mod servicegraph;
 #[cfg(feature = "transforms-span_metrics")]
 pub mod span_metrics;
+#[cfg(feature = "transforms-tag_cardinality_limit")]
+pub mod tag_cardinality_limit;
 #[cfg(feature = "transforms-tail_sampling")]
 pub mod tail_sampling;
+#[cfg(feature = "transforms-throttle")]
+pub mod throttle;
 #[cfg(feature = "transforms-trace_to_log")]
 pub mod trace_to_log;
 #[cfg(feature = "transforms-window")]
@@ -51,9 +51,9 @@ pub use sol_lib::transform::{
 mod test {
     use futures::Stream;
     use futures_util::SinkExt;
+    use sol_lib::transform::FunctionTransform;
     use tokio::sync::mpsc;
     use tokio_util::sync::PollSender;
-    use sol_lib::transform::FunctionTransform;
 
     use crate::{
         config::{

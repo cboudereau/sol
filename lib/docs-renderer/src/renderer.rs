@@ -4,11 +4,9 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use snafu::Snafu;
-use tracing::debug;
-use sol_config::schema::parser::query::{
-    QueryError, QueryableSchema, SchemaQuerier, SchemaType,
-};
+use sol_config::schema::parser::query::{QueryError, QueryableSchema, SchemaQuerier, SchemaType};
 use sol_config_common::constants;
+use tracing::debug;
 
 #[derive(Debug, Snafu)]
 pub enum RenderError {

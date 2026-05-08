@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    convert::TryFrom,
-};
+use std::{collections::HashMap, convert::TryFrom};
 
 use futures::{FutureExt, TryFutureExt};
 use sol_lib::{
@@ -475,20 +472,23 @@ impl DataStreamConfig {
         let namespace = self.namespace(&*log);
 
         // Only insert if not already present (matches original or_insert_with semantics)
-        if let Some(dtype) = dtype {
-            if log.get(event_path!("data_stream", "type")).is_none() {
-                log.insert(event_path!("data_stream", "type"), Value::from(dtype));
-            }
+        if let Some(dtype) = dtype
+            && log.get(event_path!("data_stream", "type")).is_none()
+        {
+            log.insert(event_path!("data_stream", "type"), Value::from(dtype));
         }
-        if let Some(dataset) = dataset {
-            if log.get(event_path!("data_stream", "dataset")).is_none() {
-                log.insert(event_path!("data_stream", "dataset"), Value::from(dataset));
-            }
+        if let Some(dataset) = dataset
+            && log.get(event_path!("data_stream", "dataset")).is_none()
+        {
+            log.insert(event_path!("data_stream", "dataset"), Value::from(dataset));
         }
-        if let Some(namespace) = namespace {
-            if log.get(event_path!("data_stream", "namespace")).is_none() {
-                log.insert(event_path!("data_stream", "namespace"), Value::from(namespace));
-            }
+        if let Some(namespace) = namespace
+            && log.get(event_path!("data_stream", "namespace")).is_none()
+        {
+            log.insert(
+                event_path!("data_stream", "namespace"),
+                Value::from(namespace),
+            );
         }
     }
 
@@ -496,13 +496,16 @@ impl DataStreamConfig {
         let (dtype, dataset, namespace) = if !self.auto_routing {
             (self.dtype(log)?, self.dataset(log)?, self.namespace(log)?)
         } else {
-            let dtype = log.get(event_path!("data_stream", "type"))
+            let dtype = log
+                .get(event_path!("data_stream", "type"))
                 .map(|v| v.to_string_lossy().into_owned())
                 .or_else(|| self.dtype(log))?;
-            let dataset = log.get(event_path!("data_stream", "dataset"))
+            let dataset = log
+                .get(event_path!("data_stream", "dataset"))
                 .map(|v| v.to_string_lossy().into_owned())
                 .or_else(|| self.dataset(log))?;
-            let namespace = log.get(event_path!("data_stream", "namespace"))
+            let namespace = log
+                .get(event_path!("data_stream", "namespace"))
                 .map(|v| v.to_string_lossy().into_owned())
                 .or_else(|| self.namespace(log))?;
             (dtype, dataset, namespace)

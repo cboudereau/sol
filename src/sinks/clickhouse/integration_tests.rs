@@ -15,12 +15,12 @@ use http::StatusCode;
 use ordered_float::NotNan;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::time::{Duration, timeout};
 use sol_lib::{
     codecs::encoding::{ArrowStreamSerializerConfig, BatchSerializerConfig},
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event, OtelLog},
     lookup::{PathPrefix, owned_value_path},
 };
+use tokio::time::{Duration, timeout};
 use warp::Filter;
 
 use crate::{
@@ -510,7 +510,7 @@ async fn insert_events_arrow_format() {
     for i in 0..5 {
         let mut event = OtelLog::from(format!("log message {}", i));
         event.insert("host", format!("host{}.example.com", i));
-        event.insert("count", i as i64);
+        event.insert("count", i64::from(i));
         events.push(event.into());
     }
 
@@ -575,9 +575,9 @@ async fn insert_events_arrow_with_schema_fetching() {
     for i in 0..3 {
         let mut event = OtelLog::from(format!("Test message {}", i));
         event.insert("host", format!("host{}.example.com", i));
-        event.insert("id", i as i64);
+        event.insert("id", i64::from(i));
         event.insert("name", format!("user_{}", i));
-        event.insert("score", 95.5 + i as f64);
+        event.insert("score", 95.5 + f64::from(i));
         event.insert("active", i % 2 == 0);
         events.push(event.into());
     }
@@ -718,10 +718,7 @@ async fn test_complex_types() {
 
     // Tuples with complex types
     let mut tuple_with_array = sol_lib::event::ObjectMap::new();
-    tuple_with_array.insert(
-        "f0".into(),
-        sol_lib::event::Value::Bytes("numbers".into()),
-    );
+    tuple_with_array.insert("f0".into(), sol_lib::event::Value::Bytes("numbers".into()));
     tuple_with_array.insert(
         "f1".into(),
         sol_lib::event::Value::Array(vec![
@@ -740,10 +737,7 @@ async fn test_complex_types() {
         sol_lib::event::Value::Float(NotNan::new(22.5).unwrap()),
     );
     let mut tuple_with_map = sol_lib::event::ObjectMap::new();
-    tuple_with_map.insert(
-        "f0".into(),
-        sol_lib::event::Value::Bytes("metrics".into()),
-    );
+    tuple_with_map.insert("f0".into(), sol_lib::event::Value::Bytes("metrics".into()));
     tuple_with_map.insert("f1".into(), sol_lib::event::Value::Object(inner_map));
     event1.insert(
         "tuple_with_map",
@@ -756,10 +750,7 @@ async fn test_complex_types() {
         sol_lib::event::Value::Float(NotNan::new(95.5).unwrap()),
     );
     let mut tuple_complex = sol_lib::event::ObjectMap::new();
-    tuple_complex.insert(
-        "f0".into(),
-        sol_lib::event::Value::Bytes("results".into()),
-    );
+    tuple_complex.insert("f0".into(), sol_lib::event::Value::Bytes("results".into()));
     tuple_complex.insert(
         "f1".into(),
         sol_lib::event::Value::Array(vec![sol_lib::event::Value::Integer(95)]),
@@ -819,10 +810,7 @@ async fn test_complex_types() {
         "f2".into(),
         sol_lib::event::Value::Float(NotNan::new(0.145).unwrap()),
     );
-    event1.insert(
-        "response_metrics",
-        sol_lib::event::Value::Object(metrics),
-    );
+    event1.insert("response_metrics", sol_lib::event::Value::Object(metrics));
 
     event1.insert(
         "tags",
@@ -837,10 +825,7 @@ async fn test_complex_types() {
         "roles".into(),
         sol_lib::event::Value::Array(vec![sol_lib::event::Value::Bytes("admin".into())]),
     );
-    event1.insert(
-        "user_properties",
-        sol_lib::event::Value::Object(user_props),
-    );
+    event1.insert("user_properties", sol_lib::event::Value::Object(user_props));
 
     // Nullable array
     event1.insert(
@@ -883,10 +868,7 @@ async fn test_complex_types() {
     let mut event2 = OtelLog::from("Test empty collections");
     event2.insert("host", "host2.example.com");
     event2.insert("nested_int_array", sol_lib::event::Value::Array(vec![]));
-    event2.insert(
-        "nested_string_array",
-        sol_lib::event::Value::Array(vec![]),
-    );
+    event2.insert("nested_string_array", sol_lib::event::Value::Array(vec![]));
 
     let empty_map = sol_lib::event::ObjectMap::new();
     event2.insert(
@@ -950,10 +932,7 @@ async fn test_complex_types() {
     );
 
     event2.insert("tags", sol_lib::event::Value::Array(vec![]));
-    event2.insert(
-        "user_properties",
-        sol_lib::event::Value::Object(empty_map),
-    );
+    event2.insert("user_properties", sol_lib::event::Value::Object(empty_map));
     event2.insert("array_with_nulls", sol_lib::event::Value::Array(vec![]));
     event2.insert(
         "array_with_named_tuple",
@@ -1010,10 +989,7 @@ async fn test_complex_types() {
     let mut tuple_map3 = sol_lib::event::ObjectMap::new();
     tuple_map3.insert("f0".into(), sol_lib::event::Value::Bytes("test".into()));
     tuple_map3.insert("f1".into(), sol_lib::event::Value::Object(map_inner));
-    event3.insert(
-        "tuple_with_map",
-        sol_lib::event::Value::Object(tuple_map3),
-    );
+    event3.insert("tuple_with_map", sol_lib::event::Value::Object(tuple_map3));
 
     let mut map_inner2 = sol_lib::event::ObjectMap::new();
     map_inner2.insert(
@@ -1066,10 +1042,7 @@ async fn test_complex_types() {
         "content-type".into(),
         sol_lib::event::Value::Bytes("application/json".into()),
     );
-    event3.insert(
-        "request_headers",
-        sol_lib::event::Value::Object(headers3),
-    );
+    event3.insert("request_headers", sol_lib::event::Value::Object(headers3));
 
     let mut metrics3_resp = sol_lib::event::ObjectMap::new();
     metrics3_resp.insert("f0".into(), sol_lib::event::Value::Integer(404));
@@ -1109,10 +1082,7 @@ async fn test_complex_types() {
         "category".into(),
         sol_lib::event::Value::Bytes("status".into()),
     );
-    named_tuple3.insert(
-        "tag".into(),
-        sol_lib::event::Value::Bytes("active".into()),
-    );
+    named_tuple3.insert("tag".into(), sol_lib::event::Value::Bytes("active".into()));
     event3.insert(
         "array_with_named_tuple",
         sol_lib::event::Value::Array(vec![sol_lib::event::Value::Object(named_tuple3)]),

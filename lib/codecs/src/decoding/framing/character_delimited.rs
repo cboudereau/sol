@@ -1,8 +1,8 @@
 use bytes::{Buf, Bytes, BytesMut};
 use memchr::memchr;
+use sol_config::configurable_component;
 use tokio_util::codec::Decoder;
 use tracing::{trace, warn};
-use sol_config::configurable_component;
 
 use super::BoxedFramingError;
 

@@ -2,11 +2,11 @@ use std::borrow::Cow;
 
 use bytes::BytesMut;
 use serde::Serialize;
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, codecs::Transformer, config::telemetry,
     request_metadata::GroupedCountByteSize,
 };
+use tokio_util::codec::Encoder as _;
 
 use super::sink::HecProcessedEvent;
 use crate::{

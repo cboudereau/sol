@@ -54,8 +54,8 @@ pub async fn tap(opts: &super::Opts, mut signal_rx: SignalRx) -> exitcode::ExitC
             biased;
             Ok(SignalTo::Shutdown(_) | SignalTo::Quit) = signal_rx.recv() => break,
             exec_result = tap_runner.run_tap(
-                opts.interval as i64,
-                opts.limit as i64,
+                i64::from(opts.interval),
+                i64::from(opts.limit),
                 opts.duration_ms,
                 opts.quiet,
             ) => {

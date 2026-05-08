@@ -15,9 +15,9 @@ use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use snafu::Snafu;
-use std::sync::Arc;
 use sol_config::configurable_component;
 use sol_core::event::{Event, OtelLog, Value};
+use std::sync::Arc;
 
 /// Provides Arrow schema for encoding.
 ///
@@ -316,7 +316,7 @@ fn build_record_batch(
         // https://docs.rs/serde_arrow/latest/serde_arrow/enum.Error.html), so we string-match on
         // the message to detect null constraint violations, then find the actual field ourselves.
         if source.message().contains("non-nullable")
-            && let Some(field_name) = find_null_field(&log_events, &schema)
+            && let Some(field_name) = find_null_field(log_events, &schema)
         {
             return ArrowEncodingError::NullConstraint { field_name };
         }
@@ -372,16 +372,16 @@ fn convert_timestamps_otel(
         if let DataType::Timestamp(unit, _) = field.data_type() {
             let field_name = field.name().as_str();
             // Find matching field in the flattened fields
-            if let Some((_, value)) = fields.iter().find(|(k, _)| k.as_ref() == field_name) {
-                if let Value::Timestamp(ts) = value {
-                    let val = timestamp_to_unit(ts, unit).ok_or_else(|| {
-                        ArrowEncodingError::TimestampOverflow {
-                            field_name: field_name.to_string(),
-                            timestamp: ts.to_rfc3339(),
-                        }
-                    })?;
-                    replacements.push((field_name.to_string(), Value::Integer(val)));
-                }
+            if let Some((_, value)) = fields.iter().find(|(k, _)| k.as_ref() == field_name)
+                && let Value::Timestamp(ts) = value
+            {
+                let val = timestamp_to_unit(ts, unit).ok_or_else(|| {
+                    ArrowEncodingError::TimestampOverflow {
+                        field_name: field_name.to_string(),
+                        timestamp: ts.to_rfc3339(),
+                    }
+                })?;
+                replacements.push((field_name.to_string(), Value::Integer(val)));
             }
         }
     }
@@ -392,7 +392,6 @@ fn convert_timestamps_otel(
     }
     Ok(())
 }
-
 
 /// Convert a DateTime<Utc> to i64 in the specified Arrow TimeUnit.
 /// Returns None if the value would overflow (only possible for nanoseconds).

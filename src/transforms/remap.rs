@@ -8,13 +8,8 @@ use std::{
 
 use snafu::{ResultExt, Snafu};
 use sol_lib::{
-    TimeZone,
-    codecs::MetricTagValues,
-    compile_vrl,
-    configurable::configurable_component,
-    enrichment::TableRegistry,
-    lookup::owned_value_path,
-    schema::Definition,
+    TimeZone, codecs::MetricTagValues, compile_vrl, configurable::configurable_component,
+    enrichment::TableRegistry, lookup::owned_value_path, schema::Definition,
 };
 use sol_vrl_functions::set_semantic_meaning::MeaningList;
 use sol_vrl_metrics::MetricsStorage;
@@ -31,8 +26,7 @@ use vrl::{
 use crate::{
     Result,
     config::{
-        ComponentKey, DataType, Input, OutputId, TransformConfig, TransformContext,
-        TransformOutput,
+        ComponentKey, DataType, Input, OutputId, TransformConfig, TransformContext, TransformOutput,
     },
     event::{Event, TargetEvents, VrlTarget},
     format_vrl_diagnostics,
@@ -336,28 +330,15 @@ impl TransformConfig for RemapConfig {
 
             // When a message is dropped and re-routed, we keep the original event, but also annotate
             // it with additional metadata.
-            let dropped_definition = Definition::new_with_default_metadata(Kind::never())
-                .merge(
-                    input_definition
-                        .clone()
-                        .with_metadata_field(&owned_value_path!("reason"), Kind::bytes(), None)
-                        .with_metadata_field(&owned_value_path!("body"), Kind::bytes(), None)
-                        .with_metadata_field(
-                            &owned_value_path!("component_id"),
-                            Kind::bytes(),
-                            None,
-                        )
-                        .with_metadata_field(
-                            &owned_value_path!("component_type"),
-                            Kind::bytes(),
-                            None,
-                        )
-                        .with_metadata_field(
-                            &owned_value_path!("component_kind"),
-                            Kind::bytes(),
-                            None,
-                        ),
-                );
+            let dropped_definition = Definition::new_with_default_metadata(Kind::never()).merge(
+                input_definition
+                    .clone()
+                    .with_metadata_field(&owned_value_path!("reason"), Kind::bytes(), None)
+                    .with_metadata_field(&owned_value_path!("body"), Kind::bytes(), None)
+                    .with_metadata_field(&owned_value_path!("component_id"), Kind::bytes(), None)
+                    .with_metadata_field(&owned_value_path!("component_type"), Kind::bytes(), None)
+                    .with_metadata_field(&owned_value_path!("component_kind"), Kind::bytes(), None),
+            );
 
             default_definitions.insert(
                 output_id.clone(),
@@ -522,20 +503,14 @@ where
                 if let Some(obj) = dropped.as_object() {
                     for (k, v) in obj {
                         if let Some(s) = v.as_str() {
-                            metric.replace_tag(
-                                format!("metadata.dropped.{k}"),
-                                s.to_string(),
-                            );
+                            metric.replace_tag(format!("metadata.dropped.{k}"), s.to_string());
                         }
                     }
                 }
             }
             Event::Trace(span) => {
                 let dropped = self.dropped_data(reason, error);
-                span.insert(
-                    "metadata",
-                    serde_json::json!({ "dropped": dropped }),
-                );
+                span.insert("metadata", serde_json::json!({ "dropped": dropped }));
             }
         }
     }
@@ -655,18 +630,15 @@ mod tests {
     };
 
     use indoc::{formatdoc, indoc};
+    use sol_lib::{config::GlobalOptions, event::EventMetadata, otel_tags};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::{config::{GlobalOptions}, event::EventMetadata, otel_tags};
     use vrl::{btreemap, event_path, value::kind::Collection};
 
     use super::*;
     use crate::{
         config::{ConfigBuilder, build_unit_tests},
-        event::{
-            OtelLog, OtelMetric, Value,
-            metric::MetricKind,
-        },
+        event::{OtelLog, OtelMetric, Value, metric::MetricKind},
         metrics::Controller,
         schema,
         test_util::components::{
@@ -820,8 +792,7 @@ mod tests {
         let output = outputs.pop().unwrap();
         assert_eq!(output.port, None);
         let actual_schema_def = output.schema_definitions(true)[&OutputId::dummy()].clone();
-        let expected_schema =
-            Definition::new(Kind::bytes(), Kind::any_object());
+        let expected_schema = Definition::new(Kind::bytes(), Kind::any_object());
         assert_eq!(actual_schema_def, expected_schema);
     }
 
@@ -1023,7 +994,11 @@ mod tests {
 
     #[test]
     fn check_remap_metric() {
-        let metric = Event::Metric(OtelMetric::new_counter("counter", MetricKind::Absolute, 1.0));
+        let metric = Event::Metric(OtelMetric::new_counter(
+            "counter",
+            MetricKind::Absolute,
+            1.0,
+        ));
         let metadata = metric.metadata().clone();
 
         let conf = RemapConfig {
@@ -1058,9 +1033,8 @@ mod tests {
 
     #[test]
     fn remap_timezone_fallback() {
-        let error =
-            Event::from_json_value(serde_json::json!({"timestamp": "2022-12-27 00:00:00"}))
-                .unwrap();
+        let error = Event::from_json_value(serde_json::json!({"timestamp": "2022-12-27 00:00:00"}))
+            .unwrap();
         let conf = RemapConfig {
             source: Some(formatdoc! {r#"
                 .timestamp = parse_timestamp!(.timestamp, format: "%Y-%m-%d %H:%M:%S")
@@ -1090,9 +1064,8 @@ mod tests {
 
     #[test]
     fn remap_timezone_override() {
-        let error =
-            Event::from_json_value(serde_json::json!({"timestamp": "2022-12-27 00:00:00"}))
-                .unwrap();
+        let error = Event::from_json_value(serde_json::json!({"timestamp": "2022-12-27 00:00:00"}))
+            .unwrap();
         let conf = RemapConfig {
             source: Some(formatdoc! {r#"
                 .timestamp = parse_timestamp!(.timestamp, format: "%Y-%m-%d %H:%M:%S")
@@ -1124,8 +1097,7 @@ mod tests {
     #[test]
     fn check_remap_branching() {
         let happy = Event::from_json_value(serde_json::json!({"hello": "world"})).unwrap();
-        let abort =
-            Event::from_json_value(serde_json::json!({"hello": "goodbye"})).unwrap();
+        let abort = Event::from_json_value(serde_json::json!({"hello": "goodbye"})).unwrap();
         let error = Event::from_json_value(serde_json::json!({"hello": 42})).unwrap();
 
         let happy_metric = {
@@ -1181,7 +1153,7 @@ mod tests {
             key: Some(ComponentKey::from("remapper")),
             schema_definitions,
             merged_schema_definition: schema::Definition::new_with_default_metadata(
-                Kind::any_object()
+                Kind::any_object(),
             )
             .with_event_field(&owned_value_path!("hello"), Kind::bytes(), None),
             ..Default::default()
@@ -1390,8 +1362,7 @@ mod tests {
     #[test]
     fn check_remap_branching_disabled() {
         let happy = Event::from_json_value(serde_json::json!({"hello": "world"})).unwrap();
-        let abort =
-            Event::from_json_value(serde_json::json!({"hello": "goodbye"})).unwrap();
+        let abort = Event::from_json_value(serde_json::json!({"hello": "goodbye"})).unwrap();
         let error = Event::from_json_value(serde_json::json!({"hello": 42})).unwrap();
 
         let conf = RemapConfig {
@@ -1416,20 +1387,16 @@ mod tests {
             ..Default::default()
         };
 
-        let schema_definition = schema::Definition::new_with_default_metadata(
-            Kind::any_object()
-        )
-        .with_event_field(&owned_value_path!("foo"), Kind::any(), None)
-        .with_event_field(&owned_value_path!("attributes"), Kind::any(), None);
+        let schema_definition = schema::Definition::new_with_default_metadata(Kind::any_object())
+            .with_event_field(&owned_value_path!("foo"), Kind::any(), None)
+            .with_event_field(&owned_value_path!("attributes"), Kind::any(), None);
 
         assert_eq!(
             conf.outputs(
                 &Default::default(),
                 &[(
                     "test".into(),
-                    schema::Definition::new_with_default_metadata(
-                        Kind::any_object()
-                    )
+                    schema::Definition::new_with_default_metadata(Kind::any_object())
                 )],
             ),
             vec![TransformOutput::new(
@@ -1658,9 +1625,7 @@ mod tests {
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
@@ -1669,10 +1634,7 @@ mod tests {
                 DataType::all_bits(),
                 [(
                     "in".into(),
-                    Definition::new_with_default_metadata(
-                        Kind::any_object()
-                    )
-                    .with_event_field(
+                    Definition::new_with_default_metadata(Kind::any_object()).with_event_field(
                         &owned_value_path!("thing"),
                         Kind::object(Collection::from(BTreeMap::from([
                             ("cabbage".into(), Kind::integer().or_undefined(),),
@@ -1733,9 +1695,7 @@ mod tests {
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
@@ -1744,9 +1704,7 @@ mod tests {
                 DataType::all_bits(),
                 [(
                     "in".into(),
-                    Definition::new_with_default_metadata(
-                        Kind::any_object()
-                    ),
+                    Definition::new_with_default_metadata(Kind::any_object()),
                 )]
                 .into(),
             )],
@@ -1771,9 +1729,7 @@ mod tests {
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
@@ -1798,16 +1754,16 @@ mod tests {
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
         let defs = outputs1[0].schema_definitions(true);
         let def = defs.get(&OutputId::from("in")).unwrap();
-        assert!(def.event_kind().contains_bytes(),
-            "VRL `. = \"fish\"` should produce bytes kind in the output schema");
+        assert!(
+            def.event_kind().contains_bytes(),
+            "VRL `. = \"fish\"` should produce bytes kind in the output schema"
+        );
     }
 
     #[test]
@@ -1831,18 +1787,20 @@ mod tests {
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
         let defs = outputs1[0].schema_definitions(true);
         let def = defs.get(&OutputId::from("in")).unwrap();
-        assert!(def.event_kind().contains_bytes(),
-            "Branch `. = \"fish\"` should produce bytes kind");
-        assert!(def.event_kind().contains_object(),
-            "Branch `unnest(.thing)` should produce object kind");
+        assert!(
+            def.event_kind().contains_bytes(),
+            "Branch `. = \"fish\"` should produce bytes kind"
+        );
+        assert!(
+            def.event_kind().contains_object(),
+            "Branch `unnest(.thing)` should produce object kind"
+        );
     }
 
     #[test]
@@ -1872,23 +1830,17 @@ mod tests {
         let result = transform_one(&mut tform, event).unwrap();
 
         // OtelLog stores non-Object root assignments in the body
-        assert_eq!(
-            result.as_log().get("body"),
-            Some(Value::Null)
-        );
+        assert_eq!(result.as_log().get("body"), Some(Value::Null));
 
         let outputs1 = conf.outputs(
             &Default::default(),
             &[(
                 "in".into(),
-                schema::Definition::new_with_default_metadata(
-                    Kind::any_object()
-                ),
+                schema::Definition::new_with_default_metadata(Kind::any_object()),
             )],
         );
 
-        let wanted =
-            schema::Definition::new_with_default_metadata(Kind::null());
+        let wanted = schema::Definition::new_with_default_metadata(Kind::null());
 
         assert_eq!(
             HashMap::from([(OutputId::from("in"), wanted)]),

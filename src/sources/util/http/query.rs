@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 use sol_lib::event::Event;
 
-use crate::{
-    event::string_value,
-    sources::http_server::HttpConfigParamKind,
-};
+use crate::{event::string_value, sources::http_server::HttpConfigParamKind};
 
 pub fn add_query_parameters(
     events: &mut [Event],
@@ -49,16 +46,13 @@ pub fn add_query_parameters(
                         let value = query_parameters.get(query_parameter_name);
 
                         for event in events.iter_mut() {
-                            match event {
-                                Event::Log(otel_log) => {
-                                    if let Some(v) = value {
-                                        otel_log.set_attribute(
-                                            query_parameter_name.to_string(),
-                                            string_value(v),
-                                        );
-                                    }
-                                }
-                                _ => {}
+                            if let Event::Log(otel_log) = event
+                                && let Some(v) = value
+                            {
+                                otel_log.set_attribute(
+                                    query_parameter_name.to_string(),
+                                    string_value(v),
+                                );
                             }
                         }
                     }
@@ -91,12 +85,7 @@ mod tests {
         .into();
 
         let mut events = [OtelLog::from(value!({})).into()];
-        add_query_parameters(
-            &mut events,
-            &query_params_names,
-            &query_params,
-            "test",
-        );
+        add_query_parameters(&mut events, &query_params_names, &query_params, "test");
 
         let log = events[0].as_log();
         assert_eq!(log.get("param1").unwrap(), "value1".into());
@@ -115,12 +104,7 @@ mod tests {
         .into();
 
         let mut events = [OtelLog::from(value!({})).into()];
-        add_query_parameters(
-            &mut events,
-            &query_params_names,
-            &query_params,
-            "test",
-        );
+        add_query_parameters(&mut events, &query_params_names, &query_params, "test");
 
         let log = events[0].as_log();
         assert_eq!(

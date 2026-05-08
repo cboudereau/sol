@@ -3,13 +3,13 @@ use std::fmt;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use futures::{StreamExt, future, stream::BoxStream};
-use tower::Service;
 use sol_lib::{
     partition::Partitioner,
     request_metadata::{MetaDescriptive, RequestMetadata},
     sink::StreamSink,
     stream::{BatcherSettings, DriverResponse},
 };
+use tower::Service;
 
 use crate::{
     event::{Event, EventFinalizers, Finalizable},

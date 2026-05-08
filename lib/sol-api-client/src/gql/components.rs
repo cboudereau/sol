@@ -66,6 +66,10 @@ impl ComponentsSubscriptionExt for crate::SubscriptionClient {
 }
 
 impl components_query::ComponentsQueryComponentsEdgesNodeOn {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64"
+    )]
     pub fn received_bytes_total(&self) -> i64 {
         // This is network bytes received, and only sources can receive events.
         match self {
@@ -80,6 +84,10 @@ impl components_query::ComponentsQueryComponentsEdgesNodeOn {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64"
+    )]
     pub fn received_events_total(&self) -> i64 {
         match self {
             components_query::ComponentsQueryComponentsEdgesNodeOn::Source(s) => s
@@ -103,6 +111,10 @@ impl components_query::ComponentsQueryComponentsEdgesNodeOn {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64"
+    )]
     pub fn sent_bytes_total(&self) -> i64 {
         // This is network bytes sent, and only sinks can send out events.
         match self {
@@ -117,6 +129,10 @@ impl components_query::ComponentsQueryComponentsEdgesNodeOn {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64"
+    )]
     pub fn sent_events_total(&self) -> i64 {
         match self {
             components_query::ComponentsQueryComponentsEdgesNodeOn::Source(s) => s
@@ -140,6 +156,10 @@ impl components_query::ComponentsQueryComponentsEdgesNodeOn {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GraphQL metric counters are f64 but represent whole-number totals that fit in i64"
+    )]
     pub fn outputs(&self) -> Vec<(String, i64)> {
         match self {
             components_query::ComponentsQueryComponentsEdgesNodeOn::Source(s) => s

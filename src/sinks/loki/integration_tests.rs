@@ -115,15 +115,14 @@ fn namespaced_timestamp_generator(
         // We need vector metadata for it to pick up that it is in the Vector namespace.
         insert_standard_vector_source_metadata(&mut log, "loki", Utc::now());
 
-        let schema = schema::Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        // Add a field that means the timestamp.
-        .with_event_field(
-            &owned_value_path!(&timestamp_field),
-            Kind::timestamp(),
-            Some("timestamp"),
-        );
+        let schema =
+            schema::Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                // Add a field that means the timestamp.
+                .with_event_field(
+                    &owned_value_path!(&timestamp_field),
+                    Kind::timestamp(),
+                    Some("timestamp"),
+                );
 
         let mut event = Event::from(log);
         event
@@ -485,9 +484,11 @@ async fn out_of_order_drop() {
     let base = Utc::now() - Duration::seconds(20);
     for (i, event) in events.iter_mut().enumerate() {
         let log = event.as_mut_log();
+        #[expect(clippy::cast_possible_wrap, reason = "test index fits in i64")]
+        let offset = i as i64;
         log.insert(
             (PathPrefix::Event, &owned_value_path!("time_unix_nano")),
-            base + Duration::seconds(i as i64),
+            base + Duration::seconds(offset),
         );
     }
     // first event of the second batch is out-of-order.
@@ -515,9 +516,11 @@ async fn out_of_order_accept() {
     let base = Utc::now() - Duration::seconds(20);
     for (i, event) in events.iter_mut().enumerate() {
         let log = event.as_mut_log();
+        #[expect(clippy::cast_possible_wrap, reason = "test index fits in i64")]
+        let offset = i as i64;
         log.insert(
             (PathPrefix::Event, &owned_value_path!("time_unix_nano")),
-            base + Duration::seconds(i as i64),
+            base + Duration::seconds(offset),
         );
     }
     // first event of the second batch is out-of-order.
@@ -547,9 +550,11 @@ async fn out_of_order_rewrite() {
     let base = Utc::now() - Duration::seconds(20);
     for (i, event) in events.iter_mut().enumerate() {
         let log = event.as_mut_log();
+        #[expect(clippy::cast_possible_wrap, reason = "test index fits in i64")]
+        let offset = i as i64;
         log.insert(
             (PathPrefix::Event, &owned_value_path!("time_unix_nano")),
-            base + Duration::seconds(i as i64),
+            base + Duration::seconds(offset),
         );
     }
     // first event of the second batch is out-of-order.
@@ -589,9 +594,11 @@ async fn out_of_order_per_partition() {
     let base = Utc::now() - Duration::seconds(30);
     for (i, event) in events.iter_mut().enumerate() {
         let log = event.as_mut_log();
+        #[expect(clippy::cast_possible_wrap, reason = "test index fits in i64")]
+        let offset = i as i64;
         log.insert(
             (PathPrefix::Event, &owned_value_path!("time_unix_nano")),
-            base + Duration::seconds(i as i64),
+            base + Duration::seconds(offset),
         );
     }
 

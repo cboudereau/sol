@@ -6,7 +6,11 @@ use aws_sdk_kms::Client as KMSClient;
 use chrono::Duration;
 use futures::{StreamExt, stream};
 use similar_asserts::assert_eq;
-use sol_lib::{codecs::TextSerializerConfig, lookup, lookup::{OwnedTargetPath, owned_value_path}};
+use sol_lib::{
+    codecs::TextSerializerConfig,
+    lookup,
+    lookup::{OwnedTargetPath, owned_value_path},
+};
 
 use super::*;
 use crate::{

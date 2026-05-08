@@ -1,5 +1,5 @@
-use std::{collections::BTreeMap, sync::LazyLock};
 use sol_vrl_category::Category;
+use std::{collections::BTreeMap, sync::LazyLock};
 use vrl::prelude::expression::Expr;
 
 use vrl::prelude::*;

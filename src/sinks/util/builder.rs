@@ -12,8 +12,6 @@ use std::{
 
 use futures_util::{Stream, StreamExt, stream::Map};
 use pin_project::pin_project;
-use tower::Service;
-use tracing::Span;
 use sol_lib::{
     ByteSizeOf,
     event::{Finalizable, OtelMetric},
@@ -23,6 +21,8 @@ use sol_lib::{
         batcher::{Batcher, config::BatchConfig},
     },
 };
+use tower::Service;
+use tracing::Span;
 
 use super::{
     IncrementalRequestBuilder, Normalizer, RequestBuilder, buffer::metrics::MetricNormalize,
@@ -230,7 +230,13 @@ pub trait SinkBuilderExt: Stream {
         match maybe_ttl_secs {
             None => Normalizer::new(self, N::default()),
             Some(ttl) => {
-                Normalizer::new_with_ttl(self, N::default(), Duration::from_secs(ttl as u64))
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "TTL seconds f64 to u64; reasonable config values"
+                )]
+                #[expect(clippy::cast_sign_loss, reason = "TTL is a non-negative duration")]
+                let ttl_secs = ttl as u64;
+                Normalizer::new_with_ttl(self, N::default(), Duration::from_secs(ttl_secs))
             }
         }
     }

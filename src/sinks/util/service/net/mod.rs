@@ -12,6 +12,10 @@ use std::{
 
 use futures_util::{FutureExt, future::BoxFuture};
 use snafu::{ResultExt, Snafu};
+use sol_lib::{
+    configurable::configurable_component,
+    tls::{MaybeTlsStream, TlsError},
+};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpStream, UdpSocket},
@@ -19,10 +23,6 @@ use tokio::{
     time::sleep,
 };
 use tower::Service;
-use sol_lib::{
-    configurable::configurable_component,
-    tls::{MaybeTlsStream, TlsError},
-};
 #[cfg(unix)]
 use {crate::sinks::util::unix::UnixEither, std::path::PathBuf};
 

@@ -216,13 +216,13 @@ mod test {
     use futures::stream::StreamExt;
     use futures_util::stream;
     use serde_json::Value;
+    use sol_lib::codecs::JsonSerializerConfig;
     use tokio::{
         net::TcpListener,
         time::{Duration, sleep, timeout},
     };
     use tokio_stream::wrappers::TcpListenerStream;
     use tokio_util::codec::{FramedRead, LinesCodec};
-    use sol_lib::codecs::JsonSerializerConfig;
 
     use super::*;
     cfg_if! { if #[cfg(unix)] {

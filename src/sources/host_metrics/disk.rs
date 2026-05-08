@@ -17,6 +17,10 @@ pub struct DiskConfig {
 }
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn disk_metrics(&self, output: &mut super::MetricsBuffer) {
         match heim::disk::io_counters().await {
             Ok(counters) => {

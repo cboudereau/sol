@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::event::OtelMetric;
 use crate::event::OtelAttributes;
+use crate::event::OtelMetric;
 use crate::event::metric::MetricKind;
 
 #[derive(Deserialize)]
@@ -259,12 +259,17 @@ fn cpu_metrics(
     let mut metrics = Vec::with_capacity(size);
 
     if let Some(online_cpus) = cpu.online_cpus {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "online CPU count; precise for |v| <= 2^53"
+        )]
+        let value = online_cpus as f64;
         metrics.push(gauge(
             usage,
             "online_cpus",
             namespace.clone(),
             timestamp,
-            online_cpus as f64,
+            value,
             tags.clone(),
         ));
     }
@@ -689,16 +694,13 @@ mod test {
         assert_event_data_eq!(
             parse(json.as_bytes(), Some(namespace())).unwrap(),
             vec![
-                OtelMetric::new_gauge(
-                    "cpu_online_cpus",
-                    2.0,
-                )
-                .with_namespace(Some(namespace()))
-                .with_tags(Some(otel_tags!(
-                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                    "container_name" => "vector2"
-                )))
-                .with_timestamp(Some(ts())),
+                OtelMetric::new_gauge("cpu_online_cpus", 2.0,)
+                    .with_namespace(Some(namespace()))
+                    .with_tags(Some(otel_tags!(
+                        "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                        "container_name" => "vector2"
+                    )))
+                    .with_timestamp(Some(ts())),
                 OtelMetric::new_counter(
                     "cpu_usage_system_jiffies_total",
                     MetricKind::Absolute,
@@ -743,28 +745,20 @@ mod test {
                     "container_name" => "vector2",
                 )))
                 .with_timestamp(Some(ts())),
-                OtelMetric::new_counter(
-                    "cpu_throttling_periods_total",
-                    MetricKind::Absolute,
-                    0.0,
-                )
-                .with_namespace(Some(namespace()))
-                .with_tags(Some(otel_tags!(
-                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                    "container_name" => "vector2",
-                )))
-                .with_timestamp(Some(ts())),
-                OtelMetric::new_counter(
-                    "cpu_throttled_periods_total",
-                    MetricKind::Absolute,
-                    0.0,
-                )
-                .with_namespace(Some(namespace()))
-                .with_tags(Some(otel_tags!(
-                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                    "container_name" => "vector2",
-                )))
-                .with_timestamp(Some(ts())),
+                OtelMetric::new_counter("cpu_throttling_periods_total", MetricKind::Absolute, 0.0,)
+                    .with_namespace(Some(namespace()))
+                    .with_tags(Some(otel_tags!(
+                        "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                        "container_name" => "vector2",
+                    )))
+                    .with_timestamp(Some(ts())),
+                OtelMetric::new_counter("cpu_throttled_periods_total", MetricKind::Absolute, 0.0,)
+                    .with_namespace(Some(namespace()))
+                    .with_tags(Some(otel_tags!(
+                        "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                        "container_name" => "vector2",
+                    )))
+                    .with_timestamp(Some(ts())),
                 OtelMetric::new_counter(
                     "cpu_throttled_time_seconds_total",
                     MetricKind::Absolute,
@@ -838,16 +832,13 @@ mod test {
         assert_event_data_eq!(
             parse(json.as_bytes(), Some(namespace())).unwrap(),
             vec![
-                OtelMetric::new_gauge(
-                    "precpu_online_cpus",
-                    2.0,
-                )
-                .with_namespace(Some(namespace()))
-                .with_tags(Some(otel_tags!(
-                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                    "container_name" => "vector2"
-                )))
-                .with_timestamp(Some(ts())),
+                OtelMetric::new_gauge("precpu_online_cpus", 2.0,)
+                    .with_namespace(Some(namespace()))
+                    .with_tags(Some(otel_tags!(
+                        "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                        "container_name" => "vector2"
+                    )))
+                    .with_timestamp(Some(ts())),
                 OtelMetric::new_counter(
                     "precpu_usage_system_jiffies_total",
                     MetricKind::Absolute,
@@ -1010,16 +1001,13 @@ mod test {
                 .iter()
                 .find(|m| m.name() == "memory_used_bytes")
                 .unwrap(),
-            &OtelMetric::new_gauge(
-                "memory_used_bytes",
-                40120320.0,
-            )
-            .with_namespace(Some(namespace()))
-            .with_tags(Some(otel_tags!(
-                "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                "container_name" => "vector2",
-            )))
-            .with_timestamp(Some(ts())),
+            &OtelMetric::new_gauge("memory_used_bytes", 40120320.0,)
+                .with_namespace(Some(namespace()))
+                .with_tags(Some(otel_tags!(
+                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                    "container_name" => "vector2",
+                )))
+                .with_timestamp(Some(ts())),
         );
 
         assert_event_data_eq!(
@@ -1027,16 +1015,13 @@ mod test {
                 .iter()
                 .find(|m| m.name() == "memory_max_used_bytes")
                 .unwrap(),
-            &OtelMetric::new_gauge(
-                "memory_max_used_bytes",
-                47177728.0,
-            )
-            .with_namespace(Some(namespace()))
-            .with_tags(Some(otel_tags!(
-                "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                "container_name" => "vector2",
-            )))
-            .with_timestamp(Some(ts())),
+            &OtelMetric::new_gauge("memory_max_used_bytes", 47177728.0,)
+                .with_namespace(Some(namespace()))
+                .with_tags(Some(otel_tags!(
+                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                    "container_name" => "vector2",
+                )))
+                .with_timestamp(Some(ts())),
         );
 
         assert_event_data_eq!(
@@ -1044,16 +1029,13 @@ mod test {
                 .iter()
                 .find(|m| m.name() == "memory_active_anonymous_bytes")
                 .unwrap(),
-            &OtelMetric::new_gauge(
-                "memory_active_anonymous_bytes",
-                34885632.0,
-            )
-            .with_namespace(Some(namespace()))
-            .with_tags(Some(otel_tags!(
-                "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
-                "container_name" => "vector2",
-            )))
-            .with_timestamp(Some(ts())),
+            &OtelMetric::new_gauge("memory_active_anonymous_bytes", 34885632.0,)
+                .with_namespace(Some(namespace()))
+                .with_tags(Some(otel_tags!(
+                    "container_id" => "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-4057181352",
+                    "container_name" => "vector2",
+                )))
+                .with_timestamp(Some(ts())),
         );
 
         assert_event_data_eq!(

@@ -7,12 +7,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use tonic::{
-    body::BoxBody,
-    server::NamedService,
-    service::Routes,
-    transport::server::Server,
-};
+use tonic::{body::BoxBody, server::NamedService, service::Routes, transport::server::Server};
 use tower::{Layer, Service};
 use tracing::Span;
 
@@ -89,7 +84,7 @@ struct GrpcTraceLayer {
 }
 
 impl GrpcTraceLayer {
-    fn new(span: Span) -> Self {
+    const fn new(span: Span) -> Self {
         Self { span }
     }
 }
@@ -149,10 +144,7 @@ where
             let result = fut.await;
             let latency = start.elapsed();
             if let Ok(ref response) = result {
-                emit!(GrpcServerResponseSent {
-                    response,
-                    latency
-                });
+                emit!(GrpcServerResponseSent { response, latency });
             }
             result
         };

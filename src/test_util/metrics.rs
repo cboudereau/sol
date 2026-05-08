@@ -115,14 +115,25 @@ pub fn read_gauge_value(metrics: &SplitMetrics, series: MetricSeries) -> Option<
     })
 }
 
-pub fn read_histogram_samples(
-    metrics: &SplitMetrics,
-    series: MetricSeries,
-) -> Option<Vec<Sample>> {
+pub fn read_histogram_samples(metrics: &SplitMetrics, series: MetricSeries) -> Option<Vec<Sample>> {
     metrics.get(&series).and_then(|otel| match otel.view() {
-        MetricView::Histogram { bounds, counts, .. } => {
-            Some(bounds.iter().zip(counts.iter()).map(|(&value, &rate)| Sample { value, rate: rate as u32 }).collect())
-        }
+        MetricView::Histogram { bounds, counts, .. } => Some(
+            bounds
+                .iter()
+                .zip(counts.iter())
+                .map(|(&value, &rate)| Sample {
+                    value,
+                    rate: {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "test histogram rate fits in u32"
+                        )]
+                        let r = rate as u32;
+                        r
+                    },
+                })
+                .collect(),
+        ),
         _ => None,
     })
 }
@@ -190,7 +201,7 @@ pub fn assert_distribution(
     let mut actual_count = 0;
     let mut actual_bounds = vec![0u32; expected_bounds.len()];
     for sample in &samples {
-        actual_sum += sample.rate as f64 * sample.value;
+        actual_sum += f64::from(sample.rate) * sample.value;
         actual_count += sample.rate;
 
         for (i, (bound, _)) in expected_bounds.iter().enumerate() {

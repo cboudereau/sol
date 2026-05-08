@@ -6,13 +6,13 @@ use std::{
 use async_trait::async_trait;
 use futures::{FutureExt, StreamExt, stream::BoxStream};
 use snafu::{ResultExt, Snafu};
-use tokio::{net::UdpSocket, time::sleep};
-use tokio_util::codec::Encoder;
 use sol_lib::{
     codecs::encoding::Chunker,
     configurable::configurable_component,
     internal_event::{BytesSent, Protocol, Registered},
 };
+use tokio::{net::UdpSocket, time::sleep};
+use tokio_util::codec::Encoder;
 
 use super::{
     SinkBuildError,

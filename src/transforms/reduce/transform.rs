@@ -127,10 +127,7 @@ impl ReduceState {
     }
 
     fn flush(mut self) -> OtelLog {
-        let mut event = OtelLog::from_value_map(
-            Value::Object(Default::default()),
-            self.metadata,
-        );
+        let mut event = OtelLog::from_value_map(Value::Object(Default::default()), self.metadata);
         for (path, v) in self.fields.drain() {
             if let Err(error) = v.insert_into(&path, &mut event) {
                 warn!(message = "Failed to merge values for field.", %error);
@@ -282,10 +279,10 @@ impl Reduce {
         if let Some(max_events) = self.max_events {
             if max_events == 1 {
                 ends_here = true;
-            } else if let Some(entry) = self.reduce_merge_states.get(&discriminant) {
-                if entry.events + 1 == max_events {
-                    ends_here = true;
-                }
+            } else if let Some(entry) = self.reduce_merge_states.get(&discriminant)
+                && entry.events + 1 == max_events
+            {
+                ends_here = true;
             }
         }
 
@@ -360,9 +357,9 @@ mod test {
 
     use indoc::indoc;
     use serde_json::json;
+    use sol_lib::{enrichment::TableRegistry, lookup::owned_value_path};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::{enrichment::TableRegistry, lookup::owned_value_path};
     use vrl::value::Kind;
 
     use super::*;
@@ -536,7 +533,10 @@ merge_strategies.baz = "max"
 
             let output_1 = out.recv().await.unwrap().into_log();
             assert_eq!(output_1.get("body").unwrap(), Value::from("test message 1"));
-            assert_eq!(output_1.get("foo").unwrap(), Value::from("first foo second foo"));
+            assert_eq!(
+                output_1.get("foo").unwrap(),
+                Value::from("first foo second foo")
+            );
             assert_eq!(
                 output_1.get("bar").unwrap(),
                 Value::Array(vec!["first bar".into(), 2.into(), "third bar".into()]),
@@ -677,12 +677,21 @@ max_events = 1
             }
 
             let output_1 = out.recv().await.unwrap().into_log();
-            assert_eq!(output_1.get("body").unwrap(), Value::from(vec![Value::from("test 1")]));
+            assert_eq!(
+                output_1.get("body").unwrap(),
+                Value::from(vec![Value::from("test 1")])
+            );
             let output_2 = out.recv().await.unwrap().into_log();
-            assert_eq!(output_2.get("body").unwrap(), Value::from(vec![Value::from("test 2")]));
+            assert_eq!(
+                output_2.get("body").unwrap(),
+                Value::from(vec![Value::from("test 2")])
+            );
 
             let output_3 = out.recv().await.unwrap().into_log();
-            assert_eq!(output_3.get("body").unwrap(), Value::from(vec![Value::from("test 3")]));
+            assert_eq!(
+                output_3.get("body").unwrap(),
+                Value::from(vec![Value::from("test 3")])
+            );
 
             drop(tx);
             topology.stop().await;
@@ -739,13 +748,21 @@ max_events = 3
             let output_1 = out.recv().await.unwrap().into_log();
             assert_eq!(
                 output_1.get("body").unwrap(),
-                Value::from(vec![Value::from("test 1"), Value::from("test 2"), Value::from("test 3")])
+                Value::from(vec![
+                    Value::from("test 1"),
+                    Value::from("test 2"),
+                    Value::from("test 3")
+                ])
             );
 
             let output_2 = out.recv().await.unwrap().into_log();
             assert_eq!(
                 output_2.get("body").unwrap(),
-                Value::from(vec![Value::from("test 4"), Value::from("test 5"), Value::from("test 6")])
+                Value::from(vec![
+                    Value::from("test 4"),
+                    Value::from("test 5"),
+                    Value::from("test 6")
+                ])
             );
 
             drop(tx);
@@ -832,13 +849,25 @@ merge_strategies.bar = "concat"
             tx.send(e_6.into()).await.unwrap();
 
             let output_1 = out.recv().await.unwrap().into_log();
-            assert_eq!(output_1.get("foo").unwrap(), Value::from(json!([[1, 3], [5, 7], "done"])));
-            assert_eq!(output_1.get("bar").unwrap(), Value::from(json!([1, 3, 5, 7, "done"])));
+            assert_eq!(
+                output_1.get("foo").unwrap(),
+                Value::from(json!([[1, 3], [5, 7], "done"]))
+            );
+            assert_eq!(
+                output_1.get("bar").unwrap(),
+                Value::from(json!([1, 3, 5, 7, "done"]))
+            );
             assert_eq!(output_1.metadata(), &metadata_1);
 
             let output_2 = out.recv().await.unwrap().into_log();
-            assert_eq!(output_2.get("foo").unwrap(), Value::from(json!([[2, 4], [6, 8], "done"])));
-            assert_eq!(output_2.get("bar").unwrap(), Value::from(json!([2, 4, 6, 8, "done"])));
+            assert_eq!(
+                output_2.get("foo").unwrap(),
+                Value::from(json!([[2, 4], [6, 8], "done"]))
+            );
+            assert_eq!(
+                output_2.get("bar").unwrap(),
+                Value::from(json!([2, 4, 6, 8, "done"]))
+            );
             assert_eq!(output_2.metadata(), &metadata_2);
 
             drop(tx);
@@ -1003,7 +1032,10 @@ merge_strategies.bar = "concat"
                 "a-b" => 2,
                 "test_end" => "done"
             });
-            assert_eq!(Value::Object(output.as_map().unwrap_or_default()), expected_value);
+            assert_eq!(
+                Value::Object(output.as_map().unwrap_or_default()),
+                expected_value
+            );
 
             drop(tx);
             topology.stop().await;
@@ -1039,7 +1071,10 @@ merge_strategies.bar = "concat"
                 "a b" => 3,
                 "test_end" => "done"
             });
-            assert_eq!(Value::Object(output.as_map().unwrap_or_default()), expected_value);
+            assert_eq!(
+                Value::Object(output.as_map().unwrap_or_default()),
+                expected_value
+            );
 
             drop(tx);
             topology.stop().await;

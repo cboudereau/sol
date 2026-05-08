@@ -16,8 +16,8 @@ use async_stream::stream;
 use crossbeam_queue::{ArrayQueue, SegQueue};
 use futures::Stream;
 use metrics::{Gauge, Histogram, gauge, histogram};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use sol_common::stats::EwmaGauge;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::{InMemoryBufferable, config::MemoryBufferSize};
 
@@ -457,8 +457,8 @@ pub fn limited<T: InMemoryBufferable + fmt::Debug>(
 mod tests {
     use std::num::NonZeroUsize;
 
-    use tokio_test::{assert_pending, assert_ready, task::spawn};
     use sol_common::byte_size_of::ByteSizeOf;
+    use tokio_test::{assert_pending, assert_ready, task::spawn};
 
     use super::{ChannelMetricMetadata, limited};
     use crate::{

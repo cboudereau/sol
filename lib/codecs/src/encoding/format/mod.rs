@@ -36,10 +36,10 @@ pub use logfmt::{LogfmtSerializer, LogfmtSerializerConfig};
 pub use otlp::{OtlpSerializer, OtlpSerializerConfig};
 pub use protobuf::{ProtobufSerializer, ProtobufSerializerConfig, ProtobufSerializerOptions};
 pub use raw_message::{RawMessageSerializer, RawMessageSerializerConfig};
+use sol_core::event::Event;
 #[cfg(feature = "syslog")]
 pub use syslog::{SyslogSerializer, SyslogSerializerConfig};
 pub use text::{TextSerializer, TextSerializerConfig};
-use sol_core::event::Event;
 
 pub use self::csv::{CsvSerializer, CsvSerializerConfig};
 
@@ -52,11 +52,8 @@ pub trait Serializer:
 /// Default implementation for `Serializer`s that implement
 /// `tokio_util::codec::Encoder`.
 impl<Encoder> Serializer for Encoder where
-    Encoder: tokio_util::codec::Encoder<Event, Error = sol_common::Error>
-        + Clone
-        + Debug
-        + Send
-        + Sync
+    Encoder:
+        tokio_util::codec::Encoder<Event, Error = sol_common::Error> + Clone + Debug + Send + Sync
 {
 }
 

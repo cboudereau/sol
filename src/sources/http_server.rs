@@ -4,7 +4,6 @@ use bytes::{Bytes, BytesMut};
 use chrono::Utc;
 use http::StatusCode;
 use http_serde;
-use tokio_util::codec::Decoder as _;
 use sol_lib::{
     codecs::{
         BytesDecoderConfig, BytesDeserializerConfig, JsonDeserializerConfig,
@@ -16,6 +15,7 @@ use sol_lib::{
     lookup::{lookup_v2::OptionalValuePath, owned_value_path},
     schema::Definition,
 };
+use tokio_util::codec::Decoder as _;
 use vrl::value::{Kind, kind::Collection};
 use warp::http::HeaderMap;
 
@@ -167,7 +167,6 @@ pub struct SimpleHttpConfig {
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
 
-
     #[configurable(derived)]
     #[serde(default)]
     keepalive: KeepaliveConfig,
@@ -248,10 +247,7 @@ impl SimpleHttpConfig {
             (framing, decoding)
         };
 
-        Ok(DecodingConfig::new(
-            framing,
-            decoding,
-        ))
+        Ok(DecodingConfig::new(framing, decoding))
     }
 }
 
@@ -345,9 +341,7 @@ pub fn build_param_matcher(list: &[String]) -> crate::Result<Vec<HttpConfigParam
 #[typetag::serde(name = "http_server")]
 impl SourceConfig for SimpleHttpConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
-        let decoder = self
-            .get_decoding_config()?
-            .build()?;
+        let decoder = self.get_decoding_config()?.build()?;
 
         let source = SimpleHttpSource {
             headers: build_param_matcher(&remove_duplicates(self.headers.clone(), "headers"))?,
@@ -421,10 +415,7 @@ impl HttpSource for SimpleHttpSource {
                 Event::Log(otel_log) => {
                     otel_log.set_source_metadata(SimpleHttpConfig::NAME, now);
                     if let Some(path_key) = self.path_key.path.as_ref() {
-                        otel_log.set_attribute(
-                            path_key.to_string(),
-                            string_value(request_path),
-                        );
+                        otel_log.set_attribute(path_key.to_string(), string_value(request_path));
                     }
                     if let Some(addr) = source_ip {
                         otel_log.set_resource_attribute(
@@ -439,12 +430,7 @@ impl HttpSource for SimpleHttpSource {
             }
         }
 
-        add_headers(
-            events,
-            &self.headers,
-            headers,
-            SimpleHttpConfig::NAME,
-        );
+        add_headers(events, &self.headers, headers, SimpleHttpConfig::NAME);
 
         add_query_parameters(
             events,
@@ -509,9 +495,7 @@ mod tests {
             decoding::{DeserializerConfig, FramingConfig},
         },
         event::OtelLog,
-        lookup::{
-            event_path, lookup_v2::OptionalValuePath, owned_value_path,
-        },
+        lookup::{event_path, lookup_v2::OptionalValuePath, owned_value_path},
         schema::Definition,
     };
     use vrl::value::{Kind, ObjectMap, kind::Collection};
@@ -998,9 +982,7 @@ mod tests {
     async fn assert_event_metadata(log: &OtelLog) {
         assert!(log.get_timestamp().is_some());
 
-        let source_type_value = log
-            .get_source_type()
-            .unwrap();
+        let source_type_value = log.get_source_type().unwrap();
         assert_eq!(source_type_value.as_str().unwrap(), SimpleHttpConfig::NAME);
         assert_eq!(log.get("http_path").unwrap(), Value::from("/"));
     }
@@ -1049,7 +1031,10 @@ mod tests {
             let log = event.as_log();
             assert_eq!(log.get("key1").unwrap(), "value1".into());
             assert_eq!(log.get("\"User-Agent\"").unwrap(), "test_client".into());
-            assert_eq!(log.get("\"Upgrade-Insecure-Requests\"").unwrap(), "false".into());
+            assert_eq!(
+                log.get("\"Upgrade-Insecure-Requests\"").unwrap(),
+                "false".into()
+            );
             assert_eq!(log.get("\"x-test-header\"").unwrap(), "true".into());
             assert_eq!(log.get("AbsentHeader").unwrap(), Value::Null);
             assert_event_metadata(log).await;
@@ -1096,7 +1081,10 @@ mod tests {
             let log = event.as_log();
             assert_eq!(log.get("key1").unwrap(), "value1".into());
             assert_eq!(log.get("\"user-agent\"").unwrap(), "test_client".into());
-            assert_eq!(log.get("\"x-case-sensitive-value\"").unwrap(), "CaseSensitive".into());
+            assert_eq!(
+                log.get("\"x-case-sensitive-value\"").unwrap(),
+                "CaseSensitive".into()
+            );
             assert_event_metadata(log).await;
         }
     }
@@ -1582,46 +1570,42 @@ mod tests {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(SimpleHttpConfig::NAME, "path"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(SimpleHttpConfig::NAME, "headers"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(SimpleHttpConfig::NAME, "query_parameters"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(SimpleHttpConfig::NAME, "host"),
-            Kind::bytes().or_undefined(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .unknown_fields(Kind::bytes());
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(SimpleHttpConfig::NAME, "path"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(SimpleHttpConfig::NAME, "headers"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(SimpleHttpConfig::NAME, "query_parameters"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(SimpleHttpConfig::NAME, "host"),
+                    Kind::bytes().or_undefined(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .unknown_fields(Kind::bytes());
 
         assert_eq!(definitions, Some(expected_definition))
     }

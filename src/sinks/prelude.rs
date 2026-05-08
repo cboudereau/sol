@@ -3,7 +3,6 @@
 
 pub use async_trait::async_trait;
 pub use futures::{FutureExt, StreamExt, future, future::BoxFuture, stream::BoxStream};
-pub use tower::{Service, ServiceBuilder};
 pub use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     buffers::EventCount,
@@ -20,6 +19,7 @@ pub use sol_lib::{
     stream::{BatcherSettings, DriverResponse},
     tls::TlsSettings,
 };
+pub use tower::{Service, ServiceBuilder};
 
 pub use crate::{
     codecs::{Encoder, EncodingConfig, Transformer},

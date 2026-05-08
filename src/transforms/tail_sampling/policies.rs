@@ -77,7 +77,15 @@ impl PolicyConfig {
             }),
             PolicyConfig::StringAttribute(c) => {
                 let compiled_regexes = if c.enabled_regex_matching {
-                    Some(c.values.iter().map(|v| regex::Regex::new(v).expect("invalid regex in string_attribute policy")).collect())
+                    Some(
+                        c.values
+                            .iter()
+                            .map(|v| {
+                                regex::Regex::new(v)
+                                    .expect("invalid regex in string_attribute policy")
+                            })
+                            .collect(),
+                    )
                 } else {
                     None
                 };
@@ -88,7 +96,7 @@ impl PolicyConfig {
                     compiled_regexes,
                     invert_match: c.invert_match,
                 })
-            },
+            }
             PolicyConfig::NumericAttribute(c) => Box::new(NumericAttribute {
                 name: c.name.clone(),
                 key: c.key.clone(),
@@ -227,7 +235,9 @@ impl SamplingPolicy for AlwaysSample {
     fn evaluate(&self, _trace: &BufferedTrace) -> Decision {
         Decision::Sample
     }
-    fn name(&self) -> &str { &self.0 }
+    fn name(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Match span status codes.
@@ -239,22 +249,24 @@ struct StatusCode {
 impl SamplingPolicy for StatusCode {
     fn evaluate(&self, trace: &BufferedTrace) -> Decision {
         for span_event in &trace.spans {
-            if let crate::event::Event::Trace(otel_span) = span_event {
-                if let Some(status) = otel_span.span().status.as_ref() {
-                    let code_str = match status.code {
-                        c if c == OtelStatusCode::Ok as i32 => "OK",
-                        c if c == OtelStatusCode::Error as i32 => "ERROR",
-                        _ => "UNSET",
-                    };
-                    if self.status_codes.iter().any(|s| s == code_str) {
-                        return Decision::Sample;
-                    }
+            if let crate::event::Event::Trace(otel_span) = span_event
+                && let Some(status) = otel_span.span().status.as_ref()
+            {
+                let code_str = match status.code {
+                    c if c == OtelStatusCode::Ok as i32 => "OK",
+                    c if c == OtelStatusCode::Error as i32 => "ERROR",
+                    _ => "UNSET",
+                };
+                if self.status_codes.iter().any(|s| s == code_str) {
+                    return Decision::Sample;
                 }
             }
         }
         Decision::Pending
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Trace duration exceeds threshold.
@@ -279,17 +291,19 @@ impl SamplingPolicy for Latency {
         }
         let duration_ms = (max_end.saturating_sub(min_start)) / 1_000_000;
         if duration_ms >= self.threshold_ms {
-            if let Some(upper) = self.upper_threshold_ms {
-                if duration_ms >= upper {
-                    return Decision::Pending;
-                }
+            if let Some(upper) = self.upper_threshold_ms
+                && duration_ms >= upper
+            {
+                return Decision::Pending;
             }
             Decision::Sample
         } else {
             Decision::Pending
         }
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Hash-based probabilistic sampling.
@@ -302,14 +316,21 @@ impl SamplingPolicy for Probabilistic {
     fn evaluate(&self, trace: &BufferedTrace) -> Decision {
         // Hash trace_id to get deterministic sampling.
         let hash = crc32fast::hash(&trace.trace_id);
-        let threshold = (self.sampling_percentage / 100.0 * u32::MAX as f64) as u32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "sampling percentage in [0,100] scaled to u32 threshold"
+        )]
+        let threshold = (self.sampling_percentage / 100.0 * f64::from(u32::MAX)) as u32;
         if hash <= threshold {
             Decision::Sample
         } else {
             Decision::Pending
         }
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Token-bucket rate limiting.
@@ -334,6 +355,10 @@ impl SamplingPolicy for RateLimiting {
         state.tokens = (state.tokens + elapsed * self.spans_per_second).min(self.spans_per_second);
         state.last_refill = now;
 
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "trace span count for rate-limit token bucket; precise for |v| <= 2^53"
+        )]
         let span_count = trace.spans.len() as f64;
         if state.tokens >= span_count {
             state.tokens -= span_count;
@@ -342,7 +367,9 @@ impl SamplingPolicy for RateLimiting {
             Decision::Pending
         }
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Sample by span count.
@@ -355,15 +382,17 @@ struct SpanCount {
 impl SamplingPolicy for SpanCount {
     fn evaluate(&self, trace: &BufferedTrace) -> Decision {
         let count = trace.spans.len();
-        let above_min = self.min_spans.map_or(true, |min| count >= min);
-        let below_max = self.max_spans.map_or(true, |max| count <= max);
+        let above_min = self.min_spans.is_none_or(|min| count >= min);
+        let below_max = self.max_spans.is_none_or(|max| count <= max);
         if above_min && below_max {
             Decision::Sample
         } else {
             Decision::Pending
         }
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Match string attribute value on any span.
@@ -381,30 +410,43 @@ impl SamplingPolicy for StringAttribute {
 
         let matched = 'outer: {
             for span_event in &trace.spans {
-                if let crate::event::Event::Trace(otel_span) = span_event {
-                    if let Some(v) = otel_span.attribute(&self.key) {
-                        let s_owned: String;
-                        let s: &str = match &v.value {
-                            Some(OtelValue::StringValue(s)) => s.as_str(),
-                            Some(OtelValue::IntValue(i)) => { s_owned = i.to_string(); &s_owned }
-                            Some(OtelValue::DoubleValue(d)) => { s_owned = d.to_string(); &s_owned }
-                            Some(OtelValue::BoolValue(b)) => { s_owned = b.to_string(); &s_owned }
-                            _ => continue,
-                        };
-                        let hit = if let Some(regexes) = &self.compiled_regexes {
-                            regexes.iter().any(|re| re.is_match(s))
-                        } else {
-                            self.values.iter().any(|val| val.as_str() == s)
-                        };
-                        if hit {
-                            break 'outer true;
+                if let crate::event::Event::Trace(otel_span) = span_event
+                    && let Some(v) = otel_span.attribute(&self.key)
+                {
+                    let s_owned: String;
+                    let s: &str = match &v.value {
+                        Some(OtelValue::StringValue(s)) => s.as_str(),
+                        Some(OtelValue::IntValue(i)) => {
+                            s_owned = i.to_string();
+                            &s_owned
                         }
+                        Some(OtelValue::DoubleValue(d)) => {
+                            s_owned = d.to_string();
+                            &s_owned
+                        }
+                        Some(OtelValue::BoolValue(b)) => {
+                            s_owned = b.to_string();
+                            &s_owned
+                        }
+                        _ => continue,
+                    };
+                    let hit = if let Some(regexes) = &self.compiled_regexes {
+                        regexes.iter().any(|re| re.is_match(s))
+                    } else {
+                        self.values.iter().any(|val| val.as_str() == s)
+                    };
+                    if hit {
+                        break 'outer true;
                     }
                 }
             }
             false
         };
-        let decision = if matched { Decision::Sample } else { Decision::Pending };
+        let decision = if matched {
+            Decision::Sample
+        } else {
+            Decision::Pending
+        };
         if self.invert_match {
             match decision {
                 Decision::Sample => Decision::Pending,
@@ -415,7 +457,9 @@ impl SamplingPolicy for StringAttribute {
             decision
         }
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Match numeric attribute in range on any span.
@@ -429,24 +473,36 @@ struct NumericAttribute {
 impl SamplingPolicy for NumericAttribute {
     fn evaluate(&self, trace: &BufferedTrace) -> Decision {
         for span_event in &trace.spans {
-            if let crate::event::Event::Trace(otel_span) = span_event {
-                if let Some(v) = otel_span.attribute(&self.key) {
-                    let num = match &v.value {
-                        Some(opentelemetry_proto::tonic::common::v1::any_value::Value::DoubleValue(d)) => Some(*d),
-                        Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(i)) => Some(*i as f64),
-                        _ => None,
-                    };
-                    if let Some(n) = num {
-                        if n >= self.min_value && n <= self.max_value {
-                            return Decision::Sample;
-                        }
+            if let crate::event::Event::Trace(otel_span) = span_event
+                && let Some(v) = otel_span.attribute(&self.key)
+            {
+                let num = match &v.value {
+                    Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::DoubleValue(d),
+                    ) => Some(*d),
+                    Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(i)) => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "span attribute int-to-float for numeric range comparison; precise for |v| <= 2^53"
+                        )]
+                        let v = *i as f64;
+                        Some(v)
                     }
+                    _ => None,
+                };
+                if let Some(n) = num
+                    && n >= self.min_value
+                    && n <= self.max_value
+                {
+                    return Decision::Sample;
                 }
             }
         }
         Decision::Pending
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Composite AND: all sub-policies must return Sample.
@@ -469,5 +525,7 @@ impl SamplingPolicy for And {
         }
         Decision::Sample
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }

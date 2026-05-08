@@ -4,7 +4,6 @@ use async_compression::tokio::bufread;
 use aws_smithy_types::byte_stream::ByteStream;
 use futures::{TryStreamExt, stream, stream::StreamExt};
 use snafu::Snafu;
-use tokio_util::io::StreamReader;
 use sol_lib::{
     codecs::{
         NewlineDelimitedDecoderConfig,
@@ -13,6 +12,7 @@ use sol_lib::{
     configurable::configurable_component,
     lookup::owned_value_path,
 };
+use tokio_util::io::StreamReader;
 use vrl::value::{Kind, kind::Collection};
 
 use super::util::MultilineConfig;
@@ -116,7 +116,6 @@ pub struct AwsS3Config {
 
     #[configurable(derived)]
     tls_options: Option<TlsConfig>,
-
 
     #[configurable(derived)]
     #[serde(default = "default_framing")]
@@ -241,9 +240,7 @@ impl AwsS3Config {
         )
         .await?;
 
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         match self.sqs {
             Some(ref sqs) => {

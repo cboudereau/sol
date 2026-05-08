@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use futures_util::{FutureExt, StreamExt, stream::BoxStream};
 use snafu::Snafu;
-use tokio::sync::oneshot;
 use sol_lib::{
     config::{AcknowledgementsConfig, Input},
     configurable::configurable_component,
@@ -9,6 +8,7 @@ use sol_lib::{
     finalization::Finalizable,
     sink::{StreamSink, VectorSink},
 };
+use tokio::sync::oneshot;
 
 use crate::{
     SourceSender,

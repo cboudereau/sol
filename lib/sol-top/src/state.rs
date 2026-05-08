@@ -12,8 +12,8 @@ use ratatui::{
     widgets::ListState,
 };
 use regex::Regex;
-use tokio::sync::mpsc;
 use sol_common::internal_event::DEFAULT_OUTPUT;
+use tokio::sync::mpsc;
 
 use sol_common::config::ComponentKey;
 
@@ -326,11 +326,12 @@ impl UiState {
     /// Changes current scroll by provided diff in pages. Uses [`Size`] to limit scroll,
     /// and to calculate number of rows a page contains.
     pub fn scroll_page(&mut self, diff: isize, area: Size, components_count: usize) {
-        self.scroll(
-            diff * (Self::components_box_height(area) as isize),
-            area,
-            components_count,
-        );
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "terminal height in u16 always fits in isize on any platform"
+        )]
+        let page_height = Self::components_box_height(area) as isize;
+        self.scroll(diff * page_height, area, components_count);
     }
 }
 
@@ -440,8 +441,7 @@ pub async fn updater(mut event_rx: EventRx, mut state: State) -> StateRx {
                 EventType::ReceivedBytesThroughputs(interval, rows) => {
                     for (key, v) in rows {
                         if let Some(r) = state.components.get_mut(&key) {
-                            r.received_bytes_throughput_sec =
-                                (v as f64 * (1000.0 / interval as f64)) as i64;
+                            r.received_bytes_throughput_sec = throughput_per_sec(v, interval);
                         }
                     }
                 }
@@ -455,8 +455,7 @@ pub async fn updater(mut event_rx: EventRx, mut state: State) -> StateRx {
                 EventType::ReceivedEventsThroughputs(interval, rows) => {
                     for (key, v) in rows {
                         if let Some(r) = state.components.get_mut(&key) {
-                            r.received_events_throughput_sec =
-                                (v as f64 * (1000.0 / interval as f64)) as i64;
+                            r.received_events_throughput_sec = throughput_per_sec(v, interval);
                         }
                     }
                 }
@@ -470,8 +469,7 @@ pub async fn updater(mut event_rx: EventRx, mut state: State) -> StateRx {
                 EventType::SentBytesThroughputs(interval, rows) => {
                     for (key, v) in rows {
                         if let Some(r) = state.components.get_mut(&key) {
-                            r.sent_bytes_throughput_sec =
-                                (v as f64 * (1000.0 / interval as f64)) as i64;
+                            r.sent_bytes_throughput_sec = throughput_per_sec(v, interval);
                         }
                     }
                 }
@@ -491,10 +489,9 @@ pub async fn updater(mut event_rx: EventRx, mut state: State) -> StateRx {
                 EventType::SentEventsThroughputs(interval, rows) => {
                     for m in rows {
                         if let Some(r) = state.components.get_mut(&m.key) {
-                            r.sent_events_throughput_sec =
-                                (m.total as f64 * (1000.0 / interval as f64)) as i64;
+                            r.sent_events_throughput_sec = throughput_per_sec(m.total, interval);
                             for (id, v) in m.outputs {
-                                let throughput = (v as f64 * (1000.0 / interval as f64)) as i64;
+                                let throughput = throughput_per_sec(v, interval);
                                 r.outputs
                                     .entry(id)
                                     .or_insert_with(OutputMetrics::default)
@@ -539,6 +536,22 @@ pub async fn updater(mut event_rx: EventRx, mut state: State) -> StateRx {
     });
 
     rx
+}
+
+/// Convert a raw counter delta and a sampling interval (in ms) to a per-second throughput.
+///
+/// Both operands are `i64` counters/intervals that fit comfortably in the 53-bit f64 mantissa
+/// for any realistic telemetry value.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "throughput calculation — counter and interval values fit in f64 mantissa for practical telemetry sizes"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "throughput is displayed as integer in the dashboard; fractional sub-event precision is not needed"
+)]
+fn throughput_per_sec(value: i64, interval_ms: i64) -> i64 {
+    (value as f64 * (1000.0 / interval_ms as f64)) as i64
 }
 
 fn handle_ui_event(event: UiEventType, state: &mut State) {

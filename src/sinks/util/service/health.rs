@@ -12,10 +12,10 @@ use futures::FutureExt;
 use futures_util::{TryFuture, future::BoxFuture};
 use pin_project::pin_project;
 use serde_with::serde_as;
+use sol_lib::{configurable::configurable_component, emit};
 use stream_cancel::{Trigger, Tripwire};
 use tokio::time::{Duration, sleep};
 use tower::Service;
-use sol_lib::{configurable::configurable_component, emit};
 
 use crate::{
     common::backoff::ExponentialBackoff,

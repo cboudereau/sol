@@ -7,13 +7,13 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::{Response, Uri};
 use hyper::{Body, Request, service::Service};
-use tower::ServiceExt;
 use sol_lib::{
     ByteSizeOf,
     json_size::JsonSize,
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
+use tower::ServiceExt;
 
 use super::{ElasticsearchCommon, ElasticsearchConfig};
 use crate::{

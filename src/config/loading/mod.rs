@@ -16,8 +16,8 @@ use glob::glob;
 use loader::process::Process;
 pub use loader::*;
 pub use secret::*;
-pub use source::*;
 use sol_lib::configurable::NamedComponent;
+pub use source::*;
 
 use super::{
     Config, ConfigPath, Format, FormatHint, ProviderConfig, builder::ConfigBuilder, format,

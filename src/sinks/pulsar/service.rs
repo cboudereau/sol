@@ -98,11 +98,11 @@ impl<Exe: Executor> Service<PulsarRequest> for PulsarService<Exe> {
     fn call(&mut self, request: PulsarRequest) -> Self::Future {
         let producer = Arc::clone(&self.producer);
         let topic = request.metadata.topic.clone();
-        let event_time = request
-            .metadata
-            .timestamp_millis
-            .to_owned()
-            .map(|t| t as u64);
+        let event_time = request.metadata.timestamp_millis.to_owned().map(|t| {
+            #[expect(clippy::cast_sign_loss, reason = "timestamp millis is non-negative")]
+            let ts = t as u64;
+            ts
+        });
 
         Box::pin(async move {
             let body = request.body.clone();

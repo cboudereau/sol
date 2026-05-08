@@ -7,14 +7,14 @@ use std::{
 };
 
 use futures::{StreamExt, future, stream};
-use tokio::{
-    task::yield_now,
-    time::{Duration, sleep},
-};
 use sol_lib::{
     buffers::{BufferConfig, BufferType, WhenFull},
     config::{ComponentKey, OutputId},
     source_sender::SourceSenderItem,
+};
+use tokio::{
+    task::yield_now,
+    time::{Duration, sleep},
 };
 
 use crate::{
@@ -70,7 +70,8 @@ fn basic_config_with_sink_failing_healthcheck() -> Config {
 }
 
 fn into_message(event: Event) -> String {
-    let message_key = sol_lib::lookup::OwnedTargetPath::event(sol_lib::lookup::owned_value_path!("body"));
+    let message_key =
+        sol_lib::lookup::OwnedTargetPath::event(sol_lib::lookup::owned_value_path!("body"));
     event
         .as_log()
         .get(&message_key)

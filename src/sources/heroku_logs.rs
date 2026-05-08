@@ -8,7 +8,6 @@ use std::{
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use smallvec::SmallVec;
-use tokio_util::codec::Decoder as _;
 use sol_lib::{
     codecs::{
         StreamDecodingError,
@@ -19,6 +18,7 @@ use sol_lib::{
     lookup::{lookup_v2::parse_value_path, owned_value_path},
     schema::Definition,
 };
+use tokio_util::codec::Decoder as _;
 use vrl::value::{Kind, kind::Collection};
 use warp::http::{HeaderMap, StatusCode};
 
@@ -86,7 +86,6 @@ pub struct LogplexConfig {
     #[configurable(derived)]
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
-
 
     #[configurable(derived)]
     #[serde(default)]
@@ -164,9 +163,7 @@ impl GenerateConfig for LogplexConfig {
 #[typetag::serde(name = "heroku_logs")]
 impl SourceConfig for LogplexConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         let source = LogplexSource {
             query_parameters: build_param_matcher(&remove_duplicates(
@@ -307,10 +304,7 @@ fn header_error_message(name: &str, msg: &str) -> ErrorMessage {
     )
 }
 
-fn line_to_events(
-    mut decoder: Decoder,
-    line: String,
-) -> SmallVec<[Event; 1]> {
+fn line_to_events(mut decoder: Decoder, line: String) -> SmallVec<[Event; 1]> {
     let parts = line.splitn(8, ' ').collect::<Vec<&str>>();
 
     let mut events = SmallVec::<[Event; 1]>::new();
@@ -334,21 +328,19 @@ fn line_to_events(
                     for mut event in decoded {
                         if let Event::Log(ref mut otel_log) = event {
                             if let Ok(ts) = timestamp.parse::<DateTime<Utc>>() {
-                                otel_log.record_mut().time_unix_nano =
-                                    ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                                #[expect(
+                                    clippy::cast_sign_loss,
+                                    reason = "timestamp nanos are non-negative for post-epoch dates; 0 fallback is safe"
+                                )]
+                                let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                                otel_log.record_mut().time_unix_nano = nanos;
                             }
                             otel_log.set_resource_attribute(
                                 "host.name".to_string(),
                                 string_value(hostname),
                             );
-                            otel_log.set_attribute(
-                                "app_name".to_string(),
-                                string_value(app_name),
-                            );
-                            otel_log.set_attribute(
-                                "proc_id".to_string(),
-                                string_value(proc_id),
-                            );
+                            otel_log.set_attribute("app_name".to_string(), string_value(app_name));
+                            otel_log.set_attribute("proc_id".to_string(), string_value(proc_id));
                         }
 
                         events.push(event);
@@ -369,10 +361,12 @@ fn line_to_events(
         );
 
         let mut log = OtelLog::from_bytes(line.as_bytes());
-        log.record_mut().time_unix_nano = Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or(0)
-            .max(0) as u64;
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "timestamp nanos clamped to >= 0 by .max(0)"
+        )]
+        let now_nanos = Utc::now().timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
+        log.record_mut().time_unix_nano = now_nanos;
         events.push(Event::Log(log))
     };
 
@@ -688,51 +682,47 @@ mod tests {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogplexConfig::NAME, "timestamp"),
-            Kind::timestamp().or_undefined(),
-            Some("timestamp"),
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogplexConfig::NAME, "host"),
-            Kind::bytes(),
-            Some("host"),
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogplexConfig::NAME, "app_name"),
-            Kind::bytes(),
-            Some("service"),
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogplexConfig::NAME, "proc_id"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!(LogplexConfig::NAME, "query_parameters"),
-            Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-            None,
-        )
-        .unknown_fields(Kind::bytes());
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogplexConfig::NAME, "timestamp"),
+                    Kind::timestamp().or_undefined(),
+                    Some("timestamp"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogplexConfig::NAME, "host"),
+                    Kind::bytes(),
+                    Some("host"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogplexConfig::NAME, "app_name"),
+                    Kind::bytes(),
+                    Some("service"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogplexConfig::NAME, "proc_id"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!(LogplexConfig::NAME, "query_parameters"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                )
+                .unknown_fields(Kind::bytes());
 
         assert_eq!(definitions, Some(expected_definition))
     }

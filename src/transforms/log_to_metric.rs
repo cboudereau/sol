@@ -2,15 +2,8 @@ use std::{collections::HashMap, num::ParseFloatError, sync::Arc};
 
 use chrono::Utc;
 use indexmap::IndexMap;
-use sol_lib::{
-    configurable::configurable_component,
-    event::{
-        OtelMetric,
-    },
-};
-use vrl::{
-    path::parse_target_path,
-};
+use sol_lib::{configurable::configurable_component, event::OtelMetric};
+use vrl::path::parse_target_path;
 
 use crate::{
     common::expansion::pair_expansion,
@@ -18,13 +11,9 @@ use crate::{
         DataType, GenerateConfig, Input, OutputId, TransformConfig, TransformContext,
         TransformOutput, schema::Definition,
     },
-    event::{
-        AnyValue, Event, OtelAttributes, Value,
-        metric::MetricKind,
-    },
+    event::{AnyValue, Event, OtelAttributes, Value, metric::MetricKind},
     internal_events::{
-        DROP_EVENT, LogToMetricFieldNullError, LogToMetricParseFloatError,
-        ParserMissingFieldError,
+        DROP_EVENT, LogToMetricFieldNullError, LogToMetricParseFloatError, ParserMissingFieldError,
     },
     schema,
     template::{Template, TemplateRenderingError},
@@ -306,7 +295,10 @@ fn render_tag_into(
     Ok(())
 }
 
-fn to_metric_with_config(config: &MetricConfig, event: &Event) -> Result<OtelMetric, TransformError> {
+fn to_metric_with_config(
+    config: &MetricConfig,
+    event: &Event,
+) -> Result<OtelMetric, TransformError> {
     let log = event.as_log();
 
     let timestamp = log
@@ -381,11 +373,7 @@ fn to_metric_with_config(config: &MetricConfig, event: &Event) -> Result<OtelMet
         MetricTypeConfig::Set => {
             let value = value.to_string_lossy().into_owned();
 
-            OtelMetric::new_set_from_values(
-                &name,
-                MetricKind::Incremental,
-                vec![value],
-            )
+            OtelMetric::new_set_from_values(&name, MetricKind::Incremental, vec![value])
         }
     };
     Ok(metric
@@ -460,22 +448,15 @@ mod tests {
 
     use chrono::{DateTime, Timelike, Utc, offset::TimeZone};
     use similar_asserts::assert_eq;
+    use sol_lib::{config::ComponentKey, event::ObjectMap, otel_tags};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::{
-        config::ComponentKey,
-        event::ObjectMap,
-        otel_tags,
-    };
 
     use sol_lib::lookup::{OwnedTargetPath, owned_value_path};
 
     use super::*;
     use crate::{
-        event::{
-            Event, EventMetadata, OtelLog, OtelMetric,
-            metric::MetricKind,
-        },
+        event::{Event, EventMetadata, OtelLog, OtelMetric, metric::MetricKind},
         test_util::components::assert_transform_compliance,
         transforms::test::create_topology,
     };
@@ -507,8 +488,10 @@ mod tests {
     fn create_event(key: &str, value: impl Into<Value> + std::fmt::Debug) -> Event {
         let mut log = Event::Log(OtelLog::from("i am a log"));
         log.as_mut_log().insert(key, value);
-        log.as_mut_log()
-            .insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), ts());
+        log.as_mut_log().insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            ts(),
+        );
         log
     }
 
@@ -573,10 +556,7 @@ mod tests {
         );
 
         let event = create_event("status", "42");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -606,10 +586,7 @@ mod tests {
         let mut event = create_event("message", "i am log");
         event.as_mut_log().insert("method", "post");
         event.as_mut_log().insert("code", "200");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -651,10 +628,7 @@ mod tests {
         test_dict.insert("two".into(), Value::from("baz"));
         log.insert("dict", Value::from(test_dict));
 
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -697,15 +671,15 @@ mod tests {
         map2.insert("l1_key1".into(), Value::from("val2"));
         log.insert("map2", Value::from(map2));
 
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
 
-        let metric = do_transform(config, event).await.unwrap().into_otel_metric();
+        let metric = do_transform(config, event)
+            .await
+            .unwrap()
+            .into_otel_metric();
         let tags = metric.tags().expect("Metric should have tags");
 
         assert_eq!(tags.iter_single().collect::<Vec<_>>()[0].0, "l1_key1");
@@ -734,10 +708,16 @@ mod tests {
         );
 
         let event = create_event("message", "I am log");
-        let metric = do_transform(config, event).await.unwrap().into_otel_metric();
+        let metric = do_transform(config, event)
+            .await
+            .unwrap()
+            .into_otel_metric();
         let tags = metric.tags().expect("Metric should have tags");
 
-        assert_eq!(tags.iter_single().collect::<Vec<_>>(), vec![("tag", Some("two"))]);
+        assert_eq!(
+            tags.iter_single().collect::<Vec<_>>(),
+            vec![("tag", Some("two"))]
+        );
 
         // With OtelAttributes, last value wins for multi-value tags
         assert_eq!(tags.iter_single().count(), 1);
@@ -766,7 +746,10 @@ mod tests {
         test_dict.insert("one".into(), Value::from(vec!["foo", "baz"]));
         log.insert("dict", Value::from(test_dict));
 
-        let metric = do_transform(config, event).await.unwrap().into_otel_metric();
+        let metric = do_transform(config, event)
+            .await
+            .unwrap()
+            .into_otel_metric();
         let tags = metric.tags().expect("Metric should have tags");
 
         assert_eq!(
@@ -794,10 +777,16 @@ mod tests {
         );
 
         let event = create_event("message", "I am log");
-        let metric = do_transform(config, event).await.unwrap().into_otel_metric();
+        let metric = do_transform(config, event)
+            .await
+            .unwrap()
+            .into_otel_metric();
         let tags = metric.tags().expect("Metric should have tags");
 
-        assert_eq!(tags.iter_single().collect::<Vec<_>>(), vec![("tag", Some("two"))]);
+        assert_eq!(
+            tags.iter_single().collect::<Vec<_>>(),
+            vec![("tag", Some("two"))]
+        );
 
         // With OtelAttributes, last value wins for multi-value tags
         assert_eq!(tags.iter_single().count(), 1);
@@ -819,10 +808,7 @@ mod tests {
         );
 
         let event = create_event("backtrace", "message");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -865,10 +851,7 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -896,10 +879,7 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -926,10 +906,7 @@ mod tests {
         );
 
         let event = create_event("memory_rss", "123");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1008,15 +985,13 @@ mod tests {
         );
 
         let mut event = Event::Log(OtelLog::from("i am a log"));
-        event
-            .as_mut_log()
-            .insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), ts());
+        event.as_mut_log().insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            ts(),
+        );
         event.as_mut_log().insert("status", "42");
         event.as_mut_log().insert("backtrace", "message");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1057,18 +1032,16 @@ mod tests {
         );
 
         let mut event = Event::Log(OtelLog::from("i am a log"));
-        event
-            .as_mut_log()
-            .insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), ts());
+        event.as_mut_log().insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            ts(),
+        );
         event.as_mut_log().insert("status", "42");
         event.as_mut_log().insert("backtrace", "message");
         event.as_mut_log().insert("host", "local");
         event.as_mut_log().insert("worker", "abc");
         event.as_mut_log().insert("service", "xyz");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1079,9 +1052,13 @@ mod tests {
         assert_eq!(2, output.len());
         assert_eq!(
             output[0].clone().into_otel_metric(),
-            OtelMetric::new_set_from_values("local_abc_status_set", MetricKind::Incremental, vec![String::from("42")])
-                .with_metadata(metadata.clone())
-                .with_timestamp(Some(ts()))
+            OtelMetric::new_set_from_values(
+                "local_abc_status_set",
+                MetricKind::Incremental,
+                vec![String::from("42")]
+            )
+            .with_metadata(metadata.clone())
+            .with_timestamp(Some(ts()))
         );
         assert_eq!(
             output[1].clone().into_otel_metric(),
@@ -1104,10 +1081,7 @@ mod tests {
         );
 
         let event = create_event("user_ip", "1.2.3.4");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         set_test_source_metadata(&mut metadata);
@@ -1116,9 +1090,13 @@ mod tests {
 
         assert_eq!(
             metric.into_otel_metric(),
-            OtelMetric::new_set_from_values("unique_user_ip", MetricKind::Incremental, vec![String::from("1.2.3.4")])
-                .with_metadata(metadata)
-                .with_timestamp(Some(ts()))
+            OtelMetric::new_set_from_values(
+                "unique_user_ip",
+                MetricKind::Incremental,
+                vec![String::from("1.2.3.4")]
+            )
+            .with_metadata(metadata)
+            .with_timestamp(Some(ts()))
         );
     }
 
@@ -1133,10 +1111,7 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1163,10 +1138,7 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let mut metadata =
-            event
-                .metadata()
-                .clone();
+        let mut metadata = event.metadata().clone();
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1181,5 +1153,4 @@ mod tests {
                 .with_timestamp(Some(ts()))
         );
     }
-
 }

@@ -8,8 +8,6 @@ use http::{
 };
 use indoc::indoc;
 use snafu::{ResultExt, Snafu};
-use tower::ServiceBuilder;
-use uuid::Uuid;
 use sol_lib::{
     TimeZone,
     codecs::encoding::Framer,
@@ -17,6 +15,8 @@ use sol_lib::{
     event::{EventFinalizers, Finalizable},
     request_metadata::RequestMetadata,
 };
+use tower::ServiceBuilder;
+use uuid::Uuid;
 
 use crate::{
     codecs::{Encoder, EncodingConfigWithFraming, SinkType, Transformer},
@@ -477,7 +477,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        event::{OtelLog},
+        event::OtelLog,
         test_util::{
             components::{SINK_TAGS, run_and_assert_sink_compliance},
             http::{always_200_response, spawn_blackhole_http_server},

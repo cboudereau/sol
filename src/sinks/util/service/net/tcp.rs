@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
 
 use snafu::ResultExt;
-use tokio::net::TcpStream;
 use sol_lib::{
     configurable::configurable_component,
     tcp::TcpKeepaliveConfig,
     tls::{MaybeTlsSettings, MaybeTlsStream, TlsEnableableConfig},
 };
+use tokio::net::TcpStream;
 
 use super::{ConnectorType, HostAndPort, NetError, NetworkConnector, net_error::*};
 use crate::dns;

@@ -89,8 +89,17 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = i64> + use<> {
-        counter_throughput(interval, &|m| m.name() == "sol_component_received_events_total")
-            .map(|(_, throughput)| throughput as i64)
+        counter_throughput(interval, &|m| {
+            m.name() == "sol_component_received_events_total"
+        })
+        .map(|(_, throughput)| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f64 throughput → i64 for GraphQL API"
+            )]
+            let t = throughput as i64;
+            t
+        })
     }
 
     /// Total incoming component events throughput metrics over `interval`
@@ -98,17 +107,24 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Vec<ComponentReceivedEventsThroughput>> + use<> {
-        component_counter_throughputs(interval, &|m| m.name() == "sol_component_received_events_total")
-            .map(|m| {
-                m.into_iter()
-                    .map(|(m, throughput)| {
-                        ComponentReceivedEventsThroughput::new(
-                            ComponentKey::from(m.tag_value("component_id").unwrap()),
-                            throughput as i64,
-                        )
-                    })
-                    .collect()
-            })
+        component_counter_throughputs(interval, &|m| {
+            m.name() == "sol_component_received_events_total"
+        })
+        .map(|m| {
+            m.into_iter()
+                .map(|(m, throughput)| {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f64 throughput → i64 for GraphQL API"
+                    )]
+                    let throughput_i = throughput as i64;
+                    ComponentReceivedEventsThroughput::new(
+                        ComponentKey::from(m.tag_value("component_id").unwrap()),
+                        throughput_i,
+                    )
+                })
+                .collect()
+        })
     }
 
     /// Total received component event metrics over `interval`
@@ -116,13 +132,14 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Vec<ComponentReceivedEventsTotal>> + use<> {
-        component_counter_metrics(interval, &|m| m.name() == "sol_component_received_events_total").map(
-            |m| {
-                m.into_iter()
-                    .map(ComponentReceivedEventsTotal::new)
-                    .collect()
-            },
-        )
+        component_counter_metrics(interval, &|m| {
+            m.name() == "sol_component_received_events_total"
+        })
+        .map(|m| {
+            m.into_iter()
+                .map(ComponentReceivedEventsTotal::new)
+                .collect()
+        })
     }
 
     /// Total sent events metrics
@@ -143,8 +160,16 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = i64> + use<> {
-        counter_throughput(interval, &|m| m.name() == "sol_component_sent_events_total")
-            .map(|(_, throughput)| throughput as i64)
+        counter_throughput(interval, &|m| m.name() == "sol_component_sent_events_total").map(
+            |(_, throughput)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "f64 throughput → i64 for GraphQL API"
+                )]
+                let t = throughput as i64;
+                t
+            },
+        )
     }
 
     /// Total outgoing component event throughput metrics over `interval`
@@ -178,13 +203,14 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Vec<ComponentReceivedBytesTotal>> + use<> {
-        component_counter_metrics(interval, &|m| m.name() == "sol_component_received_bytes_total").map(
-            |m| {
-                m.into_iter()
-                    .map(ComponentReceivedBytesTotal::new)
-                    .collect()
-            },
-        )
+        component_counter_metrics(interval, &|m| {
+            m.name() == "sol_component_received_bytes_total"
+        })
+        .map(|m| {
+            m.into_iter()
+                .map(ComponentReceivedBytesTotal::new)
+                .collect()
+        })
     }
 
     /// Component bytes received throughput over `interval`
@@ -192,17 +218,24 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Vec<ComponentReceivedBytesThroughput>> + use<> {
-        component_counter_throughputs(interval, &|m| m.name() == "sol_component_received_bytes_total")
-            .map(|m| {
-                m.into_iter()
-                    .map(|(m, throughput)| {
-                        ComponentReceivedBytesThroughput::new(
-                            ComponentKey::from(m.tag_value("component_id").unwrap()),
-                            throughput as i64,
-                        )
-                    })
-                    .collect()
-            })
+        component_counter_throughputs(interval, &|m| {
+            m.name() == "sol_component_received_bytes_total"
+        })
+        .map(|m| {
+            m.into_iter()
+                .map(|(m, throughput)| {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f64 throughput → i64 for GraphQL API"
+                    )]
+                    let throughput_i = throughput as i64;
+                    ComponentReceivedBytesThroughput::new(
+                        ComponentKey::from(m.tag_value("component_id").unwrap()),
+                        throughput_i,
+                    )
+                })
+                .collect()
+        })
     }
 
     /// Component bytes sent metrics over `interval`.
@@ -219,18 +252,22 @@ impl MetricsSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Vec<ComponentSentBytesThroughput>> + use<> {
-        component_counter_throughputs(interval, &|m| m.name() == "sol_component_sent_bytes_total").map(
-            |m| {
+        component_counter_throughputs(interval, &|m| m.name() == "sol_component_sent_bytes_total")
+            .map(|m| {
                 m.into_iter()
                     .map(|(m, throughput)| {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "f64 throughput → i64 for GraphQL API"
+                        )]
+                        let throughput_i = throughput as i64;
                         ComponentSentBytesThroughput::new(
                             ComponentKey::from(m.tag_value("component_id").unwrap()),
-                            throughput as i64,
+                            throughput_i,
                         )
                     })
                     .collect()
-            },
-        )
+            })
     }
 
     /// Total error metrics.

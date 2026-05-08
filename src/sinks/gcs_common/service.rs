@@ -7,11 +7,11 @@ use http::{
     header::{HeaderName, HeaderValue},
 };
 use hyper::Body;
-use tower::Service;
 use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
+use tower::Service;
 
 use crate::{
     event::{EventFinalizers, EventStatus, Finalizable},

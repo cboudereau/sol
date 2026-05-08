@@ -1,16 +1,16 @@
 use crate::{VALID_FIELD_REGEX, encoding::GelfChunker, gelf::GELF_TARGET_PATHS, gelf_fields::*};
 use bytes::{BufMut, BytesMut};
 use lookup::event_path;
+use lookup::{OwnedTargetPath, owned_value_path};
 use ordered_float::NotNan;
 use snafu::Snafu;
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
-use lookup::{OwnedTargetPath, owned_value_path};
 use sol_core::{
     config::DataType,
     event::{Event, KeyString, OtelLog, Value},
     schema,
 };
+use tokio_util::codec::Encoder;
 
 /// Config used to build a `GelfSerializer`.
 #[configurable_component]
@@ -143,11 +143,7 @@ impl Encoder<Event> for GelfSerializer {
 }
 
 /// Returns Error for invalid type.
-fn err_invalid_type(
-    field: &str,
-    expected_type: &str,
-    actual_type: &str,
-) -> sol_common::Result<()> {
+fn err_invalid_type(field: &str, expected_type: &str, actual_type: &str) -> sol_common::Result<()> {
     InvalidValueTypeSnafu {
         field,
         actual_type,
@@ -211,6 +207,10 @@ fn to_gelf_event(log: &mut OtelLog) -> sol_common::Result<()> {
                 if let Some(ts) = parsed_ts {
                     let ts_millis = ts.timestamp_millis();
                     timestamp_replacement = Some(if ts_millis % 1000 != 0 {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "timestamp millis; precise for practical values"
+                        )]
                         Value::Float(
                             NotNan::new(ts_millis as f64 / 1000.0)
                                 .expect("i64 -> f64 produced NaN"),
@@ -250,10 +250,10 @@ fn to_gelf_event(log: &mut OtelLog) -> sol_common::Result<()> {
     }
 
     // Apply mutations
-    if let Some(ts_val) = timestamp_replacement {
-        if let Ok(path) = vrl::path::parse_target_path(TIMESTAMP) {
-            log.insert(&path, ts_val);
-        }
+    if let Some(ts_val) = timestamp_replacement
+        && let Ok(path) = vrl::path::parse_target_path(TIMESTAMP)
+    {
+        log.insert(&path, ts_val);
     }
     for field in missing_prefix {
         log.rename_key(

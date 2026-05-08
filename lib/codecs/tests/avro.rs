@@ -14,8 +14,8 @@ use codecs::{
 };
 use rstest::*;
 use similar_asserts::assert_eq;
-use tokio_util::codec::Encoder;
 use sol_core::event::Event;
+use tokio_util::codec::Encoder;
 
 #[rstest]
 #[case(true)]
@@ -47,9 +47,7 @@ fn roundtrip_avro(data_path: PathBuf, schema_path: PathBuf, reserialize: bool) {
         let mut buf = BytesMut::new();
         serializer.encode(event.clone(), &mut buf).unwrap();
         // Deserialize the event from these bytes
-        let new_events = deserializer
-            .parse(buf.into())
-            .unwrap();
+        let new_events = deserializer.parse(buf.into()).unwrap();
 
         // Ensure we have the same event.
         assert_eq!(new_events.len(), 1);
@@ -72,9 +70,7 @@ fn load_file(path: &Path) -> Bytes {
 fn load_deserialize(path: &Path, deserializer: &dyn Deserializer) -> (Bytes, Event) {
     let buf = load_file(path);
 
-    let mut events = deserializer
-        .parse(buf.clone())
-        .unwrap();
+    let mut events = deserializer.parse(buf.clone()).unwrap();
     assert_eq!(events.len(), 1);
     (buf, events.pop().unwrap())
 }

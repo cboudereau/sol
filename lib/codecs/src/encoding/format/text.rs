@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
 use sol_core::{config::DataType, event::Event, schema};
+use tokio_util::codec::Encoder;
 
 use crate::{MetricTagValues, encoding::format::common::get_serializer_schema_requirement};
 
@@ -54,7 +54,9 @@ pub struct TextSerializer {
 impl TextSerializer {
     /// Creates a new `TextSerializer`.
     pub const fn new(metric_tag_values: MetricTagValues) -> Self {
-        Self { _metric_tag_values: metric_tag_values }
+        Self {
+            _metric_tag_values: metric_tag_values,
+        }
     }
 }
 
@@ -125,17 +127,20 @@ mod tests {
         let array_tag = AnyValue {
             value: Some(any_value::Value::ArrayValue(ArrayValue {
                 values: vec![
-                    AnyValue { value: Some(any_value::Value::StringValue("first".into())) },
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("first".into())),
+                    },
                     AnyValue { value: None },
-                    AnyValue { value: Some(any_value::Value::StringValue("second".into())) },
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("second".into())),
+                    },
                 ],
             })),
         };
         let mut tags = OtelAttributes::default();
         tags.insert("a".into(), array_tag);
         Event::Metric(
-            OtelMetric::new_counter("counter", MetricKind::Incremental, 1.0)
-                .with_tags(Some(tags)),
+            OtelMetric::new_counter("counter", MetricKind::Incremental, 1.0).with_tags(Some(tags)),
         )
     }
 

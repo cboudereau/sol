@@ -5,8 +5,6 @@ use std::{
 
 use futures::future::BoxFuture;
 use snafu::{ResultExt, Snafu};
-use sqlx::{Pool, Postgres, types::Json};
-use tower::Service;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::JsonSerializerConfig,
@@ -14,6 +12,8 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
+use sqlx::{Pool, Postgres, types::Json};
+use tower::Service;
 
 use crate::{
     internal_events::EndpointBytesSent,

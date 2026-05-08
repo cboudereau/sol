@@ -134,12 +134,12 @@ fn query_client() -> reqwest::Client {
 
 fn create_event(name: &str, i: i32, base_time: DateTime<Utc>) -> Event {
     Event::Metric(
-        OtelMetric::new_counter(name.to_owned(), MetricKind::Incremental, i as f64)
+        OtelMetric::new_counter(name.to_owned(), MetricKind::Incremental, f64::from(i))
             .with_namespace(Some("ns"))
             .with_tags(Some(otel_tags!(
                 "region" => "us-west-1",
                 "production" => "true",
             )))
-            .with_timestamp(Some(base_time + Duration::seconds(i as i64))),
+            .with_timestamp(Some(base_time + Duration::seconds(i64::from(i)))),
     )
 }

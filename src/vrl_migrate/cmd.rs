@@ -123,9 +123,7 @@ fn migrate_config(path: &PathBuf, show_diff: bool, in_place: bool) -> exitcode::
 
     // Extract inline VRL from `source` fields in TOML/YAML config.
     // Strategy: find `source = """..."""` or `source: |` blocks and migrate them.
-    let re_toml_vrl = regex::Regex::new(
-        r#"(?m)(source\s*=\s*"""\n)([\s\S]*?)(""")"#
-    ).unwrap();
+    let re_toml_vrl = regex::Regex::new(r#"(?m)(source\s*=\s*"""\n)([\s\S]*?)(""")"#).unwrap();
 
     let result = re_toml_vrl.replace_all(&output, |caps: &regex::Captures| {
         let prefix = &caps[1];
@@ -145,9 +143,7 @@ fn migrate_config(path: &PathBuf, show_diff: bool, in_place: bool) -> exitcode::
     output = result.into_owned();
 
     // Also handle single-line source = "..." patterns
-    let re_toml_inline = regex::Regex::new(
-        r#"(?m)(source\s*=\s*")((?:[^"\\]|\\.)*)(")"#
-    ).unwrap();
+    let re_toml_inline = regex::Regex::new(r#"(?m)(source\s*=\s*")((?:[^"\\]|\\.)*)(")"#).unwrap();
 
     let result = re_toml_inline.replace_all(&output, |caps: &regex::Captures| {
         let prefix = &caps[1];
@@ -219,22 +215,17 @@ fn parse_log_schema_from_toml(toml_source: &str) -> Option<MigrateLogSchema> {
 
 fn resolve_log_schema(path: Option<&Path>) -> Result<Option<MigrateLogSchema>, String> {
     let Some(path) = path else { return Ok(None) };
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(parse_log_schema_from_toml(&source))
 }
 
 fn strip_log_schema_section(source: &str) -> String {
     // Handle standalone [log_schema] section
-    let re_section = regex::Regex::new(
-        r"(?m)^\[log_schema\]\s*\n(?:(?!\[)[^\n]*\n)*"
-    ).unwrap();
+    let re_section = regex::Regex::new(r"(?m)^\[log_schema\]\s*\n(?:(?!\[)[^\n]*\n)*").unwrap();
     let output = re_section.replace_all(source, "");
 
     // Handle dot-key form: log_schema.field = value
-    let re_dotkey = regex::Regex::new(
-        r"(?m)^log_schema\.[a-z_]+\s*=\s*[^\n]*\n?"
-    ).unwrap();
+    let re_dotkey = regex::Regex::new(r"(?m)^log_schema\.[a-z_]+\s*=\s*[^\n]*\n?").unwrap();
     let output = re_dotkey.replace_all(&output, "");
 
     // Clean up resulting double blank lines

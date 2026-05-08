@@ -5,8 +5,8 @@ use darling::{
 use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
 use serde_derive_internals::ast as serde_ast;
-use syn::{ExprPath, Ident, parse_quote};
 use sol_config_common::validation::Validation;
+use syn::{ExprPath, Ident, parse_quote};
 
 use super::{
     LazyCustomAttribute, Metadata,

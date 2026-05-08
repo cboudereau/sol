@@ -8,8 +8,8 @@ use futures::TryFutureExt;
 use indexmap::IndexMap;
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
-use toml::value::Table;
 use sol_lib::config::ComponentKey;
+use toml::value::Table;
 
 use crate::{
     config::{

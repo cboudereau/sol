@@ -122,7 +122,10 @@ mod tests {
 
         let expected = vec![
             None,
-            Some(get_aggregated_histogram(expected_samples, MetricKind::Incremental)),
+            Some(get_aggregated_histogram(
+                expected_samples,
+                MetricKind::Incremental,
+            )),
         ];
 
         assert_normalize(StatsdNormalizer, histograms, expected);
@@ -186,7 +189,10 @@ mod tests {
 
         let expected = vec![
             None,
-            Some(get_aggregated_histogram(expected_samples, MetricKind::Incremental)),
+            Some(get_aggregated_histogram(
+                expected_samples,
+                MetricKind::Incremental,
+            )),
         ];
 
         assert_normalize(StatsdNormalizer, agg_histograms, expected);

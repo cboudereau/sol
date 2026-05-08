@@ -25,35 +25,44 @@ fn transform_otel_event(parser: &mut ParserState, output: &mut OutputBuffer, mut
             ParserState::Cri(t) => t.transform(&mut tmp_output, tmp_event),
             _ => return,
         }
-        for parsed in tmp_output.into_events() {
-            if let Event::Log(ref parsed_otel) = parsed {
-                if let Event::Log(ref mut otel_log) = event {
-                    if let Some(msg) = parsed_otel.get_body() {
-                        otel_log.set_body(crate::event::string_value(
-                            msg.as_str().unwrap_or_default(),
-                        ));
-                    }
-                    if let Some(stream) = parsed_otel.parse_path_and_get_value(".stream").ok().flatten() {
-                        otel_log.set_attribute(
-                            "stream".to_string(),
-                            crate::event::string_value(stream.as_str().unwrap_or_default()),
-                        );
-                    }
-                    if let Some(Value::Boolean(true)) = parsed_otel.parse_path_and_get_value("._partial").ok().flatten() {
-                        otel_log.set_attribute(
-                            "_partial".to_string(),
-                            opentelemetry_proto::tonic::common::v1::AnyValue {
-                                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(true)),
-                            },
-                        );
-                    }
-                    if parsed_otel.record().time_unix_nano != 0 {
-                        otel_log.record_mut().time_unix_nano = parsed_otel.record().time_unix_nano;
-                    }
+        if let Some(parsed) = tmp_output.into_events().next() {
+            if let Event::Log(ref parsed_otel) = parsed
+                && let Event::Log(ref mut otel_log) = event
+            {
+                if let Some(msg) = parsed_otel.get_body() {
+                    otel_log.set_body(crate::event::string_value(msg.as_str().unwrap_or_default()));
+                }
+                if let Some(stream) = parsed_otel
+                    .parse_path_and_get_value(".stream")
+                    .ok()
+                    .flatten()
+                {
+                    otel_log.set_attribute(
+                        "stream".to_string(),
+                        crate::event::string_value(stream.as_str().unwrap_or_default()),
+                    );
+                }
+                if let Some(Value::Boolean(true)) = parsed_otel
+                    .parse_path_and_get_value("._partial")
+                    .ok()
+                    .flatten()
+                {
+                    otel_log.set_attribute(
+                        "_partial".to_string(),
+                        opentelemetry_proto::tonic::common::v1::AnyValue {
+                            value: Some(
+                                opentelemetry_proto::tonic::common::v1::any_value::Value::BoolValue(
+                                    true,
+                                ),
+                            ),
+                        },
+                    );
+                }
+                if parsed_otel.record().time_unix_nano != 0 {
+                    otel_log.record_mut().time_unix_nano = parsed_otel.record().time_unix_nano;
                 }
             }
             output.push(event.clone());
-            return;
         }
     }
 }

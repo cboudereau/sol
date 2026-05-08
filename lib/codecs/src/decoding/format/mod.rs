@@ -25,9 +25,9 @@ pub use json::{JsonDeserializer, JsonDeserializerConfig, JsonDeserializerOptions
 pub use otlp::{OtlpDeserializer, OtlpDeserializerConfig, OtlpSignalType};
 pub use protobuf::{ProtobufDeserializer, ProtobufDeserializerConfig, ProtobufDeserializerOptions};
 use smallvec::SmallVec;
+use sol_core::event::Event;
 #[cfg(feature = "syslog")]
 pub use syslog::{SyslogDeserializer, SyslogDeserializerConfig, SyslogDeserializerOptions};
-use sol_core::event::Event;
 
 pub use self::{
     bytes::{BytesDeserializer, BytesDeserializerConfig},
@@ -44,10 +44,7 @@ pub trait Deserializer: DynClone + Send + Sync {
     /// by not requiring heap allocations for it.
     ///
     /// **Note**: The type of the produced events depends on the implementation.
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>>;
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>>;
 }
 
 dyn_clone::clone_trait_object!(Deserializer);

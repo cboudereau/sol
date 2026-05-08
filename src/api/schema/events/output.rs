@@ -55,9 +55,7 @@ pub(crate) fn from_tap_payload_to_output_events(t: TapPayload) -> Vec<OutputEven
             .collect(),
         TapPayload::Metric(output, metric_array) => metric_array
             .into_iter()
-            .map(|metric| {
-                OutputEventsPayload::Metric(Metric::new(output.clone(), metric))
-            })
+            .map(|metric| OutputEventsPayload::Metric(Metric::new(output.clone(), metric)))
             .collect(),
         TapPayload::Notification(notification) => {
             vec![OutputEventsPayload::Notification(EventNotification {
@@ -66,9 +64,7 @@ pub(crate) fn from_tap_payload_to_output_events(t: TapPayload) -> Vec<OutputEven
         }
         TapPayload::Trace(output, trace_array) => trace_array
             .into_iter()
-            .map(|trace| {
-                OutputEventsPayload::Trace(Trace::new(output.clone(), trace))
-            })
+            .map(|trace| OutputEventsPayload::Trace(Trace::new(output.clone(), trace)))
             .collect(),
     }
 }

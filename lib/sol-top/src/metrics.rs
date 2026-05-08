@@ -4,12 +4,12 @@ use std::{
 };
 
 use glob::Pattern;
-use tokio::task::JoinHandle;
-use tokio_stream::StreamExt;
 use sol_api_client::{
     Client, SubscriptionClient,
     gql::{ComponentsQueryExt, ComponentsSubscriptionExt, MetricsSubscriptionExt},
 };
+use tokio::task::JoinHandle;
+use tokio_stream::StreamExt;
 
 use crate::state::{self, OutputMetrics, SentEventsMetric};
 use sol_common::config::ComponentKey;
@@ -67,6 +67,10 @@ async fn component_added(
 
 /// Allocated bytes per component
 #[cfg(feature = "allocation-tracing")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn allocated_bytes(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -121,6 +125,10 @@ async fn component_removed(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn received_bytes_totals(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -182,6 +190,10 @@ async fn received_bytes_throughputs(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn received_events_totals(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -242,6 +254,10 @@ async fn received_events_throughputs(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn sent_bytes_totals(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -302,6 +318,10 @@ async fn sent_bytes_throughputs(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn sent_events_totals(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -365,6 +385,10 @@ async fn sent_events_throughputs(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "GraphQL counter is f64 but the dashboard displays it as i64; fractional loss is acceptable"
+)]
 async fn errors_totals(
     client: Arc<SubscriptionClient>,
     tx: state::EventTx,
@@ -507,7 +531,7 @@ pub async fn init_components(
     // Since we don't know currently have a mechanism for scrolling/paging through results,
     // we're using an artificially high page size to capture all likely component configurations.
     let rows = client
-        .components_query(i16::MAX as i64)
+        .components_query(i64::from(i16::MAX))
         .await
         .map_err(|_| ())?
         .data

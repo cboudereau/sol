@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use bytes::BytesMut;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     codecs::{
         JsonSerializer, LengthDelimitedEncoder, LogfmtSerializer, MetricTagValues,
@@ -11,6 +10,7 @@ use sol_lib::{
     },
     event::{Event, EventMetadata, OtelLog},
 };
+use tokio_util::codec::Encoder as _;
 
 use sol_lib::codecs::Encoder;
 
@@ -52,9 +52,7 @@ impl EventData {
     /// Converts this event data into an `Event`.
     pub fn into_event(self) -> Event {
         match self {
-            Self::Log(message) => {
-                Event::Log(OtelLog::from_bytes(message.as_bytes()))
-            }
+            Self::Log(message) => Event::Log(OtelLog::from_bytes(message.as_bytes())),
             Self::LogBuilder(data) => {
                 // Build a Value tree using VRL path parsing, then convert
                 // to OtelLog in one pass (avoids per-insert round-trips).

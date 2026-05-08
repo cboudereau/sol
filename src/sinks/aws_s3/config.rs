@@ -1,5 +1,4 @@
 use aws_sdk_s3::Client as S3Client;
-use tower::ServiceBuilder;
 use sol_lib::{
     TimeZone,
     codecs::{
@@ -9,6 +8,7 @@ use sol_lib::{
     configurable::configurable_component,
     sink::VectorSink,
 };
+use tower::ServiceBuilder;
 
 use super::sink::S3RequestOptions;
 use crate::{

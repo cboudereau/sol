@@ -3,8 +3,6 @@ use std::{error, fmt, path::PathBuf};
 use bytes::{Buf, BufMut};
 use metrics_tracing_context::{MetricsLayer, TracingContextLayer};
 use metrics_util::{debugging::DebuggingRecorder, layers::Layer};
-use tracing::Span;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use sol_buffers::{
     BufferType, EventCount,
     encoding::FixedEncodable,
@@ -17,6 +15,8 @@ use sol_common::{
     byte_size_of::ByteSizeOf,
     finalization::{AddBatchNotifier, BatchNotifier, EventFinalizers, Finalizable},
 };
+use tracing::Span;
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 #[derive(Clone, Debug)]
 pub struct Message<const N: usize> {

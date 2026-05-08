@@ -12,13 +12,7 @@ pub struct Opts {
     /// File format is detected from the file name.
     /// If zero files are specified the default config path
     /// `/etc/sol/sol.yaml` will be targeted.
-    #[arg(
-        id = "config",
-        short,
-        long,
-        env = "SOL_CONFIG",
-        value_delimiter(',')
-    )]
+    #[arg(id = "config", short, long, env = "SOL_CONFIG", value_delimiter(','))]
     paths: Vec<PathBuf>,
 
     /// Vector config files in TOML format.

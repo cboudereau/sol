@@ -5,7 +5,6 @@
 use std::net::SocketAddr;
 
 use futures::TryFutureExt;
-use tonic::{codec::CompressionEncoding, service::RoutesBuilder};
 use sol_lib::{
     codecs::BytesDeserializerConfig,
     configurable::configurable_component,
@@ -15,6 +14,7 @@ use sol_lib::{
         trace::v1::trace_service_server::TraceServiceServer,
     },
 };
+use tonic::{codec::CompressionEncoding, service::RoutesBuilder};
 
 use crate::{
     config::{
@@ -25,7 +25,7 @@ use crate::{
     serde::bool_or_struct,
     sources::{
         Source,
-        opentelemetry::grpc::{LOGS, METRICS, TRACES, Service},
+        opentelemetry::grpc::{LOGS, METRICS, Service, TRACES},
         util::grpc::run_grpc_server_with_routes,
     },
     tls::{MaybeTlsSettings, TlsEnableableConfig},
@@ -77,7 +77,6 @@ pub struct VectorConfig {
     #[configurable(derived)]
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
-
 }
 
 impl VectorConfig {
@@ -152,15 +151,11 @@ impl SourceConfig for VectorConfig {
             .add_service(trace_service)
             .add_service(vector_service);
 
-        let source = run_grpc_server_with_routes(
-            self.address,
-            tls_settings,
-            builder.routes(),
-            cx.shutdown,
-        )
-        .map_err(|error| {
-            error!(message = "Source future failed.", %error);
-        });
+        let source =
+            run_grpc_server_with_routes(self.address, tls_settings, builder.routes(), cx.shutdown)
+                .map_err(|error| {
+                    error!(message = "Source future failed.", %error);
+                });
 
         Ok(Box::pin(source))
     }

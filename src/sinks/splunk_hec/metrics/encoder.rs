@@ -69,6 +69,10 @@ impl HecMetricsEncoder {
                 HecFieldValue::Float(metadata.metric_value),
             )))
             .collect::<HecFieldMap>();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "epoch millis to f64 for Splunk HEC timestamp; precise for dates until year 2255"
+        )]
         let time = metric
             .timestamp()
             .unwrap_or_else(chrono::Utc::now)

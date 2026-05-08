@@ -14,14 +14,14 @@ use mongodb::{
     error::Error as MongoError,
     options::ClientOptions,
 };
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
-use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component, otel_tags,
 };
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     config::{SourceConfig, SourceContext, SourceOutput},
@@ -50,11 +50,19 @@ macro_rules! tags {
 }
 
 macro_rules! counter {
-    ($value:expr_2021) => { $value as f64 };
+    ($value:expr_2021) => {{
+        #[allow(clippy::cast_lossless, clippy::cast_precision_loss)]
+        let v = $value as f64;
+        v
+    }};
 }
 
 macro_rules! gauge {
-    ($value:expr_2021) => { $value as f64 };
+    ($value:expr_2021) => {{
+        #[allow(clippy::cast_lossless, clippy::cast_precision_loss)]
+        let v = $value as f64;
+        v
+    }};
 }
 
 #[derive(Debug, Snafu)]
@@ -129,14 +137,13 @@ impl_generate_config_from_default!(MongoDbMetricsConfig);
 impl SourceConfig for MongoDbMetricsConfig {
     async fn build(&self, mut cx: SourceContext) -> crate::Result<super::Source> {
         let namespace = Some(self.namespace.clone()).filter(|namespace| !namespace.is_empty());
-        let resource = source_otel::build_source_resource("mongodb_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("mongodb_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("mongodb_metrics");
 
-        let sources = try_join_all(
-            self.endpoints
-                .iter()
-                .map(|endpoint| MongoDbMetrics::new(endpoint, namespace.clone(), resource.clone(), scope.clone())),
-        )
+        let sources = try_join_all(self.endpoints.iter().map(|endpoint| {
+            MongoDbMetrics::new(endpoint, namespace.clone(), resource.clone(), scope.clone())
+        }))
         .await?;
 
         let duration = self.scrape_interval_secs;
@@ -154,7 +161,7 @@ impl SourceConfig for MongoDbMetricsConfig {
                 let metrics: Vec<OtelMetric> = metrics.into_iter().flatten().collect();
                 let count = metrics.len();
 
-                let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+                let events: Vec<Event> = metrics.into_iter().map(Event::Metric).collect();
                 if (cx.out.send_batch(events).await).is_err() {
                     emit!(StreamClosedError { count });
                     return Err(());
@@ -177,7 +184,12 @@ impl SourceConfig for MongoDbMetricsConfig {
 impl MongoDbMetrics {
     /// Works only with Standalone connection-string. Collect metrics only from specified instance.
     /// <https://docs.mongodb.com/manual/reference/connection-string/#standard-connection-string-format>
-    async fn new(endpoint: &str, namespace: Option<String>, resource: Resource, scope: InstrumentationScope) -> Result<MongoDbMetrics, BuildError> {
+    async fn new(
+        endpoint: &str,
+        namespace: Option<String>,
+        resource: Resource,
+        scope: InstrumentationScope,
+    ) -> Result<MongoDbMetrics, BuildError> {
         let mut client_options = ClientOptions::parse(endpoint)
             .await
             .context(InvalidEndpointSnafu)?;

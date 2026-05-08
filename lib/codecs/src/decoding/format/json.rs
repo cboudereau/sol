@@ -39,16 +39,11 @@ impl JsonDeserializerConfig {
 
     /// The schema produced by the deserializer.
     pub fn schema_definition(&self) -> schema::Definition {
-        let mut definition =
-            schema::Definition::empty_definition().unknown_fields(Kind::json());
+        let mut definition = schema::Definition::empty_definition().unknown_fields(Kind::json());
 
         {
             let timestamp_key = owned_value_path!("time_unix_nano");
-            definition = definition.try_with_field(
-                &timestamp_key,
-                Kind::json(),
-                Some("timestamp"),
-            );
+            definition = definition.try_with_field(&timestamp_key, Kind::json(), Some("timestamp"));
         }
         definition
     }
@@ -88,10 +83,7 @@ impl JsonDeserializer {
 }
 
 impl Deserializer for JsonDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         if bytes.is_empty() {
             return Ok(smallvec![]);
         }

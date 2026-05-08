@@ -44,7 +44,8 @@ impl GreptimeDBGrpcSink {
         input
             .filter_map(move |event| {
                 ready(
-                    event.try_into_otel_metric()
+                    event
+                        .try_into_otel_metric()
                         .and_then(|m| normalizer.normalize_otel(m))
                         .and_then(|e| e.try_into_otel_metric()),
                 )

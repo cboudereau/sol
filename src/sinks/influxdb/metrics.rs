@@ -2,18 +2,16 @@ use std::{collections::HashMap, future::ready, task::Poll};
 
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, future::BoxFuture, stream};
-use tower::Service;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     event::{MetricView, OtelAttributes},
 };
+use tower::Service;
 
 use crate::{
     config::{AcknowledgementsConfig, Input, SinkConfig, SinkContext},
-    event::{
-        Event, KeyString, OtelMetric,
-    },
+    event::{Event, KeyString, OtelMetric},
     http::HttpClient,
     internal_events::InfluxdbEncodingError,
     sinks::{
@@ -247,7 +245,10 @@ fn create_build_request(
     }
 }
 
-fn merge_tags(event_tags: Option<OtelAttributes>, config_tags: Option<&HashMap<String, String>>) -> Option<OtelAttributes> {
+fn merge_tags(
+    event_tags: Option<OtelAttributes>,
+    config_tags: Option<&HashMap<String, String>>,
+) -> Option<OtelAttributes> {
     let otel_as_metric: Option<OtelAttributes> = event_tags.map(|t| t.into_iter_single().collect());
     match (otel_as_metric, config_tags) {
         (Some(mut event_tags), Some(config_tags)) => {
@@ -327,13 +328,18 @@ fn encode_events(
     output
 }
 
-fn get_type_and_fields(
-    view: &MetricView<'_>,
-) -> (&'static str, Option<HashMap<KeyString, Field>>) {
+fn get_type_and_fields(view: &MetricView<'_>) -> (&'static str, Option<HashMap<KeyString, Field>>) {
     match view {
         MetricView::Sum { value } => ("counter", Some(to_fields(*value))),
         MetricView::Gauge { value } => ("gauge", Some(to_fields(*value))),
-        MetricView::Set { values } => ("set", Some(to_fields(values.len() as f64))),
+        MetricView::Set { values } => {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "set cardinality; precise for |v| <= 2^53"
+            )]
+            let v = values.len() as f64;
+            ("set", Some(to_fields(v)))
+        }
         MetricView::Histogram {
             bounds,
             counts,
@@ -343,12 +349,7 @@ fn get_type_and_fields(
             let mut fields: HashMap<KeyString, Field> = bounds
                 .iter()
                 .zip(counts.iter())
-                .map(|(&limit, &cnt)| {
-                    (
-                        format!("bucket_{limit}").into(),
-                        Field::UnsignedInt(cnt),
-                    )
-                })
+                .map(|(&limit, &cnt)| (format!("bucket_{limit}").into(), Field::UnsignedInt(cnt)))
                 .collect();
             fields.insert("count".into(), Field::UnsignedInt(*count));
             fields.insert("sum".into(), Field::Float(*sum));
@@ -374,7 +375,13 @@ fn get_type_and_fields(
 
             ("summary", Some(fields))
         }
-        MetricView::ExponentialHistogram { count, sum, min, max, .. } => {
+        MetricView::ExponentialHistogram {
+            count,
+            sum,
+            min,
+            max,
+            ..
+        } => {
             let mut fields: HashMap<KeyString, Field> = HashMap::new();
             fields.insert("count".into(), Field::UnsignedInt(*count));
             fields.insert("sum".into(), Field::Float(*sum));
@@ -385,7 +392,12 @@ fn get_type_and_fields(
                 fields.insert("max".into(), Field::Float(*mx));
             }
             if *count > 0 {
-                fields.insert("avg".into(), Field::Float(*sum / *count as f64));
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "exp-histogram count to f64 for average; precise for |v| <= 2^53"
+                )]
+                let count_f64 = *count as f64;
+                fields.insert("avg".into(), Field::Float(*sum / count_f64));
             }
             ("histogram", Some(fields))
         }
@@ -405,8 +417,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        event::metric::MetricKind,
         event::OtelMetric,
+        event::metric::MetricKind,
         sinks::influxdb::test_util::{assert_fields, split_line_protocol, tags, ts},
     };
 
@@ -465,10 +477,14 @@ mod tests {
     #[test]
     fn test_encode_set() {
         let events = vec![
-            OtelMetric::new_set_from_values("users", MetricKind::Incremental, vec!["alice".to_string(), "bob".to_string()])
-                .with_namespace(Some("ns"))
-                .with_tags(Some(tags()))
-                .with_timestamp(Some(ts())),
+            OtelMetric::new_set_from_values(
+                "users",
+                MetricKind::Incremental,
+                vec!["alice".to_string(), "bob".to_string()],
+            )
+            .with_namespace(Some("ns"))
+            .with_tags(Some(tags()))
+            .with_timestamp(Some(ts())),
         ];
 
         let line_protocols = encode_events(ProtocolVersion::V2, events, None, None, &[]);
@@ -624,12 +640,9 @@ mod tests {
 
     #[test]
     fn test_encode_distribution_as_histogram() {
+        let samples = sol_lib::samples![1.0 => 3, 2.0 => 3, 3.0 => 2];
         let events = vec![
-            OtelMetric::new_histogram_from_samples(
-                "requests",
-                MetricKind::Incremental,
-                &sol_lib::samples![1.0 => 3, 2.0 => 3, 3.0 => 2],
-            )
+            OtelMetric::new_histogram_from_samples("requests", MetricKind::Incremental, &samples)
                 .with_namespace(Some("ns"))
                 .with_tags(Some(tags()))
                 .with_timestamp(Some(ts())),
@@ -711,14 +724,13 @@ mod integration_tests {
 
     use crate::{
         config::{SinkConfig, SinkContext},
-        event::{
-            Event, OtelMetric,
-            metric::MetricKind,
-        },
+        event::{Event, OtelMetric, metric::MetricKind},
         http::HttpClient,
         sinks::influxdb::{
             InfluxDb1Settings, InfluxDb2Settings,
-            metrics::{InfluxDbConfig, InfluxDbSvc, default_summary_quantiles},
+            metrics::{
+                InfluxDbConfig, InfluxDbSvc, default_resource_to_tags, default_summary_quantiles,
+            },
             test_util::{
                 BUCKET, ORG, TOKEN, address_v1, address_v2, cleanup_v1, format_timestamp,
                 onboarding_v1, onboarding_v2, query_v1,
@@ -767,6 +779,7 @@ mod integration_tests {
             quantiles: default_summary_quantiles(),
             tags: None,
             default_namespace: None,
+            resource_to_tags: default_resource_to_tags(),
             acknowledgements: Default::default(),
         };
 
@@ -810,6 +823,11 @@ mod integration_tests {
             let timestamp = format_timestamp(metric.timestamp().unwrap(), SecondsFormat::Nanos);
             let res = query_v1_json(url, &format!("select * from {database}..\"{name}\"")).await;
 
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test counter value fits in isize"
+            )]
+            let int_value = value as isize;
             assert_eq!(
                 res,
                 serde_json::json! {
@@ -818,7 +836,7 @@ mod integration_tests {
                         "series": [{
                             "name": name,
                             "columns": ["time", "metric_type", "production", "region", "value"],
-                            "values": [[timestamp, "counter", "true", "us-west-1", value as isize]]
+                            "values": [[timestamp, "counter", "true", "us-west-1", int_value]]
                         }]
                     }]}
                 }
@@ -859,6 +877,7 @@ mod integration_tests {
             tags: None,
             tls: None,
             default_namespace: None,
+            resource_to_tags: default_resource_to_tags(),
             acknowledgements: Default::default(),
         };
 
@@ -871,7 +890,7 @@ mod integration_tests {
         let mut events = Vec::new();
         for i in 0..10 {
             let event = Event::Metric(
-                OtelMetric::new_counter(metric.clone(), MetricKind::Incremental, i as f64)
+                OtelMetric::new_counter(metric.clone(), MetricKind::Incremental, f64::from(i))
                     .with_namespace(Some("ns"))
                     .with_tags(Some(otel_tags!(
                         "region" => "us-west-1",
@@ -948,13 +967,17 @@ mod integration_tests {
 
     fn create_event(i: i32) -> Event {
         Event::Metric(
-            OtelMetric::new_counter(format!("counter-{i}"), MetricKind::Incremental, i as f64)
-                .with_namespace(Some("ns"))
-                .with_tags(Some(otel_tags!(
-                    "region" => "us-west-1",
-                    "production" => "true",
-                )))
-                .with_timestamp(Some(Utc::now())),
+            OtelMetric::new_counter(
+                format!("counter-{i}"),
+                MetricKind::Incremental,
+                f64::from(i),
+            )
+            .with_namespace(Some("ns"))
+            .with_tags(Some(otel_tags!(
+                "region" => "us-west-1",
+                "production" => "true",
+            )))
+            .with_timestamp(Some(Utc::now())),
         )
     }
 }

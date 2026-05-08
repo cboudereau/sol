@@ -4,7 +4,6 @@ use std::{
 };
 
 use futures::StreamExt;
-use tokio::sync::{mpsc, watch};
 use sol_lib::{
     config::ComponentKey,
     fanout,
@@ -14,6 +13,7 @@ use sol_lib::{
         topology::{TapOutput, TapResource},
     },
 };
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     api::schema::events::{create_events_stream, log, metric, output::OutputEventsPayload},

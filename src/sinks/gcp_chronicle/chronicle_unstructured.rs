@@ -15,8 +15,6 @@ use indoc::indoc;
 use serde::Serialize;
 use serde_json::json;
 use snafu::Snafu;
-use tokio_util::codec::Encoder as _;
-use tower::{Service, ServiceBuilder};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     config::{AcknowledgementsConfig, Input, telemetry},
@@ -25,6 +23,8 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     sink::VectorSink,
 };
+use tokio_util::codec::Encoder as _;
+use tower::{Service, ServiceBuilder};
 use vrl::value::Kind;
 
 use crate::{

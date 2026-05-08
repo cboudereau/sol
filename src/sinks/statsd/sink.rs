@@ -5,13 +5,13 @@ use futures_util::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use tower::Service;
 use sol_lib::{
     event::Event,
     internal_event::Protocol,
     sink::StreamSink,
     stream::{BatcherSettings, DriverResponse},
 };
+use tower::Service;
 
 use super::{
     batch::StatsdBatchSizer, normalizer::StatsdNormalizer, request_builder::StatsdRequestBuilder,
@@ -35,7 +35,7 @@ where
     S::Response: DriverResponse,
 {
     /// Creates a new `StatsdSink`.
-    pub fn new(
+    pub const fn new(
         service: S,
         batch_settings: BatcherSettings,
         request_builder: StatsdRequestBuilder,

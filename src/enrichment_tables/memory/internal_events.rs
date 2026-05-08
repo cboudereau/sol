@@ -65,8 +65,18 @@ pub(crate) struct MemoryEnrichmentTableFlushed {
 impl InternalEvent for MemoryEnrichmentTableFlushed {
     fn emit(self) {
         counter!("memory_enrichment_table_flushes_total",).increment(1);
-        gauge!("memory_enrichment_table_objects_count",).set(self.new_objects_count as f64);
-        gauge!("memory_enrichment_table_byte_size",).set(self.new_byte_size as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "enrichment table gauge; precise for |v| <= 2^53"
+        )]
+        let objects_count = self.new_objects_count as f64;
+        gauge!("memory_enrichment_table_objects_count",).set(objects_count);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "enrichment table gauge; precise for |v| <= 2^53"
+        )]
+        let byte_size = self.new_byte_size as f64;
+        gauge!("memory_enrichment_table_byte_size",).set(byte_size);
     }
 }
 

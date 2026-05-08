@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
 use snafu::ResultExt;
-use tokio::net::UdpSocket;
 use sol_lib::configurable::configurable_component;
+use tokio::net::UdpSocket;
 
 use super::{ConnectorType, HostAndPort, NetError, NetworkConnector, net_error::*};
 use crate::{dns, net};

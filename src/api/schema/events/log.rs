@@ -44,7 +44,7 @@ impl Log {
 
     /// Log message
     async fn message(&self) -> Option<String> {
-        self.get_body().map(Into::into)
+        self.get_body()
     }
 
     /// Log timestamp
@@ -66,9 +66,13 @@ impl Log {
 
     /// Get JSON field data on the log event, by field name
     async fn json(&self, field: String) -> Option<String> {
-        self.event.parse_path_and_get_value(&field).ok().flatten().map(|field| {
-            serde_json::to_string(&field)
-                .expect("JSON serialization of trace event field failed. Please report.")
-        })
+        self.event
+            .parse_path_and_get_value(&field)
+            .ok()
+            .flatten()
+            .map(|field| {
+                serde_json::to_string(&field)
+                    .expect("JSON serialization of trace event field failed. Please report.")
+            })
     }
 }

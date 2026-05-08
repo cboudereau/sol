@@ -11,6 +11,7 @@ use std::{
 
 use futures_util::{Stream, StreamExt, future::ready};
 use metrics_tracing_context::MetricsLayer;
+use sol_lib::lookup::event_path;
 use tokio::sync::{
     broadcast::{self, Receiver, Sender},
     oneshot,
@@ -26,7 +27,6 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 pub use tracing_tower::{InstrumentableService, InstrumentedService};
-use sol_lib::lookup::event_path;
 use vrl::value::Value;
 
 use crate::event::OtelLog;

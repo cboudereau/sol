@@ -153,7 +153,7 @@ impl From<FluentValue> for Value {
                 .unwrap_or_else(|| Value::Bytes(i.to_string().into())),
             rmpv::Value::F32(f) => {
                 // serde_json converts NaN to Null, so we model that behavior here since this is non-fallible
-                NotNan::new(f as f64)
+                NotNan::new(f64::from(f))
                     .map(Value::Float)
                     .unwrap_or(Value::Null)
             }
@@ -247,6 +247,7 @@ mod test {
     }
 
     quickcheck! {
+        #[allow(clippy::cast_possible_wrap)]
         fn from_u64(input: u64) -> () {
             if input > i64::MAX as u64 {
                 assert_eq!(Value::from(FluentValue(rmpv::Value::Integer(rmpv::Integer::from(input)))),
@@ -264,7 +265,7 @@ mod test {
           if input.is_nan() {
               assert_eq!(val, Value::Null);
           } else {
-              assert_relative_eq!(input as f64, val.as_float().unwrap().into_inner());
+              assert_relative_eq!(f64::from(input), val.as_float().unwrap().into_inner());
           }
         }
     }

@@ -3,9 +3,7 @@ use futures::{StreamExt, channel::mpsc::Receiver, stream};
 use http::header::AUTHORIZATION;
 use hyper::StatusCode;
 use indoc::indoc;
-use sol_lib::event::{
-    BatchNotifier, BatchStatus, Event, OtelLog, MetricKind, OtelMetric,
-};
+use sol_lib::event::{BatchNotifier, BatchStatus, Event, MetricKind, OtelLog, OtelMetric};
 
 use crate::{
     config::SinkConfig,
@@ -81,7 +79,11 @@ async fn metrics_real_endpoint() {
         let (batch, receiver) = BatchNotifier::new_with_receiver();
         let events: Vec<_> = (0..10)
             .map(|index| {
-                Event::Metric(OtelMetric::new_counter("counter", MetricKind::Absolute, index as f64))
+                Event::Metric(OtelMetric::new_counter(
+                    "counter",
+                    MetricKind::Absolute,
+                    f64::from(index),
+                ))
             })
             .collect();
         let stream = map_event_batch_stream(stream::iter(events.clone()), Some(batch));
@@ -100,12 +102,12 @@ async fn metrics_shape() {
                 Event::Metric(OtelMetric::new_counter(
                     format!("counter_{index}"),
                     MetricKind::Absolute,
-                    index as f64,
+                    f64::from(index),
                 )),
                 Event::Metric(OtelMetric::new_counter(
                     format!("counter_{index}"),
                     MetricKind::Absolute,
-                    (index + index) as f64,
+                    f64::from(index + index),
                 )),
             ]
         })
@@ -234,8 +236,16 @@ async fn error_scenario_real_endpoint() {
         let (sink, _) = config.build(cx).await.unwrap();
         let (batch, receiver) = BatchNotifier::new_with_receiver();
         let events = vec![
-            Event::Metric(OtelMetric::new_counter("counter", MetricKind::Absolute, 1.0)),
-            Event::Metric(OtelMetric::new_counter("counter", MetricKind::Absolute, 2.0)),
+            Event::Metric(OtelMetric::new_counter(
+                "counter",
+                MetricKind::Absolute,
+                1.0,
+            )),
+            Event::Metric(OtelMetric::new_counter(
+                "counter",
+                MetricKind::Absolute,
+                2.0,
+            )),
         ];
         let stream = map_event_batch_stream(stream::iter(events.clone()), Some(batch));
 

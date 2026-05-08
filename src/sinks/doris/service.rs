@@ -13,12 +13,12 @@ use bytes::Bytes;
 use http::Response;
 use serde_json;
 use snafu::Snafu;
-use std::task::{Context, Poll};
-use tracing::{info, warn};
 use sol_common::{
     finalization::EventStatus,
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
 };
+use std::task::{Context, Poll};
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct DorisService {

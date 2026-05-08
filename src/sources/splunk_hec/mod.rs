@@ -19,9 +19,6 @@ use serde_json::{
     de::{Read as JsonRead, StrRead},
 };
 use snafu::Snafu;
-use tokio::net::TcpStream;
-use tower::ServiceBuilder;
-use tracing::Span;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     config::{insert_source_metadata, insert_standard_vector_source_metadata},
@@ -34,6 +31,9 @@ use sol_lib::{
     source_sender::SendError,
     tls::MaybeTlsIncomingStream,
 };
+use tokio::net::TcpStream;
+use tower::ServiceBuilder;
+use tracing::Span;
 use vrl::value::{Kind, kind::Collection};
 use warp::{
     Filter, Reply,
@@ -204,14 +204,13 @@ impl SourceConfig for SplunkConfig {
 
     fn outputs(&self) -> Vec<SourceOutput> {
         let schema_definition = {
-            let definition = sol_lib::schema::Definition::empty_definition()
-                .with_event_field(
-                    &owned_value_path!("line"),
-                    Kind::object(Collection::empty())
-                        .or_array(Collection::empty())
-                        .or_undefined(),
-                    None,
-                );
+            let definition = sol_lib::schema::Definition::empty_definition().with_event_field(
+                &owned_value_path!("line"),
+                Kind::object(Collection::empty())
+                    .or_array(Collection::empty())
+                    .or_undefined(),
+                None,
+            );
 
             definition.with_event_field(
                 &owned_value_path!("body"),
@@ -678,17 +677,16 @@ impl<'de, R: JsonRead<'de>> From<EventIteratorGenerator<'de, R>> for EventIterat
                 // 3. Use the `remote`: SocketAddr value provided by warp
                 DefaultExtractor::new_with(
                     "host",
-                    OptionalValuePath { path: Some(owned_value_path!("host")) },
+                    OptionalValuePath {
+                        path: Some(owned_value_path!("host")),
+                    },
                     f.remote_addr
                         .or_else(|| f.remote.map(|addr| addr.to_string()))
                         .map(Value::from),
                 ),
                 DefaultExtractor::new("index", OptionalValuePath::new(INDEX)),
                 DefaultExtractor::new("source", OptionalValuePath::new(SOURCE)),
-                DefaultExtractor::new(
-                    "sourcetype",
-                    OptionalValuePath::new(SOURCETYPE),
-                ),
+                DefaultExtractor::new("sourcetype", OptionalValuePath::new(SOURCETYPE)),
             ],
             batch: f.batch,
             token: f.token,
@@ -708,12 +706,7 @@ impl<'de, R: JsonRead<'de>> EventIterator<'de, R> {
 
         // Process channel field
         if let Some(JsonValue::String(guid)) = json.get_mut("channel").map(JsonValue::take) {
-            insert_source_metadata(
-                SplunkConfig::NAME,
-                &mut log,
-                lookup::path!(CHANNEL),
-                guid,
-            );
+            insert_source_metadata(SplunkConfig::NAME, &mut log, lookup::path!(CHANNEL), guid);
         } else if let Some(guid) = self.channel.as_ref() {
             insert_source_metadata(
                 SplunkConfig::NAME,
@@ -746,18 +739,31 @@ impl<'de, R: JsonRead<'de>> EventIterator<'de, R> {
             None => (),
             Some(Some(t)) => {
                 if let Some(t) = t.as_u64() {
-                    let time = parse_timestamp(t as i64)
+                    #[expect(
+                        clippy::cast_possible_wrap,
+                        reason = "Splunk HEC epoch timestamp (u64) fits i64 for practical dates"
+                    )]
+                    let ts = t as i64;
+                    let time = parse_timestamp(ts)
                         .ok_or(ApiError::InvalidDataFormat { event: self.events })?;
 
                     self.time = Time::Provided(time);
                 } else if let Some(t) = t.as_f64() {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "Splunk HEC epoch seconds floor value fits i64"
+                    )]
+                    let secs = t.floor() as i64;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "sub-second fractional nanoseconds are non-negative and fit u32"
+                    )]
+                    let nanos = (t.fract() * 1000.0 * 1000.0 * 1000.0) as u32;
                     self.time = Time::Provided(
-                        Utc.timestamp_opt(
-                            t.floor() as i64,
-                            (t.fract() * 1000.0 * 1000.0 * 1000.0) as u32,
-                        )
-                        .single()
-                        .expect("invalid timestamp"),
+                        Utc.timestamp_opt(secs, nanos)
+                            .single()
+                            .expect("invalid timestamp"),
                     );
                 } else {
                     return Err(ApiError::InvalidDataFormat { event: self.events }.into());
@@ -808,16 +814,16 @@ impl<'de, R: JsonRead<'de>> EventIterator<'de, R> {
                 self.events_received
                     .emit(CountByteSize(1, log.estimated_json_encoded_size_of()));
 
-                log.metadata_mut()
-                    .value_mut()
-                    .insert(lookup::path!("vector", "ingest_timestamp"), chrono::Utc::now());
+                log.metadata_mut().value_mut().insert(
+                    lookup::path!("vector", "ingest_timestamp"),
+                    chrono::Utc::now(),
+                );
 
                 Ok(log)
             }
             None => Err(ApiError::MissingEventField { event: self.events }.into()),
         }
     }
-
 }
 
 impl<'de, R: JsonRead<'de>> Iterator for EventIterator<'de, R> {
@@ -887,10 +893,7 @@ struct DefaultExtractor {
 }
 
 impl DefaultExtractor {
-    const fn new(
-        field: &'static str,
-        to_field: OptionalValuePath,
-    ) -> Self {
+    const fn new(field: &'static str, to_field: OptionalValuePath) -> Self {
         DefaultExtractor {
             field,
             to_field,
@@ -1414,13 +1417,22 @@ mod tests {
 
         let event = channel_n(vec![message], sink, source).await.remove(0);
 
-        assert_eq!(
-            event.as_log().get("body").unwrap(),
-            message.into()
+        assert_eq!(event.as_log().get("body").unwrap(), message.into());
+        assert!(
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("splunk_hec", "timestamp"))
+                .is_some()
         );
-        assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
         assert_eq!(
-            event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("vector", "source_type"))
+                .unwrap(),
             &Value::from("splunk_hec")
         );
         assert!(event.metadata().splunk_hec_token().is_none());
@@ -1438,13 +1450,22 @@ mod tests {
 
         let event = channel_n(vec![message], sink, source).await.remove(0);
 
-        assert_eq!(
-            event.as_log().get("body").unwrap(),
-            message.into()
+        assert_eq!(event.as_log().get("body").unwrap(), message.into());
+        assert!(
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("splunk_hec", "timestamp"))
+                .is_some()
         );
-        assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
         assert_eq!(
-            event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("vector", "source_type"))
+                .unwrap(),
             &Value::from("splunk_hec")
         );
         assert!(event.metadata().splunk_hec_token().is_none());
@@ -1466,13 +1487,22 @@ mod tests {
         let events = channel_n(messages.clone(), sink, source).await;
 
         for (msg, event) in messages.into_iter().zip(events.into_iter()) {
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                msg.into()
+            assert_eq!(event.as_log().get("body").unwrap(), msg.into());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
             assert!(event.metadata().splunk_hec_token().is_none());
@@ -1491,13 +1521,22 @@ mod tests {
 
         let event = channel_n(vec![message], sink, source).await.remove(0);
 
-        assert_eq!(
-            event.as_log().get("body").unwrap(),
-            message.into()
+        assert_eq!(event.as_log().get("body").unwrap(), message.into());
+        assert!(
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("splunk_hec", "timestamp"))
+                .is_some()
         );
-        assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
         assert_eq!(
-            event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+            event
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("vector", "source_type"))
+                .unwrap(),
             &Value::from("splunk_hec")
         );
         assert!(event.metadata().splunk_hec_token().is_none());
@@ -1519,13 +1558,22 @@ mod tests {
         let events = channel_n(messages.clone(), sink, source).await;
 
         for (msg, event) in messages.into_iter().zip(events.into_iter()) {
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                msg.into()
+            assert_eq!(event.as_log().get("body").unwrap(), msg.into());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
             assert!(event.metadata().splunk_hec_token().is_none());
@@ -1549,9 +1597,19 @@ mod tests {
         let event = collect_n(source, 1).await.remove(0).into_log();
         assert_eq!(event.get("greeting").unwrap(), "hello".into());
         assert_eq!(event.get("name").unwrap(), "bob".into());
-        assert!(event.metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
+        assert!(
+            event
+                .metadata()
+                .value()
+                .get(path!("splunk_hec", "timestamp"))
+                .is_some()
+        );
         assert_eq!(
-            event.metadata().value().get(path!("vector", "source_type")).unwrap(),
+            event
+                .metadata()
+                .value()
+                .get(path!("vector", "source_type"))
+                .unwrap(),
             &Value::from("splunk_hec")
         );
         assert!(event.metadata().splunk_hec_token().is_none());
@@ -1594,10 +1652,7 @@ mod tests {
 
         let event = collect_n(source, 1).await.remove(0);
         // In Vector namespace, the `line` attribute is preserved as-is (no renaming to body/message)
-        assert_eq!(
-            event.as_log().get("line").unwrap(),
-            "hello".into()
-        );
+        assert_eq!(event.as_log().get("line").unwrap(), "hello".into());
         assert!(event.metadata().splunk_hec_token().is_none());
     }
 
@@ -1610,17 +1665,31 @@ mod tests {
             assert_eq!(200, post(address, "services/collector/raw", message).await);
 
             let event = collect_n(source, 1).await.remove(0);
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
-            assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "splunk_channel")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "splunk_channel"))
+                    .unwrap(),
                 &Value::from("channel")
             );
-            assert!(event.as_log().metadata().value().get(path!("vector", "ingest_timestamp")).is_some());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "ingest_timestamp"))
+                    .is_some()
+            );
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
             assert!(event.metadata().splunk_hec_token().is_none());
@@ -1638,17 +1707,31 @@ mod tests {
 
             let event = collect_n(source, 1).await.remove(0);
             // The HEC JSON object event stores "message" as a record attribute (not body).
+            assert_eq!(event.as_log().get("message").unwrap(), "root".into());
             assert_eq!(
-                event.as_log().get("message").unwrap(),
-                "root".into()
-            );
-            assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "splunk_channel")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "splunk_channel"))
+                    .unwrap(),
                 &Value::from("channel")
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
+            );
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
             assert!(event.metadata().splunk_hec_token().is_none());
@@ -1674,7 +1757,12 @@ mod tests {
 
             let event = collect_n(source, 1).await.remove(0);
             assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "splunk_channel")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "splunk_channel"))
+                    .unwrap(),
                 &Value::from("guid")
             );
         })
@@ -1700,7 +1788,12 @@ mod tests {
             let event = collect_n(source, 1).await.remove(0);
             // Host from xff in raw endpoint is stored in metadata["splunk_hec"]["host"]
             assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "host")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "host"))
+                    .unwrap(),
                 &Value::from("10.0.0.1")
             );
         })
@@ -1777,7 +1870,12 @@ mod tests {
 
             let event = collect_n(source, 1).await.remove(0);
             assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "splunk_channel")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "splunk_channel"))
+                    .unwrap(),
                 &Value::from("guid")
             );
         })
@@ -1876,10 +1974,7 @@ mod tests {
 
             let event = channel_n(vec![message], sink, source).await.remove(0);
 
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert_eq!(
                 &event.metadata().splunk_hec_token().as_ref().unwrap()[..],
                 TOKEN
@@ -1897,17 +1992,31 @@ mod tests {
             assert_eq!(200, post(address, "services/collector/raw", message).await);
 
             let event = collect_n(source, 1).await.remove(0);
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
-            assert_eq!(
-                event.as_log().metadata().value().get(path!("splunk_hec", "splunk_channel")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "splunk_channel"))
+                    .unwrap(),
                 &Value::from("channel")
             );
-            assert!(event.as_log().metadata().value().get(path!("vector", "ingest_timestamp")).is_some());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "ingest_timestamp"))
+                    .is_some()
+            );
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
             assert_eq!(
@@ -1933,10 +2042,7 @@ mod tests {
 
             let event = channel_n(vec![message], sink, source).await.remove(0);
 
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert!(event.metadata().splunk_hec_token().is_none());
         })
         .await;
@@ -1957,10 +2063,7 @@ mod tests {
 
             let event = channel_n(vec![message], sink, source).await.remove(0);
 
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert_eq!(
                 &event.metadata().splunk_hec_token().as_ref().unwrap()[..],
                 TOKEN
@@ -1981,13 +2084,22 @@ mod tests {
             );
 
             let event = collect_n(source, 1).await.remove(0);
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "first".into()
+            assert_eq!(event.as_log().get("body").unwrap(), "first".into());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
         })
@@ -2008,13 +2120,22 @@ mod tests {
             );
 
             let event = collect_n(source, 1).await.remove(0);
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "first".into()
+            assert_eq!(event.as_log().get("body").unwrap(), "first".into());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
         })
@@ -2033,13 +2154,22 @@ mod tests {
             );
 
             let event = collect_n(source, 1).await.remove(0);
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "first".into()
+            assert_eq!(event.as_log().get("body").unwrap(), "first".into());
+            assert!(
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("splunk_hec", "timestamp"))
+                    .is_some()
             );
-            assert!(event.as_log().metadata().value().get(path!("splunk_hec", "timestamp")).is_some());
             assert_eq!(
-                event.as_log().metadata().value().get(path!("vector", "source_type")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!("vector", "source_type"))
+                    .unwrap(),
                 &Value::from("splunk_hec")
             );
         })
@@ -2165,10 +2295,7 @@ mod tests {
 
             let event = channel_n(vec![message], sink, source).await.remove(0);
 
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                message.into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), message.into());
             assert!(event.as_log().get("host").is_none());
         })
         .await;
@@ -2525,61 +2652,57 @@ mod tests {
             ..Default::default()
         };
 
-        let definition = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definition = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(
-            &owned_value_path!("line"),
-            Kind::object(Collection::empty())
-                .or_array(Collection::empty())
-                .or_undefined(),
-            None,
-        )
-        .with_event_field(
-            &owned_value_path!("body"),
-            Kind::bytes().or_undefined(),
-            Some(meaning::MESSAGE),
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("splunk_hec", "host"),
-            Kind::bytes(),
-            Some("host"),
-        )
-        .with_metadata_field(
-            &owned_value_path!("splunk_hec", "channel"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("splunk_hec", "index"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("splunk_hec", "source"),
-            Kind::bytes(),
-            Some("service"),
-        )
-        .with_metadata_field(
-            &owned_value_path!("splunk_hec", "sourcetype"),
-            Kind::bytes(),
-            None,
-        );
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(
+                    &owned_value_path!("line"),
+                    Kind::object(Collection::empty())
+                        .or_array(Collection::empty())
+                        .or_undefined(),
+                    None,
+                )
+                .with_event_field(
+                    &owned_value_path!("body"),
+                    Kind::bytes().or_undefined(),
+                    Some(meaning::MESSAGE),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("splunk_hec", "host"),
+                    Kind::bytes(),
+                    Some("host"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("splunk_hec", "channel"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("splunk_hec", "index"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("splunk_hec", "source"),
+                    Kind::bytes(),
+                    Some("service"),
+                )
+                .with_metadata_field(
+                    &owned_value_path!("splunk_hec", "sourcetype"),
+                    Kind::bytes(),
+                    None,
+                );
 
         assert_eq!(definition, Some(expected_definition));
     }

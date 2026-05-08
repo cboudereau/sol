@@ -12,9 +12,6 @@ use bytes::{Buf, BufMut};
 use clap::{Arg, Command};
 use hdrhistogram::Histogram;
 use rand::Rng;
-use tokio::{select, sync::oneshot, task, time};
-use tracing::{Span, debug, info};
-use tracing_subscriber::EnvFilter;
 use sol_buffers::{
     BufferType, Bufferable, EventCount, MemoryBufferSize, WhenFull,
     encoding::FixedEncodable,
@@ -29,6 +26,9 @@ use sol_common::{
         AddBatchNotifier, BatchNotifier, EventFinalizer, EventFinalizers, EventStatus, Finalizable,
     },
 };
+use tokio::{select, sync::oneshot, task, time};
+use tracing::{Span, debug, info};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VariableMessage {

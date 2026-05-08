@@ -8,11 +8,11 @@ use std::{
 use async_compression::tokio::bufread::GzipDecoder;
 use crc::Crc;
 use serde::{Deserialize, Serialize};
+use sol_common::constants::GZIP_MAGIC;
 use tokio::{
     fs::{self, File},
     io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, BufReader},
 };
-use sol_common::constants::GZIP_MAGIC;
 
 use crate::{
     AsyncFileInfo, internal_events::FileSourceInternalEvents, metadata_ext::PortableFileExt,

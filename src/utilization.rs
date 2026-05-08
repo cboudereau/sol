@@ -15,12 +15,12 @@ use mock_instant::global::Instant;
 use futures::{Stream, StreamExt};
 use metrics::Gauge;
 use pin_project::pin_project;
+use sol_lib::{id::ComponentKey, shutdown::ShutdownSignal, stats};
 use tokio::{
     sync::mpsc::{Receiver, Sender, channel},
     time::interval,
 };
 use tokio_stream::wrappers::IntervalStream;
-use sol_lib::{id::ComponentKey, shutdown::ShutdownSignal, stats};
 
 const UTILIZATION_EMITTER_DURATION: Duration = Duration::from_secs(5);
 

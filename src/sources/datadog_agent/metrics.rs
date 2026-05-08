@@ -5,8 +5,8 @@ use http::StatusCode;
 use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
     metrics::v1::{
-        self as otel_metrics, metric, number_data_point::Value as NDPValue, AggregationTemporality,
-        Metric as OtelMetricProto,
+        self as otel_metrics, AggregationTemporality, Metric as OtelMetricProto, metric,
+        number_data_point::Value as NDPValue,
     },
     resource::v1::Resource,
 };
@@ -19,8 +19,8 @@ use sol_lib::{
 };
 use warp::{Filter, filters::BoxedFilter, path, path::FullPath, reply::Response};
 
-use super::ddsketch::AgentDDSketch;
 use super::ddmetric_proto::{MetricPayload, SketchPayload, metric_payload};
+use super::ddsketch::AgentDDSketch;
 use super::{ApiKeyQueryParams, DatadogAgentSource, RequestHandler};
 use crate::{
     common::{
@@ -182,12 +182,13 @@ fn decode_datadog_sketches(
         return Ok(Vec::new());
     }
 
-    let metrics = decode_ddsketch(body, &api_key, split_metric_namespace, scope).map_err(|error| {
-        ErrorMessage::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("Error decoding Datadog sketch: {error:?}"),
-        )
-    })?;
+    let metrics =
+        decode_ddsketch(body, &api_key, split_metric_namespace, scope).map_err(|error| {
+            ErrorMessage::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Error decoding Datadog sketch: {error:?}"),
+            )
+        })?;
 
     events_received.emit(CountByteSize(
         metrics.len(),
@@ -210,12 +211,13 @@ fn decode_datadog_series_v2(
         return Ok(Vec::new());
     }
 
-    let metrics = decode_ddseries_v2(body, &api_key, split_metric_namespace, scope).map_err(|error| {
-        ErrorMessage::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("Error decoding Datadog sketch: {error:?}"),
-        )
-    })?;
+    let metrics =
+        decode_ddseries_v2(body, &api_key, split_metric_namespace, scope).map_err(|error| {
+            ErrorMessage::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Error decoding Datadog sketch: {error:?}"),
+            )
+        })?;
 
     events_received.emit(CountByteSize(
         metrics.len(),
@@ -230,10 +232,7 @@ fn dd_tags_to_attributes(tags: Vec<String>) -> Vec<KeyValue> {
     tags.iter()
         .map(|tag| {
             let (key, tag_value) = extract_tag_key_and_value(tag);
-            let value = match tag_value {
-                Some(v) => Some(string_value(v)),
-                None => None,
-            };
+            let value = tag_value.map(string_value);
             KeyValue { key, value }
         })
         .collect()
@@ -283,7 +282,11 @@ fn build_otel_metric_event(
 
 /// Converts a DD timestamp (seconds since epoch) to nanoseconds.
 /// Negative (pre-epoch) timestamps are clamped to 0.
-fn dd_ts_to_nanos(ts: i64) -> u64 {
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "ts is guaranteed positive after the <= 0 early return"
+)]
+const fn dd_ts_to_nanos(ts: i64) -> u64 {
     if ts <= 0 {
         return 0;
     }
@@ -371,9 +374,7 @@ pub(crate) fn decode_ddseries_v2(
                             dp_attrs.push(KeyValue {
                                 key: "interval_ms".to_string(),
                                 value: Some(AnyValue {
-                                    value: Some(any_value::Value::IntValue(
-                                        i64::from(interval) * 1000,
-                                    )),
+                                    value: Some(any_value::Value::IntValue(interval * 1000)),
                                 }),
                             });
                         }
@@ -400,6 +401,11 @@ pub(crate) fn decode_ddseries_v2(
                     .points
                     .iter()
                     .map(|dd_point| {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "DD metric interval (i64) is a small positive seconds value"
+                        )]
                         let i = Some(serie.interval)
                             .filter(|v| *v != 0)
                             .map(|v| v as u32)
@@ -423,9 +429,7 @@ pub(crate) fn decode_ddseries_v2(
                                     time_unix_nano: dd_ts_to_nanos(dd_point.timestamp),
                                     exemplars: vec![],
                                     flags: 0,
-                                    value: Some(NDPValue::AsDouble(
-                                        dd_point.value * (i as f64),
-                                    )),
+                                    value: Some(NDPValue::AsDouble(dd_point.value * f64::from(i))),
                                 }],
                                 aggregation_temporality: AggregationTemporality::Delta as i32,
                                 is_monotonic: true,
@@ -468,14 +472,7 @@ fn decode_datadog_series_v1(
     let decoded_metrics: Vec<Event> = metrics
         .series
         .into_iter()
-        .flat_map(|m| {
-            into_otel_metric(
-                m,
-                api_key.clone(),
-                split_metric_namespace,
-                scope,
-            )
-        })
+        .flat_map(|m| into_otel_metric(m, api_key.clone(), split_metric_namespace, scope))
         .collect();
 
     events_received.emit(CountByteSize(
@@ -590,7 +587,7 @@ fn into_otel_metric(
                             time_unix_nano: dd_ts_to_nanos(dd_point.0),
                             exemplars: vec![],
                             flags: 0,
-                            value: Some(NDPValue::AsDouble(dd_point.1 * (i as f64))),
+                            value: Some(NDPValue::AsDouble(dd_point.1 * f64::from(i))),
                         }],
                         aggregation_temporality: AggregationTemporality::Delta as i32,
                         is_monotonic: true,
@@ -642,16 +639,24 @@ pub(crate) fn decode_ddsketch(
             let name = name.to_string();
             let resource = resource.clone();
             sketch_series.dogsketches.into_iter().map(move |sketch| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "DD sketch k/n/cnt fields are narrow proto values fitting i16/u16/u32"
+                )]
                 let k: Vec<i16> = sketch.k.iter().map(|k| *k as i16).collect();
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "DD sketch k/n/cnt fields are narrow proto values fitting i16/u16/u32"
+                )]
                 let n: Vec<u16> = sketch.n.iter().map(|n| *n as u16).collect();
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "DD sketch cnt is a non-negative count that fits u32"
+                )]
+                let cnt = sketch.cnt as u32;
                 let ddsketch = AgentDDSketch::from_raw(
-                    sketch.cnt as u32,
-                    sketch.min,
-                    sketch.max,
-                    sketch.sum,
-                    sketch.avg,
-                    &k,
-                    &n,
+                    cnt, sketch.min, sketch.max, sketch.sum, sketch.avg, &k, &n,
                 )
                 .unwrap_or_else(AgentDDSketch::with_agent_defaults);
 

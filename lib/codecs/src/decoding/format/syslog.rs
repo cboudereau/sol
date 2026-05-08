@@ -5,13 +5,13 @@ use chrono::{DateTime, Datelike, Utc};
 use derivative::Derivative;
 use lookup::owned_value_path;
 use smallvec::{SmallVec, smallvec};
-use syslog_loose::{IncompleteDate, Message, ProcId, Protocol, Variant};
 use sol_config::configurable_component;
 use sol_core::{
     config::{DataType, insert_source_metadata},
     event::{Event, EventMetadata, ObjectMap, OtelLog, Value},
     schema,
 };
+use syslog_loose::{IncompleteDate, Message, ProcId, Protocol, Variant};
 use vrl::value::{Kind, kind::Collection};
 
 use super::{Deserializer, default_lossy};
@@ -63,20 +63,13 @@ impl SyslogDeserializerConfig {
         let mut definition = schema::Definition::empty_definition()
             // The `message` field is always defined. If parsing fails, the entire body becomes the
             // message.
-            .with_event_field(
-                &owned_value_path!("body"),
-                Kind::bytes(),
-                Some("message"),
-            );
+            .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"));
 
         {
             let timestamp_key = owned_value_path!("time_unix_nano");
             // All other fields are optional.
-            definition = definition.optional_field(
-                &timestamp_key,
-                Kind::integer(),
-                Some("timestamp"),
-            );
+            definition =
+                definition.optional_field(&timestamp_key, Kind::integer(), Some("timestamp"));
         }
 
         definition = definition
@@ -144,10 +137,7 @@ pub struct SyslogDeserializer {
 }
 
 impl Deserializer for SyslogDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let line: Cow<str> = match self.lossy {
             true => String::from_utf8_lossy(&bytes),
             false => Cow::from(std::str::from_utf8(&bytes)?),
@@ -198,12 +188,7 @@ fn insert_metadata_fields_from_syslog(
 ) {
     if let Some(timestamp) = parsed.timestamp {
         let timestamp = DateTime::<Utc>::from(timestamp);
-        insert_source_metadata(
-            source,
-            log,
-            &owned_value_path!("timestamp"),
-            timestamp,
-        );
+        insert_source_metadata(source, log, &owned_value_path!("timestamp"), timestamp);
     }
     if let Some(host) = parsed.hostname {
         insert_source_metadata(
@@ -234,7 +219,7 @@ fn insert_metadata_fields_from_syslog(
             source,
             log,
             &owned_value_path!("version"),
-            version as i64,
+            i64::from(version),
         );
     }
     if let Some(app_name) = parsed.appname {
@@ -246,24 +231,14 @@ fn insert_metadata_fields_from_syslog(
         );
     }
     if let Some(msg_id) = parsed.msgid {
-        insert_source_metadata(
-            source,
-            log,
-            &owned_value_path!("msgid"),
-            msg_id.to_owned(),
-        );
+        insert_source_metadata(source, log, &owned_value_path!("msgid"), msg_id.to_owned());
     }
     if let Some(procid) = parsed.procid {
         let value: Value = match procid {
             ProcId::PID(pid) => pid.into(),
             ProcId::Name(name) => name.to_string().into(),
         };
-        insert_source_metadata(
-            source,
-            log,
-            &owned_value_path!("procid"),
-            value,
-        );
+        insert_source_metadata(source, log, &owned_value_path!("procid"), value);
     }
 
     let mut sdata = ObjectMap::new();
@@ -277,25 +252,27 @@ fn insert_metadata_fields_from_syslog(
         sdata.insert(element.id.into(), data.into());
     }
 
-    insert_source_metadata(
-        source,
-        log,
-        &owned_value_path!("structured_data"),
-        sdata,
-    );
+    insert_source_metadata(source, log, &owned_value_path!("structured_data"), sdata);
 }
 
-fn build_fields_from_syslog(
-    parsed: Message<&str>,
-) -> ObjectMap {
+fn build_fields_from_syslog(parsed: Message<&str>) -> ObjectMap {
     let mut map = ObjectMap::new();
 
     map.insert("body".into(), Value::from(parsed.msg));
 
     if let Some(timestamp) = parsed.timestamp {
         let timestamp = DateTime::<Utc>::from(timestamp);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "syslog timestamps are always non-negative nanoseconds since epoch"
+        )]
         let nanos = timestamp.timestamp_nanos_opt().unwrap_or(0) as u64;
-        map.insert("time_unix_nano".into(), Value::Integer(nanos as i64));
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps within representable range for both u64 and i64"
+        )]
+        let nanos_i64 = nanos as i64;
+        map.insert("time_unix_nano".into(), Value::Integer(nanos_i64));
     }
     if let Some(host) = parsed.hostname {
         map.insert("hostname".into(), Value::from(host.to_string()));
@@ -307,7 +284,7 @@ fn build_fields_from_syslog(
         map.insert("facility".into(), Value::from(facility.as_str().to_owned()));
     }
     if let Protocol::RFC5424(version) = parsed.protocol {
-        map.insert("version".into(), Value::from(version as i64));
+        map.insert("version".into(), Value::from(i64::from(version)));
     }
     if let Some(app_name) = parsed.appname {
         map.insert("appname".into(), Value::from(app_name.to_owned()));

@@ -1,6 +1,6 @@
 use sol_lib::{
     codecs::{JsonSerializerConfig, TextSerializerConfig},
-    event::{Event, OtelLog, MetricKind, OtelMetric},
+    event::{Event, MetricKind, OtelLog, OtelMetric},
     request_metadata::GroupedCountByteSize,
 };
 
@@ -74,7 +74,8 @@ fn redis_log_encode_event() {
 
     let json: serde_json::Value = serde_json::from_slice(&result[..]).unwrap();
     // After removing "key", there should be no "key" attribute in OTLP JSON
-    let has_key_attr = json.get("attributes")
+    let has_key_attr = json
+        .get("attributes")
         .and_then(|a| a.as_array())
         .map(|arr| arr.iter().any(|a| a["key"] == "key"))
         .unwrap_or(false);

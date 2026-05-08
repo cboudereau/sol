@@ -63,11 +63,18 @@ impl SendRecord for KinesisFirehoseClient {
             .send()
             .instrument(info_span!("request").or_current())
             .await
-            .map(|output: PutRecordBatchOutput| KinesisResponse {
-                failure_count: output.failed_put_count() as usize,
-                events_byte_size: CountByteSize(rec_count, JsonSize::new(total_size)).into(),
-                #[cfg(feature = "sinks-aws_kinesis_streams")]
-                failed_records: vec![], // Firehose doesn't support partial failure retry
+            .map(|output: PutRecordBatchOutput| {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "failure count from AWS API is non-negative"
+                )]
+                let failure_count = output.failed_put_count() as usize;
+                KinesisResponse {
+                    failure_count,
+                    events_byte_size: CountByteSize(rec_count, JsonSize::new(total_size)).into(),
+                    #[cfg(feature = "sinks-aws_kinesis_streams")]
+                    failed_records: vec![], // Firehose doesn't support partial failure retry
+                }
             })
     }
 }

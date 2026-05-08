@@ -2,8 +2,8 @@ use std::io;
 
 use bytes::Bytes;
 use chrono::{FixedOffset, Utc};
-use uuid::Uuid;
 use sol_lib::{codecs::encoding::Framer, event::Finalizable, request_metadata::RequestMetadata};
+use uuid::Uuid;
 
 use crate::{
     codecs::{Encoder, Transformer},

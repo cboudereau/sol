@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use tokio::{select, sync::mpsc, task::JoinHandle};
 use sol_lib::event::Event;
+use tokio::{select, sync::mpsc, task::JoinHandle};
 
 use super::io::{EventForwardService, spawn_otlp_grpc_server};
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
         util::GrpcAddress,
     },
     config::ConfigBuilder,
-    sinks::opentelemetry::{OpenTelemetryConfig, GrpcConfig, Protocol},
+    sinks::opentelemetry::{GrpcConfig, OpenTelemetryConfig, Protocol},
     sources::{internal_logs::InternalLogsConfig, internal_metrics::InternalMetricsConfig},
     test_util::addr::next_addr,
 };

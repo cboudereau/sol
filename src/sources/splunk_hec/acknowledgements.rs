@@ -11,11 +11,11 @@ use std::{
 use futures::StreamExt;
 use roaring::RoaringTreemap;
 use serde::{Deserialize, Serialize};
-use tokio::time::interval;
 use sol_lib::{
     configurable::configurable_component, finalization::BatchStatusReceiver,
     finalizer::UnorderedFinalizer,
 };
+use tokio::time::interval;
 use warp::Rejection;
 
 use super::ApiError;
@@ -137,7 +137,12 @@ impl IndexerAcknowledgement {
             return Ok(Arc::clone(channel));
         }
 
-        if channels.len() < self.max_number_of_ack_channels as usize {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "max ack channels config (u64) fits usize on 64-bit platforms"
+        )]
+        let max_channels = self.max_number_of_ack_channels as usize;
+        if channels.len() < max_channels {
             // Create the channel if it does not exist
             let channel = Arc::new(Channel::new(
                 self.max_pending_acks_per_channel,
@@ -284,8 +289,8 @@ pub struct HecAckStatusResponse {
 mod tests {
     use std::num::NonZeroU64;
 
-    use tokio::{time, time::sleep};
     use sol_lib::event::{BatchNotifier, EventFinalizer, EventStatus};
+    use tokio::{time, time::sleep};
 
     use super::{Channel, HecAcknowledgementsConfig, IndexerAcknowledgement};
     use crate::shutdown::ShutdownSignal;

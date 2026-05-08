@@ -63,4 +63,3 @@ impl InternalEvent for LogToMetricParseFloatError<'_> {
         emit!(ComponentEventsDropped::<UNINTENTIONAL> { count: 1, reason })
     }
 }
-

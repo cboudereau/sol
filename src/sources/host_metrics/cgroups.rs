@@ -7,11 +7,11 @@ use std::{
 
 use futures::future::BoxFuture;
 use snafu::{ResultExt, Snafu};
+use sol_lib::{event::OtelAttributes, otel_tags};
 use tokio::{
     fs::{self, File},
     io::AsyncReadExt,
 };
-use sol_lib::{event::OtelAttributes, otel_tags};
 
 use super::{CGroupsConfig, HostMetrics, MetricsBuffer, filter_result_sync};
 
@@ -140,6 +140,10 @@ impl<'a> CGroupRecurser<'a> {
     }
 
     /// Try to load the `cpu` controller data file and emit metrics if it is found.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     async fn load_cpu(&mut self, cgroup: &CGroup, tags: &OtelAttributes) {
         if let Some(Some(cpu)) = filter_result_sync(
             cgroup.load_cpu(&mut self.buffer).await,
@@ -164,6 +168,10 @@ impl<'a> CGroupRecurser<'a> {
     }
 
     /// Try to load the `memory` controller data files and emit metrics if they are found.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     async fn load_memory(&mut self, cgroup: &CGroup, tags: &OtelAttributes) {
         if let Some(Some(current)) = filter_result_sync(
             cgroup.load_memory_current(&mut self.buffer).await,
@@ -461,10 +469,10 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use crate::event::OtelMetric;
     use rand::{Rng, rngs::ThreadRng};
     use similar_asserts::assert_eq;
     use tempfile::TempDir;
-    use crate::event::OtelMetric;
 
     use super::{
         super::{

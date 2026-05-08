@@ -5,13 +5,13 @@ use criterion::{
     BatchSize, BenchmarkGroup, Criterion, SamplingMode, Throughput, criterion_group,
     measurement::WallTime,
 };
-use tokio_util::codec::Encoder;
 use sol::event::{Event, OtelLog, Value};
 use sol_lib::{
     btreemap,
     byte_size_of::ByteSizeOf,
     codecs::{JsonSerializerConfig, NewlineDelimitedEncoder, encoding::Framer},
 };
+use tokio_util::codec::Encoder;
 
 #[derive(Debug, Clone)]
 pub struct JsonLogSerializer;

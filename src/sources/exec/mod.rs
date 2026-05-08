@@ -4,14 +4,6 @@ use chrono::Utc;
 use futures::StreamExt;
 use smallvec::SmallVec;
 use snafu::Snafu;
-use tokio::{
-    io::{AsyncRead, BufReader},
-    process::Command,
-    sync::mpsc::{Sender, channel},
-    time::{self, Duration, Instant, sleep},
-};
-use tokio_stream::wrappers::IntervalStream;
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -22,10 +14,17 @@ use sol_lib::{
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
     lookup::owned_value_path,
 };
+use tokio::{
+    io::{AsyncRead, BufReader},
+    process::Command,
+    sync::mpsc::{Sender, channel},
+    time::{self, Duration, Instant, sleep},
+};
+use tokio_stream::wrappers::IntervalStream;
+use tokio_util::codec::FramedRead;
 use vrl::value::Kind;
 use vrl::value::Value;
 
-use sol_lib::lookup;
 use crate::{
     SourceSender,
     config::{SourceConfig, SourceContext, SourceOutput},
@@ -37,6 +36,7 @@ use crate::{
     serde::default_decoding,
     shutdown::ShutdownSignal,
 };
+use sol_lib::lookup;
 
 #[cfg(test)]
 mod tests;
@@ -87,7 +87,6 @@ pub struct ExecConfig {
     #[configurable(derived)]
     #[serde(default = "default_decoding")]
     decoding: DeserializerConfig,
-
 }
 
 /// Mode of operation for running the command.
@@ -410,14 +409,7 @@ async fn run_streaming(
             }
         }
     } else {
-        let output = run_command(
-            config.clone(),
-            hostname,
-            decoder,
-            shutdown,
-            out,
-        )
-        .await;
+        let output = run_command(config.clone(), hostname, decoder, shutdown, out).await;
 
         if let Err(command_error) = output {
             emit!(ExecFailedError {
@@ -651,10 +643,7 @@ fn handle_event(
         otel_log.set_source_metadata_vector_ns(ExecConfig::NAME, now);
         let meta = otel_log.metadata_mut().value_mut();
         if let Some(hostname) = hostname {
-            meta.insert(
-                lookup::path!(ExecConfig::NAME, "host"),
-                hostname.clone(),
-            );
+            meta.insert(lookup::path!(ExecConfig::NAME, "host"), hostname.clone());
         }
         if let Some(data_stream) = data_stream {
             meta.insert(
@@ -665,12 +654,18 @@ fn handle_event(
         if let Some(pid) = pid {
             meta.insert(
                 lookup::path!(ExecConfig::NAME, PID_KEY),
-                Value::Integer(pid as i64),
+                Value::Integer(i64::from(pid)),
             );
         }
         meta.insert(
             lookup::path!(ExecConfig::NAME, COMMAND_KEY),
-            Value::Array(config.command.iter().map(|s| Value::from(s.clone())).collect()),
+            Value::Array(
+                config
+                    .command
+                    .iter()
+                    .map(|s| Value::from(s.clone()))
+                    .collect(),
+            ),
         );
     }
 }

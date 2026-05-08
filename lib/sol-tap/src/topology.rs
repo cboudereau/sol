@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use tokio::sync::watch;
 use sol_common::{config::ComponentKey, id::Inputs};
 use sol_core::{config::OutputId, fanout};
+use tokio::sync::watch;
 
 /// A tappable output consisting of an output ID and associated metadata
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

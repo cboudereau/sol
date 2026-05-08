@@ -7,7 +7,7 @@ use influxdb_line_protocol::{FieldValue, ParsedLine};
 use smallvec::SmallVec;
 use sol_config::configurable_component;
 use sol_core::{
-    config::{DataType},
+    config::DataType,
     event::{Event, OtelAttributes, OtelMetric},
     schema,
 };
@@ -44,9 +44,7 @@ impl InfluxdbDeserializerConfig {
 
     /// The schema produced by the deserializer.
     pub fn schema_definition(&self) -> schema::Definition {
-        schema::Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
+        schema::Definition::new_with_default_metadata(Kind::object(Collection::empty()))
     }
 }
 
@@ -84,10 +82,7 @@ impl InfluxdbDeserializer {
 }
 
 impl Deserializer for InfluxdbDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let line: Cow<str> = match self.lossy {
             true => String::from_utf8_lossy(&bytes),
             false => Cow::from(std::str::from_utf8(&bytes)?),
@@ -109,6 +104,10 @@ impl Deserializer for InfluxdbDeserializer {
                     .filter_map(|f| {
                         let measurement = series.measurement.clone();
                         let tags = series.tag_set.as_ref();
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "InfluxDB field values; precise for |v| <= 2^53"
+                        )]
                         let val = match f.1 {
                             FieldValue::I64(v) => v as f64,
                             FieldValue::U64(v) => v as f64,
@@ -123,16 +122,13 @@ impl Deserializer for InfluxdbDeserializer {
                             FieldValue::String(_) => return None, // String values cannot be modelled in our schema
                         };
                         Some(Event::Metric(
-                            OtelMetric::new_gauge(
-                                format!("{0}_{1}", measurement, f.0),
-                                val,
-                            )
-                            .with_tags(tags.map(|ts| {
-                                OtelAttributes::from_iter(
-                                    ts.iter().map(|t| (t.0.to_string(), t.1.to_string())),
-                                )
-                            }))
-                            .with_timestamp(timestamp.map(DateTime::from_timestamp_nanos)),
+                            OtelMetric::new_gauge(format!("{0}_{1}", measurement, f.0), val)
+                                .with_tags(tags.map(|ts| {
+                                    OtelAttributes::from_iter(
+                                        ts.iter().map(|t| (t.0.to_string(), t.1.to_string())),
+                                    )
+                                }))
+                                .with_timestamp(timestamp.map(DateTime::from_timestamp_nanos)),
                         ))
                     })
                     .collect::<Vec<_>>()

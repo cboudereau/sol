@@ -16,7 +16,7 @@ use std::{collections::HashMap, net::SocketAddr};
 use base64::{Engine, prelude::BASE64_URL_SAFE};
 use bytes::Bytes;
 use itertools::Itertools;
-use sol_lib::{configurable::configurable_component};
+use sol_lib::configurable::configurable_component;
 use warp::http::HeaderMap;
 
 use super::parser;
@@ -423,18 +423,13 @@ mod test {
 
             let expected = vec![
                 OtelMetric::new_counter("jobs_total", MetricKind::Incremental, 1.0)
-                    .with_tags(Some(
-                        otel_tags! { "job" => "async_worker", "type" => "a" },
-                    ))
+                    .with_tags(Some(otel_tags! { "job" => "async_worker", "type" => "a" }))
                     .with_timestamp(Some(timestamp)),
                 OtelMetric::new_gauge("jobs_current", 5.0)
-                    .with_tags(Some(
-                        otel_tags! { "job" => "async_worker", "type" => "a" },
-                    ))
+                    .with_tags(Some(otel_tags! { "job" => "async_worker", "type" => "a" }))
                     .with_timestamp(Some(timestamp)),
                 {
-                    let buckets =
-                        sol_lib::buckets![1.0 => 0, 2.5 => 0, 5.0 => 0, 10.0 => 1];
+                    let buckets = sol_lib::buckets![1.0 => 0, 2.5 => 0, 5.0 => 0, 10.0 => 1];
                     OtelMetric::new_histogram(
                         "jobs_distribution",
                         MetricKind::Incremental,
@@ -442,17 +437,13 @@ mod test {
                         1,
                         8.0,
                     )
-                    .with_tags(Some(
-                        otel_tags! { "job" => "async_worker", "type" => "a" },
-                    ))
+                    .with_tags(Some(otel_tags! { "job" => "async_worker", "type" => "a" }))
                     .with_timestamp(Some(timestamp))
                 },
                 {
                     let quantiles = sol_lib::quantiles![];
                     OtelMetric::new_summary("jobs_summary", &quantiles, 1, 8.0)
-                        .with_tags(Some(
-                            otel_tags! { "job" => "async_worker", "type" => "a" },
-                        ))
+                        .with_tags(Some(otel_tags! { "job" => "async_worker", "type" => "a" }))
                         .with_timestamp(Some(timestamp))
                 },
             ];

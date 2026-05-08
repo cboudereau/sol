@@ -1,14 +1,14 @@
 use futures::{future::ready, stream};
 use http::Uri;
+use sol_lib::{
+    codecs::{JsonSerializerConfig, MetricTagValues, encoding::FramingConfig},
+    event::{BatchNotifier, BatchStatusReceiver, Event, OtelLog, Value},
+};
 use sqlx::{
     ConnectOptions, Connection, Executor as _, MySqlConnection, Row, mysql::MySqlConnectOptions,
 };
 use std::collections::HashMap;
 use tracing::{info, warn};
-use sol_lib::{
-    codecs::{JsonSerializerConfig, MetricTagValues, encoding::FramingConfig},
-    event::{BatchNotifier, BatchStatusReceiver, Event, OtelLog, Value},
-};
 // use sol_common::finalization::BatchStatus;
 use sol_common::sensitive_string::SensitiveString;
 
@@ -57,7 +57,7 @@ fn assert_fields_match(
 
         // Convert event value to string
         let event_str = match &event_value {
-            Value::Bytes(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Value::Bytes(bytes) => String::from_utf8_lossy(bytes).to_string(),
             other => other.to_string(),
         };
         // Database value already has Display implementation, use directly

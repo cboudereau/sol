@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use aws_sdk_cloudwatchlogs::Client as CloudwatchLogsClient;
 use futures::FutureExt;
 use serde::{Deserialize, Deserializer, de};
-use tower::ServiceBuilder;
 use sol_lib::{codecs::JsonSerializerConfig, configurable::configurable_component, schema};
+use tower::ServiceBuilder;
 use vrl::value::Kind;
 
 use crate::{

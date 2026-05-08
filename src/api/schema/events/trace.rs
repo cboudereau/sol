@@ -11,7 +11,7 @@ pub struct Trace {
 }
 
 impl Trace {
-    pub fn new(output: TapOutput, event: OtelSpan) -> Self {
+    pub const fn new(output: TapOutput, event: OtelSpan) -> Self {
         Self { output, event }
     }
 }

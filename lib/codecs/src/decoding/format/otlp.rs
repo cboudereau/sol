@@ -1,15 +1,15 @@
 use bytes::Bytes;
-use sol_opentelemetry_proto::proto::{
-    DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
-    RESOURCE_LOGS_JSON_FIELD, RESOURCE_METRICS_JSON_FIELD, RESOURCE_SPANS_JSON_FIELD,
-    TRACES_REQUEST_MESSAGE_TYPE,
-};
 use smallvec::{SmallVec, smallvec};
 use sol_config::{configurable_component, indexmap::IndexSet};
 use sol_core::{
     config::DataType,
     event::{Event, OtelSpan},
     schema,
+};
+use sol_opentelemetry_proto::proto::{
+    DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
+    RESOURCE_LOGS_JSON_FIELD, RESOURCE_METRICS_JSON_FIELD, RESOURCE_SPANS_JSON_FIELD,
+    TRACES_REQUEST_MESSAGE_TYPE,
 };
 use vrl::{protobuf::parse::Options, value::Kind};
 
@@ -145,40 +145,48 @@ impl OtlpDeserializer {
 }
 
 impl Deserializer for OtlpDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         for signal_type in &self.signals {
             match signal_type {
                 OtlpSignalType::Logs => {
                     if let Ok(events) = self.logs_deserializer.parse(bytes.clone())
                         && let Some(event) = events.first()
-                        && event.as_log().parse_path_and_get_value(RESOURCE_LOGS_JSON_FIELD).ok().flatten().is_some()
+                        && event
+                            .as_log()
+                            .parse_path_and_get_value(RESOURCE_LOGS_JSON_FIELD)
+                            .ok()
+                            .flatten()
+                            .is_some()
                     {
                         return Ok(events);
                     }
                 }
                 OtlpSignalType::Metrics => {
-                    if let Ok(events) = self
-                        .metrics_deserializer
-                        .parse(bytes.clone())
+                    if let Ok(events) = self.metrics_deserializer.parse(bytes.clone())
                         && let Some(event) = events.first()
-                        && event.as_log().parse_path_and_get_value(RESOURCE_METRICS_JSON_FIELD).ok().flatten().is_some()
+                        && event
+                            .as_log()
+                            .parse_path_and_get_value(RESOURCE_METRICS_JSON_FIELD)
+                            .ok()
+                            .flatten()
+                            .is_some()
                     {
                         return Ok(events);
                     }
                 }
                 OtlpSignalType::Traces => {
-                    if let Ok(mut events) =
-                        self.traces_deserializer.parse(bytes.clone())
+                    if let Ok(mut events) = self.traces_deserializer.parse(bytes.clone())
                         && let Some(event) = events.first()
-                        && event.as_log().parse_path_and_get_value(RESOURCE_SPANS_JSON_FIELD).ok().flatten().is_some()
+                        && event
+                            .as_log()
+                            .parse_path_and_get_value(RESOURCE_SPANS_JSON_FIELD)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        && let Some(Event::Log(otel_log)) = events.pop()
                     {
-                        if let Some(Event::Log(otel_log)) = events.pop() {
-                            let trace_event = Event::Trace(OtelSpan::from_otel_log(otel_log));
-                            return Ok(smallvec![trace_event]);
-                        }
+                        let trace_event = Event::Trace(OtelSpan::from_otel_log(otel_log));
+                        return Ok(smallvec![trace_event]);
                     }
                 }
             }
@@ -190,6 +198,7 @@ impl Deserializer for OtlpDeserializer {
 
 #[cfg(test)]
 mod tests {
+    use prost::Message;
     use sol_opentelemetry_proto::proto::{
         collector::{
             logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
@@ -200,7 +209,6 @@ mod tests {
         resource::v1::Resource,
         trace::v1::{ResourceSpans, ScopeSpans, Span},
     };
-    use prost::Message;
 
     use super::*;
 

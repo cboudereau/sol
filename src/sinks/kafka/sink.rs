@@ -120,7 +120,10 @@ pub(crate) async fn healthcheck(
     let client_config = config.to_rdkafka().unwrap();
     let topic: Option<String> = match config.healthcheck_topic {
         Some(topic) => Some(topic),
-        _ => match config.topic.render_string(&crate::event::OtelLog::new(Default::default())) {
+        _ => match config
+            .topic
+            .render_string(&crate::event::OtelLog::new(Default::default()))
+        {
             Ok(topic) => Some(topic),
             Err(error) => {
                 warn!(

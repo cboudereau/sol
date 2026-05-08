@@ -65,13 +65,22 @@ async fn insert_metrics(url: &str) {
 
             match metric.view() {
                 MetricView::Gauge { value } => {
-                    assert_eq!(output["value"], Value::Number((value as u32).into()))
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "test gauge value fits in u32"
+                    )]
+                    #[expect(clippy::cast_sign_loss, reason = "test gauge value is non-negative")]
+                    let int_val = value as u32;
+                    assert_eq!(output["value"], Value::Number(int_val.into()))
                 }
                 _ => panic!("Unhandled metric value, fix the test"),
             }
             let tags = metric.tags().unwrap();
             for (tag, value) in tags.iter() {
-                if let Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) = &value.value {
+                if let Some(
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s),
+                ) = &value.value
+                {
                     assert_eq!(output[tag.as_str()], Value::String(s.clone()));
                 }
             }
@@ -110,6 +119,6 @@ fn decode_metrics(data: &Value) -> Vec<HashMap<String, Value>> {
 
 fn create_events(name_range: Range<i32>, value: impl Fn(f64) -> f64) -> Vec<Event> {
     name_range
-        .map(move |num| create_event(format!("metric_{num}"), value(num as f64)))
+        .map(move |num| create_event(format!("metric_{num}"), value(f64::from(num))))
         .collect()
 }

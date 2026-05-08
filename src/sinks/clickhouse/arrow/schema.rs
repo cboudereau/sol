@@ -8,8 +8,8 @@ use http::{Request, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
 use serde::Deserialize;
-use url::form_urlencoded;
 use sol_lib::codecs::encoding::format::{ArrowEncodingError, SchemaProvider};
+use url::form_urlencoded;
 
 use crate::http::{Auth, HttpClient};
 

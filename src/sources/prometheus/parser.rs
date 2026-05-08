@@ -12,6 +12,10 @@ use crate::event::{
     metric::{Bucket, MetricKind, Quantile},
 };
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "Prometheus timestamp sub-second millis (modulo 1000) are non-negative for post-epoch dates"
+)]
 fn utc_timestamp(timestamp: Option<i64>, default: DateTime<Utc>) -> DateTime<Utc> {
     timestamp
         .and_then(|timestamp| {
@@ -78,9 +82,10 @@ fn reparse_groups(
 
                     let tags = combine_tags(key.labels, tag_overrides.clone());
 
-                    let counter = OtelMetric::new_counter(group.name.clone(), metric_kind, metric.value)
-                        .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
-                        .with_tags(tags.as_option());
+                    let counter =
+                        OtelMetric::new_counter(group.name.clone(), metric_kind, metric.value)
+                            .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
+                            .with_tags(tags.as_option());
                     result.push(Event::Metric(counter));
                 }
             }
@@ -358,8 +363,7 @@ mod test {
         assert_event_data_eq!(
             events_to_metrics(parse_text(exp)),
             Ok(vec![
-                OtelMetric::new_gauge("latency", 123.0)
-                    .with_timestamp(Some(*TIMESTAMP))
+                OtelMetric::new_gauge("latency", 123.0).with_timestamp(Some(*TIMESTAMP))
             ]),
         );
     }
@@ -388,8 +392,7 @@ mod test {
         assert_event_data_eq!(
             events_to_metrics(parse_text(exp)),
             Ok(vec![
-                OtelMetric::new_gauge("no_labels", 3.0)
-                    .with_timestamp(Some(*TIMESTAMP))
+                OtelMetric::new_gauge("no_labels", 3.0).with_timestamp(Some(*TIMESTAMP))
             ]),
         );
     }
@@ -569,8 +572,7 @@ mod test {
             Ok(vec![
                 OtelMetric::new_counter("uptime", MetricKind::Absolute, 123.0)
                     .with_timestamp(Some(*TIMESTAMP)),
-                OtelMetric::new_gauge("temperature", -1.5)
-                    .with_timestamp(Some(*TIMESTAMP)),
+                OtelMetric::new_gauge("temperature", -1.5).with_timestamp(Some(*TIMESTAMP)),
                 OtelMetric::new_counter("launch_count", MetricKind::Absolute, 10.0)
                     .with_timestamp(Some(*TIMESTAMP))
             ]),
@@ -613,10 +615,8 @@ mod test {
             Ok(vec![
                 OtelMetric::new_counter("uptime", MetricKind::Absolute, 123.0)
                     .with_timestamp(Some(*TIMESTAMP)),
-                OtelMetric::new_gauge("last_downtime", 4.0)
-                    .with_timestamp(Some(*TIMESTAMP)),
-                OtelMetric::new_gauge("temperature", -1.5)
-                    .with_timestamp(Some(*TIMESTAMP)),
+                OtelMetric::new_gauge("last_downtime", 4.0).with_timestamp(Some(*TIMESTAMP)),
+                OtelMetric::new_gauge("temperature", -1.5).with_timestamp(Some(*TIMESTAMP)),
                 OtelMetric::new_gauge("temperature_7_days_average", 0.1)
                     .with_timestamp(Some(*TIMESTAMP))
             ]),
@@ -640,21 +640,19 @@ mod test {
 
         assert_event_data_eq!(
             events_to_metrics(parse_text(exp)),
-            Ok(vec![
-                {
-                    let buckets = sol_lib::buckets![
-                        0.05 => 24054, 0.1 => 9390, 0.2 => 66948, 0.5 => 28997, 1.0 => 4599
-                    ];
-                    OtelMetric::new_histogram(
-                        "http_request_duration_seconds",
-                        MetricKind::Absolute,
-                        &buckets,
-                        144320,
-                        53423.0,
-                    )
-                    .with_timestamp(Some(*TIMESTAMP))
-                }
-            ]),
+            Ok(vec![{
+                let buckets = sol_lib::buckets![
+                    0.05 => 24054, 0.1 => 9390, 0.2 => 66948, 0.5 => 28997, 1.0 => 4599
+                ];
+                OtelMetric::new_histogram(
+                    "http_request_duration_seconds",
+                    MetricKind::Absolute,
+                    &buckets,
+                    144320,
+                    53423.0,
+                )
+                .with_timestamp(Some(*TIMESTAMP))
+            }]),
         );
     }
 
@@ -666,7 +664,7 @@ mod test {
             "#
         .to_string();
 
-        let to_float = |v: i32| -> f64 { v as f64 };
+        let to_float = |v: i32| -> f64 { f64::from(v) };
         exp += &(0..=15)
             .map(to_float)
             .chain(std::iter::once(f64::NAN))
@@ -693,19 +691,17 @@ mod test {
 
         assert_event_data_eq!(
             events_to_metrics(parse_text(exp)),
-            Ok(vec![
-                {
-                    let buckets = sol_lib::buckets![1.0 => 133988];
-                    OtelMetric::new_histogram(
-                        "duration",
-                        MetricKind::Absolute,
-                        &buckets,
-                        144320,
-                        53423.0,
-                    )
-                    .with_timestamp(Some(*TIMESTAMP))
-                }
-            ]),
+            Ok(vec![{
+                let buckets = sol_lib::buckets![1.0 => 133988];
+                OtelMetric::new_histogram(
+                    "duration",
+                    MetricKind::Absolute,
+                    &buckets,
+                    144320,
+                    53423.0,
+                )
+                .with_timestamp(Some(*TIMESTAMP))
+            }]),
         );
     }
 
@@ -723,19 +719,11 @@ mod test {
 
         assert_event_data_eq!(
             events_to_metrics(parse_text(exp)),
-            Ok(vec![
-                {
-                    let buckets = sol_lib::buckets![1.0 => 2000, 10.0 => 0];
-                    OtelMetric::new_histogram(
-                        "duration",
-                        MetricKind::Absolute,
-                        &buckets,
-                        2000,
-                        2000.0,
-                    )
+            Ok(vec![{
+                let buckets = sol_lib::buckets![1.0 => 2000, 10.0 => 0];
+                OtelMetric::new_histogram("duration", MetricKind::Absolute, &buckets, 2000, 2000.0)
                     .with_timestamp(Some(*TIMESTAMP))
-                }
-            ]),
+            }]),
         );
     }
 
@@ -887,14 +875,9 @@ mod test {
                         0.9 => 9001.0,
                         0.99 => 76656.0
                     ];
-                    OtelMetric::new_summary(
-                        "rpc_duration_seconds",
-                        &quantiles,
-                        2693,
-                        1.7560473e+07,
-                    )
-                    .with_tags(Some(otel_tags!("service" => "a")))
-                    .with_timestamp(Some(*TIMESTAMP))
+                    OtelMetric::new_summary("rpc_duration_seconds", &quantiles, 2693, 1.7560473e+07)
+                        .with_tags(Some(otel_tags!("service" => "a")))
+                        .with_timestamp(Some(*TIMESTAMP))
                 },
                 {
                     let quantiles = sol_lib::quantiles![
@@ -1114,14 +1097,9 @@ mod test {
                 },
                 {
                     let quantiles = sol_lib::quantiles![];
-                    OtelMetric::new_summary(
-                        "jobs_summary",
-                        &quantiles,
-                        1,
-                        8.0,
-                    )
-                    .with_tags(Some(otel_tags! { "type" => "a" }))
-                    .with_timestamp(Some(*TIMESTAMP))
+                    OtelMetric::new_summary("jobs_summary", &quantiles, 1, 8.0)
+                        .with_tags(Some(otel_tags! { "type" => "a" }))
+                        .with_timestamp(Some(*TIMESTAMP))
                 },
             ]),
         );
@@ -1176,14 +1154,9 @@ mod test {
                 },
                 {
                     let quantiles = sol_lib::quantiles![];
-                    OtelMetric::new_summary(
-                        "jobs_summary",
-                        &quantiles,
-                        1,
-                        8.0,
-                    )
-                    .with_tags(Some(otel_tags! { "type" => "a" }))
-                    .with_timestamp(Some(*TIMESTAMP))
+                    OtelMetric::new_summary("jobs_summary", &quantiles, 1, 8.0)
+                        .with_tags(Some(otel_tags! { "type" => "a" }))
+                        .with_timestamp(Some(*TIMESTAMP))
                 },
             ]),
         );
@@ -1206,7 +1179,10 @@ mod test {
             }
             _ => unreachable!(),
         }
-        assert_eq!(result[0].tags().unwrap().get_string("labelname").unwrap(), "val2");
+        assert_eq!(
+            result[0].tags().unwrap().get_string("labelname").unwrap(),
+            "val2"
+        );
     }
 
     #[test]
@@ -1223,7 +1199,12 @@ mod test {
         // Find the NaN metric
         let nan_metric = result
             .iter()
-            .find(|m| m.tags().as_ref().and_then(|tags| tags.get_string("labelname")) == Some("val1"))
+            .find(|m| {
+                m.tags()
+                    .as_ref()
+                    .and_then(|tags| tags.get_string("labelname"))
+                    == Some("val1")
+            })
             .unwrap();
 
         match nan_metric.view() {

@@ -4,8 +4,7 @@ pub mod udp;
 mod unix;
 
 use sol_lib::{
-    codecs::decoding::DeserializerConfig,
-    configurable::configurable_component,
+    codecs::decoding::DeserializerConfig, configurable::configurable_component,
     lookup::owned_value_path,
 };
 use vrl::value::{Kind, kind::Collection};
@@ -67,7 +66,6 @@ impl SocketConfig {
             Mode::UnixStream(config) => config.decoding().clone(),
         }
     }
-
 }
 
 impl From<tcp::TcpConfig> for SocketConfig {
@@ -142,12 +140,7 @@ impl SourceConfig for SocketConfig {
                     .clone()
                     .unwrap_or_else(|| decoding.default_message_based_framing());
                 let decoder = DecodingConfig::new(framing, decoding).build()?;
-                Ok(udp::udp(
-                    config,
-                    decoder,
-                    cx.shutdown,
-                    cx.out,
-                ))
+                Ok(udp::udp(config, decoder, cx.shutdown, cx.out))
             }
             #[cfg(unix)]
             Mode::UnixDatagram(config) => {
@@ -184,61 +177,47 @@ impl SourceConfig for SocketConfig {
             .with_standard_vector_source_metadata();
 
         let schema_definition = match &self.mode {
-            Mode::Tcp(_) => {
-                schema_definition
-                    .with_source_metadata(
-                        Self::NAME,
-                        &owned_value_path!("host"),
-                        Kind::bytes(),
-                        Some("host"),
-                    )
-                    .with_source_metadata(
-                        Self::NAME,
-                        &owned_value_path!("port"),
-                        Kind::integer(),
-                        None,
-                    )
-                    .with_source_metadata(
-                        Self::NAME,
-                        &owned_value_path!("tls_client_metadata"),
-                        Kind::object(Collection::empty().with_unknown(Kind::bytes()))
-                            .or_undefined(),
-                        None,
-                    )
-            }
-            Mode::Udp(_) => {
-                schema_definition
-                    .with_source_metadata(
-                        Self::NAME,
-                        &owned_value_path!("host"),
-                        Kind::bytes(),
-                        None,
-                    )
-                    .with_source_metadata(
-                        Self::NAME,
-                        &owned_value_path!("port"),
-                        Kind::integer(),
-                        None,
-                    )
-            }
-            #[cfg(unix)]
-            Mode::UnixDatagram(_) => {
-                schema_definition.with_source_metadata(
+            Mode::Tcp(_) => schema_definition
+                .with_source_metadata(
                     Self::NAME,
                     &owned_value_path!("host"),
                     Kind::bytes(),
-                    None,
+                    Some("host"),
                 )
-            }
-            #[cfg(unix)]
-            Mode::UnixStream(_) => {
-                schema_definition.with_source_metadata(
+                .with_source_metadata(
                     Self::NAME,
-                    &owned_value_path!("host"),
-                    Kind::bytes(),
+                    &owned_value_path!("port"),
+                    Kind::integer(),
                     None,
                 )
-            }
+                .with_source_metadata(
+                    Self::NAME,
+                    &owned_value_path!("tls_client_metadata"),
+                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                    None,
+                ),
+            Mode::Udp(_) => schema_definition
+                .with_source_metadata(Self::NAME, &owned_value_path!("host"), Kind::bytes(), None)
+                .with_source_metadata(
+                    Self::NAME,
+                    &owned_value_path!("port"),
+                    Kind::integer(),
+                    None,
+                ),
+            #[cfg(unix)]
+            Mode::UnixDatagram(_) => schema_definition.with_source_metadata(
+                Self::NAME,
+                &owned_value_path!("host"),
+                Kind::bytes(),
+                None,
+            ),
+            #[cfg(unix)]
+            Mode::UnixStream(_) => schema_definition.with_source_metadata(
+                Self::NAME,
+                &owned_value_path!("host"),
+                Kind::bytes(),
+                None,
+            ),
         };
 
         vec![SourceOutput::new_maybe_logs(
@@ -287,12 +266,6 @@ mod test {
     use futures::{StreamExt, stream};
     use rand::{SeedableRng, rngs::SmallRng, seq::SliceRandom};
     use serde_json::json;
-    use tokio::{
-        io::AsyncReadExt,
-        net::TcpStream,
-        task::JoinHandle,
-        time::{Duration, Instant, timeout},
-    };
     #[cfg(unix)]
     use sol_lib::codecs::{
         CharacterDelimitedDecoderConfig, decoding::CharacterDelimitedDecoderOptions,
@@ -301,6 +274,12 @@ mod test {
         codecs::{GelfDeserializerConfig, NewlineDelimitedDecoderConfig},
         event::EventContainer,
         lookup::{lookup_v2::OptionalValuePath, owned_value_path, path},
+    };
+    use tokio::{
+        io::AsyncReadExt,
+        net::TcpStream,
+        task::JoinHandle,
+        time::{Duration, Instant, timeout},
     };
     use vrl::{btreemap, value, value::ObjectMap};
     #[cfg(unix)]
@@ -396,6 +375,7 @@ mod test {
             .into_iter()
             .enumerate()
             .map(|(i, payload_chunk)| {
+                #[allow(clippy::cast_possible_truncation)]
                 create_gelf_chunk(message_id, i as u8, total_chunks as u8, payload_chunk)
             })
             .collect::<Vec<_>>();
@@ -505,14 +485,8 @@ mod test {
             let events = collect_n(rx, 2).await;
 
             assert_eq!(events.len(), 2);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "foo".into()
-            );
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                "bar".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "foo".into());
+            assert_eq!(events[1].as_log().get("body").unwrap(), "bar".into());
         })
         .await;
     }
@@ -535,10 +509,7 @@ mod test {
                 .unwrap();
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get_source_type().unwrap(),
-                "socket".into()
-            );
+            assert_eq!(event.as_log().get_source_type().unwrap(), "socket".into());
         })
         .await;
     }
@@ -570,16 +541,10 @@ mod test {
             send_lines(addr, lines.into_iter()).await.unwrap();
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "short".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "short".into());
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "more short".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "more short".into());
         })
         .await;
     }
@@ -626,30 +591,32 @@ mod test {
             .unwrap();
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "one line".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "one line".into());
 
             let tls_meta: ObjectMap = btreemap!(
                 "subject" => "CN=localhost,OU=Vector,O=Datadog,L=New York,ST=New York,C=US"
             );
 
             assert_eq!(
-                event.as_log().metadata().value()
-                    .get(path!(SocketConfig::NAME, "tls_client_metadata")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!(SocketConfig::NAME, "tls_client_metadata"))
+                    .unwrap(),
                 &value!(tls_meta.clone()),
             );
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "another line".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "another line".into());
 
             assert_eq!(
-                event.as_log().metadata().value()
-                    .get(path!(SocketConfig::NAME, "tls_client_metadata")).unwrap(),
+                event
+                    .as_log()
+                    .metadata()
+                    .value()
+                    .get(path!(SocketConfig::NAME, "tls_client_metadata"))
+                    .unwrap(),
                 &value!(tls_meta.clone()),
             );
         })
@@ -751,10 +718,7 @@ mod test {
                 .unwrap();
 
             let event = rx.next().await.unwrap();
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "test".into());
 
             // Now signal to the Source to shut down.
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1022,10 +986,7 @@ mod test {
             send_lines_udp(address, vec!["test".to_string()]).await;
             let events = collect_n(rx, 1).await;
 
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "test".into());
         })
         .await;
     }
@@ -1039,10 +1000,7 @@ mod test {
             send_lines_udp(address, vec!["foo\nbar".to_string()]).await;
             let events = collect_n(rx, 1).await;
 
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "foo\nbar".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "foo\nbar".into());
         })
         .await;
     }
@@ -1056,14 +1014,8 @@ mod test {
             send_lines_udp(address, vec!["test".to_string(), "test2".to_string()]).await;
             let events = collect_n(rx, 2).await;
 
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "test".into()
-            );
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                "test2".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "test".into());
+            assert_eq!(events[1].as_log().get("body").unwrap(), "test2".into());
         })
         .await;
     }
@@ -1088,14 +1040,8 @@ mod test {
             .await;
 
             let events = collect_n(rx, 2).await;
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "short line".into()
-            );
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                "a short un".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "short line".into());
+            assert_eq!(events[1].as_log().get("body").unwrap(), "a short un".into());
         })
         .await;
     }
@@ -1127,14 +1073,8 @@ mod test {
             .await;
 
             let events = collect_n(rx, 2).await;
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "test with".into()
-            );
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                "short one".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "test with".into());
+            assert_eq!(events[1].as_log().get("body").unwrap(), "short one".into());
         })
         .await;
     }
@@ -1161,10 +1101,7 @@ mod test {
             send_packets_udp(address, chunks).await;
 
             let events = collect_n(rx, 2).await;
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                big_message.into()
-            );
+            assert_eq!(events[1].as_log().get("body").unwrap(), big_message.into());
             assert_eq!(
                 events[0].as_log().get("body").unwrap(),
                 another_big_message.into()
@@ -1254,10 +1191,7 @@ mod test {
             send_lines_udp(address, vec!["test".to_string()]).await;
             let events = collect_n(rx, 1).await;
 
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "test".into());
 
             // Now signal to the Source to shut down.
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1297,10 +1231,7 @@ mod test {
             let events = collect_n(rx, 100).await;
             assert_eq!(100, events.len());
             for event in events {
-                assert_eq!(
-                    event.as_log().get("body").unwrap(),
-                    "test".into()
-                );
+                assert_eq!(event.as_log().get("body").unwrap(), "test".into());
             }
 
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1341,10 +1272,7 @@ mod test {
             );
 
             let event = rx.next().await.expect("must receive an event");
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "test".into());
         })
         .await;
     }
@@ -1402,10 +1330,7 @@ mod test {
                 ["test".to_string()],
             );
             let event = rx.next().await.expect("must receive an event");
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "test".into());
 
             // Windows does not support connecting to `0.0.0.0`,
             // therefore we connect to `127.0.0.1` instead (the socket is listening at `0.0.0.0`)
@@ -1415,10 +1340,7 @@ mod test {
             // cannot subsequently send unicast packets that the listener receives
             send_lines_udp_from(bind_unused_udp(), to, ["test".to_string()]);
             let event = rx.next().await.expect("must receive an event");
-            assert_eq!(
-                event.as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(event.as_log().get("body").unwrap(), "test".into());
         })
         .await;
     }
@@ -1520,14 +1442,8 @@ mod test {
         let events = collect_n(rx, 2).await;
 
         assert_eq!(2, events.len());
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            "test".into()
-        );
-        assert_eq!(
-            events[1].as_log().get("body").unwrap(),
-            "test2".into()
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), "test".into());
+        assert_eq!(events[1].as_log().get("body").unwrap(), "test2".into());
     }
 
     #[cfg(unix)]
@@ -1663,10 +1579,7 @@ mod test {
             send_packets_unix_datagram(path, chunks).await;
 
             let events = collect_n(rx, 2).await;
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                big_message.into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), big_message.into());
             assert_eq!(
                 events[1].as_log().get("body").unwrap(),
                 another_big_message.into()
@@ -1708,10 +1621,7 @@ mod test {
             let events = collect_n(rx, 1).await;
 
             assert_eq!(events.len(), 1);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "foo\nbar".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "foo\nbar".into());
             assert_eq!(
                 events[0].as_log().get_source_type().unwrap(),
                 "socket".into()
@@ -1795,10 +1705,7 @@ mod test {
             let events = collect_n(rx, 1).await;
 
             assert_eq!(1, events.len());
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "test".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "test".into());
             assert_eq!(
                 events[0].as_log().get_source_type().unwrap(),
                 "socket".into()
@@ -1838,18 +1745,12 @@ mod test {
             let events = collect_n(rx, 2).await;
 
             assert_eq!(events.len(), 2);
-            assert_eq!(
-                events[0].as_log().get("body").unwrap(),
-                "foo".into()
-            );
+            assert_eq!(events[0].as_log().get("body").unwrap(), "foo".into());
             assert_eq!(
                 events[0].as_log().get_source_type().unwrap(),
                 "socket".into()
             );
-            assert_eq!(
-                events[1].as_log().get("body").unwrap(),
-                "bar".into()
-            );
+            assert_eq!(events[1].as_log().get("body").unwrap(), "bar".into());
             assert_eq!(
                 events[1].as_log().get_source_type().unwrap(),
                 "socket".into()

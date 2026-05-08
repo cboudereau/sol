@@ -1,7 +1,7 @@
 use approx::assert_relative_eq;
+use sol_lib::lookup::lookup_v2::OptionalValuePath;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use sol_lib::lookup::lookup_v2::OptionalValuePath;
 use vrl::owned_value_path;
 
 use crate::{
@@ -46,6 +46,7 @@ async fn emits_internal_events() {
 }
 
 #[test]
+#[allow(clippy::cast_precision_loss)]
 fn hash_samples_at_roughly_the_configured_rate() {
     let num_events = 10000;
 
@@ -55,10 +56,7 @@ fn hash_samples_at_roughly_the_configured_rate() {
         SampleMode::new_rate(2),
         Some("body".to_string()),
         None,
-        Some(condition_contains(
-            "body",
-            "na",
-        )),
+        Some(condition_contains("body", "na")),
         default_sample_rate_key(),
     );
     let total_passed = events
@@ -78,10 +76,7 @@ fn hash_samples_at_roughly_the_configured_rate() {
         SampleMode::new_ratio(0.04),
         Some("body".to_string()),
         None,
-        Some(condition_contains(
-            "body",
-            "na",
-        )),
+        Some(condition_contains("body", "na")),
         default_sample_rate_key(),
     );
     let total_passed = events
@@ -104,10 +99,7 @@ fn hash_consistently_samples_the_same_events() {
         SampleMode::new_rate(2),
         Some("body".to_string()),
         None,
-        Some(condition_contains(
-            "body",
-            "na",
-        )),
+        Some(condition_contains("body", "na")),
         default_sample_rate_key(),
     );
 
@@ -141,10 +133,7 @@ fn always_passes_events_matching_pass_list() {
             SampleMode::new_rate(0),
             key_field.clone(),
             None,
-            Some(condition_contains(
-                "body",
-                "important",
-            )),
+            Some(condition_contains("body", "important")),
             default_sample_rate_key(),
         );
         let iterations = 0..1000;
@@ -168,10 +157,7 @@ fn handles_group_by() {
             SampleMode::new_rate(0),
             Some("body".to_string()),
             group_by.clone(),
-            Some(condition_contains(
-                "body",
-                "na",
-            )),
+            Some(condition_contains("body", "na")),
             default_sample_rate_key(),
         );
         let iterations = 0..1000;
@@ -223,10 +209,19 @@ fn sampler_adds_sampling_rate_to_event() {
         );
         let passing = events
             .into_iter()
-            .filter(|s| !s.as_log().get(message_key.as_str()).unwrap().to_string_lossy().contains("na"))
+            .filter(|s| {
+                !s.as_log()
+                    .get(message_key.as_str())
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("na")
+            })
             .find_map(|event| transform_one(&mut sampler, event))
             .unwrap();
-        assert_eq!(passing.as_log().get("sample_rate").unwrap(), Value::from("0.1"));
+        assert_eq!(
+            passing.as_log().get("sample_rate").unwrap(),
+            Value::from("0.1")
+        );
 
         let events = random_events(10000);
         let mut sampler = Sample::new(
@@ -239,10 +234,19 @@ fn sampler_adds_sampling_rate_to_event() {
         );
         let passing = events
             .into_iter()
-            .filter(|s| !s.as_log().get(message_key.as_str()).unwrap().to_string_lossy().contains("na"))
+            .filter(|s| {
+                !s.as_log()
+                    .get(message_key.as_str())
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("na")
+            })
             .find_map(|event| transform_one(&mut sampler, event))
             .unwrap();
-        assert_eq!(passing.as_log().get("custom_sample_rate").unwrap(), Value::from("25"));
+        assert_eq!(
+            passing.as_log().get("custom_sample_rate").unwrap(),
+            Value::from("25")
+        );
         assert!(passing.as_log().get("sample_rate").is_none());
 
         let events = random_events(10000);
@@ -256,7 +260,13 @@ fn sampler_adds_sampling_rate_to_event() {
         );
         let passing = events
             .into_iter()
-            .filter(|s| !s.as_log().get(message_key.as_str()).unwrap().to_string_lossy().contains("na"))
+            .filter(|s| {
+                !s.as_log()
+                    .get(message_key.as_str())
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("na")
+            })
             .find_map(|event| transform_one(&mut sampler, event))
             .unwrap();
         assert!(passing.as_log().get("sample_rate").is_none());
@@ -300,6 +310,7 @@ fn handles_trace_event() {
 }
 
 #[test]
+#[allow(clippy::cast_precision_loss)]
 fn sample_at_rates_higher_then_half() {
     // Retain 80% of the events of the stream
     let events = random_events(10000);

@@ -8,12 +8,12 @@ use chrono::{DateTime, Utc};
 use futures::FutureExt;
 use http::{StatusCode, Uri};
 use snafu::{ResultExt, Snafu};
-use tower::Service;
 use sol_lib::{
     configurable::configurable_component,
     event::{KeyString, OtelAttributes},
     sensitive_string::SensitiveString,
 };
+use tower::Service;
 
 use crate::http::HttpClient;
 

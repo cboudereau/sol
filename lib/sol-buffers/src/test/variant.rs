@@ -5,8 +5,8 @@ use std::{
 
 #[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
-use tracing::Span;
 use sol_common::finalization::Finalizable;
+use tracing::Span;
 
 use crate::{
     Bufferable, MemoryBufferSize, WhenFull,

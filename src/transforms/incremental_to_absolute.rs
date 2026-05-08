@@ -105,10 +105,7 @@ mod tests {
     use sol_lib::config::ComponentKey;
 
     use super::*;
-    use crate::event::{
-        OtelMetric,
-        metric::MetricKind,
-    };
+    use crate::event::{OtelMetric, metric::MetricKind};
 
     fn make_metric(_name: &'static str, otel: OtelMetric) -> Event {
         let mut event = Event::Metric(otel)
@@ -151,8 +148,14 @@ max_events = 100
         let (mut tx, rx) = futures::channel::mpsc::channel(10);
         let mut out_stream = incremental_to_absolute.transform_events(Box::pin(rx));
 
-        let inc_counter_1 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0));
-        let expected_inc_counter_1 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 10.0));
+        let inc_counter_1 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0),
+        );
+        let expected_inc_counter_1 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 10.0),
+        );
         assert_metric_eq(
             &mut tx,
             &mut out_stream,
@@ -161,8 +164,14 @@ max_events = 100
         )
         .await;
 
-        let inc_counter_2 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0));
-        let expected_inc_counter_2 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 20.0));
+        let inc_counter_2 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0),
+        );
+        let expected_inc_counter_2 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 20.0),
+        );
         assert_metric_eq(
             &mut tx,
             &mut out_stream,
@@ -171,8 +180,14 @@ max_events = 100
         )
         .await;
 
-        let inc_counter_3 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0));
-        let expected_inc_counter_3 = make_metric("incremental_counter", OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 30.0));
+        let inc_counter_3 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Incremental, 10.0),
+        );
+        let expected_inc_counter_3 = make_metric(
+            "incremental_counter",
+            OtelMetric::new_counter("incremental_counter", MetricKind::Absolute, 30.0),
+        );
         assert_metric_eq(
             &mut tx,
             &mut out_stream,
@@ -186,7 +201,10 @@ max_events = 100
         let expected_gauge = gauge.clone();
         assert_metric_eq(&mut tx, &mut out_stream, gauge, expected_gauge).await;
 
-        let absolute_counter = make_metric("absolute_counter", OtelMetric::new_counter("absolute_counter", MetricKind::Absolute, 42.0));
+        let absolute_counter = make_metric(
+            "absolute_counter",
+            OtelMetric::new_counter("absolute_counter", MetricKind::Absolute, 42.0),
+        );
         let absolute_counter_expected = absolute_counter.clone();
         assert_metric_eq(
             &mut tx,

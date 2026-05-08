@@ -4,7 +4,6 @@ use bytes::BytesMut;
 use chrono::Utc;
 use futures::StreamExt;
 use listenfd::ListenFd;
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -15,6 +14,7 @@ use sol_lib::{
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
     lookup::{self, lookup_v2::OptionalValuePath, owned_value_path},
 };
+use tokio_util::codec::FramedRead;
 use vrl::value::Value;
 
 use crate::{
@@ -94,7 +94,6 @@ pub struct UdpConfig {
     #[configurable(derived)]
     #[serde(default = "default_decoding")]
     pub(super) decoding: DeserializerConfig,
-
 }
 
 fn default_port_key() -> OptionalValuePath {
@@ -134,7 +133,6 @@ impl UdpConfig {
             decoding: default_decoding(),
         }
     }
-
 }
 
 pub(super) fn udp(
@@ -258,20 +256,17 @@ pub(super) fn udp(
                                 let now = Utc::now();
 
                                 for event in &mut events {
-                                    match event {
-                                        Event::Log(otel_log) => {
-                                                otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
-                                                let meta = otel_log.metadata_mut().value_mut();
-                                                meta.insert(
-                                                    lookup::path!(SocketConfig::NAME, "host"),
-                                                    address.ip().to_string(),
-                                                );
-                                                meta.insert(
-                                                    lookup::path!(SocketConfig::NAME, "port"),
-                                                    Value::Integer(address.port() as i64),
-                                                );
-                                        }
-                                        _ => {}
+                                    if let Event::Log(otel_log) = event {
+                                            otel_log.set_source_metadata_vector_ns(SocketConfig::NAME, now);
+                                            let meta = otel_log.metadata_mut().value_mut();
+                                            meta.insert(
+                                                lookup::path!(SocketConfig::NAME, "host"),
+                                                address.ip().to_string(),
+                                            );
+                                            meta.insert(
+                                                lookup::path!(SocketConfig::NAME, "port"),
+                                                Value::Integer(i64::from(address.port())),
+                                            );
                                     }
                                 }
 

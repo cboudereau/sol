@@ -24,13 +24,7 @@ fn test_scheduled_handle_event() {
 
     let mut event: Event =
         OtelLog::from_value_map(value!("hello world"), EventMetadata::default()).into();
-    handle_event(
-        &config,
-        &hostname,
-        &data_stream,
-        pid,
-        &mut event,
-    );
+    handle_event(&config, &hostname, &data_stream, pid, &mut event);
     let log = event.as_log();
     let meta = log.metadata().value();
 
@@ -55,10 +49,11 @@ fn test_scheduled_handle_event() {
         meta.get(path!("vector", "source_type")).unwrap(),
         &value!("exec")
     );
-    assert!(meta
-        .get(path!("vector", "ingest_timestamp"))
-        .unwrap()
-        .is_timestamp());
+    assert!(
+        meta.get(path!("vector", "ingest_timestamp"))
+            .unwrap()
+            .is_timestamp()
+    );
 }
 
 #[test]
@@ -71,13 +66,7 @@ fn test_scheduled_handle_event_vector_namespace() {
     let mut event: Event =
         OtelLog::from_value_map(value!("hello world"), EventMetadata::default()).into();
 
-    handle_event(
-        &config,
-        &hostname,
-        &data_stream,
-        pid,
-        &mut event,
-    );
+    handle_event(&config, &hostname, &data_stream, pid, &mut event);
 
     let log = event.as_log();
     let meta = log.metadata().value();
@@ -119,13 +108,7 @@ fn test_streaming_create_event() {
 
     let mut event: Event =
         OtelLog::from_value_map(value!("hello world"), EventMetadata::default()).into();
-    handle_event(
-        &config,
-        &hostname,
-        &data_stream,
-        pid,
-        &mut event,
-    );
+    handle_event(&config, &hostname, &data_stream, pid, &mut event);
     let log = event.as_log();
     let meta = log.metadata().value();
 
@@ -150,10 +133,11 @@ fn test_streaming_create_event() {
         meta.get(path!("vector", "source_type")).unwrap(),
         &value!("exec")
     );
-    assert!(meta
-        .get(path!("vector", "ingest_timestamp"))
-        .unwrap()
-        .is_timestamp());
+    assert!(
+        meta.get(path!("vector", "ingest_timestamp"))
+            .unwrap()
+            .is_timestamp()
+    );
 }
 
 #[test]
@@ -166,13 +150,7 @@ fn test_streaming_create_event_vector_namespace() {
     let mut event: Event =
         OtelLog::from_value_map(value!("hello world"), EventMetadata::default()).into();
 
-    handle_event(
-        &config,
-        &hostname,
-        &data_stream,
-        pid,
-        &mut event,
-    );
+    handle_event(&config, &hostname, &data_stream, pid, &mut event);
 
     let log = event.as_log();
     let meta = event.metadata().value();
@@ -310,10 +288,7 @@ async fn test_spawn_reader_thread() {
         assert_eq!(byte_size, 11);
         assert_eq!(events.len(), 1);
         let log = events[0].as_log();
-        assert_eq!(
-            log.get_body().unwrap(),
-            Bytes::from("hello world").into()
-        );
+        assert_eq!(log.get_body().unwrap(), Bytes::from("hello world").into());
         assert_eq!(origin, STDOUT);
         counter += 1;
     }
@@ -344,13 +319,7 @@ async fn test_drop_receiver() {
     // Wait for our task to finish, wrapping it in a timeout
     let timeout = tokio::time::timeout(
         time::Duration::from_secs(5),
-        run_command(
-            config.clone(),
-            hostname,
-            decoder,
-            shutdown,
-            tx,
-        ),
+        run_command(config.clone(), hostname, decoder, shutdown, tx),
     );
 
     drop(rx);
@@ -379,13 +348,7 @@ async fn test_run_command_linux() {
             // Wait for our task to finish, wrapping it in a timeout
             let result = tokio::time::timeout(
                 time::Duration::from_secs(5),
-                run_command(
-                    config.clone(),
-                    hostname,
-                    decoder,
-                    shutdown,
-                    tx,
-                ),
+                run_command(config.clone(), hostname, decoder, shutdown, tx),
             )
             .await;
             (rx, result)
@@ -419,10 +382,11 @@ async fn test_run_command_linux() {
             &value!("Some.Machine")
         );
         assert!(meta.get(path!(ExecConfig::NAME, PID_KEY)).is_some());
-        assert!(meta
-            .get(path!("vector", "ingest_timestamp"))
-            .unwrap()
-            .is_timestamp());
+        assert!(
+            meta.get(path!("vector", "ingest_timestamp"))
+                .unwrap()
+                .is_timestamp()
+        );
     } else {
         panic!("Expected to receive a linux event");
     }
@@ -445,13 +409,7 @@ async fn test_graceful_shutdown() {
     let (trigger, shutdown, _) = ShutdownSignal::new_wired();
     let (tx, mut rx) = SourceSender::new_test();
 
-    let task = tokio::spawn(run_command(
-        config.clone(),
-        hostname,
-        decoder,
-        shutdown,
-        tx,
-    ));
+    let task = tokio::spawn(run_command(config.clone(), hostname, decoder, shutdown, tx));
 
     tokio::time::sleep(Duration::from_secs(1)).await; // let the source start the command
 

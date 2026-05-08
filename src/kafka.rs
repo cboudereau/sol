@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use rdkafka::{ClientConfig, ClientContext, Statistics, consumer::ConsumerContext};
 use snafu::Snafu;
-use tracing::Span;
 use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
+use tracing::Span;
 
 use crate::{
     internal_events::KafkaStatisticsReceived,

@@ -16,9 +16,9 @@ use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
-use tokio::time::sleep;
 use sol::test_util::{temp_dir, temp_file};
 use sol_lib::api_client::{Client, gql::ComponentsQueryExt};
+use tokio::time::sleep;
 
 // Constants
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);

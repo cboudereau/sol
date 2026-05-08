@@ -2,12 +2,12 @@ use std::num::NonZeroUsize;
 
 use bytes::BytesMut;
 use chrono::Utc;
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     ByteSizeOf,
     event::{EventFinalizers, Finalizable},
     request_metadata::{MetaDescriptive, RequestMetadata},
 };
+use tokio_util::codec::Encoder as _;
 
 use super::TemplateRenderingError;
 use crate::{
@@ -141,7 +141,10 @@ impl ByteSizeOf for CloudwatchRequest {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use sol_lib::{event::OtelLog, lookup::{OwnedTargetPath, owned_value_path}};
+    use sol_lib::{
+        event::OtelLog,
+        lookup::{OwnedTargetPath, owned_value_path},
+    };
 
     use super::{CloudwatchRequestBuilder, MAX_MESSAGE_SIZE};
 
@@ -156,7 +159,10 @@ mod tests {
         let timestamp = Utc::now();
         let message = "event message";
         let mut event = OtelLog::from(message);
-        event.insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), timestamp);
+        event.insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            timestamp,
+        );
 
         let request = request_builder.build(event.into()).unwrap();
         assert_eq!(request.timestamp, timestamp.timestamp_millis());
@@ -175,7 +181,10 @@ mod tests {
         let timestamp = Utc::now();
         let oversized = "X".repeat(MAX_MESSAGE_SIZE + 1);
         let mut event = OtelLog::from(oversized);
-        event.insert(&OwnedTargetPath::event(owned_value_path!("time_unix_nano")), timestamp);
+        event.insert(
+            &OwnedTargetPath::event(owned_value_path!("time_unix_nano")),
+            timestamp,
+        );
 
         let request = request_builder.build(event.into());
         assert!(request.is_none(), "Expected None for oversized log event");

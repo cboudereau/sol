@@ -3,15 +3,15 @@ use std::{collections::BTreeMap, env, time::Duration};
 use futures::StreamExt;
 use http_body::Collected;
 use hyper::{Body, Request};
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
-use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     configurable::configurable_component,
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
 };
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     SourceSender,
@@ -165,7 +165,8 @@ impl SourceConfig for AwsEcsMetricsSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         let namespace = Some(self.namespace.clone()).filter(|namespace| !namespace.is_empty());
         let http_client = HttpClient::new(None, &cx.proxy)?;
-        let resource = source_otel::build_source_resource("aws_ecs_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("aws_ecs_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("aws_ecs_metrics");
 
         Ok(Box::pin(aws_ecs_metrics(
@@ -229,7 +230,8 @@ async fn aws_ecs_metrics(
                                     endpoint: uri.path(),
                                 });
 
-                                let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+                                let events: Vec<Event> =
+                                    metrics.into_iter().map(Event::Metric).collect();
                                 if (out.send_batch(events).await).is_err() {
                                     emit!(StreamClosedError { count });
                                     return Err(());

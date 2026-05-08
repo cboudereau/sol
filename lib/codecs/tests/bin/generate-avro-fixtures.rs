@@ -1,5 +1,5 @@
-use std::{fs::File, io::Write, path::PathBuf};
 use sol_common::Result;
+use std::{fs::File, io::Write, path::PathBuf};
 
 use apache_avro::{Decimal, Schema, types::Value};
 use serde::{Deserialize, Serialize};

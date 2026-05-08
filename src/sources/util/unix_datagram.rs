@@ -2,14 +2,14 @@ use std::{fs::remove_file, path::PathBuf};
 
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
-use tokio::net::UnixDatagram;
-use tokio_util::codec::FramedRead;
-use tracing::field;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::StreamDecodingError,
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol},
 };
+use tokio::net::UnixDatagram;
+use tokio_util::codec::FramedRead;
+use tracing::field;
 
 use crate::{
     SourceSender,

@@ -9,7 +9,6 @@ use futures_util::FutureExt;
 use http::{Uri, response::Parts};
 use serde_with::serde_as;
 use snafu::ResultExt;
-use tokio_util::codec::Decoder as _;
 use sol_lib::{
     TimeZone,
     codecs::{
@@ -21,6 +20,7 @@ use sol_lib::{
     configurable::configurable_component,
     event::{Event, OtelLog, VrlTarget},
 };
+use tokio_util::codec::Decoder as _;
 use vrl::{
     compiler::{CompileConfig, Function, Program, runtime::Runtime},
     prelude::TypeState,
@@ -130,7 +130,6 @@ pub struct HttpClientConfig {
     /// HTTP Authentication.
     #[configurable(derived)]
     pub auth: Option<Auth>,
-
 }
 
 const fn default_http_method() -> HttpMethod {
@@ -446,7 +445,11 @@ impl HttpClientBuilder for HttpClientContext {
 }
 
 fn resolve_vrl(value: &str, program: &Program) -> Option<String> {
-    let mut target = VrlTarget::new(Event::Log(OtelLog::new(Default::default())), program.info(), false);
+    let mut target = VrlTarget::new(
+        Event::Log(OtelLog::new(Default::default())),
+        program.info(),
+        false,
+    );
     let timezone = TimeZone::default();
 
     Runtime::default()

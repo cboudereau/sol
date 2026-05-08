@@ -140,6 +140,7 @@ pub fn init_allocation_tracing() {
                     if allocations_diff == 0 && deallocations_diff == 0 {
                         continue;
                     }
+                    #[expect(clippy::cast_possible_wrap, reason = "allocation byte counts fit in i64 for signed difference")]
                     let mem_used_diff = allocations_diff as i64 - deallocations_diff as i64;
                     let group_info = group.lock().unwrap();
                     if allocations_diff > 0 {

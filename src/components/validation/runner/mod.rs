@@ -6,6 +6,10 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use bytes::BytesMut;
 use chrono::Utc;
+use sol_lib::{
+    EstimatedJsonEncodedSizeOf, codecs::encoding, config::insert_standard_vector_source_metadata,
+    event::Event,
+};
 use tokio::{
     runtime::Builder,
     select,
@@ -16,10 +20,6 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::codec::Encoder as _;
-use sol_lib::{
-    EstimatedJsonEncodedSizeOf, codecs::encoding,
-    config::insert_standard_vector_source_metadata, event::Event,
-};
 
 pub use self::config::TopologyBuilder;
 use super::{

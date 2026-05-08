@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use crate::encoding::BuildError;
 use bytes::BytesMut;
 use prost_reflect::{MessageDescriptor, prost::Message as _};
-use tokio_util::codec::Encoder;
 use sol_config_macros::configurable_component;
 use sol_core::{
     config::DataType,
     event::{Event, Value},
     schema,
 };
+use tokio_util::codec::Encoder;
 use vrl::protobuf::{
     descriptor::{get_message_descriptor, get_message_descriptor_from_bytes},
     encode::{Options, encode_message},

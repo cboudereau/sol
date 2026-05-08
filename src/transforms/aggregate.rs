@@ -6,10 +6,7 @@ use std::{
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
-use sol_lib::{
-    configurable::configurable_component,
-    event::metric::MetricSeries,
-};
+use sol_lib::{configurable::configurable_component, event::metric::MetricSeries};
 
 use crate::{
     config::{DataType, Input, OutputId, TransformConfig, TransformContext, TransformOutput},
@@ -144,14 +141,14 @@ impl Aggregate {
                 }
             }
             AggregationMode::Count => self.record_count(series, metric),
-            AggregationMode::Max | AggregationMode::Min => {
-                self.record_comparison(series, metric)
-            }
+            AggregationMode::Max | AggregationMode::Min => self.record_comparison(series, metric),
             AggregationMode::Mean | AggregationMode::Stdev => {
                 if metric.is_gauge() {
                     match self.multi_map.entry(series) {
                         Entry::Occupied(mut entry) => entry.get_mut().push(metric),
-                        Entry::Vacant(entry) => { entry.insert(vec![metric]); }
+                        Entry::Vacant(entry) => {
+                            entry.insert(vec![metric]);
+                        }
                     }
                 }
             }
@@ -170,11 +167,7 @@ impl Aggregate {
             }
             Entry::Vacant(entry) => {
                 use crate::event::metric::MetricKind;
-                let mut counter = OtelMetric::new_counter(
-                    metric.name(),
-                    MetricKind::Absolute,
-                    1.0,
-                );
+                let mut counter = OtelMetric::new_counter(metric.name(), MetricKind::Absolute, 1.0);
                 *counter.metadata_mut() = metric.metadata().clone();
                 entry.insert(counter);
             }
@@ -182,7 +175,9 @@ impl Aggregate {
     }
 
     fn record_sum(&mut self, series: MetricSeries, metric: OtelMetric) {
-        if !metric.is_delta() { return; }
+        if !metric.is_delta() {
+            return;
+        }
         match self.map.entry(series) {
             Entry::Occupied(mut entry) => {
                 let existing = entry.get_mut();
@@ -200,7 +195,9 @@ impl Aggregate {
     }
 
     fn record_comparison(&mut self, series: MetricSeries, metric: OtelMetric) {
-        if !metric.is_cumulative() && !metric.is_gauge() { return; }
+        if !metric.is_cumulative() && !metric.is_gauge() {
+            return;
+        }
         match self.map.entry(series) {
             Entry::Occupied(mut entry) => {
                 let existing_val = entry.get().first_value_as_f64();
@@ -225,12 +222,11 @@ impl Aggregate {
     fn flush_into(&mut self, output: &mut Vec<Event>) {
         let map = std::mem::take(&mut self.map);
         for (series, mut metric) in map.clone().into_iter() {
-            if matches!(self.mode, AggregationMode::Diff) {
-                if let Some(prev) = self.prev_map.get(&series) {
-                    if !metric.subtract(prev) {
-                        emit!(AggregateUpdateFailed);
-                    }
-                }
+            if matches!(self.mode, AggregationMode::Diff)
+                && let Some(prev) = self.prev_map.get(&series)
+                && !metric.subtract(prev)
+            {
+                emit!(AggregateUpdateFailed);
             }
             output.push(Event::Metric(metric));
         }
@@ -250,6 +246,10 @@ impl Aggregate {
                 combined.metadata_mut().merge(m.metadata().clone());
             }
 
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "metric aggregation entry count; precise for |v| <= 2^53"
+            )]
             let count = entries.len() as f64;
             let mean_value = combined.first_value_as_f64().unwrap_or(0.0) / count;
 
@@ -327,17 +327,14 @@ mod tests {
     use std::{collections::BTreeSet, sync::Arc, task::Poll};
 
     use futures::stream;
+    use sol_lib::config::ComponentKey;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::config::ComponentKey;
     use vrl::value::Kind;
 
     use super::*;
     use crate::{
-        event::{
-            Event, OtelMetric,
-            metric::MetricKind,
-        },
+        event::{Event, OtelMetric, metric::MetricKind},
         schema::Definition,
         test_util::components::assert_transform_compliance,
         transforms::test::create_topology,
@@ -369,9 +366,18 @@ mod tests {
         })
         .unwrap();
 
-        let counter_a_1 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0));
-        let counter_a_2 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0));
-        let counter_a_summed = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0));
+        let counter_a_1 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0),
+        );
+        let counter_a_2 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0),
+        );
+        let counter_a_summed = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0),
+        );
 
         // Single item, just stored regardless of kind
         agg.record(counter_a_1.clone());
@@ -397,9 +403,15 @@ mod tests {
         out.clear();
         agg.flush_into(&mut out);
         assert_eq!(1, out.len());
-        assert_eq!(counter_a_summed.clone().into_otel_metric(), out[0].clone().into_otel_metric());
+        assert_eq!(
+            counter_a_summed.clone().into_otel_metric(),
+            out[0].clone().into_otel_metric()
+        );
 
-        let counter_b_1 = make_metric("counter_b", OtelMetric::new_counter("counter_b", MetricKind::Incremental, 44.0));
+        let counter_b_1 = make_metric(
+            "counter_b",
+            OtelMetric::new_counter("counter_b", MetricKind::Incremental, 44.0),
+        );
         // Two increments with the different series, should get each back as-is
         agg.record(counter_a_1.clone());
         agg.record(counter_b_1.clone());
@@ -482,8 +494,14 @@ mod tests {
 
         let gauge_a_1 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 42.0));
         let gauge_a_2 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 43.0));
-        let result_count = make_metric("gauge_a", OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 1.0));
-        let result_count_2 = make_metric("gauge_a", OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 2.0));
+        let result_count = make_metric(
+            "gauge_a",
+            OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 1.0),
+        );
+        let result_count_2 = make_metric(
+            "gauge_a",
+            OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 2.0),
+        );
 
         // Single item, counter should be 1
         agg.record(gauge_a_1.clone());
@@ -641,7 +659,10 @@ mod tests {
         .unwrap();
 
         let gauge_a_1 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 32.0));
-        let gauge_a_2 = make_metric("gauge_a", OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 1.0));
+        let gauge_a_2 = make_metric(
+            "gauge_a",
+            OtelMetric::new_counter("gauge_a", MetricKind::Absolute, 1.0),
+        );
 
         let mut out = vec![];
         // Two absolutes in 2 separate flushes, result should be second one due to different types
@@ -736,12 +757,21 @@ mod tests {
         })
         .unwrap();
 
-        let counter = make_metric("the-thing", OtelMetric::new_counter("the-thing", MetricKind::Incremental, 42.0));
+        let counter = make_metric(
+            "the-thing",
+            OtelMetric::new_counter("the-thing", MetricKind::Incremental, 42.0),
+        );
         let mut values = BTreeSet::<String>::new();
         values.insert("a".into());
         values.insert("b".into());
-        let set = make_metric("the-thing", OtelMetric::new_set_from_values("the-thing", MetricKind::Incremental, values));
-        let summed = make_metric("the-thing", OtelMetric::new_counter("the-thing", MetricKind::Incremental, 84.0));
+        let set = make_metric(
+            "the-thing",
+            OtelMetric::new_set_from_values("the-thing", MetricKind::Incremental, values),
+        );
+        let summed = make_metric(
+            "the-thing",
+            OtelMetric::new_counter("the-thing", MetricKind::Incremental, 84.0),
+        );
 
         // when types conflict the new values replaces whatever is there
 
@@ -782,9 +812,18 @@ mod tests {
         })
         .unwrap();
 
-        let incremental = make_metric("the-thing", OtelMetric::new_counter("the-thing", MetricKind::Incremental, 42.0));
-        let absolute = make_metric("the-thing", OtelMetric::new_counter("the-thing", MetricKind::Absolute, 43.0));
-        let summed = make_metric("the-thing", OtelMetric::new_counter("the-thing", MetricKind::Incremental, 84.0));
+        let incremental = make_metric(
+            "the-thing",
+            OtelMetric::new_counter("the-thing", MetricKind::Incremental, 42.0),
+        );
+        let absolute = make_metric(
+            "the-thing",
+            OtelMetric::new_counter("the-thing", MetricKind::Absolute, 43.0),
+        );
+        let summed = make_metric(
+            "the-thing",
+            OtelMetric::new_counter("the-thing", MetricKind::Incremental, 84.0),
+        );
 
         // when types conflict the new values replaces whatever is there
 
@@ -831,9 +870,18 @@ interval_ms = 999999
 
         let agg = agg.into_task();
 
-        let counter_a_1 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0));
-        let counter_a_2 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0));
-        let counter_a_summed = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0));
+        let counter_a_1 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0),
+        );
+        let counter_a_2 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0),
+        );
+        let counter_a_summed = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0),
+        );
         let gauge_a_1 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 42.0));
         let gauge_a_2 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 43.0));
         let inputs = vec![counter_a_1, counter_a_2, gauge_a_1, gauge_a_2.clone()];
@@ -864,9 +912,18 @@ interval_ms = 999999
     async fn transform_interval() {
         let transform_config = toml::from_str::<AggregateConfig>("").unwrap();
 
-        let counter_a_1 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0));
-        let counter_a_2 = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0));
-        let counter_a_summed = make_metric("counter_a", OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0));
+        let counter_a_1 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 42.0),
+        );
+        let counter_a_2 = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 43.0),
+        );
+        let counter_a_summed = make_metric(
+            "counter_a",
+            OtelMetric::new_counter("counter_a", MetricKind::Incremental, 85.0),
+        );
         let gauge_a_1 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 42.0));
         let gauge_a_2 = make_metric("gauge_a", OtelMetric::new_gauge("gauge_a", 43.0));
 
@@ -898,7 +955,9 @@ interval_ms = 999999
                     Some(event) => {
                         let metric = event.clone().into_otel_metric();
                         match metric.name() {
-                            "counter_a" => assert_eq!(counter_a_summed.clone().into_otel_metric(), metric),
+                            "counter_a" => {
+                                assert_eq!(counter_a_summed.clone().into_otel_metric(), metric)
+                            }
                             "gauge_a" => assert_eq!(gauge_a_2.clone().into_otel_metric(), metric),
                             _ => panic!("Unexpected metric name in aggregate output"),
                         };

@@ -14,6 +14,11 @@
 #![allow(clippy::new_ret_no_self)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::unit_arg)]
+#![deny(clippy::cast_lossless)]
+#![deny(clippy::cast_possible_truncation)]
+#![deny(clippy::cast_possible_wrap)]
+#![deny(clippy::cast_precision_loss)]
+#![deny(clippy::cast_sign_loss)]
 #![deny(clippy::clone_on_ref_ptr)]
 #![deny(clippy::trivially_copy_pass_by_ref)]
 #![deny(clippy::disallowed_methods)] // [nursery] mark some functions as verboten
@@ -122,12 +127,12 @@ pub mod trace;
 pub mod transforms;
 pub mod types;
 pub mod unit_test;
-#[allow(unreachable_pub, missing_docs)]
-pub mod vrl_migrate;
 pub(crate) mod utilization;
 pub mod validate;
 #[cfg(windows)]
 pub mod vector_windows;
+#[allow(unreachable_pub, missing_docs)]
+pub mod vrl_migrate;
 
 pub use sol_lib::{
     Error, Result, event, metrics, schema, shutdown, source_sender::SourceSender, tcp, tls,

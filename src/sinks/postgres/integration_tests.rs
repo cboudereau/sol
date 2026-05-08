@@ -4,11 +4,10 @@ use chrono::{DateTime, Utc};
 use futures::stream;
 use ordered_float::NotNan;
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, FromRow, PgConnection};
 use sol_lib::event::{
-    BatchNotifier, BatchStatus, BatchStatusReceiver, Event, OtelLog, MetricKind,
-    OtelMetric,
+    BatchNotifier, BatchStatus, BatchStatusReceiver, Event, MetricKind, OtelLog, OtelMetric,
 };
+use sqlx::{Connection, FromRow, PgConnection};
 use vrl::event_path;
 
 use crate::{
@@ -51,7 +50,9 @@ fn create_event_with_notifier(id: i64) -> (Event, BatchStatusReceiver) {
 }
 
 fn create_events(count: usize) -> (Vec<Event>, BatchStatusReceiver) {
-    let mut events = (0..count as i64).map(create_event).collect::<Vec<_>>();
+    #[expect(clippy::cast_possible_wrap, reason = "test event count fits in i64")]
+    let count = count as i64;
+    let mut events = (0..count).map(create_event).collect::<Vec<_>>();
     let receiver = BatchNotifier::apply_to(&mut events);
     (events, receiver)
 }

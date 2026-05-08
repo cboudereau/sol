@@ -11,11 +11,10 @@ use chrono::{TimeZone, Utc};
 use futures::{Stream, StreamExt};
 use http::HeaderMap;
 use indoc::indoc;
+use opentelemetry_proto::tonic::common::v1::AnyValue;
 use prost::Message;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use similar_asserts::assert_eq;
-use tokio::time::timeout;
-use opentelemetry_proto::tonic::common::v1::AnyValue;
 use sol_lib::{
     codecs::{
         BytesDecoder, BytesDeserializer, CharacterDelimitedDecoderConfig,
@@ -24,16 +23,13 @@ use sol_lib::{
             DeserializerConfig, Framer,
         },
     },
-    config::{DataType},
+    config::DataType,
     event::OtelAttributes,
     lookup::owned_value_path,
     otel_tags,
 };
-use vrl::{
-    compiler::value::Collection,
-    value,
-    value::Kind,
-};
+use tokio::time::timeout;
+use vrl::{compiler::value::Collection, value, value::Kind};
 
 use crate::{
     SourceSender,
@@ -41,8 +37,8 @@ use crate::{
     components::validation::prelude::*,
     config::{SourceConfig, SourceContext},
     event::{
-        Event, EventStatus, OtelMetric, OtelSpan, Value, into_event_stream,
-        metric::MetricKind, MetricView,
+        Event, EventStatus, MetricView, OtelMetric, OtelSpan, Value, into_event_stream,
+        metric::MetricKind,
     },
     schema,
     schema::Definition,
@@ -80,7 +76,7 @@ impl Arbitrary for LogMsg {
             message: Bytes::from(String::arbitrary(g)),
             status: Bytes::from(String::arbitrary(g)),
             timestamp: Utc
-                .timestamp_millis_opt(u32::arbitrary(g) as i64)
+                .timestamp_millis_opt(i64::from(u32::arbitrary(g)))
                 .single()
                 .expect("invalid timestamp"),
             hostname: Bytes::from(String::arbitrary(g)),
@@ -124,7 +120,7 @@ fn test_decode_log_body() {
             if expected_nanos != 0 {
                 assert_eq!(
                     log.get("time_unix_nano").unwrap(),
-                    Value::Integer(expected_nanos as i64)
+                    Value::Integer(expected_nanos)
                 );
             } else {
                 // When nanos == 0, time_unix_nano is stored as 0 on the proto record
@@ -133,7 +129,10 @@ fn test_decode_log_body() {
                 assert!(log.get("time_unix_nano").is_none());
                 assert!(log.get("timestamp").is_some());
             }
-            assert_eq!(log.get("hostname").unwrap(), Value::from(String::from_utf8_lossy(&msg.hostname).into_owned()));
+            assert_eq!(
+                log.get("hostname").unwrap(),
+                Value::from(String::from_utf8_lossy(&msg.hostname).into_owned())
+            );
             assert_eq!(log.get("service").unwrap(), Value::from(msg.service));
             assert_eq!(log.get("ddsource").unwrap(), Value::from(msg.ddsource));
             assert_eq!(log.get("ddtags").unwrap(), Value::from(msg.ddtags));
@@ -193,13 +192,19 @@ fn test_decode_log_body_parse_ddtags() {
     assert_eq!(log.get("status").unwrap(), Value::from(log_msg.status));
     assert_eq!(
         log.get("time_unix_nano").unwrap(),
-        Value::Integer(log_msg.timestamp.timestamp_nanos_opt().unwrap() as i64)
+        Value::Integer(log_msg.timestamp.timestamp_nanos_opt().unwrap())
     );
-    assert_eq!(log.get("hostname").unwrap(), Value::from(String::from_utf8_lossy(&log_msg.hostname).into_owned()));
+    assert_eq!(
+        log.get("hostname").unwrap(),
+        Value::from(String::from_utf8_lossy(&log_msg.hostname).into_owned())
+    );
     assert_eq!(log.get("service").unwrap(), Value::from(log_msg.service));
     assert_eq!(log.get("ddsource").unwrap(), Value::from(log_msg.ddsource));
 
-    assert_eq!(log.get("ddtags").unwrap(), value!(["wizard:the_grey", "env:staging"]));
+    assert_eq!(
+        log.get("ddtags").unwrap(),
+        value!(["wizard:the_grey", "env:staging"])
+    );
 }
 
 #[test]
@@ -980,7 +985,11 @@ async fn decode_series_endpoint_v1() {
             );
 
             assert_eq!(
-                &events[0].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[0]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
 
@@ -1007,7 +1016,11 @@ async fn decode_series_endpoint_v1() {
             );
 
             assert_eq!(
-                &events[1].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[1]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
 
@@ -1033,14 +1046,22 @@ async fn decode_series_endpoint_v1() {
                 expected_tags.insert(
                     "interval_ms".to_string(),
                     AnyValue {
-                        value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(10000)),
+                        value: Some(
+                            opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(
+                                10000,
+                            ),
+                        ),
                     },
                 );
                 assert_tags(&metric, expected_tags);
             }
 
             assert_eq!(
-                &events[2].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[2]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
 
@@ -1055,7 +1076,10 @@ async fn decode_series_endpoint_v1() {
                 )
             );
             assert_eq!(metric.kind(), MetricKind::Incremental);
-            assert!(matches!(metric.view(), MetricView::Sum { value: 16777216.0 }));
+            assert!(matches!(
+                metric.view(),
+                MetricView::Sum { value: 16777216.0 }
+            ));
             {
                 let mut expected_tags = otel_tags!(
                     "resource.host.name" => "a_host",
@@ -1074,7 +1098,11 @@ async fn decode_series_endpoint_v1() {
             assert_eq!(metric.namespace(), Some("system"));
 
             assert_eq!(
-                &events[3].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[3]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
         }
@@ -1197,18 +1225,34 @@ async fn decode_traces() {
         .await;
 
         // Helper to find an attribute value by key
-        fn find_attr<'a>(attrs: &'a [opentelemetry_proto::tonic::common::v1::KeyValue], key: &str) -> Option<&'a opentelemetry_proto::tonic::common::v1::AnyValue> {
-            attrs.iter().find(|kv| kv.key == key).and_then(|kv| kv.value.as_ref())
+        fn find_attr<'a>(
+            attrs: &'a [opentelemetry_proto::tonic::common::v1::KeyValue],
+            key: &str,
+        ) -> Option<&'a opentelemetry_proto::tonic::common::v1::AnyValue> {
+            attrs
+                .iter()
+                .find(|kv| kv.key == key)
+                .and_then(|kv| kv.value.as_ref())
         }
-        fn attr_str(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue], key: &str) -> String {
+        fn attr_str(
+            attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+            key: &str,
+        ) -> String {
             match find_attr(attrs, key).and_then(|v| v.value.as_ref()) {
-                Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => s.clone(),
+                Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => {
+                    s.clone()
+                }
                 other => panic!("expected string attribute for '{key}', got {other:?}"),
             }
         }
-        fn attr_double(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue], key: &str) -> f64 {
+        fn attr_double(
+            attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+            key: &str,
+        ) -> f64 {
             match find_attr(attrs, key).and_then(|v| v.value.as_ref()) {
-                Some(opentelemetry_proto::tonic::common::v1::any_value::Value::DoubleValue(d)) => *d,
+                Some(opentelemetry_proto::tonic::common::v1::any_value::Value::DoubleValue(d)) => {
+                    *d
+                }
                 other => panic!("expected double attribute for '{key}', got {other:?}"),
             }
         }
@@ -1230,7 +1274,10 @@ async fn decode_traces() {
 
             // Resource attributes
             assert_eq!(resource_attr_str(span_v1, "host.name"), "a_hostname");
-            assert_eq!(resource_attr_str(span_v1, "deployment.environment"), "an_environment");
+            assert_eq!(
+                resource_attr_str(span_v1, "deployment.environment"),
+                "an_environment"
+            );
 
             // Scope (language from X-Datadog-Reported-Languages header)
             let scope = span_v1.scope().expect("scope should be set");
@@ -1253,15 +1300,31 @@ async fn decode_traces() {
 
             // Status (error=404 → Error)
             let status = otel_span.status.as_ref().unwrap();
-            assert_eq!(status.code, opentelemetry_proto::tonic::trace::v1::status::StatusCode::Error as i32);
+            assert_eq!(
+                status.code,
+                opentelemetry_proto::tonic::trace::v1::status::StatusCode::Error as i32
+            );
 
             // Span attributes (from DD meta + metrics)
-            assert_eq!(attr_str(&span_v1.attributes().to_key_values(), "foo"), "bar");
-            assert_eq!(attr_double(&span_v1.attributes().to_key_values(), "a_metrics"), 0.577);
-            assert_eq!(attr_str(&span_v1.attributes().to_key_values(), "dd.resource"), "a_resource");
+            assert_eq!(
+                attr_str(&span_v1.attributes().to_key_values(), "foo"),
+                "bar"
+            );
+            assert_eq!(
+                attr_double(&span_v1.attributes().to_key_values(), "a_metrics"),
+                0.577
+            );
+            assert_eq!(
+                attr_str(&span_v1.attributes().to_key_values(), "dd.resource"),
+                "a_resource"
+            );
 
             assert_eq!(
-                &events[0].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[0]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
 
@@ -1269,12 +1332,22 @@ async fn decode_traces() {
             let apm_span = events[1].as_trace();
             let apm_otel = apm_span.span();
             assert_eq!(resource_attr_str(apm_span, "host.name"), "a_hostname");
-            assert_eq!(resource_attr_str(apm_span, "deployment.environment"), "an_environment");
+            assert_eq!(
+                resource_attr_str(apm_span, "deployment.environment"),
+                "an_environment"
+            );
             assert_eq!(apm_otel.name, "a_name");
-            assert_eq!(attr_str(&apm_span.attributes().to_key_values(), "dd.resource"), "a_resource");
+            assert_eq!(
+                attr_str(&apm_span.attributes().to_key_values(), "dd.resource"),
+                "a_resource"
+            );
 
             assert_eq!(
-                &events[1].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[1]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
 
@@ -1322,14 +1395,21 @@ async fn decode_traces() {
 
             // Status (error=404 → Error)
             let v2_status = v2_otel.status.as_ref().unwrap();
-            assert_eq!(v2_status.code, opentelemetry_proto::tonic::trace::v1::status::StatusCode::Error as i32);
+            assert_eq!(
+                v2_status.code,
+                opentelemetry_proto::tonic::trace::v1::status::StatusCode::Error as i32
+            );
 
             // Meta + metrics as span attributes
             assert_eq!(attr_str(&v2_kvs, "foo"), "bar");
             assert_eq!(attr_double(&v2_kvs, "a_metrics"), 0.577);
 
             assert_eq!(
-                &events[2].metadata().secrets().get("datadog_api_key").unwrap()[..],
+                &events[2]
+                    .metadata()
+                    .secrets()
+                    .get("datadog_api_key")
+                    .unwrap()[..],
                 DD_API_KEY
             );
         }
@@ -1739,12 +1819,42 @@ fn test_config_outputs() {
                     Some(
                         DeserializerConfig::Json(Default::default())
                             .schema_definition()
-                            .with_source_metadata("datadog_agent", &owned_value_path!("status"), Kind::bytes(), Some("severity"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("timestamp"), Kind::timestamp(), Some("timestamp"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("hostname"), Kind::bytes(), Some("host"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("service"), Kind::bytes(), Some("service"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("ddsource"), Kind::bytes(), Some("source"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("ddtags"), Kind::bytes(), Some("tags"))
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("status"),
+                                Kind::bytes(),
+                                Some("severity"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("timestamp"),
+                                Kind::timestamp(),
+                                Some("timestamp"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("hostname"),
+                                Kind::bytes(),
+                                Some("host"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("service"),
+                                Kind::bytes(),
+                                Some("service"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("ddsource"),
+                                Kind::bytes(),
+                                Some("source"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("ddtags"),
+                                Kind::bytes(),
+                                Some("tags"),
+                            )
                             .with_standard_vector_source_metadata(),
                     ),
                 )]),
@@ -1761,12 +1871,42 @@ fn test_config_outputs() {
                         Some(
                             DeserializerConfig::Json(Default::default())
                                 .schema_definition()
-                                .with_source_metadata("datadog_agent", &owned_value_path!("status"), Kind::bytes(), Some("severity"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("timestamp"), Kind::timestamp(), Some("timestamp"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("hostname"), Kind::bytes(), Some("host"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("service"), Kind::bytes(), Some("service"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("ddsource"), Kind::bytes(), Some("source"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("ddtags"), Kind::bytes(), Some("tags"))
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("status"),
+                                    Kind::bytes(),
+                                    Some("severity"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("timestamp"),
+                                    Kind::timestamp(),
+                                    Some("timestamp"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("hostname"),
+                                    Kind::bytes(),
+                                    Some("host"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("service"),
+                                    Kind::bytes(),
+                                    Some("service"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("ddsource"),
+                                    Kind::bytes(),
+                                    Some("source"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("ddtags"),
+                                    Kind::bytes(),
+                                    Some("tags"),
+                                )
                                 .with_standard_vector_source_metadata(),
                         ),
                     ),
@@ -1786,12 +1926,42 @@ fn test_config_outputs() {
                     Some(
                         DeserializerConfig::Syslog(Default::default())
                             .schema_definition()
-                            .with_source_metadata("datadog_agent", &owned_value_path!("status"), Kind::bytes(), Some("severity"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("timestamp"), Kind::timestamp(), Some("timestamp"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("hostname"), Kind::bytes(), Some("host"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("service"), Kind::bytes(), Some("service"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("ddsource"), Kind::bytes(), Some("source"))
-                            .with_source_metadata("datadog_agent", &owned_value_path!("ddtags"), Kind::bytes(), Some("tags"))
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("status"),
+                                Kind::bytes(),
+                                Some("severity"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("timestamp"),
+                                Kind::timestamp(),
+                                Some("timestamp"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("hostname"),
+                                Kind::bytes(),
+                                Some("host"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("service"),
+                                Kind::bytes(),
+                                Some("service"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("ddsource"),
+                                Kind::bytes(),
+                                Some("source"),
+                            )
+                            .with_source_metadata(
+                                "datadog_agent",
+                                &owned_value_path!("ddtags"),
+                                Kind::bytes(),
+                                Some("tags"),
+                            )
                             .with_standard_vector_source_metadata(),
                     ),
                 )]),
@@ -1809,12 +1979,42 @@ fn test_config_outputs() {
                         Some(
                             DeserializerConfig::Syslog(Default::default())
                                 .schema_definition()
-                                .with_source_metadata("datadog_agent", &owned_value_path!("status"), Kind::bytes(), Some("severity"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("timestamp"), Kind::timestamp(), Some("timestamp"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("hostname"), Kind::bytes(), Some("host"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("service"), Kind::bytes(), Some("service"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("ddsource"), Kind::bytes(), Some("source"))
-                                .with_source_metadata("datadog_agent", &owned_value_path!("ddtags"), Kind::bytes(), Some("tags"))
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("status"),
+                                    Kind::bytes(),
+                                    Some("severity"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("timestamp"),
+                                    Kind::timestamp(),
+                                    Some("timestamp"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("hostname"),
+                                    Kind::bytes(),
+                                    Some("host"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("service"),
+                                    Kind::bytes(),
+                                    Some("service"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("ddsource"),
+                                    Kind::bytes(),
+                                    Some("source"),
+                                )
+                                .with_source_metadata(
+                                    "datadog_agent",
+                                    &owned_value_path!("ddtags"),
+                                    Kind::bytes(),
+                                    Some("tags"),
+                                )
                                 .with_standard_vector_source_metadata(),
                         ),
                     ),
@@ -2101,51 +2301,49 @@ fn test_output_schema_definition_json_vector_namespace() {
     assert_eq!(
         definition,
         Some(
-            Definition::new_with_default_metadata(
-                Kind::object(Collection::empty())
-            )
-            .unknown_fields(Kind::json())
-            .with_event_field(&owned_value_path!("time_unix_nano"), Kind::json(), None)
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "ddsource"),
-                Kind::bytes(),
-                Some("source")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "ddtags"),
-                Kind::bytes(),
-                Some("tags")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "hostname"),
-                Kind::bytes(),
-                Some("host")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "service"),
-                Kind::bytes(),
-                Some("service")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "status"),
-                Kind::bytes(),
-                Some("severity")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "timestamp"),
-                Kind::timestamp(),
-                Some("timestamp")
-            )
-            .with_metadata_field(
-                &owned_value_path!("vector", "ingest_timestamp"),
-                Kind::timestamp(),
-                None
-            )
-            .with_metadata_field(
-                &owned_value_path!("vector", "source_type"),
-                Kind::bytes(),
-                None
-            )
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .unknown_fields(Kind::json())
+                .with_event_field(&owned_value_path!("time_unix_nano"), Kind::json(), None)
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "ddsource"),
+                    Kind::bytes(),
+                    Some("source")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "ddtags"),
+                    Kind::bytes(),
+                    Some("tags")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "hostname"),
+                    Kind::bytes(),
+                    Some("host")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "service"),
+                    Kind::bytes(),
+                    Some("service")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "status"),
+                    Kind::bytes(),
+                    Some("severity")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "timestamp"),
+                    Kind::timestamp(),
+                    Some("timestamp")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None
+                )
         )
     )
 }
@@ -2164,50 +2362,48 @@ fn test_output_schema_definition_bytes_vector_namespace() {
     assert_eq!(
         definition,
         Some(
-            Definition::new_with_default_metadata(
-                Kind::object(Collection::empty())
-            )
-            .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "ddsource"),
-                Kind::bytes(),
-                Some("source")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "ddtags"),
-                Kind::bytes(),
-                Some("tags")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "hostname"),
-                Kind::bytes(),
-                Some("host")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "service"),
-                Kind::bytes(),
-                Some("service")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "status"),
-                Kind::bytes(),
-                Some("severity")
-            )
-            .with_metadata_field(
-                &owned_value_path!("datadog_agent", "timestamp"),
-                Kind::timestamp(),
-                Some("timestamp")
-            )
-            .with_metadata_field(
-                &owned_value_path!("vector", "ingest_timestamp"),
-                Kind::timestamp(),
-                None
-            )
-            .with_metadata_field(
-                &owned_value_path!("vector", "source_type"),
-                Kind::bytes(),
-                None
-            )
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "ddsource"),
+                    Kind::bytes(),
+                    Some("source")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "ddtags"),
+                    Kind::bytes(),
+                    Some("tags")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "hostname"),
+                    Kind::bytes(),
+                    Some("host")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "service"),
+                    Kind::bytes(),
+                    Some("service")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "status"),
+                    Kind::bytes(),
+                    Some("severity")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("datadog_agent", "timestamp"),
+                    Kind::timestamp(),
+                    Some("timestamp")
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None
+                )
         )
     )
 }

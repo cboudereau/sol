@@ -35,9 +35,12 @@ impl HealthSubscription {
         &self,
         #[graphql(default = 1000, validator(minimum = 10, maximum = 60_000))] interval: i32,
     ) -> impl Stream<Item = Heartbeat> + use<> {
-        IntervalStream::new(tokio::time::interval(Duration::from_millis(
-            interval as u64,
-        )))
-        .map(|_| Heartbeat::new())
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "GraphQL interval validated to [10, 60_000]"
+        )]
+        let interval_ms = interval as u64;
+        IntervalStream::new(tokio::time::interval(Duration::from_millis(interval_ms)))
+            .map(|_| Heartbeat::new())
     }
 }

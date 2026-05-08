@@ -89,11 +89,7 @@ impl DnstapParser {
         event.insert(prefix.concat(path), value)
     }
 
-    pub fn parse(
-        event: &mut Value,
-        frame: Bytes,
-        parsing_options: DnsParserOptions,
-    ) -> Result<()> {
+    pub fn parse(event: &mut Value, frame: Bytes, parsing_options: DnsParserOptions) -> Result<()> {
         //parse frame with dnstap protobuf
         let proto_msg = Dnstap::decode(frame.clone())?;
         let root = owned_value_path!();
@@ -358,11 +354,17 @@ impl DnstapParser {
             return Err(Error::from("Cannot parse timestamp"));
         }
 
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "time_sec is guarded above to be <= i64::MAX, so the cast is lossless"
+        )]
+        let time_sec_signed = time_sec as i64;
+
         let (time_in_nanosec, query_time_nsec) = match time_nsec {
             Some(nsec) => {
-                if let Some(time_in_ns) = (time_sec as i64)
+                if let Some(time_in_ns) = time_sec_signed
                     .checked_mul(1_000_000_000)
-                    .and_then(|v| v.checked_add(nsec as i64))
+                    .and_then(|v| v.checked_add(i64::from(nsec)))
                 {
                     (time_in_ns, nsec)
                 } else {
@@ -370,7 +372,7 @@ impl DnstapParser {
                 }
             }
             None => {
-                if let Some(time_in_ns) = (time_sec as i64).checked_mul(1_000_000_000) {
+                if let Some(time_in_ns) = time_sec_signed.checked_mul(1_000_000_000) {
                     (time_in_ns, 0)
                 } else {
                     return Err(Error::from("Cannot parse timestamp"));
@@ -632,6 +634,10 @@ impl DnstapParser {
         questions: &[QueryQuestion],
     ) {
         for (i, query) in questions.iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "DNS query section count is a small protocol field, well within isize::MAX"
+            )]
             let index_segment = path!(i as isize);
             DnstapParser::log_dns_query_question(event, prefix.concat(index_segment), query);
         }
@@ -852,6 +858,10 @@ impl DnstapParser {
 
     fn log_edns_ede<'a>(event: &mut Value, prefix: impl ValuePath<'a>, options: &[EDE]) {
         options.iter().enumerate().for_each(|(i, entry)| {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "EDNS EDE option count is a small protocol field, well within isize::MAX"
+            )]
             let index_segment = path!(i as isize);
             DnstapParser::log_edns_ede_entry(event, prefix.concat(index_segment), entry);
         });
@@ -883,6 +893,10 @@ impl DnstapParser {
         options: &[EdnsOptionEntry],
     ) {
         options.iter().enumerate().for_each(|(i, opt)| {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "EDNS option count is a small protocol field, well within isize::MAX"
+            )]
             let index_segment = path!(i as isize);
             DnstapParser::log_edns_opt(event, prefix.concat(index_segment), opt);
         });
@@ -915,6 +929,10 @@ impl DnstapParser {
         records: &[DnsRecord],
     ) {
         for (i, record) in records.iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "DNS record section count is a small protocol field, well within isize::MAX"
+            )]
             let index_segment = path!(i as isize);
             DnstapParser::log_dns_record(event, prefix.concat(index_segment), record);
         }
@@ -1138,8 +1156,10 @@ mod tests {
             assert_eq!(value, exp_value);
         }
 
-        assert!(log_event.get_timestamp().unwrap().as_timestamp().is_some(),
-            "parser should set time_unix_nano via from_value_map round-trip");
+        assert!(
+            log_event.get_timestamp().unwrap().as_timestamp().is_some(),
+            "parser should set time_unix_nano via from_value_map round-trip"
+        );
     }
 
     #[test]
@@ -1318,8 +1338,10 @@ mod tests {
             assert_eq!(value, exp_value);
         }
 
-        assert!(log_event.get_timestamp().unwrap().as_timestamp().is_some(),
-            "parser should set time_unix_nano via from_value_map round-trip");
+        assert!(
+            log_event.get_timestamp().unwrap().as_timestamp().is_some(),
+            "parser should set time_unix_nano via from_value_map round-trip"
+        );
     }
 
     #[test]

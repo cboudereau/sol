@@ -1,13 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use config::PerMetricConfig;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use sol_lib::{
     config::{ComponentKey, OutputId},
     event::EventMetadata,
     otel_tags,
 };
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use vrl::compiler::prelude::Kind;
 
 use super::*;
@@ -214,10 +214,7 @@ async fn drop_tag(config: TagCardinalityLimitConfig) {
         let new_event3 = new_event3.unwrap();
         let m3 = new_event3.as_metric();
         assert!(!m3.tags().unwrap().contains_key("tag1"));
-        assert_eq!(
-            "val1",
-            m3.tags().unwrap().get_string("tag2").unwrap()
-        );
+        assert_eq!("val1", m3.tags().unwrap().get_string("tag2").unwrap());
     })
     .await;
 }

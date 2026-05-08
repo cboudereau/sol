@@ -13,12 +13,6 @@ use evmap::{
 };
 use evmap_derive::ShallowCopy;
 use futures::{StreamExt, stream::BoxStream};
-use thread_local::ThreadLocal;
-use tokio::{
-    sync::broadcast::{Receiver, Sender},
-    time::interval,
-};
-use tokio_stream::wrappers::IntervalStream;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     enrichment::{Case, Condition, IndexHandle, Table},
@@ -29,6 +23,12 @@ use sol_lib::{
     shutdown::ShutdownSignal,
     sink::StreamSink,
 };
+use thread_local::ThreadLocal;
+use tokio::{
+    sync::broadcast::{Receiver, Sender},
+    time::interval,
+};
+use tokio_stream::wrappers::IntervalStream;
 use vrl::value::{KeyString, ObjectMap, Value};
 
 use super::source::MemorySource;
@@ -169,7 +169,14 @@ impl Memory {
                     .as_ref()
                     .and_then(|p| value.get(p))
                     .and_then(|v| v.as_integer())
-                    .map(|v| v as u64)
+                    .map(|v| {
+                        #[expect(
+                            clippy::cast_sign_loss,
+                            reason = "TTL field expected to be non-negative"
+                        )]
+                        let ttl = v as u64;
+                        ttl
+                    })
                     .unwrap_or(self.config.ttl),
             };
             let new_entry_size = new_entry_key.size_of() + new_entry.size_of();
@@ -284,11 +291,7 @@ impl Memory {
         }
     }
 
-    pub(crate) fn as_source(
-        &self,
-        shutdown: ShutdownSignal,
-        out: SourceSender,
-    ) -> MemorySource {
+    pub(crate) fn as_source(&self, shutdown: ShutdownSignal, out: SourceSender) -> MemorySource {
         MemorySource {
             memory: self.clone(),
             shutdown,
@@ -449,9 +452,7 @@ mod tests {
     use tokio::time;
 
     use sol_lib::{
-        event::MetricView,
-        lookup::lookup_v2::OptionalValuePath,
-        metrics::Controller,
+        event::MetricView, lookup::lookup_v2::OptionalValuePath, metrics::Controller,
         sink::VectorSink,
     };
 

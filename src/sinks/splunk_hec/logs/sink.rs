@@ -268,6 +268,10 @@ pub fn process_log(event: Event, data: &HecLogData) -> HecProcessedEvent {
             Some(Value::Timestamp(ts)) => Some(ts),
             Some(Value::Integer(nanos)) => {
                 let secs = nanos / 1_000_000_000;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "nanos modulo 1e9 is always in 0..999_999_999"
+                )]
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 chrono::DateTime::from_timestamp(secs, nsecs)
             }
@@ -286,7 +290,11 @@ pub fn process_log(event: Event, data: &HecLogData) -> HecProcessedEvent {
             if let Some(key) = data.timestamp_nanos_key {
                 log.try_insert(event_path!(key), ts.timestamp_subsec_nanos() % 1_000_000);
             }
-            (ts.timestamp_millis() as f64) / 1000f64
+            {
+                #[expect(clippy::cast_precision_loss, reason = "epoch millis to f64 for Splunk HEC timestamp; precise for dates until year 2255")]
+                let millis = ts.timestamp_millis() as f64;
+                millis / 1000f64
+            }
         })
     } else {
         None

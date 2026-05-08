@@ -67,13 +67,14 @@ impl Parser {
         for i in extra_start..parts.len() {
             let part = parts[i];
             if part.starts_with('#') {
-                tags = Some(parse_tags_d39(&part)?);
+                tags = Some(parse_tags_d39(part)?);
             } else if part.starts_with("c:") && part.len() > 2 {
                 container_id = Some(part[2..].to_string());
-            } else if part.starts_with('T') && part.len() > 1 {
-                if let Ok(ts) = part[1..].parse::<u64>() {
-                    _timestamp = Some(ts * 1_000_000_000);
-                }
+            } else if part.starts_with('T')
+                && part.len() > 1
+                && let Ok(ts) = part[1..].parse::<u64>()
+            {
+                _timestamp = Some(ts * 1_000_000_000);
             }
         }
 
@@ -244,8 +245,7 @@ impl From<ParseFloatError> for ParseError {
 mod test {
     use super::{ParseError, Parser, sanitize_key, sanitize_sampling};
     use crate::{
-        event::string_value,
-        sources::statsd::ConversionUnit,
+        event::string_value, sources::statsd::ConversionUnit,
         sources::statsd::aggregator::ParsedMetric,
     };
 
@@ -365,14 +365,8 @@ mod test {
         match m {
             ParsedMetric::Counter { key, .. } => {
                 let tags = key.tags.unwrap();
-                assert_eq!(
-                    tags.get("env").unwrap(),
-                    &string_value("prod")
-                );
-                assert_eq!(
-                    tags.get("bare_tag").unwrap(),
-                    &string_value("")
-                );
+                assert_eq!(tags.get("env").unwrap(), &string_value("prod"));
+                assert_eq!(tags.get("bare_tag").unwrap(), &string_value(""));
             }
             _ => panic!("expected Counter"),
         }
@@ -384,14 +378,8 @@ mod test {
         match m {
             ParsedMetric::Counter { key, .. } => {
                 let tags = key.tags.unwrap();
-                assert_eq!(
-                    tags.get("container.id").unwrap(),
-                    &string_value("abc123")
-                );
-                assert_eq!(
-                    tags.get("env").unwrap(),
-                    &string_value("prod")
-                );
+                assert_eq!(tags.get("container.id").unwrap(), &string_value("abc123"));
+                assert_eq!(tags.get("env").unwrap(), &string_value("prod"));
             }
             _ => panic!("expected Counter"),
         }

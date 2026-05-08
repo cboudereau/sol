@@ -85,6 +85,11 @@ impl<'de> Deserialize<'de> for Concurrency {
 
             fn visit_i64<E: de::Error>(self, value: i64) -> Result<Concurrency, E> {
                 if value > 0 {
+                    #[expect(clippy::cast_sign_loss, reason = "value is checked positive above")]
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "concurrency config value fits in usize"
+                    )]
                     Ok(Concurrency::Fixed(value as usize))
                 } else {
                     Err(de::Error::invalid_value(
@@ -96,6 +101,10 @@ impl<'de> Deserialize<'de> for Concurrency {
 
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<Concurrency, E> {
                 if value > 0 {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "concurrency config value fits in usize"
+                    )]
                     Ok(Concurrency::Fixed(value as usize))
                 } else {
                     Err(de::Error::invalid_value(

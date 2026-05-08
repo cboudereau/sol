@@ -187,6 +187,7 @@ async fn receive_trace() {
 }
 
 #[tokio::test]
+#[allow(clippy::cast_possible_truncation)]
 async fn receive_metric() {
     // generate a metrics gauge request
     let req = ExportMetricsServiceRequest {

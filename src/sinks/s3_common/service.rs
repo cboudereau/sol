@@ -7,13 +7,13 @@ use base64::prelude::{BASE64_STANDARD, Engine as _};
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use md5::Digest;
-use tower::Service;
-use tracing::Instrument;
 use sol_lib::{
     event::{EventFinalizers, EventStatus, Finalizable},
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
+use tower::Service;
+use tracing::Instrument;
 
 use super::{config::S3Options, partitioner::S3PartitionKey};
 

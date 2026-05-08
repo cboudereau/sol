@@ -70,11 +70,7 @@ impl ReduceValueMerger for DiscardMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, self.v);
         Ok(())
     }
@@ -100,11 +96,7 @@ impl ReduceValueMerger for RetainMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, self.v);
         Ok(())
     }
@@ -144,11 +136,7 @@ impl ReduceValueMerger for ConcatMerger {
         }
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Bytes(self.v.into()));
         Ok(())
     }
@@ -175,11 +163,7 @@ impl ReduceValueMerger for ConcatArrayMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Array(self.v));
         Ok(())
     }
@@ -202,11 +186,7 @@ impl ReduceValueMerger for ArrayMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Array(self.v));
         Ok(())
     }
@@ -238,11 +218,7 @@ impl ReduceValueMerger for LongestArrayMerger {
         }
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Array(self.v));
         Ok(())
     }
@@ -274,11 +250,7 @@ impl ReduceValueMerger for ShortestArrayMerger {
         }
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Array(self.v));
         Ok(())
     }
@@ -323,11 +295,7 @@ impl ReduceValueMerger for FlatUniqueMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(path, Value::Array(self.v.into_iter().collect()));
         Ok(())
     }
@@ -361,11 +329,7 @@ impl ReduceValueMerger for TimestampWindowMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         v.insert(
             format!("{path}_end").as_str(),
             Value::Timestamp(self.latest),
@@ -412,11 +376,23 @@ impl ReduceValueMerger for AddNumbersMerger {
             Value::Integer(i) => match self.v {
                 NumberMergerValue::Int(j) => self.v = NumberMergerValue::Int(i + j),
                 NumberMergerValue::Float(j) => {
-                    self.v = NumberMergerValue::Float(NotNan::new(i as f64).unwrap() + j)
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "merge strategy arithmetic; precise for |v| <= 2^53"
+                    )]
+                    let i_f = i as f64;
+                    self.v = NumberMergerValue::Float(NotNan::new(i_f).unwrap() + j)
                 }
             },
             Value::Float(f) => match self.v {
-                NumberMergerValue::Int(j) => self.v = NumberMergerValue::Float(f + j as f64),
+                NumberMergerValue::Int(j) => {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "merge strategy arithmetic; precise for |v| <= 2^53"
+                    )]
+                    let j_f = j as f64;
+                    self.v = NumberMergerValue::Float(f + j_f);
+                }
                 NumberMergerValue::Float(j) => self.v = NumberMergerValue::Float(f + j),
             },
             _ => {
@@ -429,11 +405,7 @@ impl ReduceValueMerger for AddNumbersMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         match self.v {
             NumberMergerValue::Float(f) => v.insert(path, Value::Float(f)),
             NumberMergerValue::Int(i) => v.insert(path, Value::Integer(i)),
@@ -466,6 +438,10 @@ impl ReduceValueMerger for MaxNumberMerger {
                         }
                     }
                     NumberMergerValue::Float(f2) => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "merge strategy max comparison; precise for |v| <= 2^53"
+                        )]
                         let f = NotNan::new(i as f64).unwrap();
                         if f > f2 {
                             self.v = NumberMergerValue::Float(f);
@@ -475,7 +451,14 @@ impl ReduceValueMerger for MaxNumberMerger {
             }
             Value::Float(f) => {
                 let f2 = match self.v {
-                    NumberMergerValue::Int(i2) => NotNan::new(i2 as f64).unwrap(),
+                    NumberMergerValue::Int(i2) => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "merge strategy max comparison; precise for |v| <= 2^53"
+                        )]
+                        let v = i2 as f64;
+                        NotNan::new(v).unwrap()
+                    }
                     NumberMergerValue::Float(f2) => f2,
                 };
                 if f > f2 {
@@ -492,11 +475,7 @@ impl ReduceValueMerger for MaxNumberMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         match self.v {
             NumberMergerValue::Float(f) => v.insert(path, Value::Float(f)),
             NumberMergerValue::Int(i) => v.insert(path, Value::Integer(i)),
@@ -529,6 +508,10 @@ impl ReduceValueMerger for MinNumberMerger {
                         }
                     }
                     NumberMergerValue::Float(f2) => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "merge strategy min comparison; precise for |v| <= 2^53"
+                        )]
                         let f = NotNan::new(i as f64).unwrap();
                         if f < f2 {
                             self.v = NumberMergerValue::Float(f);
@@ -538,7 +521,14 @@ impl ReduceValueMerger for MinNumberMerger {
             }
             Value::Float(f) => {
                 let f2 = match self.v {
-                    NumberMergerValue::Int(i2) => NotNan::new(i2 as f64).unwrap(),
+                    NumberMergerValue::Int(i2) => {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "merge strategy min comparison; precise for |v| <= 2^53"
+                        )]
+                        let v = i2 as f64;
+                        NotNan::new(v).unwrap()
+                    }
                     NumberMergerValue::Float(f2) => f2,
                 };
                 if f < f2 {
@@ -555,11 +545,7 @@ impl ReduceValueMerger for MinNumberMerger {
         Ok(())
     }
 
-    fn insert_into(
-        self: Box<Self>,
-        path: &OwnedTargetPath,
-        v: &mut OtelLog,
-    ) -> Result<(), String> {
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String> {
         match self.v {
             NumberMergerValue::Float(f) => v.insert(path, Value::Float(f)),
             NumberMergerValue::Int(i) => v.insert(path, Value::Integer(i)),
@@ -570,8 +556,7 @@ impl ReduceValueMerger for MinNumberMerger {
 
 pub trait ReduceValueMerger: std::fmt::Debug + Send + Sync + DynClone {
     fn add(&mut self, v: Value) -> Result<(), String>;
-    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog)
-    -> Result<(), String>;
+    fn insert_into(self: Box<Self>, path: &OwnedTargetPath, v: &mut OtelLog) -> Result<(), String>;
 }
 
 dyn_clone::clone_trait_object!(ReduceValueMerger);

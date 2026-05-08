@@ -51,6 +51,10 @@ impl AmqpPropertiesConfig {
             });
 
             // Clamp the value to the range of 0-255, as AMQP priority is a u8.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "value is clamped to 0..=255"
+            )]
             let priority = priority.clamp(0, u8::MAX.into()) as u8;
             prop = prop.with_priority(priority);
         }
@@ -163,8 +167,8 @@ pub(super) async fn healthcheck(channels: AmqpSinkChannels) -> crate::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sol_lib::event::OtelLog;
     use crate::config::format::{Format, deserialize};
+    use sol_lib::event::OtelLog;
 
     #[test]
     pub fn generate_config() {
@@ -181,7 +185,7 @@ mod tests {
                 .unwrap()
                 .render(&otel_log)
                 .unwrap(),
-            priority as u64
+            u64::from(priority)
         );
     }
 

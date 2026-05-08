@@ -169,8 +169,8 @@ mod test {
 
     use bytes::{Buf, BytesMut};
     use futures::{SinkExt, StreamExt, future, stream};
-    use tokio::time::Duration;
     use sol_lib::json_size::JsonSize;
+    use tokio::time::Duration;
 
     use super::{Buffer, Compression};
     use crate::sinks::util::{BatchSettings, BatchSink, EncodedEvent};

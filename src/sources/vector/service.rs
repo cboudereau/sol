@@ -4,12 +4,12 @@
 //! the original `vector` sink / `vector` source protocol.
 
 use futures::TryFutureExt;
-use tonic::{Request, Response, Status};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
     internal_event::{CountByteSize, InternalEventHandle as _, Registered},
 };
+use tonic::{Request, Response, Status};
 
 use crate::{
     SourceSender,
@@ -18,9 +18,8 @@ use crate::{
 
 use super::convert::convert_event;
 use super::proto::vector::{
+    HealthCheckRequest, HealthCheckResponse, PushEventsRequest, PushEventsResponse, ServingStatus,
     vector_server::Vector,
-    HealthCheckRequest, HealthCheckResponse, PushEventsRequest, PushEventsResponse,
-    ServingStatus,
 };
 
 #[derive(Clone)]

@@ -169,7 +169,11 @@ fn dd_span_to_otel(
     let mut span_resource = resource.clone();
     if !dd_span.service.is_empty() {
         // Replace or add service.name on the resource.
-        if let Some(attr) = span_resource.attributes.iter_mut().find(|a| a.key == "service.name") {
+        if let Some(attr) = span_resource
+            .attributes
+            .iter_mut()
+            .find(|a| a.key == "service.name")
+        {
             attr.value = Some(string_value(&dd_span.service));
         } else {
             span_resource.attributes.push(KeyValue {
@@ -196,14 +200,24 @@ fn dd_span_to_otel(
     // Include extra trace-level attributes
     attributes.extend_from_slice(extra_attributes);
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "DD span start/duration are non-negative nanosecond timestamps"
+    )]
+    let start_time_unix_nano = dd_span.start as u64;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "DD span start+duration is a non-negative nanosecond timestamp"
+    )]
+    let end_time_unix_nano = (dd_span.start + dd_span.duration) as u64;
     let span = Span {
         trace_id: dd_trace_id_to_otel(dd_span.trace_id),
         span_id: dd_span_id_to_otel(dd_span.span_id),
         parent_span_id: dd_span_id_to_otel(dd_span.parent_id),
         name: dd_span.name,
         kind: 0, // SPAN_KIND_UNSPECIFIED — DD doesn't distinguish client/server/etc.
-        start_time_unix_nano: dd_span.start as u64,
-        end_time_unix_nano: (dd_span.start + dd_span.duration) as u64,
+        start_time_unix_nano,
+        end_time_unix_nano,
         attributes,
         status: dd_error_to_otel_status(dd_span.error),
         trace_state: String::new(),
@@ -359,9 +373,7 @@ fn handle_dd_trace_payload_v1(
                         chunk_attrs.push(KeyValue {
                             key: "dd.priority".to_string(),
                             value: Some(AnyValue {
-                                value: Some(any_value::Value::IntValue(
-                                    i64::from(chunk.priority),
-                                )),
+                                value: Some(any_value::Value::IntValue(i64::from(chunk.priority))),
                             }),
                         });
                     }
@@ -380,13 +392,7 @@ fn handle_dd_trace_payload_v1(
                         .spans
                         .into_iter()
                         .map(|span| {
-                            dd_span_to_otel(
-                                span,
-                                &resource,
-                                &scope,
-                                &api_key,
-                                &chunk_attrs,
-                            )
+                            dd_span_to_otel(span, &resource, &scope, &api_key, &chunk_attrs)
                         })
                         .collect::<Vec<_>>()
                 })

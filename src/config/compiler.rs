@@ -157,17 +157,17 @@ pub(crate) fn expand_globs(config: &mut ConfigBuilder) {
         .sources
         .iter()
         .flat_map(|(key, s)| {
-            s.inner
-                .outputs()
-                .into_iter()
-                .map(|output| OutputId {
-                    component: key.clone(),
-                    port: output.port,
-                })
+            s.inner.outputs().into_iter().map(|output| OutputId {
+                component: key.clone(),
+                port: output.port,
+            })
         })
-        .chain(config.transforms.iter().flat_map(|(key, t)| {
-            get_transform_output_ids(t.inner.as_ref(), key.clone())
-        }))
+        .chain(
+            config
+                .transforms
+                .iter()
+                .flat_map(|(key, t)| get_transform_output_ids(t.inner.as_ref(), key.clone())),
+        )
         .map(|output_id| output_id.to_string())
         .collect::<IndexSet<String>>();
 

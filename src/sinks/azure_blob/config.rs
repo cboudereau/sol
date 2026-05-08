@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use azure_storage_blob::BlobContainerClient;
-use tower::ServiceBuilder;
 use sol_lib::{
     codecs::{JsonSerializerConfig, NewlineDelimitedEncoderConfig, encoding::Framer},
     configurable::configurable_component,
     sensitive_string::SensitiveString,
 };
+use tower::ServiceBuilder;
 
 use super::request_builder::AzureBlobRequestOptions;
 use crate::{

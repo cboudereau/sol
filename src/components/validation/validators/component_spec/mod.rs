@@ -218,10 +218,10 @@ fn filter_events_by_metric_and_component<'a>(
             }
         })
         .filter(|m| {
-            if m.name() == metric.to_string() {
-                if m.tag_value("component_id").as_deref() == Some(component_id) {
-                    return true;
-                }
+            if m.name() == metric.to_string()
+                && m.tag_value("component_id").as_deref() == Some(component_id)
+            {
+                return true;
             }
 
             false
@@ -254,6 +254,11 @@ fn sum_counters(
     }
 
     if errs.is_empty() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "counter sum is a non-negative f64 fitting in u64"
+        )]
         Ok(sum as u64)
     } else {
         Err(errs)

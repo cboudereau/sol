@@ -11,12 +11,12 @@ use encoding::EventEncodingType;
 use futures::{Stream, StreamExt, stream};
 use output::{OutputEventsPayload, from_tap_payload_to_output_events};
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use tokio::{select, sync::mpsc, time};
-use tokio_stream::wrappers::ReceiverStream;
 use sol_lib::tap::{
     controller::{TapController, TapPatterns},
     topology::WatchRx,
 };
+use tokio::{select, sync::mpsc, time};
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug, Default)]
 pub struct EventsSubscription;
@@ -39,7 +39,7 @@ impl EventsSubscription {
             for_inputs: inputs_patterns.unwrap_or_default().into_iter().collect(),
         };
         // Client input is confined to `u32` to provide sensible bounds.
-        create_events_stream(watch_rx, patterns, interval as u64, limit as usize)
+        create_events_stream(watch_rx, patterns, u64::from(interval), limit as usize)
     }
 }
 
@@ -83,6 +83,10 @@ pub(crate) fn create_events_stream(
 
         // Random number generator to allow for sampling. Speed trumps cryptographic security here.
         // The RNG must be Send + Sync to use with the `select!` loop below, hence `SmallRng`.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "nanosecond timestamp fits in u64 until year 2554"
+        )]
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

@@ -8,18 +8,18 @@ use std::{
 
 use futures::{Future, FutureExt, future};
 use snafu::Snafu;
-use stream_cancel::Trigger;
-use tokio::{
-    sync::{mpsc, watch},
-    time::{Duration, Instant, interval, sleep_until},
-};
-use tracing::Instrument;
 use sol_lib::{
     buffers::topology::channel::BufferSender,
     shutdown::ShutdownSignal,
     tap::topology::{TapOutput, TapResource, WatchRx, WatchTx},
     trigger::DisabledTrigger,
 };
+use stream_cancel::Trigger;
+use tokio::{
+    sync::{mpsc, watch},
+    time::{Duration, Instant, interval, sleep_until},
+};
+use tracing::Instrument;
 
 use super::{
     BuiltBuffer, TaskHandle,

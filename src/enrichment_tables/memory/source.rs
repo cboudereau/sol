@@ -2,8 +2,6 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt;
-use tokio::time::interval;
-use tokio_stream::wrappers::IntervalStream;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     event::{Event, EventMetadata, OtelLog},
@@ -13,6 +11,8 @@ use sol_lib::{
     },
     shutdown::ShutdownSignal,
 };
+use tokio::time::interval;
+use tokio_stream::wrappers::IntervalStream;
 
 use super::{Memory, MemoryConfig};
 use crate::{
@@ -89,7 +89,12 @@ impl MemorySource {
                             sent
                         })
                         .take(if let Some(batch_size) = source_config.export_batch_size {
-                            batch_size as usize
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "batch size u64 fits in usize on 64-bit"
+                            )]
+                            let bs = batch_size as usize;
+                            bs
                         } else {
                             usize::MAX
                         })
@@ -129,6 +134,10 @@ impl MemorySource {
             sent += count;
             match source_config.export_batch_size {
                 None => break,
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "batch size u64 fits in usize on 64-bit"
+                )]
                 Some(export_batch_size) if count < export_batch_size as usize => break,
                 _ => {}
             }

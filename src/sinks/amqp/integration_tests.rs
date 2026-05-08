@@ -180,14 +180,10 @@ async fn amqp_round_trip() {
         ..Default::default()
     };
     let (tx, rx) = SourceSender::new_test();
-    let amqp_source = crate::sources::amqp::amqp_source(
-        &source_cfg,
-        ShutdownSignal::noop(),
-        tx,
-        true,
-    )
-    .await
-    .unwrap();
+    let amqp_source =
+        crate::sources::amqp::amqp_source(&source_cfg, ShutdownSignal::noop(), tx, true)
+            .await
+            .unwrap();
 
     // prepare server
     let queue_opts = lapin::options::QueueDeclareOptions {

@@ -23,6 +23,13 @@ use futures::{FutureExt, SinkExt, Stream, StreamExt, TryStreamExt, stream, task:
 use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode};
 use rand::{Rng, rng};
 use rand_distr::Alphanumeric;
+use sol_lib::{
+    buffers::topology::channel::LimitedReceiver,
+    event::{
+        BatchNotifier, BatchStatusReceiver, Event, EventArray, MetricKind, OtelAttributes, OtelLog,
+        OtelMetric,
+    },
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Result as IoResult},
     net::{TcpListener, TcpStream, ToSocketAddrs},
@@ -35,13 +42,6 @@ use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::codec::{Encoder, FramedRead, FramedWrite, LinesCodec};
-use sol_lib::{
-    buffers::topology::channel::LimitedReceiver,
-    event::{
-        BatchNotifier, BatchStatusReceiver, Event, EventArray, MetricKind, OtelAttributes,
-        OtelLog, OtelMetric,
-    },
-};
 #[cfg(test)]
 use zstd::Decoder as ZstdDecoder;
 
@@ -268,10 +268,7 @@ pub fn generate_events_with_stream<Gen: FnMut(usize) -> Event>(
     batch: Option<BatchNotifier>,
 ) -> (Vec<Event>, impl Stream<Item = EventArray>) {
     let events = (0..count).map(generator).collect::<Vec<_>>();
-    let stream = map_batch_stream(
-        stream::iter(events.clone()),
-        batch,
-    );
+    let stream = map_batch_stream(stream::iter(events.clone()), batch);
     (events, stream)
 }
 
@@ -309,12 +306,24 @@ pub fn random_metrics_with_stream_timestamp(
 ) -> (Vec<Event>, impl Stream<Item = EventArray>) {
     let events: Vec<_> = (0..count)
         .map(|index| {
-            let ts = timestamp + (timestamp_offset * index as u32);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test metric index; count always small"
+            )]
+            let idx = index as u32;
+            let ts = timestamp + (timestamp_offset * idx);
             Event::Metric(
                 OtelMetric::new_counter(
                     format!("counter_{}", rng().random::<u32>()),
                     MetricKind::Incremental,
-                    index as f64,
+                    {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "test metric index value; always small"
+                        )]
+                        let v = index as f64;
+                        v
+                    },
                 )
                 .with_timestamp(Some(ts))
                 .with_tags(tags.clone()),
@@ -336,10 +345,7 @@ pub fn random_events_with_stream(
     let events = (0..count)
         .map(|_| Event::Log(OtelLog::from_str_legacy(random_string(len))))
         .collect::<Vec<_>>();
-    let stream = map_batch_stream(
-        stream::iter(events.clone()),
-        batch,
-    );
+    let stream = map_batch_stream(stream::iter(events.clone()), batch);
     (events, stream)
 }
 
@@ -356,12 +362,9 @@ where
         .map(|_| OtelLog::from_str_legacy(random_string(len)))
         .enumerate()
         .map(update_fn)
-        .map(|log| Event::from(log))
+        .map(Event::from)
         .collect::<Vec<_>>();
-    let stream = map_batch_stream(
-        stream::iter(events.clone()),
-        batch,
-    );
+    let stream = map_batch_stream(stream::iter(events.clone()), batch);
     (events, stream)
 }
 

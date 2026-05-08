@@ -10,11 +10,11 @@ use bytes::{Buf, Bytes, BytesMut};
 use derivative::Derivative;
 use flate2::read::{MultiGzDecoder, ZlibDecoder};
 use snafu::{ResultExt, Snafu, ensure};
+use sol_common::constants::{GZIP_MAGIC, ZLIB_MAGIC};
+use sol_config::configurable_component;
 use tokio::{self, task::JoinHandle};
 use tokio_util::codec::Decoder;
 use tracing::{debug, trace, warn};
-use sol_common::constants::{GZIP_MAGIC, ZLIB_MAGIC};
-use sol_config::configurable_component;
 
 use super::{BoxedFramingError, FramingError};
 use crate::{BytesDecoder, StreamDecodingError};
@@ -143,7 +143,7 @@ impl MessageState {
     }
 
     fn is_complete(&self) -> bool {
-        self.chunks_bitmap.count_ones() == self.total_chunks as u32
+        self.chunks_bitmap.count_ones() == u32::from(self.total_chunks)
     }
 
     fn current_length(&self) -> usize {
@@ -182,7 +182,7 @@ impl ChunkedGelfDecompression {
         if data.starts_with(ZLIB_MAGIC) {
             // Based on https://datatracker.ietf.org/doc/html/rfc1950#section-2.2
             if let Some([first_byte, second_byte]) = data.get(0..2)
-                && (*first_byte as u16 * 256 + *second_byte as u16).is_multiple_of(31)
+                && (u16::from(*first_byte) * 256 + u16::from(*second_byte)).is_multiple_of(31)
             {
                 trace!("Detected Zlib compression");
                 return Self::Zlib;
@@ -1029,12 +1029,23 @@ mod tests {
             payload
         });
         let compressed_payload = compression.compress(&payload);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test chunk count is known to be small enough for u8"
+        )]
         let total_chunks = compressed_payload.len().div_ceil(max_chunk_size) as u8;
         assert!(total_chunks < GELF_MAX_TOTAL_CHUNKS);
         let mut chunks = compressed_payload
             .chunks(max_chunk_size)
             .enumerate()
-            .map(|(i, chunk)| create_chunk(message_id, i as u8, total_chunks, &chunk))
+            .map(|(i, chunk)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "test chunk index is known to be small enough for u8"
+                )]
+                let seq = i as u8;
+                create_chunk(message_id, seq, total_chunks, &chunk)
+            })
             .collect::<Vec<_>>();
         let (last_chunk, first_chunks) =
             chunks.split_last_mut().expect("chunks should not be empty");

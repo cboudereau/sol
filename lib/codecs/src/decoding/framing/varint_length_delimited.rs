@@ -1,8 +1,8 @@
 use bytes::{Buf, Bytes, BytesMut};
 use derivative::Derivative;
 use snafu::Snafu;
-use tokio_util::codec::Decoder;
 use sol_config::configurable_component;
+use tokio_util::codec::Decoder;
 
 use super::{BoxedFramingError, FramingError, StreamDecodingError};
 
@@ -82,7 +82,7 @@ impl VarintLengthDelimitedDecoder {
 
         for byte in buf.iter() {
             bytes_read += 1;
-            let byte_value = (*byte & 0x7F) as u64;
+            let byte_value = u64::from(*byte & 0x7F);
             value |= byte_value << shift;
 
             if *byte & 0x80 == 0 {
@@ -115,7 +115,14 @@ impl Decoder for VarintLengthDelimitedDecoder {
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         // First, try to decode the varint length
         let length = match self.decode_varint(src)? {
-            Some(len) => len as usize,
+            Some(len) => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "varint frame length validated against max_frame_length which is usize"
+                )]
+                let frame_len = len as usize;
+                frame_len
+            }
             None => return Ok(None), // Incomplete varint
         };
 

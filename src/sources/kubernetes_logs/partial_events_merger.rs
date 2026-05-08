@@ -26,12 +26,7 @@ struct PartialEventMergeState {
 }
 
 impl PartialEventMergeState {
-    fn add_event(
-        &mut self,
-        event: OtelLog,
-        file: &str,
-        expiration_time: Duration,
-    ) {
+    fn add_event(&mut self, event: OtelLog, file: &str, expiration_time: Duration) {
         let new_body = event.body_string();
         let new_body_bytes = bytes::Bytes::from(new_body);
 
@@ -56,9 +51,11 @@ impl PartialEventMergeState {
                 });
             }
 
-            bucket.event.set_body(crate::event::string_value(
-                String::from_utf8_lossy(&bytes_mut),
-            ));
+            bucket
+                .event
+                .set_body(crate::event::string_value(String::from_utf8_lossy(
+                    &bytes_mut,
+                )));
         } else {
             let mut exceeds_max_merged_line_limit = false;
 
@@ -147,15 +144,25 @@ fn merge_partial_events_with_custom_expiration(
               otel_log: OtelLog,
               emitter: &mut Emitter<OtelLog>| {
             use crate::event::OtelValueKind;
-            let is_partial = otel_log.attribute(event::PARTIAL)
+            let is_partial = otel_log
+                .attribute(event::PARTIAL)
                 .and_then(|av| av.value.as_ref())
-                .map(|v| matches!(v, OtelValueKind::StringValue(s) if s == "true" || s == "1")
-                    || matches!(v, OtelValueKind::BoolValue(true)))
+                .map(|v| {
+                    matches!(v, OtelValueKind::StringValue(s) if s == "true" || s == "1")
+                        || matches!(v, OtelValueKind::BoolValue(true))
+                })
                 .unwrap_or(false);
 
-            let file = otel_log.attribute(FILE_KEY)
+            let file = otel_log
+                .attribute(FILE_KEY)
                 .and_then(|av| av.value.as_ref())
-                .and_then(|v| if let OtelValueKind::StringValue(s) = v { Some(s.clone()) } else { None })
+                .and_then(|v| {
+                    if let OtelValueKind::StringValue(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
 
             state.add_event(otel_log, &file, expiration_time);
@@ -299,11 +306,8 @@ mod test {
         let input_stream =
             futures::stream::iter([e_1.into(), e_2.into()]).chain(futures::stream::pending());
 
-        let output_stream = merge_partial_events_with_custom_expiration(
-            input_stream,
-            Duration::from_secs(1),
-            None,
-        );
+        let output_stream =
+            merge_partial_events_with_custom_expiration(input_stream, Duration::from_secs(1), None);
 
         let output: Vec<Event> = output_stream.take(2).collect().await;
         assert_eq!(output.len(), 2);

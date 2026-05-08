@@ -2,8 +2,8 @@ use std::io;
 
 use async_nats::HeaderMap;
 use bytes::{Bytes, BytesMut};
-use tokio_util::codec::Encoder as _;
 use sol_lib::config::telemetry;
+use tokio_util::codec::Encoder as _;
 
 use super::{config::NatsHeaderConfig, sink::NatsEvent};
 use crate::sinks::prelude::*;

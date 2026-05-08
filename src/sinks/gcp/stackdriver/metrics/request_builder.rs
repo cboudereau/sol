@@ -119,6 +119,10 @@ impl encoding::Encoder<Vec<OtelMetric>> for StackdriverMetricsEncoder {
                     points: vec![gcp::GcpPoint {
                         interval,
                         value: gcp::GcpPointValue {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "metric value f64 to i64 for GCP API"
+                            )]
                             int64_value: Some(point_value as i64),
                         },
                     }],

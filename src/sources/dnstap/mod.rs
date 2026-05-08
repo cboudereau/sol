@@ -70,6 +70,10 @@ pub struct DnstapConfig {
     pub lowercase_hostnames: bool,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "100 KiB constant fits usize on all supported platforms"
+)]
 fn default_max_frame_length() -> usize {
     bytesize::kib(100u64) as usize
 }
@@ -107,7 +111,11 @@ impl DnstapConfig {
         let schema = sol_lib::schema::Definition::empty_definition();
 
         if self.raw_data_only() {
-            return schema.with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"));
+            return schema.with_event_field(
+                &owned_value_path!("body"),
+                Kind::bytes(),
+                Some("message"),
+            );
         }
         event_schema.schema_definition(schema)
     }
@@ -145,11 +153,8 @@ impl SourceConfig for DnstapConfig {
                 let tls_config = config.tls().as_ref().map(|tls| tls.tls_config.clone());
 
                 let tls = MaybeTlsSettings::from_config(tls_config.as_ref(), true)?;
-                let frame_handler = tcp::DnstapFrameHandler::new(
-                    config.clone(),
-                    tls,
-                    common_frame_handler,
-                );
+                let frame_handler =
+                    tcp::DnstapFrameHandler::new(config.clone(), tls, common_frame_handler);
 
                 build_framestream_tcp_source(frame_handler, cx.shutdown, cx.out)
             }
@@ -226,10 +231,7 @@ impl FrameHandler for CommonFrameHandler {
 
         let mut value = Value::Object(ObjectMap::new());
         let parse_result = if self.raw_data_only {
-            value.insert(
-                &DNSTAP_VALUE_PATHS.raw_data,
-                BASE64_STANDARD.encode(&frame),
-            );
+            value.insert(&DNSTAP_VALUE_PATHS.raw_data, BASE64_STANDARD.encode(&frame));
             Ok(())
         } else {
             DnstapParser::parse(
@@ -339,7 +341,9 @@ mod tests {
         let mut event = Event::Log(OtelLog::from(vrl::value::Value::from(json)));
         // Set the observed timestamp via OTLP-native API (stored as
         // observed_time_unix_nano in the canonical view, not "timestamp").
-        event.as_mut_log().set_observed_timestamp(chrono::Utc::now());
+        event
+            .as_mut_log()
+            .set_observed_timestamp(chrono::Utc::now());
 
         let definition = DnstapEventSchema;
         // Build the schema without with_standard_vector_source_metadata:
@@ -347,11 +351,7 @@ mod tests {
         // JSON fixture) and the timestamp as observed_time_unix_nano (integer),
         // not the legacy "timestamp" (Kind::timestamp) path.
         let schema = sol_lib::schema::Definition::empty_definition()
-            .with_event_field(
-                &owned_value_path!("source_type"),
-                Kind::bytes(),
-                None,
-            )
+            .with_event_field(&owned_value_path!("source_type"), Kind::bytes(), None)
             .with_event_field(
                 &owned_value_path!("observed_time_unix_nano"),
                 Kind::integer(),
@@ -374,8 +374,8 @@ mod integration_tests {
     };
     use futures::StreamExt;
     use serde_json::json;
-    use tokio::time;
     use sol_lib::{event::Event, lookup::lookup_v2::OptionalValuePath};
+    use tokio::time;
 
     use self::unix::UnixConfig;
     use super::*;
@@ -506,10 +506,9 @@ mod integration_tests {
                 "No UpdateResponse event!"
             );
             assert!(
-                events
-                    .iter()
-                    .any(|v| v.as_log().get("messageType")
-                        == Some(Value::Bytes("AuthQuery".into()))),
+                events.iter().any(
+                    |v| v.as_log().get("messageType") == Some(Value::Bytes("AuthQuery".into()))
+                ),
                 "No UpdateQuery event!"
             );
             assert!(

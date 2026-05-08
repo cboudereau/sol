@@ -17,14 +17,6 @@ use nix::{
 };
 use serde_json::{Error as JsonError, Value as JsonValue};
 use snafu::{ResultExt, Snafu};
-use tokio::{
-    fs::{File, OpenOptions},
-    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    process::{Child, Command},
-    sync::{Mutex, MutexGuard},
-    time::sleep,
-};
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{CharacterDelimitedDecoder, decoding::BoxedFramingError},
@@ -36,13 +28,19 @@ use sol_lib::{
     lookup::{owned_value_path, path},
     schema::Definition,
 };
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    process::{Child, Command},
+    sync::{Mutex, MutexGuard},
+    time::sleep,
+};
+use tokio_util::codec::FramedRead;
 use vrl::value::{Kind, Value, kind::Collection};
 
 use crate::{
     SourceSender,
-    config::{
-        DataType, SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput,
-    },
+    config::{DataType, SourceAcknowledgementsConfig, SourceConfig, SourceContext, SourceOutput},
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event, OtelLog},
     internal_events::{
         EventsReceived, JournaldCheckpointFileOpenError, JournaldCheckpointSetError,
@@ -212,7 +210,6 @@ pub struct JournaldConfig {
     )]
     remap_priority: bool,
 
-
     /// Whether to emit the [__CURSOR field][cursor]. See also [sd_journal_get_cursor][get_cursor].
     ///
     /// [cursor]: https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html#Address%20Fields
@@ -255,9 +252,7 @@ impl JournaldConfig {
 
     /// Builds the `schema::Definition` for this source.
     fn schema_definition(&self) -> Definition {
-        let schema_definition = Definition::new_with_default_metadata(
-            Kind::bytes().or_null()
-        );
+        let schema_definition = Definition::new_with_default_metadata(Kind::bytes().or_null());
 
         let mut schema_definition = schema_definition
             .with_standard_vector_source_metadata()
@@ -390,8 +385,7 @@ impl SourceConfig for JournaldConfig {
     }
 
     fn outputs(&self) -> Vec<SourceOutput> {
-        let schema_definition =
-            self.schema_definition();
+        let schema_definition = self.schema_definition();
 
         vec![SourceOutput::new_maybe_logs(
             DataType::Log,
@@ -612,10 +606,7 @@ impl<'a> Batch<'a> {
                         ) {
                             self.record_size += bytes.len();
 
-                            let mut event = create_log_event_from_record(
-                                record,
-                                &self.batch,
-                            );
+                            let mut event = create_log_event_from_record(record, &self.batch);
 
                             enrich_log_event(&mut event);
 
@@ -845,8 +836,13 @@ fn enrich_log_event(log: &mut OtelLog) {
         .filter(|ts| ts.is_bytes())
         .and_then(|ts| ts.as_str().unwrap().parse::<u64>().ok())
         .map(|ts| {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "journald __REALTIME_TIMESTAMP microseconds (u64) fits i64 until year 292277"
+            )]
+            let secs = (ts / 1_000_000) as i64;
             chrono::Utc
-                .timestamp_opt((ts / 1_000_000) as i64, (ts % 1_000_000) as u32 * 1_000)
+                .timestamp_opt(secs, (ts % 1_000_000) as u32 * 1_000)
                 .single()
                 .expect("invalid timestamp")
         });
@@ -867,20 +863,14 @@ fn enrich_log_event(log: &mut OtelLog) {
         .insert(path!("vector", "source_type"), JournaldConfig::NAME);
 }
 
-fn create_log_event_from_record(
-    mut record: Record,
-    batch: &Option<BatchNotifier>,
-) -> OtelLog {
+fn create_log_event_from_record(mut record: Record, batch: &Option<BatchNotifier>) -> OtelLog {
     let message_value = record
         .remove(MESSAGE)
         .map(|msg| Value::Bytes(Bytes::from(msg)))
         .unwrap_or(Value::Null);
 
-    let mut log = OtelLog::from_value_map(
-        message_value,
-        crate::event::EventMetadata::default(),
-    )
-    .with_batch_notifier_option(batch);
+    let mut log = OtelLog::from_value_map(message_value, crate::event::EventMetadata::default())
+        .with_batch_notifier_option(batch);
 
     // Add the remaining fields from the Record to the log event into an object to avoid collisions.
     record.iter().for_each(|(key, value)| {
@@ -932,7 +922,11 @@ fn decode_array_as_bytes(array: &[JsonValue]) -> Option<JsonValue> {
         .iter()
         .map(|item| {
             item.as_u64().and_then(|num| match num {
-                num if num <= u8::MAX as u64 => Some(num as u8),
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "value is range-checked to fit u8 in the match guard"
+                )]
+                num if num <= u64::from(u8::MAX) => Some(num as u8),
                 _ => None,
             })
         })
@@ -1265,8 +1259,12 @@ mod tests {
             Value::Bytes("System Initialization".into())
         );
         assert_eq!(
-            received[0].as_log().metadata().value()
-                .get(path!("vector", "source_type")).unwrap(),
+            received[0]
+                .as_log()
+                .metadata()
+                .value()
+                .get(path!("vector", "source_type"))
+                .unwrap(),
             &Value::from("journald")
         );
         assert_eq!(timestamp(&received[0]), value_ts(1578529839, 140001000));
@@ -1695,38 +1693,34 @@ mod tests {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition =
-            Definition::new_with_default_metadata(Kind::bytes().or_null())
-                .with_metadata_field(
-                    &owned_value_path!("vector", "source_type"),
-                    Kind::bytes(),
-                    None,
-                )
-                .with_metadata_field(
-                    &owned_value_path!("vector", "ingest_timestamp"),
-                    Kind::timestamp(),
-                    None,
-                )
-                .with_metadata_field(
-                    &owned_value_path!(JournaldConfig::NAME, "metadata"),
-                    Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
-                    None,
-                )
-                .with_metadata_field(
-                    &owned_value_path!(JournaldConfig::NAME, "timestamp"),
-                    Kind::timestamp().or_undefined(),
-                    Some("timestamp"),
-                )
-                .with_metadata_field(
-                    &owned_value_path!(JournaldConfig::NAME, "host"),
-                    Kind::bytes().or_undefined(),
-                    Some("host"),
-                );
+        let expected_definition = Definition::new_with_default_metadata(Kind::bytes().or_null())
+            .with_metadata_field(
+                &owned_value_path!("vector", "source_type"),
+                Kind::bytes(),
+                None,
+            )
+            .with_metadata_field(
+                &owned_value_path!("vector", "ingest_timestamp"),
+                Kind::timestamp(),
+                None,
+            )
+            .with_metadata_field(
+                &owned_value_path!(JournaldConfig::NAME, "metadata"),
+                Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
+                None,
+            )
+            .with_metadata_field(
+                &owned_value_path!(JournaldConfig::NAME, "timestamp"),
+                Kind::timestamp().or_undefined(),
+                Some("timestamp"),
+            )
+            .with_metadata_field(
+                &owned_value_path!(JournaldConfig::NAME, "host"),
+                Kind::bytes().or_undefined(),
+                Some("host"),
+            );
 
         assert_eq!(definitions, Some(expected_definition))
     }

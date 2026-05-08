@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use http::Uri;
-use tokio::time::Duration;
 use sol_lib::{
     codecs::{
         CharacterDelimitedDecoderConfig,
@@ -9,6 +8,7 @@ use sol_lib::{
     },
     event::Event,
 };
+use tokio::time::Duration;
 use warp::{Filter, http::HeaderMap};
 
 use super::HttpClientConfig;

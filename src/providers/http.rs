@@ -4,9 +4,9 @@ use futures::Stream;
 use http_body::{Body as _, Collected};
 use hyper::Body;
 use indexmap::IndexMap;
+use sol_lib::configurable::configurable_component;
 use tokio::time;
 use url::Url;
-use sol_lib::configurable::configurable_component;
 
 use super::BuildResult;
 use crate::{

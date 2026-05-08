@@ -4,11 +4,11 @@ use chrono::Utc;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
 use http::uri::Scheme;
 use hyper::{Body, Request};
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
 use snafu::ResultExt;
-use tokio_stream::wrappers::IntervalStream;
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{EstimatedJsonEncodedSizeOf, configurable::configurable_component, otel_tags};
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     SourceSender,
@@ -87,7 +87,8 @@ impl SourceConfig for ApacheMetricsConfig {
             .context(super::UriParseSnafu)?;
 
         let namespace = Some(self.namespace.clone()).filter(|namespace| !namespace.is_empty());
-        let resource = source_otel::build_source_resource("apache_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("apache_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("apache_metrics");
 
         Ok(apache_metrics(
@@ -208,13 +209,12 @@ fn apache_metrics(
                                     Utc::now(),
                                     Some(&tags),
                                 )
-                                .chain(vec![Ok(OtelMetric::new_gauge(
-                                    "up",
-                                    1.0,
-                                )
-                                .with_namespace(namespace.clone())
-                                .with_tags(Some(tags.clone()))
-                                .with_timestamp(Some(Utc::now())))]);
+                                .chain(vec![Ok(
+                                    OtelMetric::new_gauge("up", 1.0)
+                                        .with_namespace(namespace.clone())
+                                        .with_tags(Some(tags.clone()))
+                                        .with_timestamp(Some(Utc::now())),
+                                )]);
 
                                 let metrics = results
                                     .filter_map(|res| match res {
@@ -242,13 +242,10 @@ fn apache_metrics(
                                     url: sanitized_url.to_owned(),
                                 });
                                 Some(stream::iter(vec![
-                                    OtelMetric::new_gauge(
-                                        "up",
-                                        1.0,
-                                    )
-                                    .with_namespace(namespace.clone())
-                                    .with_tags(Some(tags.clone()))
-                                    .with_timestamp(Some(Utc::now())),
+                                    OtelMetric::new_gauge("up", 1.0)
+                                        .with_namespace(namespace.clone())
+                                        .with_tags(Some(tags.clone()))
+                                        .with_timestamp(Some(Utc::now())),
                                 ]))
                             }
                             Err(error) => {
@@ -257,13 +254,10 @@ fn apache_metrics(
                                     url: sanitized_url.to_owned(),
                                 });
                                 Some(stream::iter(vec![
-                                    OtelMetric::new_gauge(
-                                        "up",
-                                        0.0,
-                                    )
-                                    .with_namespace(namespace.clone())
-                                    .with_tags(Some(tags.clone()))
-                                    .with_timestamp(Some(Utc::now())),
+                                    OtelMetric::new_gauge("up", 0.0)
+                                        .with_namespace(namespace.clone())
+                                        .with_tags(Some(tags.clone()))
+                                        .with_timestamp(Some(Utc::now())),
                                 ]))
                             }
                         })

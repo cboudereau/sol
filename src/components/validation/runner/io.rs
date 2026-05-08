@@ -1,26 +1,31 @@
-use tokio::{pin, select, sync::mpsc};
-use tonic::{Request, Response, Status, codec::CompressionEncoding, service::RoutesBuilder, transport::{Channel, Endpoint}};
 use sol_lib::{
     event::Event,
     opentelemetry::proto::collector::{
         logs::v1::{
             ExportLogsServiceRequest, ExportLogsServiceResponse,
-            logs_service_client::LogsServiceClient, logs_service_server::LogsServiceServer,
-            logs_service_server::LogsService,
+            logs_service_client::LogsServiceClient, logs_service_server::LogsService,
+            logs_service_server::LogsServiceServer,
         },
         metrics::v1::{
             ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-            metrics_service_client::MetricsServiceClient, metrics_service_server::MetricsServiceServer,
-            metrics_service_server::MetricsService,
+            metrics_service_client::MetricsServiceClient, metrics_service_server::MetricsService,
+            metrics_service_server::MetricsServiceServer,
         },
         trace::v1::{
             ExportTraceServiceRequest, ExportTraceServiceResponse,
-            trace_service_client::TraceServiceClient, trace_service_server::TraceServiceServer,
-            trace_service_server::TraceService,
+            trace_service_client::TraceServiceClient, trace_service_server::TraceService,
+            trace_service_server::TraceServiceServer,
         },
     },
     shutdown::ShutdownSignal,
     tls::MaybeTlsSettings,
+};
+use tokio::{pin, select, sync::mpsc};
+use tonic::{
+    Request, Response, Status,
+    codec::CompressionEncoding,
+    service::RoutesBuilder,
+    transport::{Channel, Endpoint},
 };
 
 use crate::{

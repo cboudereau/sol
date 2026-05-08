@@ -42,15 +42,15 @@ use std::{
 
 use futures::{FutureExt, Sink, Stream, TryFutureExt, future::BoxFuture, stream::FuturesUnordered};
 use pin_project::pin_project;
+use sol_lib::internal_event::{
+    CallError, CountByteSize, EventsSent, InternalEventHandle as _, Output,
+};
 use tokio::{
     sync::oneshot,
     time::{Duration, Sleep, sleep},
 };
 use tower::{Service, ServiceBuilder};
 use tracing::Instrument;
-use sol_lib::internal_event::{
-    CallError, CountByteSize, EventsSent, InternalEventHandle as _, Output,
-};
 // === StreamSink<Event> ===
 pub use sol_lib::sink::StreamSink;
 
@@ -578,11 +578,11 @@ mod tests {
 
     use bytes::Bytes;
     use futures::{SinkExt, StreamExt, future, stream, task::noop_waker_ref};
-    use tokio::{task::yield_now, time::Instant};
     use sol_lib::{
         finalization::{BatchNotifier, BatchStatus, EventFinalizer, EventFinalizers},
         json_size::JsonSize,
     };
+    use tokio::{task::yield_now, time::Instant};
 
     use super::*;
     use crate::{

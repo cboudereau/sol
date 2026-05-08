@@ -1,11 +1,11 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, quote_spanned};
+use sol_config_common::validation::Validation;
 use syn::{
     DeriveInput, ExprPath, Ident, PathArguments, Type, parse_macro_input, parse_quote,
     spanned::Spanned, token::PathSep,
 };
-use sol_config_common::validation::Validation;
 
 use crate::ast::{Container, Data, Field, LazyCustomAttribute, Style, Tagging, Variant};
 
@@ -643,17 +643,16 @@ fn get_metadata_custom_attributes(
     meta_ident: &Ident,
     custom_attributes: impl Iterator<Item = LazyCustomAttribute>,
 ) -> proc_macro2::TokenStream {
-    let mapped_custom_attributes = custom_attributes
-        .map(|attr| match attr {
-            LazyCustomAttribute::Flag(key) => quote! {
-                #meta_ident.add_custom_attribute(::sol_config::attributes::CustomAttribute::flag(#key));
-            },
-            LazyCustomAttribute::KeyValue { key, value } => quote! {
-                #meta_ident.add_custom_attribute(::sol_config::attributes::CustomAttribute::kv(
-                    #key, #value
-                ));
-            },
-        });
+    let mapped_custom_attributes = custom_attributes.map(|attr| match attr {
+        LazyCustomAttribute::Flag(key) => quote! {
+            #meta_ident.add_custom_attribute(::sol_config::attributes::CustomAttribute::flag(#key));
+        },
+        LazyCustomAttribute::KeyValue { key, value } => quote! {
+            #meta_ident.add_custom_attribute(::sol_config::attributes::CustomAttribute::kv(
+                #key, #value
+            ));
+        },
+    });
 
     quote! {
         #(#mapped_custom_attributes)*

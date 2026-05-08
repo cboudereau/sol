@@ -13,21 +13,19 @@ impl ResourceSpans {
     pub fn into_otel_event_iter(self) -> impl Iterator<Item = Event> {
         let resource = proto_convert_resource(self.resource);
 
-        self.scope_spans
-            .into_iter()
-            .flat_map(move |scope_spans| {
-                let scope = proto_convert_scope(scope_spans.scope);
-                let resource = resource.clone();
-                scope_spans.spans.into_iter().map(move |span| {
-                    let otel_span = proto_convert_span(span);
-                    Event::Trace(OtelSpan::from_parts(
-                        otel_span,
-                        resource.clone(),
-                        scope.clone(),
-                        EventMetadata::default(),
-                    ))
-                })
+        self.scope_spans.into_iter().flat_map(move |scope_spans| {
+            let scope = proto_convert_scope(scope_spans.scope);
+            let resource = resource.clone();
+            scope_spans.spans.into_iter().map(move |span| {
+                let otel_span = proto_convert_span(span);
+                Event::Trace(OtelSpan::from_parts(
+                    otel_span,
+                    resource.clone(),
+                    scope.clone(),
+                    EventMetadata::default(),
+                ))
             })
+        })
     }
 }
 
@@ -36,7 +34,8 @@ fn proto_convert_resource(
 ) -> Option<upstream_opentelemetry_proto::tonic::resource::v1::Resource> {
     let r = r?;
     let bytes = r.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes))
+        .ok()
 }
 
 fn proto_convert_scope(
@@ -44,7 +43,10 @@ fn proto_convert_scope(
 ) -> Option<upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope> {
     let s = s?;
     let bytes = s.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(bytes::Bytes::from(bytes)).ok()
+    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(
+        bytes::Bytes::from(bytes),
+    )
+    .ok()
 }
 
 fn proto_convert_span(s: Span) -> upstream_opentelemetry_proto::tonic::trace::v1::Span {
@@ -55,7 +57,7 @@ fn proto_convert_span(s: Span) -> upstream_opentelemetry_proto::tonic::trace::v1
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::proto::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         trace::v1::{ResourceSpans, ScopeSpans, Span},
@@ -91,9 +93,7 @@ mod tests {
                         attributes: vec![KeyValue {
                             key: "http.method".to_string(),
                             value: Some(AnyValue {
-                                value: Some(any_value::Value::StringValue(
-                                    "GET".to_string(),
-                                )),
+                                value: Some(any_value::Value::StringValue("GET".to_string())),
                             }),
                         }],
                         ..Default::default()
@@ -160,7 +160,9 @@ mod tests {
         let span = events[0].as_otel_span();
         let attr = span.attribute("http.method").expect("attribute must exist");
         match &attr.value {
-            Some(upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s)) => {
+            Some(
+                upstream_opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s),
+            ) => {
                 assert_eq!(s, "GET")
             }
             other => panic!("unexpected attribute value: {:?}", other),

@@ -18,7 +18,7 @@ pub struct Options {
 
 impl Options {
     /// Merges two schema options together.
-    pub fn append(&mut self, with: Self, _errors: &mut Vec<String>) {
+    pub const fn append(&mut self, with: Self, _errors: &mut Vec<String>) {
         // If either config enables these flags, it is enabled.
         self.enabled |= with.enabled;
         self.validation |= with.validation;

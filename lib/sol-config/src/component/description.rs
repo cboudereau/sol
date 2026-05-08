@@ -1,8 +1,8 @@
 use std::{cell::RefCell, marker::PhantomData};
 
 use snafu::Snafu;
-use toml::Value;
 use sol_config_common::{attributes::CustomAttribute, constants};
+use toml::Value;
 
 use super::{ComponentMarker, GenerateConfig};
 use crate::{

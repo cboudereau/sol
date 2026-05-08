@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
-use syslog::{Facility, Formatter3164, LogFormat, Severity};
 use sol_lib::configurable::configurable_component;
+use syslog::{Facility, Formatter3164, LogFormat, Severity};
 use vrl::value::Kind;
 
 use crate::{
@@ -133,11 +133,7 @@ struct PapertrailEncoder {
 impl tokio_util::codec::Encoder<Event> for PapertrailEncoder {
     type Error = sol_lib::codecs::encoding::Error;
 
-    fn encode(
-        &mut self,
-        event: Event,
-        buffer: &mut bytes::BytesMut,
-    ) -> Result<(), Self::Error> {
+    fn encode(&mut self, event: Event, buffer: &mut bytes::BytesMut) -> Result<(), Self::Error> {
         let mut event = event;
         let host = event
             .as_mut_log()
@@ -188,11 +184,11 @@ mod tests {
     use bytes::BytesMut;
     use futures::{future::ready, stream};
     use serde::Deserialize;
-    use tokio_util::codec::Encoder as _;
     use sol_lib::{
         codecs::JsonSerializerConfig,
         event::{Event, OtelLog},
     };
+    use tokio_util::codec::Encoder as _;
 
     use super::*;
     use crate::test_util::{
@@ -246,16 +242,14 @@ mod tests {
         let obj = value.as_object().unwrap();
 
         // OTLP JSON: attributes is an array of {key, value} objects
-        let attrs = obj.get("attributes")
+        let attrs = obj
+            .get("attributes")
             .and_then(|a| a.as_array())
             .cloned()
             .unwrap_or_default();
         let has_magic = attrs.iter().any(|a| a["key"] == "magic");
         assert!(!has_magic, "magic attribute should have been removed");
         let process_attr = attrs.iter().find(|a| a["key"] == "process").unwrap();
-        assert_eq!(
-            process_attr["value"]["stringValue"].as_str(),
-            Some("foo")
-        );
+        assert_eq!(process_attr["value"]["stringValue"].as_str(), Some("foo"));
     }
 }

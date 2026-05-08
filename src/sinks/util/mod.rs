@@ -53,8 +53,8 @@ pub use service::{
 };
 pub use sink::{BatchSink, PartitionBatchSink, StreamSink};
 use snafu::Snafu;
-pub use uri::UriSerde;
 use sol_lib::{TimeZone, json_size::JsonSize};
+pub use uri::UriSerde;
 
 use crate::event::EventFinalizers;
 

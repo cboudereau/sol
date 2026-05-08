@@ -6,7 +6,7 @@ use sol_lib::lookup::{PathPrefix, owned_value_path};
 use crate::{
     codecs::Transformer,
     config::ProxyConfig,
-    event::{OtelLog, OtelMetric, ObjectMap, Value},
+    event::{ObjectMap, OtelLog, OtelMetric, Value},
     sinks::{
         elasticsearch::{
             BulkAction, BulkConfig, DataStreamConfig, ElasticsearchApiVersion,
@@ -26,7 +26,6 @@ fn parse_template(input: &str) -> Template {
 #[tokio::test]
 async fn sets_create_action_when_configured() {
     use chrono::{TimeZone, Utc};
-
 
     let config = ElasticsearchConfig {
         bulk: BulkConfig {
@@ -91,7 +90,6 @@ async fn encoding_with_external_versioning_without_version_set_does_not_include_
 async fn encoding_with_external_versioning_with_version_set_includes_version() {
     use chrono::{TimeZone, Utc};
 
-
     let config = ElasticsearchConfig {
         bulk: BulkConfig {
             action: parse_template("create"),
@@ -139,7 +137,6 @@ async fn encoding_with_external_versioning_with_version_set_includes_version() {
 #[tokio::test]
 async fn encoding_with_external_gte_versioning_with_version_set_includes_version() {
     use chrono::{TimeZone, Utc};
-
 
     let config = ElasticsearchConfig {
         bulk: BulkConfig {
@@ -226,7 +223,6 @@ fn assert_expected_is_encoded(expected: &str, encoded: &[u8]) {
 async fn encode_datastream_mode() {
     use chrono::{TimeZone, Utc};
 
-
     let config = ElasticsearchConfig {
         bulk: BulkConfig {
             index: parse_template("vector"),
@@ -275,7 +271,6 @@ async fn encode_datastream_mode() {
 #[tokio::test]
 async fn encode_datastream_mode_no_routing() {
     use chrono::{TimeZone, Utc};
-
 
     let config = ElasticsearchConfig {
         bulk: BulkConfig {
@@ -363,9 +358,14 @@ async fn handle_metrics() {
         serde_json::from_str(encoded_lines.get(1).unwrap()).expect("valid JSON");
     // metric_to_log now puts the full metric as the OtelLog body (KvlistValue)
     let body = &metric_json["body"];
-    let body_kvs = body["kvlistValue"]["values"].as_array().expect("body kvlistValue array");
+    let body_kvs = body["kvlistValue"]["values"]
+        .as_array()
+        .expect("body kvlistValue array");
     let find_body_kv = |key: &str| -> Option<&serde_json::Value> {
-        body_kvs.iter().find(|a| a["key"] == key).map(|a| &a["value"])
+        body_kvs
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| &a["value"])
     };
     assert_eq!(
         find_body_kv("name").and_then(|v| v["stringValue"].as_str()),
@@ -373,7 +373,10 @@ async fn handle_metrics() {
     );
     let gauge_kv = find_body_kv("gauge").expect("gauge key in body");
     let gauge_str = serde_json::to_string(gauge_kv).unwrap();
-    assert!(gauge_str.contains("42"), "gauge body should contain the value 42.0: {gauge_str}");
+    assert!(
+        gauge_str.contains("42"),
+        "gauge body should contain the value 42.0: {gauge_str}"
+    );
 }
 
 #[tokio::test]
@@ -431,7 +434,6 @@ async fn decode_bulk_action() {
 #[tokio::test]
 async fn encode_datastream_mode_no_sync() {
     use chrono::{TimeZone, Utc};
-
 
     let config = ElasticsearchConfig {
         bulk: BulkConfig {

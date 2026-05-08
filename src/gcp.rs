@@ -16,8 +16,8 @@ use http_body::{Body as _, Collected};
 use hyper::header::AUTHORIZATION;
 use smpl_jwt::Jwt;
 use snafu::{ResultExt, Snafu};
-use tokio::sync::watch;
 use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
+use tokio::sync::watch;
 
 use crate::{
     config::ProxyConfig,
@@ -201,7 +201,7 @@ impl GcpAuthenticator {
     async fn token_regenerator(self, sender: watch::Sender<()>) {
         match self {
             Self::Credentials(inner) => {
-                let mut expires_in = inner.token.read().unwrap().expires_in() as u64;
+                let mut expires_in = u64::from(inner.token.read().unwrap().expires_in());
                 loop {
                     let deadline = Duration::from_secs(
                         expires_in
@@ -221,7 +221,7 @@ impl GcpAuthenticator {
                             // the same (cached) token during the last 300 seconds of its lifetime.
                             // This scenario is handled by retrying the token refresh after the
                             // METADATA_TOKEN_ERROR_RETRY_SECS period when a fresh token is expected
-                            expires_in = inner.token.read().unwrap().expires_in() as u64;
+                            expires_in = u64::from(inner.token.read().unwrap().expires_in());
                         }
                         Err(error) => {
                             error!(

@@ -12,7 +12,6 @@ use pulsar::{
     consumer::Message,
     message::proto::MessageIdData,
 };
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -31,6 +30,7 @@ use sol_lib::{
     sensitive_string::SensitiveString,
     shutdown::ShutdownSignal,
 };
+use tokio_util::codec::FramedRead;
 use vrl::{owned_value_path, value::Kind};
 
 use crate::{
@@ -95,7 +95,6 @@ pub struct PulsarSourceConfig {
     #[configurable(derived)]
     #[serde(default, deserialize_with = "bool_or_struct")]
     acknowledgements: SourceAcknowledgementsConfig,
-
 
     #[configurable(derived)]
     #[serde(default)]
@@ -204,9 +203,7 @@ impl_generate_config_from_default!(PulsarSourceConfig);
 impl SourceConfig for PulsarSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<super::Source> {
         let consumer = self.create_consumer().await?;
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
         let acknowledgements = cx.do_acknowledgements(self.acknowledgements);
 
         Ok(Box::pin(pulsar_source(
@@ -539,42 +536,22 @@ mod integration_tests {
     }
     #[tokio::test]
     async fn consumes_event_with_acknowledgements() {
-        pulsar_send_receive(
-            &pulsar_address("pulsar", 6650),
-            true,
-            None,
-        )
-        .await;
+        pulsar_send_receive(&pulsar_address("pulsar", 6650), true, None).await;
     }
 
     #[tokio::test]
     async fn consumes_event_with_acknowledgements_vector_namespace() {
-        pulsar_send_receive(
-            &pulsar_address("pulsar", 6650),
-            true,
-            None,
-        )
-        .await;
+        pulsar_send_receive(&pulsar_address("pulsar", 6650), true, None).await;
     }
 
     #[tokio::test]
     async fn consumes_event_without_acknowledgements() {
-        pulsar_send_receive(
-            &pulsar_address("pulsar", 6650),
-            false,
-            None,
-        )
-        .await;
+        pulsar_send_receive(&pulsar_address("pulsar", 6650), false, None).await;
     }
 
     #[tokio::test]
     async fn consumes_event_without_acknowledgements_vector_namespace() {
-        pulsar_send_receive(
-            &pulsar_address("pulsar", 6650),
-            false,
-            None,
-        )
-        .await;
+        pulsar_send_receive(&pulsar_address("pulsar", 6650), false, None).await;
     }
 
     #[tokio::test]
@@ -591,11 +568,7 @@ mod integration_tests {
         .await;
     }
 
-    async fn pulsar_send_receive(
-        endpoint: &str,
-        acknowledgements: bool,
-        tls: Option<TlsOptions>,
-    ) {
+    async fn pulsar_send_receive(endpoint: &str, acknowledgements: bool, tls: Option<TlsOptions>) {
         trace_init();
 
         let topic = format!("test-{}", random_string(10));
@@ -627,12 +600,9 @@ mod integration_tests {
         let pulsar = builder.build().await.unwrap();
 
         let consumer = cnf.create_consumer().await.unwrap();
-        let decoder = DecodingConfig::new(
-            cnf.framing.clone(),
-            cnf.decoding.clone(),
-        )
-        .build()
-        .unwrap();
+        let decoder = DecodingConfig::new(cnf.framing.clone(), cnf.decoding.clone())
+            .build()
+            .unwrap();
 
         let mut producer = pulsar.producer().with_topic(topic).build().await.unwrap();
 
@@ -653,9 +623,6 @@ mod integration_tests {
         })
         .await;
 
-        assert_eq!(
-            events[0].as_log().get("body").unwrap(),
-            msg.into()
-        );
+        assert_eq!(events[0].as_log().get("body").unwrap(), msg.into());
     }
 }

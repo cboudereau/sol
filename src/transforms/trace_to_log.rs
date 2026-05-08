@@ -57,18 +57,15 @@ pub struct TraceToLog;
 
 impl FunctionTransform for TraceToLog {
     fn transform(&mut self, output: &mut OutputBuffer, event: Event) {
-        match event {
-            Event::Trace(span) => {
-                // Convert span to log: span fields become log attributes,
-                // resource and scope are preserved.
-                let map = span.as_map().unwrap_or_default();
-                let log = sol_lib::event::OtelLog::from_value_map(
-                    vrl::value::Value::Object(map),
-                    span.metadata().clone(),
-                );
-                output.push(Event::Log(log));
-            }
-            _ => {}
+        if let Event::Trace(span) = event {
+            // Convert span to log: span fields become log attributes,
+            // resource and scope are preserved.
+            let map = span.as_map().unwrap_or_default();
+            let log = sol_lib::event::OtelLog::from_value_map(
+                vrl::value::Value::Object(map),
+                span.metadata().clone(),
+            );
+            output.push(Event::Log(log));
         }
     }
 }
@@ -78,9 +75,9 @@ mod tests {
     use super::*;
     use crate::test_util::components::assert_transform_compliance;
     use crate::transforms::test::create_topology;
+    use sol_lib::event::{EventMetadata, OtelLog, OtelSpan};
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use sol_lib::event::{EventMetadata, OtelLog, OtelSpan};
     use vrl::value::Value;
 
     #[test]
@@ -123,9 +120,7 @@ mod tests {
         let expected_map = trace.as_map().unwrap();
 
         let log = do_transform(trace).await.unwrap();
-        let actual_map = log
-            .as_map()
-            .expect("log value should be an object");
+        let actual_map = log.as_map().expect("log value should be an object");
 
         assert_eq!(
             actual_map, expected_map,

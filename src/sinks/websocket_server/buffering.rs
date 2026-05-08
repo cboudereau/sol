@@ -2,15 +2,15 @@ use std::{collections::VecDeque, net::SocketAddr, num::NonZeroUsize};
 
 use bytes::Bytes;
 use derivative::Derivative;
-use tokio_tungstenite::tungstenite::{Message, handshake::server::Request};
-use url::Url;
-use uuid::Uuid;
 use sol_config::configurable_component;
 use sol_lib::{
     codecs::decoding::{DeserializerConfig, format::Deserializer as _},
     event::{Event, MaybeAsLogMut},
     lookup::{PathPrefix, lookup_v2::ConfigValuePath},
 };
+use tokio_tungstenite::tungstenite::{Message, handshake::server::Request};
+use url::Url;
+use uuid::Uuid;
 use vrl::prelude::VrlValueConvert;
 
 use crate::serde::default_decoding;
@@ -241,7 +241,10 @@ impl WsMessageBufferConfig for Option<MessageBufferingConfig> {
         {
             let mut buffer = [0; 36];
             let uuid = message_id.hyphenated().encode_lower(&mut buffer);
-            log.insert((PathPrefix::Event, message_id_path), Bytes::copy_from_slice(uuid.as_bytes()));
+            log.insert(
+                (PathPrefix::Event, message_id_path),
+                Bytes::copy_from_slice(uuid.as_bytes()),
+            );
         }
         message_id
     }

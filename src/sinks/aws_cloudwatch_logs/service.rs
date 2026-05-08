@@ -23,6 +23,11 @@ use http::{
 };
 use indexmap::IndexMap;
 use snafu::{ResultExt, Snafu};
+use sol_lib::{
+    finalization::EventStatus,
+    request_metadata::{GroupedCountByteSize, MetaDescriptive},
+    stream::DriverResponse,
+};
 use tokio::sync::oneshot;
 use tower::{
     Service, ServiceBuilder, ServiceExt,
@@ -30,11 +35,6 @@ use tower::{
     limit::{ConcurrencyLimit, RateLimit},
     retry::Retry,
     timeout::Timeout,
-};
-use sol_lib::{
-    finalization::EventStatus,
-    request_metadata::{GroupedCountByteSize, MetaDescriptive},
-    stream::DriverResponse,
 };
 
 use crate::sinks::{

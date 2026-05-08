@@ -9,7 +9,6 @@ use futures::{FutureExt, StreamExt};
 use futures_util::Stream;
 use lapin::{Channel, acker::Acker, message::Delivery, options::BasicQosOptions};
 use snafu::Snafu;
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::decoding::{DeserializerConfig, FramingConfig},
@@ -20,6 +19,7 @@ use sol_lib::{
     internal_event::{CountByteSize, EventsReceived, InternalEventHandle as _},
     lookup::{lookup_v2::OptionalValuePath, metadata_path, owned_value_path, path},
 };
+use tokio_util::codec::FramedRead;
 use vrl::value::Kind;
 
 use crate::{
@@ -81,7 +81,6 @@ pub struct AmqpSourceConfig {
     #[serde(default = "default_offset_key")]
     #[derivative(Default(value = "default_offset_key()"))]
     pub(crate) offset_key: OptionalValuePath,
-
 
     #[configurable(derived)]
     #[serde(default = "default_framing_message_based")]
@@ -289,6 +288,10 @@ async fn receive_event(
     let mut stream = FramedRead::new(payload, decoder);
 
     // Extract timestamp from AMQP message
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "AMQP timestamp millis (u64) fits i64 for any practical date"
+    )]
     let _timestamp = msg
         .properties
         .timestamp()
@@ -296,13 +299,18 @@ async fn receive_event(
 
     let routing = msg.routing_key.to_string();
     let exchange = msg.exchange.to_string();
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "AMQP delivery tag (u64) practically fits i64"
+    )]
+    let delivery_tag = msg.delivery_tag as i64;
     let keys = Keys {
         routing_key_field: &config.routing_key_field,
         exchange_key: &config.exchange_key,
         offset_key: &config.offset_key,
         routing: &routing,
         exchange: &exchange,
-        delivery_tag: msg.delivery_tag as i64,
+        delivery_tag,
     };
     let events_received = register!(EventsReceived);
 
@@ -535,33 +543,29 @@ pub mod test {
             ..Default::default()
         };
 
-        let definition = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definition = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("amqp", "timestamp"),
-            Kind::timestamp(),
-            Some("timestamp"),
-        )
-        .with_metadata_field(&owned_value_path!("amqp", "routing"), Kind::bytes(), None)
-        .with_metadata_field(&owned_value_path!("amqp", "exchange"), Kind::bytes(), None)
-        .with_metadata_field(&owned_value_path!("amqp", "offset"), Kind::integer(), None);
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("amqp", "timestamp"),
+                    Kind::timestamp(),
+                    Some("timestamp"),
+                )
+                .with_metadata_field(&owned_value_path!("amqp", "routing"), Kind::bytes(), None)
+                .with_metadata_field(&owned_value_path!("amqp", "exchange"), Kind::bytes(), None)
+                .with_metadata_field(&owned_value_path!("amqp", "offset"), Kind::integer(), None);
 
         assert_eq!(definition, Some(expected_definition));
     }
@@ -571,9 +575,6 @@ pub mod test {
 #[cfg(feature = "amqp-integration-tests")]
 #[cfg(test)]
 mod integration_test {
-    use chrono::Utc;
-    use lapin::{BasicProperties, options::*};
-    use tokio::time::Duration;
     use super::{test::*, *};
     use crate::{
         SourceSender,
@@ -584,6 +585,9 @@ mod integration_test {
             random_string,
         },
     };
+    use chrono::Utc;
+    use lapin::{BasicProperties, options::*};
+    use tokio::time::Duration;
 
     #[tokio::test]
     async fn amqp_source_create_ok() {

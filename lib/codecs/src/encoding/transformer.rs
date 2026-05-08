@@ -117,12 +117,10 @@ impl Transformer {
             || self.except_fields.is_some()
             || self.timestamp_format.is_some();
 
-        if has_rules {
-            if let Event::Log(otel_log) = event {
-                self.apply_except_fields_otel(otel_log);
-                self.apply_only_fields_otel(otel_log);
-                self.apply_timestamp_format_otel(otel_log);
-            }
+        if has_rules && let Event::Log(otel_log) = event {
+            self.apply_except_fields_otel(otel_log);
+            self.apply_only_fields_otel(otel_log);
+            self.apply_timestamp_format_otel(otel_log);
         }
     }
 
@@ -169,19 +167,18 @@ impl Transformer {
                 .unwrap_or_default();
 
             for key in &keys_to_check {
-                if !only_set.contains(key.as_str()) {
-                    if let Ok(path) = vrl::path::parse_target_path(key) {
-                        if let Some(service_path) = &service_path {
-                            if service_path.path.to_string() == *key {
-                                if let Some(v) = log.remove(&path) {
-                                    log.metadata_mut()
-                                        .add_dropped_field(meaning::SERVICE.into(), v);
-                                    continue;
-                                }
-                            }
-                        }
-                        log.remove(&path);
+                if !only_set.contains(key.as_str())
+                    && let Ok(path) = vrl::path::parse_target_path(key)
+                {
+                    if let Some(service_path) = &service_path
+                        && service_path.path.to_string() == *key
+                        && let Some(v) = log.remove(&path)
+                    {
+                        log.metadata_mut()
+                            .add_dropped_field(meaning::SERVICE.into(), v);
+                        continue;
                     }
+                    log.remove(&path);
                 }
             }
         }
@@ -191,14 +188,22 @@ impl Transformer {
         if let Some(timestamp_format) = self.timestamp_format.as_ref() {
             match timestamp_format {
                 TimestampFormat::Unix => self.format_timestamps_otel(log, |ts| ts.timestamp()),
-                TimestampFormat::UnixMs => self.format_timestamps_otel(log, |ts| ts.timestamp_millis()),
-                TimestampFormat::UnixUs => self.format_timestamps_otel(log, |ts| ts.timestamp_micros()),
+                TimestampFormat::UnixMs => {
+                    self.format_timestamps_otel(log, |ts| ts.timestamp_millis())
+                }
+                TimestampFormat::UnixUs => {
+                    self.format_timestamps_otel(log, |ts| ts.timestamp_micros())
+                }
                 TimestampFormat::UnixNs => self.format_timestamps_otel(log, |ts| {
                     ts.timestamp_nanos_opt().expect("Timestamp out of range")
                 }),
                 TimestampFormat::UnixFloat => self.format_timestamps_otel(log, |ts| {
-                    NotNan::new(ts.timestamp_micros() as f64 / 1e6)
-                        .expect("this division will never produce a NaN")
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "timestamp micros; precise for practical values"
+                    )]
+                    let secs = ts.timestamp_micros() as f64 / 1e6;
+                    NotNan::new(secs).expect("this division will never produce a NaN")
                 }),
                 TimestampFormat::Rfc3339 => (),
             }
@@ -268,10 +273,7 @@ mod tests {
 
     use indoc::indoc;
     use lookup::path::parse_target_path;
-    use sol_core::{
-        event::OtelLog,
-        schema,
-    };
+    use sol_core::{event::OtelLog, schema};
     use vrl::{btreemap, value::Kind};
 
     use super::*;
@@ -320,15 +322,40 @@ mod tests {
         let mut event = Event::Log(log);
         transformer.transform(&mut event);
         let log = event.as_log();
-        assert!(!log.parse_path_and_get_value("a.b.c").ok().flatten().is_some());
+        assert!(
+            !log.parse_path_and_get_value("a.b.c")
+                .ok()
+                .flatten()
+                .is_some()
+        );
         assert!(!log.parse_path_and_get_value("b").ok().flatten().is_some());
-        assert!(!log.parse_path_and_get_value("b[1].x").ok().flatten().is_some());
-        assert!(!log.parse_path_and_get_value("c[0].y").ok().flatten().is_some());
+        assert!(
+            !log.parse_path_and_get_value("b[1].x")
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(
+            !log.parse_path_and_get_value("c[0].y")
+                .ok()
+                .flatten()
+                .is_some()
+        );
         assert!(!log.parse_path_and_get_value("d.z").ok().flatten().is_some());
         assert!(!log.parse_path_and_get_value("e.a").ok().flatten().is_some());
 
-        assert!(log.parse_path_and_get_value("a.b.d").ok().flatten().is_some());
-        assert!(log.parse_path_and_get_value("c[0].x").ok().flatten().is_some());
+        assert!(
+            log.parse_path_and_get_value("a.b.d")
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(
+            log.parse_path_and_get_value("c[0].x")
+                .ok()
+                .flatten()
+                .is_some()
+        );
     }
 
     #[test]
@@ -362,13 +389,11 @@ mod tests {
             log.insert("thing.service", "carrot");
         }
 
-        let schema = schema::Definition::new_with_default_metadata(
-            Kind::object(btreemap! {
-                "thing" => Kind::object(btreemap! {
-                    "service" => Kind::bytes(),
-                }),
-            })
-        );
+        let schema = schema::Definition::new_with_default_metadata(Kind::object(btreemap! {
+            "thing" => Kind::object(btreemap! {
+                "service" => Kind::bytes(),
+            }),
+        }));
 
         let schema = schema.with_meaning(parse_target_path("thing.service").unwrap(), "service");
 
@@ -380,10 +405,20 @@ mod tests {
 
         transformer.transform(&mut event);
         let log = event.as_log();
-        assert!(log.parse_path_and_get_value("body").ok().flatten().is_some());
+        assert!(
+            log.parse_path_and_get_value("body")
+                .ok()
+                .flatten()
+                .is_some()
+        );
 
         // Event no longer contains the service field.
-        assert!(!log.parse_path_and_get_value("thing.service").ok().flatten().is_some());
+        assert!(
+            !log.parse_path_and_get_value("thing.service")
+                .ok()
+                .flatten()
+                .is_some()
+        );
 
         // But we can still get the service by meaning.
         assert_eq!(

@@ -46,10 +46,10 @@ impl DecisionCache {
         if self.map.contains_key(&id) {
             return;
         }
-        if self.map.len() >= self.capacity {
-            if let Some(evicted) = self.order.pop_front() {
-                self.map.remove(&evicted);
-            }
+        if self.map.len() >= self.capacity
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.map.remove(&evicted);
         }
         self.map.insert(id, ());
         self.order.push_back(id);
@@ -276,14 +276,18 @@ impl TaskTransform<Event> for TailSampling {
 
 #[cfg(test)]
 mod tests {
+    use super::super::policies::{
+        AlwaysSampleConfig, AndConfig, LatencyConfig, PolicyConfig, SpanCountConfig,
+        StatusCodeConfig, StringAttributeConfig,
+    };
     use super::*;
     use crate::event::{Event, OtelSpan};
-    use opentelemetry_proto::tonic::trace::v1::{Span, Status, status::StatusCode as OtelStatusCode};
-    use super::super::policies::{
-        PolicyConfig, AlwaysSampleConfig, StatusCodeConfig, LatencyConfig,
-        SpanCountConfig, AndConfig, StringAttributeConfig,
+    use opentelemetry_proto::tonic::common::v1::{
+        AnyValue, KeyValue, any_value::Value as OtelValueKind,
     };
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value as OtelValueKind};
+    use opentelemetry_proto::tonic::trace::v1::{
+        Span, Status, status::StatusCode as OtelStatusCode,
+    };
 
     fn make_span(trace_id: &[u8; 16], name: &str, start_ns: u64, duration_ns: u64) -> Event {
         let span = Span {
@@ -359,7 +363,8 @@ mod tests {
         let policy = PolicyConfig::StatusCode(StatusCodeConfig {
             name: "errors".into(),
             status_codes: vec!["ERROR".into()],
-        }).build();
+        })
+        .build();
         let id = [1u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -375,7 +380,8 @@ mod tests {
         let policy = PolicyConfig::StatusCode(StatusCodeConfig {
             name: "errors".into(),
             status_codes: vec!["ERROR".into()],
-        }).build();
+        })
+        .build();
         let id = [2u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -392,7 +398,8 @@ mod tests {
             name: "slow".into(),
             threshold_ms: 5000,
             upper_threshold_ms: None,
-        }).build();
+        })
+        .build();
         let id = [3u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -409,7 +416,8 @@ mod tests {
             name: "slow".into(),
             threshold_ms: 5000,
             upper_threshold_ms: None,
-        }).build();
+        })
+        .build();
         let id = [4u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -426,7 +434,8 @@ mod tests {
             name: "many".into(),
             min_spans: Some(3),
             max_spans: None,
-        }).build();
+        })
+        .build();
         let id = [5u8; 16];
 
         let trace_small = BufferedTrace {
@@ -469,7 +478,9 @@ mod tests {
             num_traces: 2,
             max_trace_size_bytes: usize::MAX,
             decision_cache: Default::default(),
-            policies: vec![PolicyConfig::AlwaysSample(AlwaysSampleConfig { name: "all".into() })],
+            policies: vec![PolicyConfig::AlwaysSample(AlwaysSampleConfig {
+                name: "all".into(),
+            })],
         };
         let mut ts = TailSampling::new(config).unwrap();
 
@@ -490,7 +501,9 @@ mod tests {
             num_traces: 1000,
             max_trace_size_bytes: usize::MAX,
             decision_cache: Default::default(),
-            policies: vec![PolicyConfig::AlwaysSample(AlwaysSampleConfig { name: "all".into() })],
+            policies: vec![PolicyConfig::AlwaysSample(AlwaysSampleConfig {
+                name: "all".into(),
+            })],
         };
         let mut ts = TailSampling::new(config).unwrap();
         let id = [10u8; 16];
@@ -547,7 +560,8 @@ mod tests {
                     upper_threshold_ms: None,
                 }),
             ],
-        }).build();
+        })
+        .build();
         let id = [20u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -573,7 +587,8 @@ mod tests {
                     upper_threshold_ms: None,
                 }),
             ],
-        }).build();
+        })
+        .build();
         let id = [21u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -589,7 +604,8 @@ mod tests {
         let policy = PolicyConfig::And(AndConfig {
             name: "empty".into(),
             sub_policies: vec![],
-        }).build();
+        })
+        .build();
         let id = [22u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -604,13 +620,12 @@ mod tests {
     fn and_policy_single() {
         let policy = PolicyConfig::And(AndConfig {
             name: "single".into(),
-            sub_policies: vec![
-                PolicyConfig::StatusCode(StatusCodeConfig {
-                    name: "errors".into(),
-                    status_codes: vec!["ERROR".into()],
-                }),
-            ],
-        }).build();
+            sub_policies: vec![PolicyConfig::StatusCode(StatusCodeConfig {
+                name: "errors".into(),
+                status_codes: vec!["ERROR".into()],
+            })],
+        })
+        .build();
         let id = [23u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -661,7 +676,8 @@ mod tests {
             values: vec!["404".into()],
             enabled_regex_matching: false,
             invert_match: false,
-        }).build();
+        })
+        .build();
         let id = [30u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -680,7 +696,8 @@ mod tests {
             values: vec!["4..".into()],
             enabled_regex_matching: true,
             invert_match: false,
-        }).build();
+        })
+        .build();
         let id = [31u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -699,7 +716,8 @@ mod tests {
             values: vec!["404".into()],
             enabled_regex_matching: false,
             invert_match: true,
-        }).build();
+        })
+        .build();
         let id = [32u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
@@ -718,7 +736,8 @@ mod tests {
             values: vec!["4..".into()],
             enabled_regex_matching: true,
             invert_match: true,
-        }).build();
+        })
+        .build();
         let id = [33u8; 16];
 
         // 404 matches regex "4.." → inverted → Pending
@@ -742,7 +761,12 @@ mod tests {
 
     // -- IntValue coercion tests --
 
-    fn make_span_with_int_attr(trace_id: &[u8; 16], key: &str, value: i64, status_code: OtelStatusCode) -> Event {
+    fn make_span_with_int_attr(
+        trace_id: &[u8; 16],
+        key: &str,
+        value: i64,
+        status_code: OtelStatusCode,
+    ) -> Event {
         let span = Span {
             trace_id: trace_id.to_vec(),
             span_id: vec![0, 0, 0, 0, 0, 0, 0, 1],
@@ -780,11 +804,17 @@ mod tests {
             values: vec!["404".into()],
             enabled_regex_matching: false,
             invert_match: false,
-        }).build();
+        })
+        .build();
         let id = [40u8; 16];
         let trace = BufferedTrace {
             trace_id: id,
-            spans: vec![make_span_with_int_attr(&id, "http.response.status_code", 404, OtelStatusCode::Ok)],
+            spans: vec![make_span_with_int_attr(
+                &id,
+                "http.response.status_code",
+                404,
+                OtelStatusCode::Ok,
+            )],
             first_seen: Instant::now(),
             total_bytes: 0,
         };
@@ -799,13 +829,19 @@ mod tests {
             values: vec!["4..".into()],
             enabled_regex_matching: true,
             invert_match: true,
-        }).build();
+        })
+        .build();
         let id = [41u8; 16];
 
         // IntValue(404) → "404" matches regex "4.." → inverted → Pending
         let trace_4xx = BufferedTrace {
             trace_id: id,
-            spans: vec![make_span_with_int_attr(&id, "http.response.status_code", 404, OtelStatusCode::Error)],
+            spans: vec![make_span_with_int_attr(
+                &id,
+                "http.response.status_code",
+                404,
+                OtelStatusCode::Error,
+            )],
             first_seen: Instant::now(),
             total_bytes: 0,
         };
@@ -814,7 +850,12 @@ mod tests {
         // IntValue(500) → "500" does not match regex "4.." → inverted → Sample
         let trace_5xx = BufferedTrace {
             trace_id: id,
-            spans: vec![make_span_with_int_attr(&id, "http.response.status_code", 500, OtelStatusCode::Error)],
+            spans: vec![make_span_with_int_attr(
+                &id,
+                "http.response.status_code",
+                500,
+                OtelStatusCode::Error,
+            )],
             first_seen: Instant::now(),
             total_bytes: 0,
         };
@@ -838,13 +879,19 @@ mod tests {
                     invert_match: true,
                 }),
             ],
-        }).build();
+        })
+        .build();
         let id = [42u8; 16];
 
         // 404 ERROR → StatusCode=Sample, StringAttribute=Pending (4xx filtered) → AND=Pending
         let trace_404 = BufferedTrace {
             trace_id: id,
-            spans: vec![make_span_with_int_attr(&id, "http.response.status_code", 404, OtelStatusCode::Error)],
+            spans: vec![make_span_with_int_attr(
+                &id,
+                "http.response.status_code",
+                404,
+                OtelStatusCode::Error,
+            )],
             first_seen: Instant::now(),
             total_bytes: 0,
         };
@@ -853,7 +900,12 @@ mod tests {
         // 500 ERROR → StatusCode=Sample, StringAttribute=Sample (5xx kept) → AND=Sample
         let trace_500 = BufferedTrace {
             trace_id: id,
-            spans: vec![make_span_with_int_attr(&id, "http.response.status_code", 500, OtelStatusCode::Error)],
+            spans: vec![make_span_with_int_attr(
+                &id,
+                "http.response.status_code",
+                500,
+                OtelStatusCode::Error,
+            )],
             first_seen: Instant::now(),
             total_bytes: 0,
         };

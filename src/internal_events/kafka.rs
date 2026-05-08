@@ -122,9 +122,23 @@ pub struct KafkaStatisticsReceived<'a> {
 }
 
 impl InternalEvent for KafkaStatisticsReceived<'_> {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "Kafka statistics counters are non-negative i64 values"
+    )]
     fn emit(self) {
-        gauge!("kafka_queue_messages").set(self.statistics.msg_cnt as f64);
-        gauge!("kafka_queue_messages_bytes").set(self.statistics.msg_size as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Kafka queue message count gauge; precise for |v| <= 2^53"
+        )]
+        let msg_cnt = self.statistics.msg_cnt as f64;
+        gauge!("kafka_queue_messages").set(msg_cnt);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Kafka queue byte size gauge; precise for |v| <= 2^53"
+        )]
+        let msg_size = self.statistics.msg_size as f64;
+        gauge!("kafka_queue_messages_bytes").set(msg_size);
         counter!("kafka_requests_total").absolute(self.statistics.tx as u64);
         counter!("kafka_requests_bytes_total").absolute(self.statistics.tx_bytes as u64);
         counter!("kafka_responses_total").absolute(self.statistics.rx as u64);
@@ -144,7 +158,14 @@ impl InternalEvent for KafkaStatisticsReceived<'_> {
                         "topic_id" => topic_id.clone(),
                         "partition_id" => partition_id.to_string(),
                     )
-                    .set(partition.consumer_lag as f64);
+                    .set({
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "Kafka consumer lag gauge; precise for |v| <= 2^53"
+                        )]
+                        let lag = partition.consumer_lag as f64;
+                        lag
+                    });
                 }
             }
         }

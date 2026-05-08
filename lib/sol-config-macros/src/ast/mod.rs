@@ -9,9 +9,9 @@ mod variant;
 
 pub use container::Container;
 pub use field::Field;
+use sol_config_common::constants;
 use syn::Expr;
 pub use variant::Variant;
-use sol_config_common::constants;
 
 const INVALID_VALUE_EXPR: &str =
     "got function call-style literal value but could not parse as expression";

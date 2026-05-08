@@ -247,8 +247,21 @@ pub struct MetricGroup {
 }
 
 fn try_f64_to_u64(f: f64) -> Result<u64, ParserError> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "boundary comparison against u64::MAX — exact precision not required for range check"
+    )]
     if 0.0 <= f && f <= u64::MAX as f64 {
-        Ok(f as u64)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "histogram bucket boundary — sub-integer precision is not meaningful for bucket counts"
+        )]
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "sign is checked non-negative by the guard above"
+        )]
+        let value = f as u64;
+        Ok(value)
     } else {
         Err(ParserError::ValueOutOfRange {
             value: f,
@@ -663,7 +676,12 @@ mod test {
         );
 
         assert_eq!(try_f64_to_u64(0.0).unwrap(), 0);
-        assert_eq!(try_f64_to_u64(u64::MAX as f64).unwrap(), u64::MAX);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "intentionally testing the boundary where u64::MAX rounds up in f64"
+        )]
+        let max_as_f64 = u64::MAX as f64;
+        assert_eq!(try_f64_to_u64(max_as_f64).unwrap(), u64::MAX);
 
         // The following tests fails because we lose accuracy converting from u64 to f64
         // assert_eq!(try_f64_to_u64((u64::MAX - 1) as f64).unwrap(), u64::MAX - 1);

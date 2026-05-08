@@ -55,7 +55,7 @@ pub enum ParsedMetric {
 }
 
 impl ParsedMetric {
-    pub fn key(&self) -> &MetricKey {
+    pub const fn key(&self) -> &MetricKey {
         match self {
             Self::Counter { key, .. }
             | Self::Gauge { key, .. }
@@ -152,6 +152,11 @@ impl Aggregator {
                 value,
                 sample_rate,
             } => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "inverse sample rate is a small positive integer (e.g. 1/0.1 = 10)"
+                )]
                 let count = if sample_rate > 0.0 && sample_rate < 1.0 {
                     (1.0 / sample_rate).round() as u64
                 } else {
@@ -169,11 +174,7 @@ impl Aggregator {
         }
     }
 
-    pub fn flush(
-        &mut self,
-        resource: &Resource,
-        scope: &InstrumentationScope,
-    ) -> Vec<OtelMetric> {
+    pub fn flush(&mut self, resource: &Resource, scope: &InstrumentationScope) -> Vec<OtelMetric> {
         let flush_time_ns = now_nanos();
         let start_time_ns = self.last_flush_ns;
         self.last_flush_ns = flush_time_ns;
@@ -182,9 +183,12 @@ impl Aggregator {
 
         // Counters → Sum(Delta, is_monotonic from config), unit="1"
         for (key, counter) in self.counters.drain() {
-            let mut m =
-                OtelMetric::new_counter(&key.name, crate::event::metric::MetricKind::Incremental, counter.value)
-                    .with_unit("1");
+            let mut m = OtelMetric::new_counter(
+                &key.name,
+                crate::event::metric::MetricKind::Incremental,
+                counter.value,
+            )
+            .with_unit("1");
             if let Some(tags) = key.tags {
                 m = m.with_tags(Some(tags));
             }
@@ -198,7 +202,8 @@ impl Aggregator {
         // Gauges → Gauge(absolute), with TTL eviction
         let ttl = self.config.gauge_ttl;
         let now = Instant::now();
-        self.gauges.retain(|_, g| now.duration_since(g.last_update) < ttl);
+        self.gauges
+            .retain(|_, g| now.duration_since(g.last_update) < ttl);
         for (key, gauge) in &self.gauges {
             let mut m = OtelMetric::new_gauge(&key.name, gauge.value);
             if let Some(ref tags) = key.tags {
@@ -212,8 +217,12 @@ impl Aggregator {
 
         // Sets → Gauge(cardinality), unit="1"
         for (key, set) in self.sets.drain() {
-            let mut m = OtelMetric::new_gauge(&key.name, set.values.len() as f64)
-                .with_unit("1");
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "set cardinality; precise for |v| <= 2^53"
+            )]
+            let cardinality = set.values.len() as f64;
+            let mut m = OtelMetric::new_gauge(&key.name, cardinality).with_unit("1");
             if let Some(tags) = key.tags {
                 m = m.with_tags(Some(tags));
             }
@@ -225,7 +234,8 @@ impl Aggregator {
 
         // Histograms → ExponentialHistogram(Delta), unit from config
         for (key, hist) in self.histograms.drain() {
-            let mut m = hist.to_otel_metric(&key.name)
+            let mut m = hist
+                .to_otel_metric(&key.name)
                 .with_unit(&self.config.timer_unit);
             if let Some(tags) = key.tags {
                 m = m.with_tags(Some(tags));
@@ -240,6 +250,10 @@ impl Aggregator {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "system clock nanoseconds since epoch fit u64 until year 2554"
+)]
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -268,20 +282,20 @@ fn set_timestamps(metric: &mut OtelMetric, start_ns: u64, end_ns: u64) {
 }
 
 fn set_gauge_timestamp(metric: &mut OtelMetric, time_ns: u64) {
-    if let Some(data) = metric.metric_mut().data.as_mut() {
-        if let MetricData::Gauge(gauge) = data {
-            for dp in &mut gauge.data_points {
-                dp.time_unix_nano = time_ns;
-            }
+    if let Some(data) = metric.metric_mut().data.as_mut()
+        && let MetricData::Gauge(gauge) = data
+    {
+        for dp in &mut gauge.data_points {
+            dp.time_unix_nano = time_ns;
         }
     }
 }
 
 fn set_is_monotonic(metric: &mut OtelMetric, is_monotonic: bool) {
-    if let Some(data) = metric.metric_mut().data.as_mut() {
-        if let MetricData::Sum(sum) = data {
-            sum.is_monotonic = is_monotonic;
-        }
+    if let Some(data) = metric.metric_mut().data.as_mut()
+        && let MetricData::Sum(sum) = data
+    {
+        sum.is_monotonic = is_monotonic;
     }
 }
 
@@ -308,26 +322,40 @@ struct ExpoBuckets {
 }
 
 impl ExpoBuckets {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             counts: Vec::new(),
             index_start: 0,
         }
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.counts.is_empty()
     }
 
-    fn index_end(&self) -> i32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "histogram bucket count bounded by max_size which fits i32"
+    )]
+    const fn index_end(&self) -> i32 {
         self.index_start + self.counts.len() as i32 - 1
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "histogram bucket count bounded by max_size which fits i32"
+    )]
     fn span(&self) -> i32 {
         self.counts.len() as i32
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "index differences are non-negative: guards ensure index >= index_start"
+    )]
     fn increment(&mut self, index: i32, count: u64) -> bool {
         if self.counts.is_empty() {
             self.index_start = index;
@@ -360,6 +388,12 @@ impl ExpoBuckets {
         (hi - lo + 1) > max_size
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "histogram bin index math: differences are non-negative, lengths bounded by max_size"
+    )]
     fn downscale(&mut self, by: i32) {
         if self.counts.len() <= 1 || by < 1 {
             self.index_start >>= by;
@@ -395,7 +429,7 @@ impl ExpoBuckets {
 }
 
 impl ExpoHistogram {
-    pub fn new(max_size: i32, scale: i32) -> Self {
+    pub const fn new(max_size: i32, scale: i32) -> Self {
         Self {
             max_size,
             scale,
@@ -415,7 +449,12 @@ impl ExpoHistogram {
         }
 
         self.count += count;
-        self.sum += value * count as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "histogram sample count; precise for |v| <= 2^53"
+        )]
+        let count_f = count as f64;
+        self.sum += value * count_f;
 
         if value < self.min {
             self.min = value;
@@ -507,15 +546,15 @@ impl ExpoHistogram {
         self.scale -= change;
     }
 
-    pub fn scale(&self) -> i32 {
+    pub const fn scale(&self) -> i32 {
         self.scale
     }
 
-    pub fn count(&self) -> u64 {
+    pub const fn count(&self) -> u64 {
         self.count
     }
 
-    pub fn sum(&self) -> f64 {
+    pub const fn sum(&self) -> f64 {
         self.sum
     }
 
@@ -542,6 +581,18 @@ impl ExpoHistogram {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "histogram bin index math; power-of-two shift is exact in f64"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "scale is non-negative in the branch where it is cast to u64"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "logarithmic bin index result fits i32 by OTel expo histogram spec"
+)]
 fn map_to_index(value: f64, scale: i32) -> i32 {
     debug_assert!(value > 0.0, "map_to_index requires positive value");
 
@@ -559,6 +610,10 @@ fn map_to_index(value: f64, scale: i32) -> i32 {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "histogram bin index math; power-of-two shift is exact in f64"
+)]
 fn frexp(value: f64) -> (f64, i32) {
     if value == 0.0 {
         return (0.0, 0);
@@ -611,7 +666,10 @@ mod tests {
         // At scale 20, very fine resolution. Nearby values should get different indices.
         let i1 = map_to_index(1.0, 20);
         let i2 = map_to_index(1.0001, 20);
-        assert!(i2 > i1, "nearby values should map to different indices at scale 20");
+        assert!(
+            i2 > i1,
+            "nearby values should map to different indices at scale 20"
+        );
     }
 
     #[test]
@@ -682,7 +740,11 @@ mod tests {
         h.record(0.000001, 1);
 
         assert_eq!(h.count(), 5);
-        assert!(h.scale() < 20, "scale should have decreased from 20, got {}", h.scale());
+        assert!(
+            h.scale() < 20,
+            "scale should have decreased from 20, got {}",
+            h.scale()
+        );
         assert!(
             h.positive.span() <= 4,
             "positive span {} should be <= max_size 4",
@@ -694,7 +756,7 @@ mod tests {
     fn expo_histogram_many_values_bounded() {
         let mut h = ExpoHistogram::new(160, 20);
         for i in 1..=10000 {
-            h.record(i as f64, 1);
+            h.record(f64::from(i), 1);
         }
         assert_eq!(h.count(), 10000);
         assert!(
@@ -728,8 +790,7 @@ mod tests {
 
         let proto = m.metric_proto();
         let eh = proto.data.as_ref().unwrap();
-        if let MetricData::ExponentialHistogram(eh) = eh
-        {
+        if let MetricData::ExponentialHistogram(eh) = eh {
             assert_eq!(eh.data_points.len(), 1);
             let dp = &eh.data_points[0];
             assert_eq!(dp.count, 3);
@@ -838,12 +899,12 @@ mod tests {
         let m = &metrics[0];
         assert_eq!(m.name(), "requests");
         let proto = m.metric_proto();
-        if let Some(MetricData::Sum(sum)) =
-            &proto.data
-        {
+        if let Some(MetricData::Sum(sum)) = &proto.data {
             assert_eq!(sum.data_points.len(), 1);
-            assert!((sum.data_points[0].value.as_ref().unwrap().clone()
-                == NumberDataPointValue::AsDouble(4.5)));
+            assert!(
+                (sum.data_points[0].value.as_ref().unwrap().clone()
+                    == NumberDataPointValue::AsDouble(4.5))
+            );
         } else {
             panic!("expected Sum");
         }
@@ -871,15 +932,9 @@ mod tests {
         let metrics = agg.flush(&test_resource(), &test_scope());
         assert_eq!(metrics.len(), 1);
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::Gauge(g)) = &proto.data
-        {
+        if let Some(MetricData::Gauge(g)) = &proto.data {
             assert_eq!(g.data_points.len(), 1);
-            assert!(g.data_points[0].value
-                == Some(
-                    NumberDataPointValue::AsDouble(
-                        70.0
-                    )
-                ));
+            assert!(g.data_points[0].value == Some(NumberDataPointValue::AsDouble(70.0)));
         } else {
             panic!("expected Gauge");
         }
@@ -912,12 +967,9 @@ mod tests {
         let metrics = agg.flush(&test_resource(), &test_scope());
         assert_eq!(metrics.len(), 1);
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::Gauge(g)) = &proto.data
-        {
+        if let Some(MetricData::Gauge(g)) = &proto.data {
             let val = match &g.data_points[0].value {
-                Some(
-                    NumberDataPointValue::AsDouble(v),
-                ) => *v,
+                Some(NumberDataPointValue::AsDouble(v)) => *v,
                 _ => panic!("expected double"),
             };
             assert!((val - 102.0).abs() < 1e-10);
@@ -956,12 +1008,9 @@ mod tests {
         let metrics3 = agg.flush(&test_resource(), &test_scope());
         assert_eq!(metrics3.len(), 1);
         let proto = metrics3[0].metric_proto();
-        if let Some(MetricData::Gauge(g)) = &proto.data
-        {
+        if let Some(MetricData::Gauge(g)) = &proto.data {
             let val = match &g.data_points[0].value {
-                Some(
-                    NumberDataPointValue::AsDouble(v),
-                ) => *v,
+                Some(NumberDataPointValue::AsDouble(v)) => *v,
                 _ => panic!("expected double"),
             };
             assert!((val - 105.0).abs() < 1e-10);
@@ -992,12 +1041,9 @@ mod tests {
         let metrics = agg.flush(&test_resource(), &test_scope());
         assert_eq!(metrics.len(), 1);
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::Gauge(g)) = &proto.data
-        {
+        if let Some(MetricData::Gauge(g)) = &proto.data {
             let val = match &g.data_points[0].value {
-                Some(
-                    NumberDataPointValue::AsDouble(v),
-                ) => *v,
+                Some(NumberDataPointValue::AsDouble(v)) => *v,
                 _ => panic!("expected double"),
             };
             assert!((val - 2.0).abs() < 1e-10);
@@ -1017,7 +1063,7 @@ mod tests {
         for i in 1..=100 {
             agg.record(ParsedMetric::Timer {
                 key: key.clone(),
-                value: i as f64,
+                value: f64::from(i),
                 sample_rate: 1.0,
             });
         }
@@ -1025,10 +1071,7 @@ mod tests {
         let metrics = agg.flush(&test_resource(), &test_scope());
         assert_eq!(metrics.len(), 1);
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::ExponentialHistogram(
-            eh,
-        )) = &proto.data
-        {
+        if let Some(MetricData::ExponentialHistogram(eh)) = &proto.data {
             let dp = &eh.data_points[0];
             assert_eq!(dp.count, 100);
             assert!((dp.sum.unwrap() - 5050.0).abs() < 1e-10);
@@ -1059,10 +1102,7 @@ mod tests {
 
         let metrics = agg.flush(&test_resource(), &test_scope());
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::ExponentialHistogram(
-            eh,
-        )) = &proto.data
-        {
+        if let Some(MetricData::ExponentialHistogram(eh)) = &proto.data {
             assert_eq!(eh.data_points[0].count, 10);
             assert!((eh.data_points[0].sum.unwrap() - 50.0).abs() < 1e-10);
         } else {
@@ -1103,8 +1143,7 @@ mod tests {
 
         let metrics = agg.flush(&test_resource(), &test_scope());
         let proto = metrics[0].metric_proto();
-        if let Some(MetricData::Sum(sum)) = &proto.data
-        {
+        if let Some(MetricData::Sum(sum)) = &proto.data {
             let dp = &sum.data_points[0];
             assert!(dp.start_time_unix_nano > 0);
             assert!(dp.time_unix_nano > 0);

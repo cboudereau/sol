@@ -1,7 +1,7 @@
 use bytes::BytesMut;
-use tokio_util::codec::Encoder as _;
 use sol_common::internal_event::emit;
 use sol_core::event::Event;
+use tokio_util::codec::Encoder as _;
 
 #[cfg(feature = "arrow")]
 use crate::encoding::ArrowStreamSerializer;
@@ -184,9 +184,7 @@ impl Encoder<Framer> {
     /// Get the HTTP content type.
     pub const fn content_type(&self) -> &'static str {
         match (&self.serializer, &self.framer) {
-            (Serializer::Json(_), Framer::NewlineDelimited(_)) => {
-                "application/x-ndjson"
-            }
+            (Serializer::Json(_), Framer::NewlineDelimited(_)) => "application/x-ndjson",
             (
                 Serializer::Gelf(_) | Serializer::Json(_),
                 Framer::CharacterDelimited(crate::encoding::CharacterDelimitedEncoder {
@@ -269,8 +267,8 @@ impl tokio_util::codec::Encoder<Event> for Encoder<()> {
 mod tests {
     use bytes::BufMut;
     use futures::{SinkExt, StreamExt};
-    use tokio_util::codec::FramedWrite;
     use sol_core::event::OtelLog;
+    use tokio_util::codec::FramedWrite;
 
     use super::*;
     use crate::encoding::BoxedFramingError;

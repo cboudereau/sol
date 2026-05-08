@@ -571,14 +571,14 @@ mod tests {
     use futures::stream::StreamExt;
     use sol_lib::{
         codecs::JsonSerializerConfig,
-        event::{Event, OtelLog, ObjectMap, Value},
+        event::{Event, ObjectMap, OtelLog, Value},
         lookup::{PathPrefix, owned_value_path},
     };
 
     use super::{EventEncoder, KeyPartitioner, RecordFilter};
     use crate::{
-        codecs::Encoder, sinks::loki::config::OutOfOrderAction,
-        template::Template, test_util::random_lines,
+        codecs::Encoder, sinks::loki::config::OutOfOrderAction, template::Template,
+        test_util::random_lines,
     };
 
     #[test]
@@ -600,10 +600,7 @@ mod tests {
             chrono::Utc::now(),
         );
         let record = encoder.encode_event(event).unwrap();
-        assert!(
-            String::from_utf8_lossy(&record.event.event)
-                .contains("timeUnixNano")
-        );
+        assert!(String::from_utf8_lossy(&record.event.event).contains("timeUnixNano"));
         assert_eq!(record.labels.len(), 1);
         assert_eq!(
             record.labels[0],
@@ -655,10 +652,7 @@ mod tests {
         log.insert("dict", Value::from(test_dict));
 
         let record = encoder.encode_event(event).unwrap();
-        assert!(
-            String::from_utf8_lossy(&record.event.event)
-                .contains("timeUnixNano")
-        );
+        assert!(String::from_utf8_lossy(&record.event.event).contains("timeUnixNano"));
         assert_eq!(record.labels.len(), 4);
 
         let labels: HashMap<String, String> = record.labels.into_iter().collect();
@@ -818,10 +812,7 @@ mod tests {
         let record = encoder.encode_event(event).unwrap();
         // In the OTLP/JSON format the native timestamp field is
         // "timeUnixNano"; remove_timestamp clears that field.
-        assert!(
-            !String::from_utf8_lossy(&record.event.event)
-                .contains("timeUnixNano")
-        );
+        assert!(!String::from_utf8_lossy(&record.event.event).contains("timeUnixNano"));
     }
 
     #[test]
@@ -956,10 +947,12 @@ mod tests {
             .enumerate()
             .map(|(i, mut event)| {
                 let log = event.as_mut_log();
+                #[expect(clippy::cast_possible_wrap, reason = "test index fits in i64")]
+                let offset = i as i64;
                 let ts = if i % 5 == 1 {
                     base
                 } else {
-                    base + chrono::Duration::seconds(i as i64)
+                    base + chrono::Duration::seconds(offset)
                 };
                 log.insert(
                     (PathPrefix::Event, &owned_value_path!("time_unix_nano")),

@@ -21,18 +21,15 @@ use bytes::{Buf, Bytes};
 use chrono::{DateTime, FixedOffset, Local, ParseError, Utc};
 use futures::{Stream, StreamExt};
 use serde_with::serde_as;
-use tokio::sync::mpsc;
-use tracing_futures::Instrument;
 use sol_lib::{
     codecs::{BytesDeserializer, BytesDeserializerConfig},
     config::insert_source_metadata,
     configurable::configurable_component,
     internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol, Registered},
-    lookup::{
-        lookup_v2::OptionalValuePath, metadata_path, owned_value_path,
-        path,
-    },
+    lookup::{lookup_v2::OptionalValuePath, metadata_path, owned_value_path, path},
 };
+use tokio::sync::mpsc;
+use tracing_futures::Instrument;
 use vrl::{
     event_path,
     value::{Kind, kind::Collection},
@@ -44,7 +41,10 @@ use crate::{
     common::backoff::ExponentialBackoff,
     config::{DataType, SourceConfig, SourceContext, SourceOutput},
     docker::{DockerTlsConfig, docker},
-    event::{self, EstimatedJsonEncodedSizeOf, Event, OtelLog, Value, merge_state::MergeState, string_value},
+    event::{
+        self, EstimatedJsonEncodedSizeOf, Event, OtelLog, Value, merge_state::MergeState,
+        string_value,
+    },
     internal_events::{
         DockerLogsCommunicationError, DockerLogsContainerEventReceived,
         DockerLogsContainerMetadataFetchError, DockerLogsContainerUnwatch,
@@ -169,7 +169,6 @@ pub struct DockerLogsConfig {
 
     #[configurable(derived)]
     tls: Option<DockerTlsConfig>,
-
 }
 
 impl Default for DockerLogsConfig {
@@ -284,18 +283,8 @@ impl SourceConfig for DockerLogsConfig {
                 Kind::bytes(),
                 None,
             )
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!(IMAGE),
-                Kind::bytes(),
-                None,
-            )
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!(NAME),
-                Kind::bytes(),
-                None,
-            )
+            .with_source_metadata(Self::NAME, &owned_value_path!(IMAGE), Kind::bytes(), None)
+            .with_source_metadata(Self::NAME, &owned_value_path!(NAME), Kind::bytes(), None)
             .with_source_metadata(
                 Self::NAME,
                 &owned_value_path!(CREATED_AT),
@@ -308,23 +297,14 @@ impl SourceConfig for DockerLogsConfig {
                 Kind::object(Collection::empty().with_unknown(Kind::bytes())).or_undefined(),
                 None,
             )
-            .with_source_metadata(
-                Self::NAME,
-                &owned_value_path!(STREAM),
-                Kind::bytes(),
-                None,
-            )
+            .with_source_metadata(Self::NAME, &owned_value_path!(STREAM), Kind::bytes(), None)
             .with_source_metadata(
                 Self::NAME,
                 &owned_value_path!("timestamp"),
                 Kind::timestamp(),
                 Some("timestamp"),
             )
-            .with_vector_metadata(
-                &owned_value_path!("source_type"),
-                Kind::bytes(),
-                None,
-            )
+            .with_vector_metadata(&owned_value_path!("source_type"), Kind::bytes(), None)
             .with_vector_metadata(
                 &owned_value_path!("ingest_timestamp"),
                 Kind::timestamp(),
@@ -754,7 +734,14 @@ impl EventStreamBuilder {
                 .follow(true)
                 .stdout(true)
                 .stderr(true)
-                .since(info.log_since() as i32) // 2038 bug (I think)
+                .since({
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "Docker logs since timestamp; 2038 bug noted upstream"
+                    )]
+                    let since = info.log_since() as i32;
+                    since
+                })
                 .timestamps(true)
                 .build(),
         );
@@ -854,10 +841,7 @@ impl EventStreamBuilder {
     }
 }
 
-fn add_hostname(
-    mut log: OtelLog,
-    hostname: &Option<String>,
-) -> OtelLog {
+fn add_hostname(mut log: OtelLog, hostname: &Option<String>) -> OtelLog {
     if let Some(hostname) = hostname {
         log.set_host(hostname.clone());
     }
@@ -1084,19 +1068,39 @@ impl ContainerLogInfo {
         otel_log.set_source_metadata(DockerLogsConfig::NAME, Utc::now());
 
         otel_log.set_attribute(CONTAINER.to_string(), string_value(self.id.as_str()));
-        otel_log.set_attribute(IMAGE.to_string(), string_value(String::from_utf8_lossy(&self.metadata.image.coerce_to_bytes()).into_owned()));
-        otel_log.set_attribute(NAME.to_string(), string_value(String::from_utf8_lossy(&self.metadata.name.coerce_to_bytes()).into_owned()));
-        otel_log.set_attribute(CREATED_AT.to_string(), string_value(self.metadata.created_at.to_rfc3339()));
+        otel_log.set_attribute(
+            IMAGE.to_string(),
+            string_value(
+                String::from_utf8_lossy(&self.metadata.image.coerce_to_bytes()).into_owned(),
+            ),
+        );
+        otel_log.set_attribute(
+            NAME.to_string(),
+            string_value(
+                String::from_utf8_lossy(&self.metadata.name.coerce_to_bytes()).into_owned(),
+            ),
+        );
+        otel_log.set_attribute(
+            CREATED_AT.to_string(),
+            string_value(self.metadata.created_at.to_rfc3339()),
+        );
 
         for (key, value) in self.metadata.labels.iter() {
             otel_log.set_attribute(format!("label.{key}"), string_value(value.clone()));
         }
 
-        otel_log.set_attribute(STREAM.to_string(), string_value(String::from_utf8_lossy(&stream).into_owned()));
+        otel_log.set_attribute(
+            STREAM.to_string(),
+            string_value(String::from_utf8_lossy(&stream).into_owned()),
+        );
 
         if let Some(timestamp) = timestamp {
-            otel_log.record_mut().time_unix_nano =
-                timestamp.timestamp_nanos_opt().unwrap_or(0) as u64;
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "timestamp nanos are non-negative for post-epoch dates; 0 fallback is safe"
+            )]
+            let nanos = timestamp.timestamp_nanos_opt().unwrap_or(0) as u64;
+            otel_log.record_mut().time_unix_nano = nanos;
         }
 
         let mut log = otel_log;

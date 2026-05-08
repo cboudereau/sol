@@ -36,11 +36,7 @@ impl BytesDeserializerConfig {
     pub fn schema_definition(&self) -> schema::Definition {
         let definition = schema::Definition::empty_definition();
         let message_key = owned_value_path!("body");
-        definition.with_event_field(
-            &message_key,
-            Kind::bytes(),
-            Some(meaning::MESSAGE),
-        )
+        definition.with_event_field(&message_key, Kind::bytes(), Some(meaning::MESSAGE))
     }
 }
 
@@ -59,10 +55,7 @@ impl BytesDeserializer {
 }
 
 impl Deserializer for BytesDeserializer {
-    fn parse(
-        &self,
-        bytes: Bytes,
-    ) -> sol_common::Result<SmallVec<[Event; 1]>> {
+    fn parse(&self, bytes: Bytes) -> sol_common::Result<SmallVec<[Event; 1]>> {
         let otel_log = self.parse_single(bytes);
         Ok(smallvec![Event::Log(otel_log)])
     }

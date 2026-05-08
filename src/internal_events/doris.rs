@@ -17,10 +17,20 @@ impl InternalEvent for DorisRowsLoaded {
         );
 
         // Record the number of rows loaded
-        counter!("doris_rows_loaded_total").increment(self.loaded_rows as u64);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "Doris loaded_rows expected non-negative"
+        )]
+        let loaded_rows = self.loaded_rows as u64;
+        counter!("doris_rows_loaded_total").increment(loaded_rows);
 
         // Record the number of bytes loaded
-        counter!("doris_bytes_loaded_total").increment(self.load_bytes as u64);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "Doris load_bytes expected non-negative"
+        )]
+        let load_bytes = self.load_bytes as u64;
+        counter!("doris_bytes_loaded_total").increment(load_bytes);
     }
 }
 
@@ -37,6 +47,11 @@ impl InternalEvent for DorisRowsFiltered {
             filtered_rows = %self.filtered_rows
         );
 
-        counter!("doris_rows_filtered_total").increment(self.filtered_rows as u64);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "Doris filtered_rows expected non-negative"
+        )]
+        let filtered_rows = self.filtered_rows as u64;
+        counter!("doris_rows_filtered_total").increment(filtered_rows);
     }
 }

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use tracing::debug;
 use sol_config_common::schema::{
     visit::{Visitor, with_resolved_schema_reference},
     *,
 };
+use tracing::debug;
 
 use super::scoped_visit::{
     SchemaReference, SchemaScopeStack, ScopedVisitor, visit_schema_object_scoped,

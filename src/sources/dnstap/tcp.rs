@@ -138,11 +138,7 @@ pub struct DnstapFrameHandler<T: FrameHandler + Clone> {
 }
 
 impl<T: FrameHandler + Clone> DnstapFrameHandler<T> {
-    pub fn new(
-        config: TcpConfig,
-        tls: MaybeTlsSettings,
-        frame_handler: T,
-    ) -> Self {
+    pub fn new(config: TcpConfig, tls: MaybeTlsSettings, frame_handler: T) -> Self {
         let tls_client_metadata_key = config
             .tls()
             .as_ref()
@@ -182,24 +178,21 @@ impl<T: FrameHandler + Clone> FrameHandler for DnstapFrameHandler<T> {
         self.frame_handler
             .handle_event(received_from, frame)
             .map(|mut event| {
-                match &mut event {
-                    Event::Log(otel_log) => {
-                        if let Some(tls_client_metadata) = &self.tls_client_metadata {
-                            for (k, v) in tls_client_metadata.iter() {
-                                otel_log.set_attribute(
-                                    format!("tls_client_metadata.{k}"),
-                                    crate::event::string_value(v.to_string_lossy().as_ref()),
-                                );
-                            }
+                if let Event::Log(otel_log) = &mut event {
+                    if let Some(tls_client_metadata) = &self.tls_client_metadata {
+                        for (k, v) in tls_client_metadata.iter() {
+                            otel_log.set_attribute(
+                                format!("tls_client_metadata.{k}"),
+                                crate::event::string_value(v.to_string_lossy().as_ref()),
+                            );
                         }
-
-                        emit!(SocketEventsReceived {
-                            mode: SocketMode::Tcp,
-                            byte_size: otel_log.estimated_json_encoded_size_of(),
-                            count: 1
-                        });
                     }
-                    _ => {}
+
+                    emit!(SocketEventsReceived {
+                        mode: SocketMode::Tcp,
+                        byte_size: otel_log.estimated_json_encoded_size_of(),
+                        count: 1
+                    });
                 }
                 event
             })

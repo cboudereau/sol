@@ -4,8 +4,8 @@ mod cmd;
 use clap::Parser;
 pub(crate) use cmd::cmd;
 pub use cmd::tap;
-use url::Url;
 use sol_lib::api_client::gql::TapEncodingFormat;
+use url::Url;
 
 use crate::config::api::default_graphql_url;
 

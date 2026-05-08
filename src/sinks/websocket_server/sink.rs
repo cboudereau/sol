@@ -31,15 +31,6 @@ use futures::{
     stream::BoxStream,
 };
 use http::StatusCode;
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::{
-    Message,
-    handshake::server::{ErrorResponse, Request, Response},
-};
-use tokio_util::codec::Encoder as _;
-use tracing::Instrument;
-use url::Url;
-use uuid::Uuid;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{Event, EventStatus},
@@ -50,6 +41,15 @@ use sol_lib::{
     sink::StreamSink,
     tls::{MaybeTlsIncomingStream, MaybeTlsListener, MaybeTlsSettings},
 };
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::{
+    Message,
+    handshake::server::{ErrorResponse, Request, Response},
+};
+use tokio_util::codec::Encoder as _;
+use tracing::Instrument;
+use url::Url;
+use uuid::Uuid;
 
 pub struct WebSocketListenerSink {
     tls: MaybeTlsSettings,
@@ -436,8 +436,6 @@ mod tests {
 
     use futures::{SinkExt, Stream, StreamExt, channel::mpsc::UnboundedReceiver};
     use futures_util::stream;
-    use tokio::{task::JoinHandle, time};
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use sol_lib::{
         codecs::{
             JsonDeserializerConfig,
@@ -447,6 +445,8 @@ mod tests {
         metrics::Controller,
         sink::VectorSink,
     };
+    use tokio::{task::JoinHandle, time};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     use super::*;
     use crate::{
@@ -878,24 +878,25 @@ mod tests {
                 .await;
 
             pairs.iter().for_each(|(msg, expected)| {
-                let mut base_msg: serde_json::Value = serde_json::from_str(
-                    &msg.as_ref().unwrap().clone().into_text().unwrap(),
-                )
-                .unwrap();
+                let mut base_msg: serde_json::Value =
+                    serde_json::from_str(&msg.as_ref().unwrap().clone().into_text().unwrap())
+                        .unwrap();
                 // Removing message_id from message, since it is not part of the event.
                 // In OTLP/JSON, message_id is inside the attributes array.
                 if let Some(obj) = base_msg.as_object_mut() {
                     obj.remove("message_id");
                     // Also remove message_id from the OTLP attributes array
                     if let Some(attrs) = obj.get_mut("attributes").and_then(|a| a.as_array_mut()) {
-                        attrs.retain(|kv| kv.get("key").and_then(|k| k.as_str()) != Some("message_id"));
+                        attrs.retain(|kv| {
+                            kv.get("key").and_then(|k| k.as_str()) != Some("message_id")
+                        });
                         if attrs.is_empty() {
                             obj.remove("attributes");
                         }
                     }
                 }
                 let expected_json: serde_json::Value =
-                    serde_json::to_value(&expected.clone().into_log()).unwrap();
+                    serde_json::to_value(expected.clone().into_log()).unwrap();
                 assert_eq!(expected_json, base_msg);
             });
 

@@ -56,12 +56,7 @@ impl LuaConfig {
         // Lua causes the type definition to be reset
         let definition = input_definitions
             .iter()
-            .map(|(output, _definition)| {
-                (
-                    output.clone(),
-                    Definition::default_definition(),
-                )
-            })
+            .map(|(output, _definition)| (output.clone(), Definition::default_definition()))
             .collect();
 
         vec![TransformOutput::new(DataType::Log, definition)]
@@ -552,7 +547,10 @@ mod tests {
         let mut transform =
             Lua::new(source, vec![dir.path().to_string_lossy().into_owned()]).unwrap();
         let event = transform.transform_one(OtelLog::default().into()).unwrap();
-        assert_eq!(event.as_log().get("\"new field\"").unwrap(), Value::from("new value"));
+        assert_eq!(
+            event.as_log().get("\"new field\"").unwrap(),
+            Value::from("new value")
+        );
     }
 
     #[test]
@@ -572,7 +570,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.as_log().get("name").unwrap(), Value::from("nameBob"));
-        assert_eq!(event.as_log().get("friend").unwrap(), Value::from("friendAlice"));
+        assert_eq!(
+            event.as_log().get("friend").unwrap(),
+            Value::from("friendAlice")
+        );
     }
 
     fn transform_one(transform: &str, event: impl Into<Event>) -> Option<Event> {

@@ -130,7 +130,6 @@ pub struct NatsSourceConfig {
     /// The NATS queue group to join.
     pub queue: Option<String>,
 
-
     #[configurable(derived)]
     pub tls: Option<TlsEnableableConfig>,
 
@@ -192,9 +191,7 @@ impl GenerateConfig for NatsSourceConfig {
 #[typetag::serde(name = "nats")]
 impl SourceConfig for NatsSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<Source> {
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         match self.mode() {
             NatsMode::JetStream(js_config) => {
@@ -313,10 +310,7 @@ impl TryFrom<&NatsSourceConfig> for async_nats::ConnectOptions {
 mod tests {
     #![allow(clippy::print_stdout)]
 
-    use sol_lib::{
-        lookup::owned_value_path,
-        schema::Definition,
-    };
+    use sol_lib::{lookup::owned_value_path, schema::Definition};
     use vrl::value::{Kind, kind::Collection};
 
     use super::*;
@@ -334,26 +328,22 @@ mod tests {
             ..Default::default()
         };
 
-        let definitions = config
-            .outputs()
-            .remove(0)
-            .schema_definition(true);
+        let definitions = config.outputs().remove(0).schema_definition(true);
 
-        let expected_definition = Definition::new_with_default_metadata(
-            Kind::object(Collection::empty())
-        )
-        .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
-        .with_metadata_field(
-            &owned_value_path!("vector", "source_type"),
-            Kind::bytes(),
-            None,
-        )
-        .with_metadata_field(
-            &owned_value_path!("vector", "ingest_timestamp"),
-            Kind::timestamp(),
-            None,
-        )
-        .with_metadata_field(&owned_value_path!("nats", "subject"), Kind::bytes(), None);
+        let expected_definition =
+            Definition::new_with_default_metadata(Kind::object(Collection::empty()))
+                .with_event_field(&owned_value_path!("body"), Kind::bytes(), Some("message"))
+                .with_metadata_field(
+                    &owned_value_path!("vector", "source_type"),
+                    Kind::bytes(),
+                    None,
+                )
+                .with_metadata_field(
+                    &owned_value_path!("vector", "ingest_timestamp"),
+                    Kind::timestamp(),
+                    None,
+                )
+                .with_metadata_field(&owned_value_path!("nats", "subject"), Kind::bytes(), None);
 
         assert_eq!(definitions, Some(expected_definition));
     }

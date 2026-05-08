@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
-use tracing::debug;
 use sol_config_common::schema::{visit::Visitor, *};
+use tracing::debug;
 
 use super::scoped_visit::{
     SchemaReference, SchemaScopeStack, ScopedVisitor, visit_schema_object_scoped,

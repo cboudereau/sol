@@ -13,7 +13,12 @@ pub struct LuaGcTriggered {
 
 impl InternalEvent for LuaGcTriggered {
     fn emit(self) {
-        gauge!("lua_memory_used_bytes").set(self.used_memory as f64);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Lua memory usage gauge; precise for |v| <= 2^53"
+        )]
+        let used_memory = self.used_memory as f64;
+        gauge!("lua_memory_used_bytes").set(used_memory);
     }
 }
 

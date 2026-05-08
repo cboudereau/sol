@@ -3,40 +3,40 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use futures::Stream;
-use futures_util::StreamExt;
-use opentelemetry_proto::tonic::metrics::v1::metric::Data as OtelMetricData;
-use prost::Message;
-use similar_asserts::assert_eq;
-use tonic::Request;
-use sol_lib::opentelemetry::proto::{
-    collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
-        metrics::v1::{
-            ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient,
-        },
-    },
-    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value::StringValue},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-    metrics::v1::{
-        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
-        Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        Sum, Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets,
-        metric::Data, summary_data_point::ValueAtQuantile,
-    },
-    resource::v1::{Resource, Resource as OtelResource},
-};
 use crate::{
     SourceSender,
     config::{SourceConfig, SourceContext},
     event::{Event, EventStatus, into_event_stream},
-    sources::opentelemetry::config::{GrpcConfig, HttpConfig, LOGS, METRICS, OpentelemetryConfig, TRACES},
+    sources::opentelemetry::config::{
+        GrpcConfig, HttpConfig, LOGS, METRICS, OpentelemetryConfig, TRACES,
+    },
     test_util::{
         self,
         addr::next_addr,
         components::{SOURCE_TAGS, assert_source_compliance},
     },
 };
+use futures::Stream;
+use futures_util::StreamExt;
+use opentelemetry_proto::tonic::metrics::v1::metric::Data as OtelMetricData;
+use prost::Message;
+use similar_asserts::assert_eq;
+use sol_lib::opentelemetry::proto::{
+    collector::{
+        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
+    },
+    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value::StringValue},
+    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+    metrics::v1::{
+        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
+        Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+        Summary, SummaryDataPoint, exponential_histogram_data_point::Buckets, metric::Data,
+        summary_data_point::ValueAtQuantile,
+    },
+    resource::v1::{Resource, Resource as OtelResource},
+};
+use tonic::Request;
 
 fn create_test_logs_request() -> Request<ExportLogsServiceRequest> {
     Request::new(ExportLogsServiceRequest {
@@ -138,10 +138,7 @@ async fn receive_grpc_logs_vector_namespace() {
             otel_log.trace_id(),
             &str_into_hex_bytes("4ac52aadf321c2e531db005df08792f5")
         );
-        assert_eq!(
-            otel_log.span_id(),
-            &str_into_hex_bytes("0b9e4bda2a55530d")
-        );
+        assert_eq!(otel_log.span_id(), &str_into_hex_bytes("0b9e4bda2a55530d"));
         assert_eq!(otel_log.record().flags, 4);
         assert_eq!(otel_log.record().dropped_attributes_count, 3);
 
@@ -542,7 +539,10 @@ async fn receive_histogram_metric() {
         assert_eq!(otel_metric.metric().name, "some.random.metric");
         match &otel_metric.metric().data {
             Some(OtelMetricData::Histogram(hist)) => {
-                assert_eq!(hist.aggregation_temporality, AggregationTemporality::Cumulative as i32);
+                assert_eq!(
+                    hist.aggregation_temporality,
+                    AggregationTemporality::Cumulative as i32
+                );
                 assert_eq!(hist.data_points.len(), 1);
                 let dp = &hist.data_points[0];
                 assert_eq!(dp.time_unix_nano, event_time_nanos);
@@ -642,7 +642,10 @@ async fn receive_histogram_delta_metric() {
         assert_eq!(otel_metric.metric().name, "some.random.metric");
         match &otel_metric.metric().data {
             Some(OtelMetricData::Histogram(hist)) => {
-                assert_eq!(hist.aggregation_temporality, AggregationTemporality::Delta as i32);
+                assert_eq!(
+                    hist.aggregation_temporality,
+                    AggregationTemporality::Delta as i32
+                );
                 assert_eq!(hist.data_points.len(), 1);
                 let dp = &hist.data_points[0];
                 assert_eq!(dp.time_unix_nano, event_time_nanos);
@@ -751,7 +754,10 @@ async fn receive_expontential_histogram_metric() {
         assert_eq!(otel_metric.metric().name, "some.random.metric");
         match &otel_metric.metric().data {
             Some(OtelMetricData::ExponentialHistogram(hist)) => {
-                assert_eq!(hist.aggregation_temporality, AggregationTemporality::Cumulative as i32);
+                assert_eq!(
+                    hist.aggregation_temporality,
+                    AggregationTemporality::Cumulative as i32
+                );
                 assert_eq!(hist.data_points.len(), 1);
                 let dp = &hist.data_points[0];
                 assert_eq!(dp.time_unix_nano, event_time_nanos);
@@ -986,9 +992,7 @@ pub struct OTelTestEnv {
     pub output: Box<dyn Stream<Item = Event> + Unpin + Send>,
 }
 
-pub async fn build_otlp_test_env(
-    event_name: &'static str,
-) -> OTelTestEnv {
+pub async fn build_otlp_test_env(event_name: &'static str) -> OTelTestEnv {
     let (_guard_0, grpc_addr) = next_addr();
     let (_guard_1, http_addr) = next_addr();
 
@@ -1044,7 +1048,6 @@ fn str_into_hex_bytes(s: &str) -> Vec<u8> {
     // unwrap is okay in test
     hex::decode(s).unwrap()
 }
-
 
 fn current_time_and_nanos() -> (SystemTime, u64) {
     let time = SystemTime::now();
@@ -1139,10 +1142,7 @@ async fn http_json_logs() {
             otel_log.trace_id(),
             &str_into_hex_bytes("4ac52aadf321c2e531db005df08792f5")
         );
-        assert_eq!(
-            otel_log.span_id(),
-            &str_into_hex_bytes("0b9e4bda2a55530d")
-        );
+        assert_eq!(otel_log.span_id(), &str_into_hex_bytes("0b9e4bda2a55530d"));
     })
     .await;
 }
@@ -1213,7 +1213,10 @@ async fn http_json_metrics() {
         match &proto.data {
             Some(OtelMetricData::Sum(sum)) => {
                 assert!(sum.is_monotonic);
-                assert_eq!(sum.aggregation_temporality, AggregationTemporality::Cumulative as i32);
+                assert_eq!(
+                    sum.aggregation_temporality,
+                    AggregationTemporality::Cumulative as i32
+                );
                 assert_eq!(sum.data_points.len(), 1);
                 let dp = &sum.data_points[0];
                 assert_eq!(dp.attributes[0].key, "method");
@@ -1364,4 +1367,3 @@ async fn http_protobuf_response_content_type() {
     })
     .await;
 }
-

@@ -14,7 +14,6 @@ use codecs::{
 };
 use tokio_util::codec::Encoder;
 
-
 fn test_data_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("tests/data/protobuf")
 }
@@ -59,18 +58,14 @@ fn roundtrip_coding() {
     let message_type: String = "test_protobuf.Person".into();
     let (mut serializer, deserializer) = build_serializer_pair(desc_file, message_type, false);
 
-    let events_original = deserializer
-        .parse(protobuf_message)
-        .unwrap();
+    let events_original = deserializer.parse(protobuf_message).unwrap();
     assert_eq!(1, events_original.len());
     let mut new_message = BytesMut::new();
     serializer
         .encode(events_original[0].clone(), &mut new_message)
         .unwrap();
     let protobuf_message: Bytes = new_message.into();
-    let events_encoded = deserializer
-        .parse(protobuf_message)
-        .unwrap();
+    let events_encoded = deserializer.parse(protobuf_message).unwrap();
     assert_eq!(events_original, events_encoded);
 }
 
@@ -110,18 +105,14 @@ fn roundtrip_coding_with_json_names() {
     serializer_snake_case
         .encode(events_snake_case[0].clone(), &mut new_message)
         .unwrap();
-    let events_encoded = deserializer_snake_case
-        .parse(new_message.into())
-        .unwrap();
+    let events_encoded = deserializer_snake_case.parse(new_message.into()).unwrap();
     assert_eq!(events_snake_case, events_encoded);
 
     // Test with use_json_names=true (camelCase field names)
     let (mut serializer_camel_case, deserializer_camel_case) =
         build_serializer_pair(desc_file, message_type, true);
 
-    let events_camel_case = deserializer_camel_case
-        .parse(protobuf_message)
-        .unwrap();
+    let events_camel_case = deserializer_camel_case.parse(protobuf_message).unwrap();
     assert_eq!(1, events_camel_case.len());
 
     // Verify that JSON names are being used (camelCase)
@@ -144,8 +135,6 @@ fn roundtrip_coding_with_json_names() {
     serializer_camel_case
         .encode(events_camel_case[0].clone(), &mut new_message)
         .unwrap();
-    let events_encoded = deserializer_camel_case
-        .parse(new_message.into())
-        .unwrap();
+    let events_encoded = deserializer_camel_case.parse(new_message.into()).unwrap();
     assert_eq!(events_camel_case, events_encoded);
 }

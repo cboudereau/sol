@@ -38,9 +38,7 @@ impl FunctionTransform for Cri {
         if let Event::Log(ref mut otel_log) = event {
             let body = otel_log.body_string();
             if body.is_empty() {
-                emit!(ParserMissingFieldError::<DROP_EVENT> {
-                    field: "body"
-                });
+                emit!(ParserMissingFieldError::<DROP_EVENT> { field: "body" });
                 return;
             }
             let s = bytes::Bytes::from(body);
@@ -50,9 +48,9 @@ impl FunctionTransform for Cri {
                     return;
                 }
                 Some(parsed_log) => {
-                    otel_log.set_body(crate::event::string_value(
-                        String::from_utf8_lossy(parsed_log.message),
-                    ));
+                    otel_log.set_body(crate::event::string_value(String::from_utf8_lossy(
+                        parsed_log.message,
+                    )));
 
                     if parsed_log.multiline_tag[0] == b'P' {
                         otel_log.set_attribute(
@@ -67,8 +65,12 @@ impl FunctionTransform for Cri {
                     match DateTime::parse_from_str(&ds, "%+") {
                         Ok(dt) => {
                             let ts = dt.with_timezone(&Utc);
-                            otel_log.record_mut().time_unix_nano =
-                                ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                            #[expect(
+                                clippy::cast_sign_loss,
+                                reason = "timestamp nanos are non-negative for post-epoch dates; 0 fallback is safe"
+                            )]
+                            let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u64;
+                            otel_log.record_mut().time_unix_nano = nanos;
                         }
                         Err(e) => {
                             emit!(ParserConversionError {
@@ -83,9 +85,7 @@ impl FunctionTransform for Cri {
 
                     otel_log.set_attribute(
                         STREAM_KEY.to_string(),
-                        crate::event::string_value(
-                            String::from_utf8_lossy(parsed_log.stream),
-                        ),
+                        crate::event::string_value(String::from_utf8_lossy(parsed_log.stream)),
                     );
                 }
             }
@@ -156,7 +156,7 @@ pub mod tests {
     use vrl::value;
 
     use super::{super::test_util, *};
-    use crate::{event::{OtelLog}, test_util::trace_init};
+    use crate::{event::OtelLog, test_util::trace_init};
 
     fn make_long_string(base: &str, len: usize) -> String {
         base.chars().cycle().take(len).collect()

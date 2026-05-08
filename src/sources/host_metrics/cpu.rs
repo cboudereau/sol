@@ -13,6 +13,10 @@ const LOGICAL_CPUS: &str = "logical_cpus";
 const PHYSICAL_CPUS: &str = "physical_cpus";
 
 impl HostMetrics {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "system metric counter values; precise for |v| <= 2^53"
+    )]
     pub async fn cpu_metrics(&self, output: &mut super::MetricsBuffer) {
         // adds the metrics from cpu time for each cpu
         match heim::cpu::times().await {

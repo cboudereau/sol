@@ -9,8 +9,8 @@ use ddmetric_proto::{
     MetricPayload,
     metric_payload::{MetricSeries, MetricType},
 };
-use tracing::info;
 use sol::common::datadog::DatadogSeriesMetric;
+use tracing::info;
 
 use self::ddmetric_proto::metric_payload::{MetricPoint, Resource};
 use super::*;

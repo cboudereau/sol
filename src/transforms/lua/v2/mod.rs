@@ -187,12 +187,7 @@ impl LuaConfig {
         // Lua causes the type definition to be reset
         let definition = input_definitions
             .iter()
-            .map(|(output, _definition)| {
-                (
-                    output.clone(),
-                    Definition::default_definition(),
-                )
-            })
+            .map(|(output, _definition)| (output.clone(), Definition::default_definition()))
             .collect();
 
         vec![TransformOutput::new(
@@ -280,8 +275,13 @@ impl Lua {
                 .and_then(|f| lua.create_registry_value(f))
                 .context(InvalidTimerHandlerSnafu)?;
 
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "timer count always fits in u32"
+            )]
+            let timer_id = id as u32;
             let timer = Timer {
-                id: id as u32,
+                id: timer_id,
                 interval: timer.interval_seconds,
             };
             timers.push((timer, handler_key));
@@ -464,10 +464,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        event::{
-            Event, OtelLog, Value,
-            metric::MetricKind, OtelMetric,
-        },
+        event::{Event, OtelLog, OtelMetric, Value, metric::MetricKind},
         test_util,
         test_util::{components::assert_transform_compliance, random_string},
         transforms::test::create_topology,
@@ -547,7 +544,11 @@ mod tests {
                     .unwrap();
                 drop(tx);
                 assert_eq!(
-                    next_event(&out, "transform").await.as_log().get("body").unwrap(),
+                    next_event(&out, "transform")
+                        .await
+                        .as_log()
+                        .get("body")
+                        .unwrap(),
                     Value::from(line1)
                 );
                 assert_eq!(
@@ -599,7 +600,10 @@ mod tests {
                 let event = Event::Log(OtelLog::from("Hello, my name is Bob."));
                 tx.send(event).await.unwrap();
 
-                assert_eq!(next_event(&out, "in").await.as_log().get("name").unwrap(), Value::from("Bob"));
+                assert_eq!(
+                    next_event(&out, "in").await.as_log().get("name").unwrap(),
+                    Value::from("Bob")
+                );
             },
         )
         .await;
@@ -916,7 +920,11 @@ mod tests {
                 tx.send(event.into()).await.unwrap();
 
                 assert_eq!(
-                    next_event(&out, "in").await.as_log().get("\"new field\"").unwrap(),
+                    next_event(&out, "in")
+                        .await
+                        .as_log()
+                        .get("\"new field\"")
+                        .unwrap(),
                     Value::from("new value")
                 );
             },
@@ -946,7 +954,10 @@ mod tests {
                 let output = next_event(&out, "in").await;
 
                 assert_eq!(output.as_log().get("name").unwrap(), Value::from("nameBob"));
-                assert_eq!(output.as_log().get("friend").unwrap(), Value::from("friendAlice"));
+                assert_eq!(
+                    output.as_log().get("friend").unwrap(),
+                    Value::from("friendAlice")
+                );
             },
         )
         .await;
@@ -966,7 +977,8 @@ mod tests {
             |tx, out| async move {
                 let metric = OtelMetric::new_counter("example counter", MetricKind::Absolute, 1.0);
 
-                let mut expected = OtelMetric::new_counter("example counter", MetricKind::Absolute, 2.0);
+                let mut expected =
+                    OtelMetric::new_counter("example counter", MetricKind::Absolute, 2.0);
                 let metadata = expected.metadata_mut();
                 metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
                 metadata.set_source_id(Arc::new(ComponentKey::from("in")));

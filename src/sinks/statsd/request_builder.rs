@@ -1,13 +1,13 @@
 use std::convert::Infallible;
 
 use bytes::BytesMut;
-use tokio_util::codec::Encoder;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     config::telemetry,
     event::{EventFinalizers, Finalizable, OtelMetric},
     request_metadata::RequestMetadata,
 };
+use tokio_util::codec::Encoder;
 
 use super::{encoder::StatsdEncoder, service::StatsdRequest};
 use crate::{

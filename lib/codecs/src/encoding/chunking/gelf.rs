@@ -55,7 +55,9 @@ impl Chunking for GelfChunker {
             .enumerate()
             .map(|(i, chunk)| {
                 let framed = Bytes::copy_from_slice(chunk);
+                #[expect(clippy::cast_possible_truncation, reason = "GELF chunk index bounded by GELF_MAX_TOTAL_CHUNKS (128) which fits in u8")]
                 let sequence_number = i as u8;
+                #[expect(clippy::cast_possible_truncation, reason = "GELF chunk count bounded by GELF_MAX_TOTAL_CHUNKS (128) which fits in u8")]
                 let sequence_count = chunk_count as u8;
 
                 let mut headers = BytesMut::with_capacity(GELF_CHUNK_HEADERS_LENGTH);
@@ -109,9 +111,19 @@ mod tests {
             assert_eq!(chunks[i][0..2], GELF_MAGIC_BYTES);
             // Bytes 2 to 9: Random ID (not checked)
             // Byte 10: Sequence number
-            assert_eq!(chunks[i][10], i as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test chunk index fits in u8"
+            )]
+            let seq_num = i as u8;
+            assert_eq!(chunks[i][10], seq_num);
             // Byte 11: Sequence count
-            assert_eq!(chunks[i][11], chunks.len() as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test chunk count fits in u8"
+            )]
+            let seq_count = chunks.len() as u8;
+            assert_eq!(chunks[i][11], seq_count);
             // Payload bytes
             if i < 4 {
                 assert_eq!(&chunks[i][GELF_CHUNK_HEADERS_LENGTH..], b"1234");
@@ -137,9 +149,19 @@ mod tests {
             assert_eq!(chunks[i][0..2], GELF_MAGIC_BYTES);
             // Bytes 2 to 9: Random ID (not checked)
             // Byte 10: Sequence number
-            assert_eq!(chunks[i][10], i as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test chunk index fits in u8"
+            )]
+            let seq_num = i as u8;
+            assert_eq!(chunks[i][10], seq_num);
             // Byte 11: Sequence count
-            assert_eq!(chunks[i][11], chunks.len() as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test chunk count fits in u8"
+            )]
+            let seq_count = chunks.len() as u8;
+            assert_eq!(chunks[i][11], seq_count);
             // Payload bytes
             assert_eq!(&chunks[i][GELF_CHUNK_HEADERS_LENGTH..], &[0; 65500]);
         }

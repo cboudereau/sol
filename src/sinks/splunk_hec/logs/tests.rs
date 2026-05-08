@@ -238,7 +238,12 @@ fn splunk_encode_log_event_json() {
     assert_eq!(hec_data.host, Some("test_host".to_string()));
 
     // Fields are OTLP-serialized; check that the attributes array contains event_field1
-    let fields_attrs = hec_data.fields.get("attributes").unwrap().as_array().unwrap();
+    let fields_attrs = hec_data
+        .fields
+        .get("attributes")
+        .unwrap()
+        .as_array()
+        .unwrap();
     let find_field = |name: &str| -> Option<String> {
         fields_attrs.iter().find_map(|a| {
             if a["key"].as_str() == Some(name) {
@@ -271,7 +276,12 @@ fn splunk_encode_log_event_text() {
     assert_eq!(hec_data.host, Some("test_host".to_string()));
 
     // Fields are OTLP-serialized; check that the attributes array contains event_field1
-    let fields_attrs = hec_data.fields.get("attributes").unwrap().as_array().unwrap();
+    let fields_attrs = hec_data
+        .fields
+        .get("attributes")
+        .unwrap()
+        .as_array()
+        .unwrap();
     let find_field = |name: &str| -> Option<String> {
         fields_attrs.iter().find_map(|a| {
             if a["key"].as_str() == Some(name) {
@@ -359,7 +369,8 @@ fn splunk_encode_log_event_json_timestamps() {
     let do_auto_extract = true;
 
     // no timestamp_key → remove_timestamp() used, but no timestamp set → None
-    let mut hec_data = get_hec_data_for_timestamp_test(None, no_timestamp.clone(), dont_auto_extract);
+    let mut hec_data =
+        get_hec_data_for_timestamp_test(None, no_timestamp.clone(), dont_auto_extract);
     assert_eq!(hec_data.time, None);
 
     // no timestamp_key, no timestamp in the event
@@ -375,11 +386,8 @@ fn splunk_encode_log_event_json_timestamps() {
     assert!(hec_data.time.is_some());
 
     // auto_extract_timestamp is set → timestamp not extracted
-    hec_data = get_hec_data_for_timestamp_test(
-        Some(Value::Timestamp(Utc::now())),
-        None,
-        do_auto_extract,
-    );
+    hec_data =
+        get_hec_data_for_timestamp_test(Some(Value::Timestamp(Utc::now())), None, do_auto_extract);
     assert_eq!(hec_data.time, None);
 }
 
@@ -410,6 +418,7 @@ fn splunk_encode_log_event_semantic_meanings() {
     let og_time = Utc::now();
 
     // determine the time we expect to get after encoding
+    #[allow(clippy::cast_precision_loss)]
     let expected_time = (og_time.timestamp_millis() as f64) / 1000f64;
 
     log.insert(metadata_path!("splunk_hec", "hostname"), "roast");

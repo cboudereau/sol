@@ -4,8 +4,8 @@ use similar_asserts::assert_eq;
 use sol_lib::otel_tags;
 
 use super::*;
-use crate::event::metric::MetricKind;
 use crate::event::OtelMetric;
+use crate::event::metric::MetricKind;
 
 fn timestamp(time: &str) -> DateTime {
     DateTime::from_millis(
@@ -45,13 +45,12 @@ async fn svc() -> CloudWatchMetricsSvc {
 async fn encode_events_basic_counter() {
     let events: Vec<OtelMetric> = vec![
         OtelMetric::new_counter("exception_total", MetricKind::Incremental, 1.0),
-        OtelMetric::new_counter("bytes_out", MetricKind::Incremental, 2.5)
-            .with_timestamp(Some(
-                Utc.with_ymd_and_hms(2018, 11, 14, 8, 9, 10)
-                    .single()
-                    .and_then(|t| t.with_nanosecond(123456789))
-                    .expect("invalid timestamp"),
-            )),
+        OtelMetric::new_counter("bytes_out", MetricKind::Incremental, 2.5).with_timestamp(Some(
+            Utc.with_ymd_and_hms(2018, 11, 14, 8, 9, 10)
+                .single()
+                .and_then(|t| t.with_nanosecond(123456789))
+                .expect("invalid timestamp"),
+        )),
         OtelMetric::new_counter("healthcheck", MetricKind::Incremental, 1.0)
             .with_tags(Some(otel_tags!("region" => "local")))
             .with_timestamp(Some(
@@ -87,9 +86,7 @@ async fn encode_events_basic_counter() {
 
 #[tokio::test]
 async fn encode_events_absolute_gauge() {
-    let events: Vec<OtelMetric> = vec![
-        OtelMetric::new_gauge("temperature", 10.0),
-    ];
+    let events: Vec<OtelMetric> = vec![OtelMetric::new_gauge("temperature", 10.0)];
 
     assert_eq!(
         svc().await.encode_events(events),
@@ -104,13 +101,12 @@ async fn encode_events_absolute_gauge() {
 
 #[tokio::test]
 async fn encode_events_distribution() {
-    let events: Vec<OtelMetric> = vec![
-        OtelMetric::new_histogram_from_samples(
-            "latency",
-            MetricKind::Incremental,
-            &sol_lib::samples![11.0 => 100, 12.0 => 50],
-        ),
-    ];
+    let samples = sol_lib::samples![11.0 => 100, 12.0 => 50];
+    let events: Vec<OtelMetric> = vec![OtelMetric::new_histogram_from_samples(
+        "latency",
+        MetricKind::Incremental,
+        &samples,
+    )];
 
     assert_eq!(
         svc().await.encode_events(events),
@@ -126,9 +122,11 @@ async fn encode_events_distribution() {
 
 #[tokio::test]
 async fn encode_events_set() {
-    let events: Vec<OtelMetric> = vec![
-        OtelMetric::new_set_from_values("users", MetricKind::Incremental, vec!["alice", "bob"]),
-    ];
+    let events: Vec<OtelMetric> = vec![OtelMetric::new_set_from_values(
+        "users",
+        MetricKind::Incremental,
+        vec!["alice", "bob"],
+    )];
 
     assert_eq!(
         svc().await.encode_events(events),

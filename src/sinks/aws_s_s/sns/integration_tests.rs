@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use aws_config::Region;
 use aws_sdk_sns::Client as SnsClient;
 use aws_sdk_sqs::{Client as SqsClient, types::QueueAttributeName};
-use tokio::time::{Duration, sleep};
 use sol_lib::codecs::TextSerializerConfig;
+use tokio::time::{Duration, sleep};
 
 use super::{
     BaseSSSinkConfig,
@@ -106,9 +106,15 @@ async fn sns_send_message_batch() {
 
     sleep(Duration::from_secs(1)).await;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test message count fits in i32"
+    )]
+    #[expect(clippy::cast_possible_wrap, reason = "test message count fits in i32")]
+    let max_msgs = input_lines.len() as i32;
     let response = sqs_client
         .receive_message()
-        .max_number_of_messages(input_lines.len() as i32)
+        .max_number_of_messages(max_msgs)
         .queue_url(queue_url)
         .send()
         .await

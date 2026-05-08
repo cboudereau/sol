@@ -47,7 +47,6 @@ pub struct MqttSourceConfig {
     #[derivative(Default(value = "default_decoding()"))]
     pub decoding: DeserializerConfig,
 
-
     /// Overrides the name of the log field used to add the topic to each event.
     ///
     /// The value is the topic from which the MQTT message was published to.
@@ -72,9 +71,7 @@ impl SourceConfig for MqttSourceConfig {
     async fn build(&self, cx: SourceContext) -> crate::Result<crate::sources::Source> {
         let connector = self.build_connector()?;
 
-        let decoder =
-            DecodingConfig::new(self.framing.clone(), self.decoding.clone())
-                .build()?;
+        let decoder = DecodingConfig::new(self.framing.clone(), self.decoding.clone()).build()?;
 
         let sink = MqttSource::new(connector.clone(), decoder, self.clone())?;
         Ok(Box::pin(sink.run(cx.out, cx.shutdown)))

@@ -9,9 +9,9 @@ use std::{
 
 use futures::FutureExt;
 use metrics::{counter, histogram};
+use sol_lib::configurable::configurable_component;
 use tokio::time::{Sleep, sleep};
 use tower::{retry::Policy, timeout::error::Elapsed};
-use sol_lib::configurable::configurable_component;
 
 use crate::Error;
 
@@ -104,7 +104,12 @@ impl<L: RetryLogic> FibonacciRetryPolicy<L> {
     }
 
     fn add_full_jitter(d: Duration) -> Duration {
-        let jitter = (rand::random::<u64>() % (d.as_millis() as u64)) + 1;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "backoff duration millis fits in u64"
+        )]
+        let millis = d.as_millis() as u64;
+        let jitter = (rand::random::<u64>() % millis) + 1;
         Duration::from_millis(jitter)
     }
 
@@ -253,8 +258,8 @@ impl<Request> RetryAction<Request> {
 mod tests {
     use std::{fmt, time::Duration};
 
-    use metrics_util::debugging::DebuggingRecorder;
     use metrics_util::MetricKind;
+    use metrics_util::debugging::DebuggingRecorder;
     use tokio::time;
     use tokio_test::{assert_pending, assert_ready_err, assert_ready_ok, task};
     use tower::retry::RetryLayer;
@@ -455,7 +460,7 @@ mod tests {
                 SvcRetryLogic,
                 JitterMode::None,
             );
-            let _ = policy.build_retry("request_failed");
+            drop(policy.build_retry("request_failed"));
 
             let snapshot = snapshotter.snapshot().into_vec();
             let (key, _, _, _) = snapshot
@@ -488,7 +493,7 @@ mod tests {
                 SvcRetryLogic,
                 JitterMode::None,
             );
-            let _ = policy.build_retry("timeout");
+            drop(policy.build_retry("timeout"));
 
             let snapshot = snapshotter.snapshot().into_vec();
             let (key, _, _, _) = snapshot
@@ -521,7 +526,7 @@ mod tests {
                 SvcRetryLogic,
                 JitterMode::None,
             );
-            let _ = policy.build_retry("request_failed");
+            drop(policy.build_retry("request_failed"));
 
             let snapshot = snapshotter.snapshot().into_vec();
             let (_, _, _, value) = snapshot
@@ -533,7 +538,10 @@ mod tests {
                 .expect("component_retry_backoff_seconds histogram not found");
 
             if let metrics_util::debugging::DebugValue::Histogram(values) = value {
-                assert!(!values.is_empty(), "histogram should have at least one sample");
+                assert!(
+                    !values.is_empty(),
+                    "histogram should have at least one sample"
+                );
             } else {
                 panic!("expected histogram value");
             }

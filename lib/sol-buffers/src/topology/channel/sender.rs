@@ -2,9 +2,9 @@ use std::{sync::Arc, time::Instant};
 
 use async_recursion::async_recursion;
 use derivative::Derivative;
+use sol_common::internal_event::{InternalEventHandle, Registered, register};
 use tokio::sync::Mutex;
 use tracing::Span;
-use sol_common::internal_event::{InternalEventHandle, Registered, register};
 
 use super::limited_queue::LimitedSender;
 use crate::{

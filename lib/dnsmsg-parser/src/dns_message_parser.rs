@@ -219,12 +219,17 @@ impl DnsMessageParser {
             };
         self.raw_message_for_rdata_parsing = Some(raw_message_for_rdata_parsing_data);
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "DNS message index is bounded by the 65535-byte UDP datagram limit"
+        )]
+        let index = index as u16;
         BinDecoder::new(
             self.raw_message_for_rdata_parsing
                 .as_ref()
                 .expect("None raw_message_for_rdata_parsing"),
         )
-        .clone(index as u16)
+        .clone(index)
     }
 
     fn parse_wks_rdata(
@@ -326,7 +331,7 @@ impl DnsMessageParser {
             let dir = if received_lon > 0x8000_0000 { "E" } else { "W" };
             parse_loc_rdata_coordinates(received_lon, dir)
         };
-        let altitude = (parse_u32(&mut decoder)? as f64 - 10_000_000.0) / 100.0;
+        let altitude = (f64::from(parse_u32(&mut decoder)?) - 10_000_000.0) / 100.0;
 
         Ok((
             Some(format!(
@@ -473,6 +478,10 @@ impl DnsMessageParser {
             dns_message::RTYPE_NSAP => {
                 let raw_rdata = rdata.anything();
                 let mut decoder = BinDecoder::new(raw_rdata);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "DNS RDATA length is bounded by the 65535-byte UDP datagram limit"
+                )]
                 let rdata_len = raw_rdata.len() as u16;
                 let nsap_rdata = HEXUPPER.encode(&parse_vec_with_u16_len(&mut decoder, rdata_len)?);
                 Ok((Some(format!("0x{nsap_rdata}")), None))
@@ -505,6 +514,10 @@ impl DnsMessageParser {
                 let meaning = parse_u8(&mut decoder)?;
                 let coding = parse_u8(&mut decoder)?;
                 let subcoding = parse_u8(&mut decoder)?;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "DNS RDATA length is bounded by the 65535-byte UDP datagram limit"
+                )]
                 let data_len = raw_rdata.len() as u16 - 3;
                 let data = BASE64.encode(&parse_vec_with_u16_len(&mut decoder, data_len)?);
 
@@ -516,6 +529,10 @@ impl DnsMessageParser {
             dns_message::RTYPE_DHCID => {
                 let raw_rdata = rdata.anything();
                 let mut decoder = BinDecoder::new(raw_rdata);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "DNS RDATA length is bounded by the 65535-byte UDP datagram limit"
+                )]
                 let raw_data_len = raw_rdata.len() as u16;
                 let digest = BASE64.encode(&parse_vec_with_u16_len(&mut decoder, raw_data_len)?);
                 Ok((Some(digest), None))
@@ -623,7 +640,7 @@ impl DnsMessageParser {
             RData::CAA(caa) => {
                 let caa_rdata = format!(
                     "{} {} \"{}\"",
-                    caa.issuer_critical() as u8,
+                    u8::from(caa.issuer_critical()),
                     caa.tag().as_str(),
                     match caa.tag() {
                         Property::Iodef => {
@@ -768,7 +785,7 @@ impl DnsMessageParser {
                     let nsec3_rdata = format!(
                         "{} {} {} {} {} {}",
                         u8::from(nsec3.hash_algorithm()),
-                        nsec3.opt_out() as u8,
+                        u8::from(nsec3.opt_out()),
                         nsec3.iterations(),
                         HEXUPPER.encode(nsec3.salt()),
                         BASE32HEX_NOPAD.encode(nsec3.next_hashed_owner_name()),
@@ -784,7 +801,7 @@ impl DnsMessageParser {
                     let nsec3param_rdata = format!(
                         "{} {} {} {}",
                         u8::from(nsec3param.hash_algorithm()),
-                        nsec3param.opt_out() as u8,
+                        u8::from(nsec3param.opt_out()),
                         nsec3param.iterations(),
                         HEXUPPER.encode(nsec3param.salt()),
                     );
@@ -1076,12 +1093,20 @@ fn parse_loc_rdata_size(data: u8) -> DnsParserResult<f64> {
     }
 
     let ten: u64 = 10;
-    let ans = (base as f64) * ten.pow(exponent as u32) as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "max value is 10^9, exact in f64"
+    )]
+    let ans = f64::from(base) * ten.pow(u32::from(exponent)) as f64;
     Ok(ans / 100.0) // convert cm to metre
 }
 
 fn parse_loc_rdata_coordinates(coordinates: u32, dir: &str) -> String {
-    let degree = (coordinates as i64 - 0x8000_0000) as f64 / 3_600_000.00;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "geographic coordinate value fits in f64 mantissa"
+    )]
+    let degree = (i64::from(coordinates) - 0x8000_0000) as f64 / 3_600_000.00;
     let minute = degree.fract() * 60.0;
     let second = minute.fract() * 60.0;
 
@@ -2274,13 +2299,18 @@ mod tests {
             .decode(raw_data.as_bytes())
             .expect("Invalid base64 encoded rdata.");
         let mut decoder = BinDecoder::new(&raw_rdata);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test RDATA length is bounded by the 65535-byte DNS message limit"
+        )]
+        let rdata_len = raw_rdata.len() as u16;
         let record = Record::from_rdata(
             Name::new(),
             1,
             RData::read(
                 &mut decoder,
                 RecordType::from(code),
-                Restrict::new(raw_rdata.len() as u16),
+                Restrict::new(rdata_len),
             )
             .unwrap(),
         );

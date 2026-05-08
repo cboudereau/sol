@@ -14,14 +14,18 @@ use serde::Serialize;
 use sol_config::configurable_component;
 pub use sol_lib::{
     config::{
-        AcknowledgementsConfig, DataType, GlobalOptions, Input, SourceAcknowledgementsConfig, SourceOutput, TransformOutput, WildcardMatching,
+        AcknowledgementsConfig, DataType, GlobalOptions, Input, SourceAcknowledgementsConfig,
+        SourceOutput, TransformOutput, WildcardMatching,
     },
     configurable::component::{GenerateConfig, SinkDescription, TransformDescription},
 };
 
 use crate::{
     conditions,
-    event::{Value, MetricKind, OtelAttributes, OtelMetric, metric::{Sample, Bucket, Quantile}},
+    event::{
+        MetricKind, OtelAttributes, OtelMetric, Value,
+        metric::{Bucket, Quantile, Sample},
+    },
     secrets::SecretBackends,
     serde::OneOrMany,
 };
@@ -60,6 +64,10 @@ pub use loading::{
 pub use provider::ProviderConfig;
 pub use secret::SecretBackend;
 pub use sink::{BoxedSink, SinkConfig, SinkContext, SinkHealthcheckOptions, SinkOuter};
+pub use sol_lib::{
+    config::{ComponentKey, OutputId, init_telemetry, proxy::ProxyConfig, telemetry},
+    id::Inputs,
+};
 pub use source::{BoxedSource, SourceConfig, SourceContext, SourceOuter};
 pub use transform::{
     BoxedTransform, TransformConfig, TransformContext, TransformOuter, get_transform_output_ids,
@@ -67,12 +75,6 @@ pub use transform::{
 pub use unit_test::{UnitTestResult, build_unit_tests, build_unit_tests_main};
 pub use validation::warnings;
 pub use vars::{ENVIRONMENT_VARIABLE_INTERPOLATION_REGEX, interpolate};
-pub use sol_lib::{
-    config::{
-        ComponentKey, OutputId, init_telemetry, proxy::ProxyConfig, telemetry,
-    },
-    id::Inputs,
-};
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 // // This is not a comprehensive set; variants are added as needed.
@@ -675,22 +677,30 @@ impl TestMetricInput {
                 MetricKind::Absolute => OtelMetric::new_gauge(name, *value),
                 MetricKind::Incremental => OtelMetric::new_gauge_delta(name, *value),
             },
-            TestMetricValue::Set { values } => {
-                OtelMetric::new_set_from_values(name, kind, values.iter().cloned().collect::<Vec<_>>())
-            }
-            TestMetricValue::Distribution { samples, statistic: _ } => {
-                OtelMetric::new_histogram_from_samples(name, kind, samples)
-            }
-            TestMetricValue::AggregatedHistogram { buckets, count, sum } => {
-                OtelMetric::new_histogram(name, kind, buckets, *count, *sum)
-            }
-            TestMetricValue::AggregatedSummary { quantiles, count, sum } => {
-                OtelMetric::new_summary(name, quantiles, *count, *sum)
-            }
+            TestMetricValue::Set { values } => OtelMetric::new_set_from_values(
+                name,
+                kind,
+                values.iter().cloned().collect::<Vec<_>>(),
+            ),
+            TestMetricValue::Distribution {
+                samples,
+                statistic: _,
+            } => OtelMetric::new_histogram_from_samples(name, kind, samples),
+            TestMetricValue::AggregatedHistogram {
+                buckets,
+                count,
+                sum,
+            } => OtelMetric::new_histogram(name, kind, buckets, *count, *sum),
+            TestMetricValue::AggregatedSummary {
+                quantiles,
+                count,
+                sum,
+            } => OtelMetric::new_summary(name, quantiles, *count, *sum),
         };
-        let tags: Option<OtelAttributes> = self.tags.as_ref().map(|t| {
-            t.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        });
+        let tags: Option<OtelAttributes> = self
+            .tags
+            .as_ref()
+            .map(|t| t.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         otel.with_namespace(self.namespace.clone())
             .with_tags(tags)
             .with_timestamp(self.timestamp)
@@ -995,10 +1005,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            Some(PathBuf::from("/var/lib/sol")),
-            config.global.data_dir
-        )
+        assert_eq!(Some(PathBuf::from("/var/lib/sol")), config.global.data_dir)
     }
 
     #[test]
@@ -1397,8 +1404,8 @@ mod resource_tests {
 
 #[cfg(all(test, feature = "sources-stdin", feature = "sinks-console"))]
 mod resource_config_tests {
-    use indoc::indoc;
     use super::{Format, load_from_str};
+    use indoc::indoc;
 
     #[test]
     fn config_conflict_detected() {
@@ -1421,5 +1428,4 @@ mod resource_config_tests {
             .is_err()
         );
     }
-
 }

@@ -24,7 +24,9 @@ registered_event! {
     }
 
     fn emit(&self, data: AdaptiveConcurrencyLimitData) {
-        self.limit.record(data.concurrency as f64);
+        #[expect(clippy::cast_precision_loss, reason = "concurrency limit metric; precise for |v| <= 2^53")]
+        let concurrency = data.concurrency as f64;
+        self.limit.record(concurrency);
         let reached_limit = if data.reached_limit { 1.0 } else { Default::default() };
         self.reached_limit.record(reached_limit);
         let back_pressure = if data.had_back_pressure { 1.0 } else { Default::default() };
@@ -40,7 +42,9 @@ registered_event! {
     }
 
     fn emit(&self, in_flight: u64) {
-        self.in_flight.record(in_flight as f64);
+        #[expect(clippy::cast_precision_loss, reason = "in-flight request count metric; precise for |v| <= 2^53")]
+        let in_flight_f = in_flight as f64;
+        self.in_flight.record(in_flight_f);
     }
 }
 

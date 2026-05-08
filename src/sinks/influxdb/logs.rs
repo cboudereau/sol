@@ -588,10 +588,7 @@ mod tests {
         let line_protocol = split_line_protocol(line);
         assert_eq!("vector", line_protocol.0);
         assert_eq!("", line_protocol.1, "tags should be empty");
-        assert_fields(
-            line_protocol.2,
-            ["value=100i", "body=\"hello\""].to_vec(),
-        );
+        assert_fields(line_protocol.2, ["value=100i", "body=\"hello\""].to_vec());
 
         assert_eq!("1542182950000000011\n", line_protocol.3);
     }
@@ -767,8 +764,10 @@ mod tests {
             let mut event = OtelLog::from(line.to_string()).with_batch_notifier(&batch);
             event.insert(format!("key{i}").as_str(), format!("value{i}"));
 
+            #[expect(clippy::cast_possible_truncation, reason = "test index fits in u32")]
+            let secs = (i as u32) + 1;
             let timestamp = Utc
-                .with_ymd_and_hms(1970, 1, 1, 0, 0, (i as u32) + 1)
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, secs)
                 .single()
                 .expect("invalid timestamp");
             event.set_timestamp(timestamp);
@@ -811,11 +810,7 @@ mod tests {
         assert_eq!("metric_type=logs,source_type=file", line_protocol.1);
         assert_fields(
             line_protocol.2.to_string(),
-            [
-                &*format!("key{i}=\"value{i}\""),
-                "body=\"message_value\"",
-            ]
-            .to_vec(),
+            [&*format!("key{i}=\"value{i}\""), "body=\"message_value\""].to_vec(),
         );
 
         assert_eq!(((i + 1) * 1000000000).to_string(), line_protocol.3);
@@ -919,17 +914,8 @@ mod integration_tests {
 
         let mut namespaced_log =
             OtelLog::from(value!("namespaced message")).with_batch_notifier(&batch);
-        insert_source_metadata(
-            "file",
-            &mut namespaced_log,
-            path!("host"),
-            "aws.cloud.eur",
-        );
-        insert_standard_vector_source_metadata(
-            &mut namespaced_log,
-            "file",
-            now,
-        );
+        insert_source_metadata("file", &mut namespaced_log, path!("host"), "aws.cloud.eur");
+        insert_standard_vector_source_metadata(&mut namespaced_log, "file", now);
         let schema = BytesDeserializerConfig
             .schema_definition()
             .with_metadata_field(

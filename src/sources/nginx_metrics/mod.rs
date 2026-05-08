@@ -10,12 +10,12 @@ use futures::{StreamExt, TryFutureExt, future::join_all};
 use http::{Request, StatusCode};
 use http_body::Collected;
 use hyper::{Body, Uri};
-use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
+use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
+use sol_lib::{EstimatedJsonEncodedSizeOf, configurable::configurable_component, otel_tags};
 use tokio::time;
 use tokio_stream::wrappers::IntervalStream;
-use sol_lib::{EstimatedJsonEncodedSizeOf, configurable::configurable_component, otel_tags};
 
 use crate::{
     config::{SourceConfig, SourceContext, SourceOutput},
@@ -102,7 +102,8 @@ impl SourceConfig for NginxMetricsConfig {
         let http_client = HttpClient::new(tls, &cx.proxy)?;
 
         let namespace = Some(self.namespace.clone()).filter(|namespace| !namespace.is_empty());
-        let resource = source_otel::build_source_resource("nginx_metrics", &self.resource_attributes);
+        let resource =
+            source_otel::build_source_resource("nginx_metrics", &self.resource_attributes);
         let scope = source_otel::build_source_scope("nginx_metrics");
         let mut sources = Vec::with_capacity(self.endpoints.len());
         for endpoint in self.endpoints.iter() {
@@ -131,7 +132,7 @@ impl SourceConfig for NginxMetricsConfig {
                 let metrics: Vec<OtelMetric> = metrics.into_iter().flatten().collect();
                 let count = metrics.len();
 
-                let events: Vec<Event> = metrics.into_iter().map(|m| Event::Metric(m)).collect();
+                let events: Vec<Event> = metrics.into_iter().map(Event::Metric).collect();
                 if (cx.out.send_batch(events).await).is_err() {
                     emit!(StreamClosedError { count });
                     return Err(());
@@ -214,6 +215,10 @@ impl NginxMetrics {
         metrics
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "nginx stub status counters (connections, requests); precise for |v| <= 2^53"
+    )]
     async fn collect_metrics(&self) -> Result<Vec<OtelMetric>, ()> {
         let response = self.get_nginx_response().await.map_err(|error| {
             emit!(NginxMetricsRequestError {

@@ -2,13 +2,13 @@ use std::io;
 
 use bytes::BytesMut;
 use itertools::{Itertools, Position};
-use tokio_util::codec::Encoder as _;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{Transformer, encoding::Framer, internal_events::EncoderWriteError},
     config::telemetry,
     request_metadata::GroupedCountByteSize,
 };
+use tokio_util::codec::Encoder as _;
 
 use crate::event::Event;
 #[cfg(feature = "codecs-arrow")]

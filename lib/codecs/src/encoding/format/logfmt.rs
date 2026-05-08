@@ -1,8 +1,8 @@
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
-use tokio_util::codec::Encoder;
 use sol_common::encode_logfmt;
 use sol_core::{config::DataType, event::Event, schema};
+use tokio_util::codec::Encoder;
 use vrl::value::ObjectMap;
 
 /// Config used to build a `LogfmtSerializer`.
@@ -74,7 +74,9 @@ mod tests {
 
     #[test]
     fn serialize_otel_log_logfmt() {
-        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value as Kind};
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, KeyValue, any_value::Value as Kind,
+        };
         use sol_core::event::OtelLog;
 
         let event = Event::Log(OtelLog::new(

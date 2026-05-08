@@ -3,7 +3,6 @@
 use std::io;
 
 use bytes::{BufMut, BytesMut};
-use tokio_util::codec::Encoder as _;
 use sol_lib::codecs::{
     CharacterDelimitedEncoder,
     encoding::{
@@ -12,6 +11,7 @@ use sol_lib::codecs::{
         Serializer::Json,
     },
 };
+use tokio_util::codec::Encoder as _;
 
 use crate::{
     event::Event,

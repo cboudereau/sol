@@ -1,6 +1,7 @@
 use async_compression::tokio::bufread::GzipDecoder;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
+use sol_common::constants::GZIP_MAGIC;
 use std::{
     io::{self, SeekFrom},
     path::PathBuf,
@@ -12,7 +13,6 @@ use tokio::{
     time::Instant,
 };
 use tracing::debug;
-use sol_common::constants::GZIP_MAGIC;
 
 use file_source_common::{
     AsyncFileInfo, FilePosition, PortableFileExt, ReadFrom,

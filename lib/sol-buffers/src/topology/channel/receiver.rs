@@ -6,9 +6,9 @@ use std::{
 
 use async_recursion::async_recursion;
 use futures::Stream;
+use sol_common::internal_event::emit;
 use tokio::select;
 use tokio_util::sync::ReusableBoxFuture;
-use sol_common::internal_event::emit;
 
 use super::limited_queue::LimitedReceiver;
 use crate::{

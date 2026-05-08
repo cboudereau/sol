@@ -16,17 +16,18 @@ pub(crate) fn check_is_metric_with_context(e: Event) -> (Result<(), String>, Eve
 #[cfg(test)]
 mod test {
     use super::check_is_metric;
-    use crate::event::{
-        Event, OtelLog, OtelMetric,
-        metric::MetricKind,
-    };
+    use crate::event::{Event, OtelLog, OtelMetric, metric::MetricKind};
     use opentelemetry_proto::tonic::metrics::v1::Metric as OtelMetricProto;
 
     #[test]
     fn is_metric_basic() {
         assert!(!check_is_metric(Event::Log(OtelLog::from("just a log"))).0);
         assert!(
-            check_is_metric(Event::Metric(OtelMetric::new_counter("test metric", MetricKind::Incremental, 1.0)))
+            check_is_metric(Event::Metric(OtelMetric::new_counter(
+                "test metric",
+                MetricKind::Incremental,
+                1.0
+            )))
             .0,
         );
     }

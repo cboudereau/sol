@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use snafu::Snafu;
-use sol_lib::config::{SourceOutput};
+use sol_lib::config::SourceOutput;
 
 pub(super) use crate::schema::Definition;
 use crate::{
@@ -411,8 +411,7 @@ impl ComponentContainer for Config {
     }
 
     fn source_outputs(&self, key: &ComponentKey) -> Option<Vec<SourceOutput>> {
-        self.source(key)
-            .map(|source| source.inner.outputs())
+        self.source(key).map(|source| source.inner.outputs())
     }
 
     fn transform_inputs(&self, key: &ComponentKey) -> Option<&[OutputId]> {

@@ -14,8 +14,6 @@ use hyper::Body;
 use serde::Deserialize;
 use serde_with::serde_as;
 use snafu::ResultExt as _;
-use tokio::time::{Duration, Instant, sleep};
-use tracing::Instrument;
 use sol_lib::{
     configurable::configurable_component,
     lookup::{
@@ -24,6 +22,8 @@ use sol_lib::{
         owned_value_path,
     },
 };
+use tokio::time::{Duration, Instant, sleep};
+use tracing::Instrument;
 use vrl::value::{Kind, kind::Collection};
 
 use sol_lib::event::string_value;
@@ -565,11 +565,14 @@ impl MetadataClient {
                 for (i, role_name) in role_names.lines().enumerate() {
                     new_state.push((
                         MetadataKey {
-                            log_path: self
-                                .keys
-                                .role_name_key
-                                .log_path
-                                .with_index_appended(i as isize),
+                            log_path: self.keys.role_name_key.log_path.with_index_appended({
+                                #[expect(
+                                    clippy::cast_possible_wrap,
+                                    reason = "role name index always small"
+                                )]
+                                let idx = i as isize;
+                                idx
+                            }),
                             metric_tag: format!("{}[{}]", self.keys.role_name_key.metric_tag, i),
                         },
                         role_name.to_string().into(),
@@ -741,8 +744,7 @@ mod test {
             ..Default::default()
         };
 
-        let input_definition =
-            Definition::new(Kind::bytes(), Kind::any_object());
+        let input_definition = Definition::new(Kind::bytes(), Kind::any_object());
 
         let mut outputs = transform_config.outputs(
             &Default::default(),
@@ -758,8 +760,6 @@ mod test {
 #[cfg(feature = "aws-ec2-metadata-integration-tests")]
 #[cfg(test)]
 mod integration_tests {
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
     use sol_lib::{
         assert_event_data_eq,
         lookup::{
@@ -767,6 +767,8 @@ mod integration_tests {
             lookup_v2::{OwnedSegment, OwnedValuePath},
         },
     };
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
     use vrl::value::{ObjectMap, Value};
     use warp::Filter;
 
@@ -1082,8 +1084,7 @@ mod integration_tests {
                 format!("{}[{}]", TAGS_KEY, "Name"),
                 "test-instance".to_string(),
             );
-            expected_otel
-                .replace_tag(format!("{}[{}]", TAGS_KEY, "Test"), "test-tag".to_string());
+            expected_otel.replace_tag(format!("{}[{}]", TAGS_KEY, "Test"), "test-tag".to_string());
 
             tx.send(metric.into()).await.unwrap();
 

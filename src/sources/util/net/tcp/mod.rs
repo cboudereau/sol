@@ -9,13 +9,6 @@ use ipnet::IpNet;
 use listenfd::ListenFd;
 use smallvec::SmallVec;
 use socket2::SockRef;
-use tokio::{
-    io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
-    time::sleep,
-};
-use tokio_util::codec::Decoder;
-use tracing::Instrument;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{ReadyFrames, StreamDecodingError, internal_events::DecoderFramingError},
@@ -28,6 +21,13 @@ use sol_lib::{
     tcp::TcpKeepaliveConfig,
     tls::{CertificateMetadata, MaybeTlsIncomingStream, MaybeTlsListener, MaybeTlsSettings},
 };
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+    time::sleep,
+};
+use tokio_util::codec::Decoder;
+use tracing::Instrument;
 
 use self::request_limiter::RequestLimiter;
 use super::SocketListenAddr;

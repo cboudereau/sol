@@ -4,7 +4,6 @@ use async_stream::stream;
 use bytes::Bytes;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt, channel::mpsc, executor};
-use tokio_util::{codec::FramedRead, io::StreamReader};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -16,6 +15,7 @@ use sol_lib::{
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Protocol},
     lookup::{lookup_v2::OptionalValuePath, owned_value_path},
 };
+use tokio_util::{codec::FramedRead, io::StreamReader};
 use vrl::value::Kind;
 
 use crate::{
@@ -173,10 +173,7 @@ async fn process_stream(
 
 /// Builds the `sol_lib::config::Outputs` for stdin and
 /// file_descriptor sources.
-fn outputs(
-    decoding: &DeserializerConfig,
-    source_name: &'static str,
-) -> Vec<SourceOutput> {
+fn outputs(decoding: &DeserializerConfig, source_name: &'static str) -> Vec<SourceOutput> {
     let schema_definition = decoding
         .schema_definition()
         .with_source_metadata(

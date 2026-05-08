@@ -3,8 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use sol_lib::stats::EwmaDefault;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const EWMA_WEIGHT: f64 = 0.1;
 const MINIMUM_PERMITS: usize = 2;
@@ -52,13 +52,27 @@ struct RequestLimiterData {
 impl RequestLimiterData {
     pub fn update_average(&mut self, num_events: usize) {
         if num_events > 0 {
-            self.average_request_size.update(num_events as f64);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "request event count; precise for |v| <= 2^53"
+            )]
+            let events_f = num_events as f64;
+            self.average_request_size.update(events_f);
         }
     }
 
     pub fn target_requests_in_flight(&self) -> usize {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "event limit target; precise for |v| <= 2^53"
+        )]
         let target = (self.event_limit_target as f64) / self.average_request_size.average();
         #[allow(clippy::manual_clamp)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "permit target is a small positive value clamped by .max()/.min() below"
+        )]
         (target as usize)
             .max(MINIMUM_PERMITS)
             .min(self.max_requests)
@@ -91,12 +105,17 @@ impl RequestLimiter {
         assert!(event_limit_target > 0);
 
         let semaphore = Arc::new(Semaphore::new(MINIMUM_PERMITS));
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "event limit target; precise for |v| <= 2^53"
+        )]
+        let initial_avg = event_limit_target as f64;
         RequestLimiter {
             semaphore: Arc::clone(&semaphore),
             data: Arc::new(Mutex::new(RequestLimiterData {
                 event_limit_target,
                 total_permits: MINIMUM_PERMITS,
-                average_request_size: EwmaDefault::new(EWMA_WEIGHT, event_limit_target as f64),
+                average_request_size: EwmaDefault::new(EWMA_WEIGHT, initial_avg),
                 semaphore,
                 max_requests,
             })),

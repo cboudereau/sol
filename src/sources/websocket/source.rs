@@ -3,16 +3,16 @@ use std::pin::Pin;
 use chrono::Utc;
 use futures::{Sink, Stream, StreamExt, pin_mut, sink::SinkExt};
 use snafu::Snafu;
-use tokio::time;
-use tokio_tungstenite::tungstenite::{
-    Message, error::Error as TungsteniteError, protocol::CloseFrame,
-};
-use tokio_util::codec::FramedRead;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::Event,
     internal_event::{CountByteSize, EventsReceived, InternalEventHandle as _},
 };
+use tokio::time;
+use tokio_tungstenite::tungstenite::{
+    Message, error::Error as TungsteniteError, protocol::CloseFrame,
+};
+use tokio_util::codec::FramedRead;
 
 use crate::{
     SourceSender,
@@ -24,8 +24,8 @@ use crate::{
         WebSocketConnectionFailedError, WebSocketConnectionShutdown, WebSocketKind,
         WebSocketMessageReceived, WebSocketReceiveError, WebSocketSendError,
     },
-    sources::websocket::config::WebSocketConfig,
     sol_lib::codecs::StreamDecodingError,
+    sources::websocket::config::WebSocketConfig,
 };
 
 macro_rules! fail_with_event {
@@ -428,6 +428,7 @@ mod tests {
     use std::{borrow::Cow, num::NonZeroU64};
 
     use futures::{StreamExt, sink::SinkExt};
+    use sol_lib::codecs::decoding::DeserializerConfig;
     use tokio::{net::TcpListener, time::Duration};
     use tokio_tungstenite::{
         accept_async,
@@ -437,7 +438,6 @@ mod tests {
         },
     };
     use url::Url;
-    use sol_lib::codecs::decoding::DeserializerConfig;
 
     use crate::{
         common::websocket::WebSocketCommonConfig,
