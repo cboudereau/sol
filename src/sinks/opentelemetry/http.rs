@@ -28,7 +28,9 @@ use crate::{
         Healthcheck, VectorSink,
         util::{
             BatchConfig, RealtimeEventBasedDefaultBatchSettings, ServiceBuilderExt, SinkBuilderExt,
-            StreamSink, TowerRequestConfig, metadata::RequestMetadataBuilder, retries::RetryLogic,
+            StreamSink, TowerRequestConfig,
+            metadata::RequestMetadataBuilder,
+            retries::{RetryAction, RetryLogic},
         },
     },
     tls::TlsSettings,
@@ -189,12 +191,19 @@ impl MetaDescriptive for OtlpHttpRequest {
 }
 
 pub struct OtlpHttpResponse {
+    status: http::StatusCode,
     events_byte_size: GroupedCountByteSize,
 }
 
 impl DriverResponse for OtlpHttpResponse {
     fn event_status(&self) -> EventStatus {
-        EventStatus::Delivered
+        if self.status.is_success() {
+            EventStatus::Delivered
+        } else if self.status.is_client_error() {
+            EventStatus::Rejected
+        } else {
+            EventStatus::Errored
+        }
     }
 
     fn events_sent(&self) -> &GroupedCountByteSize {
@@ -252,19 +261,19 @@ impl Service<OtlpHttpRequest> for OtlpHttpService {
                 })?;
 
             let status = response.status();
-            if !status.is_success() {
-                return Err(OtlpHttpError::HttpRequest {
-                    message: format!("HTTP {} from {}", status, uri),
+
+            if status.is_success() {
+                emit!(EndpointBytesSent {
+                    byte_size,
+                    protocol: "http",
+                    endpoint: &endpoint,
                 });
             }
 
-            emit!(EndpointBytesSent {
-                byte_size,
-                protocol: "http",
-                endpoint: &endpoint,
-            });
-
-            Ok(OtlpHttpResponse { events_byte_size })
+            Ok(OtlpHttpResponse {
+                status,
+                events_byte_size,
+            })
         })
     }
 }
@@ -283,6 +292,22 @@ impl RetryLogic for OtlpHttpRetryLogic {
 
     fn is_retriable_error(&self, _error: &Self::Error) -> bool {
         true
+    }
+
+    fn should_retry_response(&self, response: &Self::Response) -> RetryAction<Self::Request> {
+        let status = response.status;
+        match status {
+            http::StatusCode::TOO_MANY_REQUESTS => RetryAction::Retry("too many requests".into()),
+            http::StatusCode::REQUEST_TIMEOUT => RetryAction::Retry("request timeout".into()),
+            http::StatusCode::NOT_IMPLEMENTED => {
+                RetryAction::DontRetry("endpoint not implemented".into())
+            }
+            _ if status.is_server_error() => {
+                RetryAction::Retry(format!("server error: {status}").into())
+            }
+            _ if status.is_success() => RetryAction::Successful,
+            _ => RetryAction::DontRetry(format!("response status: {status}").into()),
+        }
     }
 }
 
@@ -503,5 +528,97 @@ fn strip_nulls(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sol_lib::request_metadata::GroupedCountByteSize;
+    use sol_lib::stream::DriverResponse;
+
+    fn make_response(status: http::StatusCode) -> OtlpHttpResponse {
+        OtlpHttpResponse {
+            status,
+            events_byte_size: GroupedCountByteSize::default(),
+        }
+    }
+
+    #[test]
+    fn test_otlp_http_response_event_status_2xx() {
+        let resp = make_response(http::StatusCode::OK);
+        assert_eq!(resp.event_status(), EventStatus::Delivered);
+    }
+
+    #[test]
+    fn test_otlp_http_response_event_status_4xx() {
+        let resp = make_response(http::StatusCode::BAD_REQUEST);
+        assert_eq!(resp.event_status(), EventStatus::Rejected);
+    }
+
+    #[test]
+    fn test_otlp_http_response_event_status_5xx() {
+        let resp = make_response(http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resp.event_status(), EventStatus::Errored);
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_400() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::DontRetry(_)
+        ));
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_408() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::REQUEST_TIMEOUT);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::Retry(_)
+        ));
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_429() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::Retry(_)
+        ));
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_500() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::Retry(_)
+        ));
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_501() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::NOT_IMPLEMENTED);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::DontRetry(_)
+        ));
+    }
+
+    #[test]
+    fn test_otlp_http_retry_logic_200() {
+        let logic = OtlpHttpRetryLogic;
+        let resp = make_response(http::StatusCode::OK);
+        assert!(matches!(
+            logic.should_retry_response(&resp),
+            RetryAction::Successful
+        ));
     }
 }

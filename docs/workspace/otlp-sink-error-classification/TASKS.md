@@ -78,11 +78,11 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - `test_otlp_http_response_event_status_5xx` — 500 returns `EventStatus::Errored`
 **Verify**: `cargo test -p sol --no-default-features --features api,sources-opentelemetry,sinks-opentelemetry otlp_http_response`
 **Acceptance criteria**:
-- [ ] `OtlpHttpResponse` has a `status: StatusCode` field
-- [ ] `event_status()` returns `Delivered` for 2xx, `Rejected` for 4xx, `Errored` for 5xx
-- [ ] `OtlpHttpService::call()` returns `Ok` for all HTTP responses
-- [ ] `EndpointBytesSent` only emitted on 2xx
-- [ ] Connection/builder errors still return `Err(OtlpHttpError)`
+- [x] `OtlpHttpResponse` has a `status: StatusCode` field
+- [x] `event_status()` returns `Delivered` for 2xx, `Rejected` for 4xx, `Errored` for 5xx
+- [x] `OtlpHttpService::call()` returns `Ok` for all HTTP responses
+- [x] `EndpointBytesSent` only emitted on 2xx
+- [x] Connection/builder errors still return `Err(OtlpHttpError)`
 **Depends on**: (none)
 **Time-box**: ~45 min
 
@@ -103,13 +103,13 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - `test_otlp_http_retry_logic_200` — 200 → successful
 **Verify**: `cargo test -p sol --no-default-features --features api,sources-opentelemetry,sinks-opentelemetry otlp_http_retry`
 **Acceptance criteria**:
-- [ ] `OtlpHttpRetryLogic` implements `should_retry_response()`
-- [ ] 4xx (except 429/408) returns `DontRetry`
-- [ ] 5xx (except 501) returns `Retry`
-- [ ] 429/408 returns `Retry`
-- [ ] 501 returns `DontRetry`
-- [ ] 2xx returns `Successful`
-- [ ] All tests pass
+- [x] `OtlpHttpRetryLogic` implements `should_retry_response()`
+- [x] 4xx (except 429/408) returns `DontRetry`
+- [x] 5xx (except 501) returns `Retry`
+- [x] 429/408 returns `Retry`
+- [x] 501 returns `DontRetry`
+- [x] 2xx returns `Successful`
+- [x] All tests pass
 **Depends on**: task 1
 **Time-box**: ~30 min
 
@@ -132,10 +132,10 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - `test_otlp_grpc_retry_logic_permission_denied` — PERMISSION_DENIED → not retriable
 **Verify**: `cargo test -p sol --no-default-features --features api,sources-opentelemetry,sinks-opentelemetry otlp_grpc_retry`
 **Acceptance criteria**:
-- [ ] `is_retriable_error()` inspects `tonic::Status::code()`
-- [ ] Transient codes (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, INTERNAL, UNKNOWN, ABORTED, CANCELLED) return `true`
-- [ ] Permanent codes (INVALID_ARGUMENT, UNIMPLEMENTED, etc.) return `false`
-- [ ] All tests pass
+- [x] `is_retriable_error()` inspects `tonic::Status::code()`
+- [x] Transient codes (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, INTERNAL, UNKNOWN, ABORTED, CANCELLED) return `true`
+- [x] Permanent codes (INVALID_ARGUMENT, UNIMPLEMENTED, etc.) return `false`
+- [x] All tests pass
 **Depends on**: (none)
 **Time-box**: ~30 min
 
@@ -148,9 +148,9 @@ Tasks: 1, 2, 3
 **Commit point**: yes — commit after checkpoint passes
 
 ## Quality gates (post-session review)
-- [ ] Acceptance criteria: all green above
-- [ ] Code review: changes match [DESIGN.md](./DESIGN.md) intent — proper error classification, no over-engineering
-- [ ] Code organization: changes scoped to `src/sinks/opentelemetry/{http,grpc}.rs`
-- [ ] Security review: no new attack surface
-- [ ] Observability: `component_errors_total` now increments for permanent failures; `component_retries_total` only for transient; Sol Pipeline dashboard works without changes
-- [ ] Performance: no additional overhead — status code matching is O(1)
+- [x] Acceptance criteria: all green above
+- [x] Code review: changes match [DESIGN.md](./DESIGN.md) intent — proper error classification, no over-engineering
+- [x] Code organization: changes scoped to `src/sinks/opentelemetry/{http,grpc}.rs`
+- [x] Security review: no new attack surface
+- [x] Observability: `component_errors_total` now increments for permanent failures; `component_retries_total` only for transient; Sol Pipeline dashboard works without changes
+- [x] Performance: no additional overhead — status code matching is O(1)
