@@ -18,7 +18,7 @@ pub struct LuaOtelAttributes {
 }
 
 impl IntoLua for MetricKind {
-    #![allow(clippy::wrong_self_convention)] // this trait is defined by mlua
+    #![expect(clippy::wrong_self_convention, reason = "trait method name defined by mlua")]
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let kind = match self {
             MetricKind::Absolute => "absolute",
@@ -79,7 +79,7 @@ impl IntoLua for LuaOtelAttributes {
 }
 
 impl IntoLua for LuaMetric {
-    #![allow(clippy::wrong_self_convention)] // this trait is defined by mlua
+    #![expect(clippy::wrong_self_convention, reason = "trait method name defined by mlua")]
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let tbl = lua.create_table()?;
 
@@ -164,7 +164,7 @@ impl IntoLua for LuaMetric {
 }
 
 impl FromLua for OtelMetric {
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "handles all metric data variants")]
     fn from_lua(value: LuaValue, _: &Lua) -> LuaResult<Self> {
         let table = match &value {
             LuaValue::Table(table) => table,
