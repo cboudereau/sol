@@ -95,9 +95,10 @@ Prod: 385 | Test: 72 | Files: 122
 - Files: `src/sources/mongodb_metrics/mod.rs` (lines 52-58),
   `src/sources/postgresql_metrics.rs` (lines 60-66)
 - Both files define identical macros: `macro_rules! counter { ($value:expr_2021) => { $value as f64 }; }`
-- Fix: add `#[expect(clippy::cast_precision_loss)]` to an inline helper or
-  use `#[allow]` inside the macro body (macros cannot carry `#[expect]` on
-  expansion sites)
+- Fix: use `#[allow(clippy::cast_lossless, clippy::cast_precision_loss)]`
+  inside the macro body block — `#[expect]` is not viable inside
+  `macro_rules!` arms because it would fire unfulfilled-expectation errors
+  for call sites where the expression type already satisfies the lint
 - Also check for similar macro patterns in other metric source files
 
 **Tests**: `cargo test -p sol --features sources-mongodb_metrics,sources-postgresql_metrics`
