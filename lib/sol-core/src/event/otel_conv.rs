@@ -33,10 +33,6 @@ impl OtlpTimestamp {
         clippy::cast_possible_wrap,
         reason = "seconds fit in i64 until year 2262"
     )]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "modulo 10^9 < 2^30, fits u32"
-    )]
     pub(crate) fn to_chrono(self) -> DateTime<Utc> {
         let secs = (self.0 / 1_000_000_000) as i64;
         let nsecs = (self.0 % 1_000_000_000) as u32;
