@@ -14,7 +14,7 @@ use codecs::{
 };
 use rstest::*;
 use similar_asserts::assert_eq;
-use sol_core::event::Event;
+use sol_core::event::{Event, OtelLog, Value};
 use tokio_util::codec::Encoder;
 
 #[rstest]
@@ -47,7 +47,13 @@ fn roundtrip_avro(data_path: PathBuf, schema_path: PathBuf, reserialize: bool) {
         let mut buf = BytesMut::new();
         serializer.encode(event.clone(), &mut buf).unwrap();
         // Deserialize the event from these bytes
-        let new_events = deserializer.parse(buf.into()).unwrap();
+        let mut new_events = deserializer.parse(buf.into()).unwrap();
+
+        // The avro schema doesn't carry timestamps, so each deserialization
+        // sets time_unix_nano to Utc::now(). Normalize before comparing.
+        if let (Event::Log(orig), Event::Log(roundtripped)) = (&event, &mut new_events[0]) {
+            copy_timestamp(orig, roundtripped);
+        }
 
         // Ensure we have the same event.
         assert_eq!(new_events.len(), 1);
@@ -73,4 +79,10 @@ fn load_deserialize(path: &Path, deserializer: &dyn Deserializer) -> (Bytes, Eve
     let mut events = deserializer.parse(buf.clone()).unwrap();
     assert_eq!(events.len(), 1);
     (buf, events.pop().unwrap())
+}
+
+fn copy_timestamp(src: &OtelLog, dst: &mut OtelLog) {
+    if let Some(Value::Timestamp(ts)) = src.get_timestamp() {
+        dst.set_timestamp(ts);
+    }
 }

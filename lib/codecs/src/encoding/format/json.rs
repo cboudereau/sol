@@ -169,7 +169,7 @@ mod tests {
 
         assert_eq!(
             bytes,
-            r#"{"name":"foos","sum":{"dataPoints":[{"asDouble":100.0,"attributes":[{"key":"Key3","value":{"stringValue":"Value3"}},{"key":"key1","value":{"stringValue":"value1"}},{"key":"key2","value":{"stringValue":"value2"}}],"timeUnixNano":"1542182950000000011"}],"aggregationTemporality":1,"isMonotonic":true},"resource":{"attributes":[{"key":"metric.namespace","value":{"stringValue":"vector"}}]}}"#
+            r#"{"name":"foos","sum":{"dataPoints":[{"attributes":[{"key":"Key3","value":{"stringValue":"Value3"}},{"key":"key1","value":{"stringValue":"value1"}},{"key":"key2","value":{"stringValue":"value2"}}],"timeUnixNano":"1542182950000000011","asDouble":100.0}],"aggregationTemporality":1,"isMonotonic":true},"resource":{"attributes":[{"key":"metric.namespace","value":{"stringValue":"vector"}}]}}"#
         );
     }
 
@@ -200,7 +200,7 @@ mod tests {
 
         assert_eq!(
             bytes,
-            r#"{"name":"counter","sum":{"dataPoints":[{"asDouble":1.0,"attributes":[{"key":"a","value":{"arrayValue":{"values":[{"stringValue":"first"},{},{"stringValue":"second"}]}}}]}],"aggregationTemporality":1,"isMonotonic":true}}"#
+            r#"{"name":"counter","sum":{"dataPoints":[{"attributes":[{"key":"a","value":{"arrayValue":{"values":[{"stringValue":"first"},{},{"stringValue":"second"}]}}}],"asDouble":1.0}],"aggregationTemporality":1,"isMonotonic":true}}"#
         );
     }
 
@@ -216,7 +216,7 @@ mod tests {
 
         assert_eq!(
             bytes,
-            r#"{"name":"counter","sum":{"dataPoints":[{"asDouble":1.0,"attributes":[{"key":"a","value":{"stringValue":"second"}}]}],"aggregationTemporality":1,"isMonotonic":true}}"#
+            r#"{"name":"counter","sum":{"dataPoints":[{"attributes":[{"key":"a","value":{"stringValue":"second"}}],"asDouble":1.0}],"aggregationTemporality":1,"isMonotonic":true}}"#
         );
     }
 
@@ -306,7 +306,6 @@ mod tests {
   "sum": {
     "dataPoints": [
       {
-        "asDouble": 100.0,
         "attributes": [
           {
             "key": "Key3",
@@ -327,7 +326,8 @@ mod tests {
             }
           }
         ],
-        "timeUnixNano": "1542182950000000011"
+        "timeUnixNano": "1542182950000000011",
+        "asDouble": 100.0
       }
     ],
     "aggregationTemporality": 1,
@@ -373,7 +373,6 @@ mod tests {
   "sum": {
     "dataPoints": [
       {
-        "asDouble": 1.0,
         "attributes": [
           {
             "key": "a",
@@ -391,7 +390,8 @@ mod tests {
               }
             }
           }
-        ]
+        ],
+        "asDouble": 1.0
       }
     ],
     "aggregationTemporality": 1,
@@ -416,7 +416,6 @@ mod tests {
   "sum": {
     "dataPoints": [
       {
-        "asDouble": 1.0,
         "attributes": [
           {
             "key": "a",
@@ -424,7 +423,8 @@ mod tests {
               "stringValue": "second"
             }
           }
-        ]
+        ],
+        "asDouble": 1.0
       }
     ],
     "aggregationTemporality": 1,

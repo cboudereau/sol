@@ -299,22 +299,24 @@ fn build_record_batch(
     schema: SchemaRef,
     events: &[Event],
 ) -> Result<RecordBatch, ArrowEncodingError> {
-    let mut projected: Vec<OtelLog> = events
+    let projected: Vec<OtelLog> = events
         .iter()
         .filter_map(|e| match e {
             Event::Log(otel_log) => Some(otel_log.clone()),
             _ => None,
         })
         .collect();
-    for log in &mut projected {
-        convert_timestamps_otel(log, &schema)?;
-    }
     let log_events = &projected;
 
-    let batch = serde_arrow::to_record_batch(schema.fields(), &log_events).map_err(|source| {
-        // serde_arrow doesn't expose structured error variants (see
-        // https://docs.rs/serde_arrow/latest/serde_arrow/enum.Error.html), so we string-match on
-        // the message to detect null constraint violations, then find the actual field ourselves.
+    let mut flat_maps: Vec<vrl::value::ObjectMap> = log_events
+        .iter()
+        .map(|log| log.as_map().unwrap_or_default())
+        .collect();
+    for map in &mut flat_maps {
+        convert_timestamps_in_map(map, &schema)?;
+    }
+
+    let batch = serde_arrow::to_record_batch(schema.fields(), &flat_maps).map_err(|source| {
         if source.message().contains("non-nullable")
             && let Some(field_name) = find_null_field(log_events, &schema)
         {
@@ -361,33 +363,35 @@ fn find_null_field(events: &[OtelLog], schema: &SchemaRef) -> Option<String> {
     None
 }
 
-/// Convert timestamps in an OtelLog for Arrow timestamp columns.
-fn convert_timestamps_otel(
-    log: &mut OtelLog,
+/// Convert timestamp values in a flat ObjectMap to integers for Arrow timestamp columns.
+/// Handles both `Value::Timestamp` (native) and `Value::Bytes` (string timestamps
+/// that went through OTLP roundtrip).
+fn convert_timestamps_in_map(
+    map: &mut vrl::value::ObjectMap,
     schema: &SchemaRef,
 ) -> Result<(), ArrowEncodingError> {
-    let fields = log.convert_to_fields();
-    let mut replacements = Vec::new();
     for field in schema.fields() {
         if let DataType::Timestamp(unit, _) = field.data_type() {
             let field_name = field.name().as_str();
-            // Find matching field in the flattened fields
-            if let Some((_, value)) = fields.iter().find(|(k, _)| k.as_ref() == field_name)
-                && let Value::Timestamp(ts) = value
-            {
-                let val = timestamp_to_unit(ts, unit).ok_or_else(|| {
+            let key = vrl::value::KeyString::from(field_name.to_string());
+            let ts = match map.get(&key) {
+                Some(Value::Timestamp(ts)) => Some(*ts),
+                Some(Value::Bytes(b)) => std::str::from_utf8(b).ok().and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                }),
+                _ => None,
+            };
+            if let Some(ts) = ts {
+                let val = timestamp_to_unit(&ts, unit).ok_or_else(|| {
                     ArrowEncodingError::TimestampOverflow {
                         field_name: field_name.to_string(),
                         timestamp: ts.to_rfc3339(),
                     }
                 })?;
-                replacements.push((field_name.to_string(), Value::Integer(val)));
+                map.insert(key, Value::Integer(val));
             }
-        }
-    }
-    for (name, val) in replacements {
-        if let Ok(path) = vrl::path::parse_target_path(&name) {
-            log.insert(&path, val);
         }
     }
     Ok(())

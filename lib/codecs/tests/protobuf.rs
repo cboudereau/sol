@@ -12,7 +12,22 @@ use codecs::{
     },
     encoding::{ProtobufSerializer, ProtobufSerializerConfig, ProtobufSerializerOptions},
 };
+use sol_core::event::{Event, OtelLog, Value};
 use tokio_util::codec::Encoder;
+
+fn normalize_timestamps(original: &[Event], roundtripped: &mut [Event]) {
+    for (orig, rt) in original.iter().zip(roundtripped.iter_mut()) {
+        if let (Event::Log(src), Event::Log(dst)) = (orig, rt) {
+            copy_timestamp(src, dst);
+        }
+    }
+}
+
+fn copy_timestamp(src: &OtelLog, dst: &mut OtelLog) {
+    if let Some(Value::Timestamp(ts)) = src.get_timestamp() {
+        dst.set_timestamp(ts);
+    }
+}
 
 fn test_data_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("tests/data/protobuf")
@@ -65,7 +80,8 @@ fn roundtrip_coding() {
         .encode(events_original[0].clone(), &mut new_message)
         .unwrap();
     let protobuf_message: Bytes = new_message.into();
-    let events_encoded = deserializer.parse(protobuf_message).unwrap();
+    let mut events_encoded = deserializer.parse(protobuf_message).unwrap();
+    normalize_timestamps(&events_original, &mut events_encoded);
     assert_eq!(events_original, events_encoded);
 }
 
@@ -105,7 +121,8 @@ fn roundtrip_coding_with_json_names() {
     serializer_snake_case
         .encode(events_snake_case[0].clone(), &mut new_message)
         .unwrap();
-    let events_encoded = deserializer_snake_case.parse(new_message.into()).unwrap();
+    let mut events_encoded = deserializer_snake_case.parse(new_message.into()).unwrap();
+    normalize_timestamps(&events_snake_case, &mut events_encoded);
     assert_eq!(events_snake_case, events_encoded);
 
     // Test with use_json_names=true (camelCase field names)
@@ -135,6 +152,7 @@ fn roundtrip_coding_with_json_names() {
     serializer_camel_case
         .encode(events_camel_case[0].clone(), &mut new_message)
         .unwrap();
-    let events_encoded = deserializer_camel_case.parse(new_message.into()).unwrap();
+    let mut events_encoded = deserializer_camel_case.parse(new_message.into()).unwrap();
+    normalize_timestamps(&events_camel_case, &mut events_encoded);
     assert_eq!(events_camel_case, events_encoded);
 }

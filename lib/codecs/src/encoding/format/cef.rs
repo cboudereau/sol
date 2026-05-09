@@ -534,7 +534,7 @@ mod tests {
         let mut bytes = BytesMut::new();
 
         serializer.encode(event, &mut bytes).unwrap();
-        let expected = b"CEF:0|Datadog|Vector|0|Telemetry Event|Event name|1|bool=true comma=abc,bcd float=3.1415925 foo=bar int=123 quote=the \"quote\" should be escaped space=sp ace time=2023-02-27T07:04:49.363Z";
+        let expected = b"CEF:0|Datadog|Sol|0|Telemetry Event|Event name|1|bool=true comma=abc,bcd float=3.1415925 foo=bar int=123 quote=the \"quote\" should be escaped space=sp ace time=2023-02-27T07:04:49.363Z";
 
         assert_eq!(bytes.as_ref(), expected);
     }
