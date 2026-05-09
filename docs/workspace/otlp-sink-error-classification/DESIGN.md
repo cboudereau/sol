@@ -86,7 +86,7 @@ The fix requires two changes per transport:
 
 1. **Refactor `OtlpHttpService::call()`** to return `Ok(OtlpHttpResponse { status, ... })` for ALL HTTP responses (not just 2xx). The response carries the status code.
 2. **Implement `should_retry_response()`** on `OtlpHttpRetryLogic` to classify the status code — matching `HttpRetryLogic` behavior.
-3. **Implement `DriverResponse`** on `OtlpHttpResponse` with status-aware `event_status()` — returning `Delivered` for 2xx, `Rejected` for 4xx, `Errored` for 5xx.
+3. **Implement `DriverResponse`** on `OtlpHttpResponse` with status-aware `event_status()` — returning `Delivered` for 2xx, `Errored` for 5xx, `Rejected` for all others (3xx, 4xx).
 
 ### gRPC transport
 

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Align OTLP sink retry logic with OTLP specification and base HttpRetryLogic
 

@@ -39,20 +39,20 @@ OtlpRetryLogic (gRPC)
 
 | Function | Input → Output | Invariant / Rule |
 |---|---|---|
-| `OtlpHttpRetryLogic::should_retry_response()` | `&OtlpHttpResponse → RetryAction` | 4xx (except 429/408) → DontRetry; 5xx (except 501) → Retry; 429/408 → Retry; 501 → DontRetry; 2xx → Successful |
-| `OtlpRetryLogic::is_retriable_error()` | `&OtlpGrpcError → bool` | UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED/INTERNAL/UNKNOWN → true; all others → false |
-| `OtlpHttpResponse::event_status()` | `&self → EventStatus` | 2xx → Delivered; 5xx → Errored; 4xx/other → Rejected |
+| `OtlpHttpRetryLogic::should_retry_response()` | `&OtlpHttpResponse → RetryAction` | 429/408 → Retry; 501 → DontRetry; 5xx (except 501) → Retry; 2xx → Successful; all others (3xx, 4xx) → DontRetry |
+| `OtlpRetryLogic::is_retriable_error()` | `&OtlpGrpcError → bool` | UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED/INTERNAL/UNKNOWN/ABORTED/CANCELLED → true; all others → false |
+| `OtlpHttpResponse::event_status()` | `&self → EventStatus` | 2xx → Delivered; 5xx → Errored; all others (3xx, 4xx) → Rejected |
 | `OtlpHttpService::call()` | `OtlpHttpRequest → Result<OtlpHttpResponse, OtlpHttpError>` | All HTTP responses (2xx-5xx) → Ok(response); connection/build errors → Err |
 
 ### Key files
 
 ```
-src/sinks/opentelemetry/http.rs:40-44     — OtlpHttpError enum
-src/sinks/opentelemetry/http.rs:189-201   — OtlpHttpResponse + DriverResponse
-src/sinks/opentelemetry/http.rs:214-267   — OtlpHttpService::call (status check at 251-256)
-src/sinks/opentelemetry/http.rs:273-284   — OtlpHttpRetryLogic (missing should_retry_response)
-src/sinks/opentelemetry/grpc.rs:34-38     — OtlpGrpcError (wraps tonic::Status)
-src/sinks/opentelemetry/grpc.rs:333-344   — OtlpRetryLogic (is_retriable_error always true)
+src/sinks/opentelemetry/http.rs:44-48     — OtlpHttpError enum
+src/sinks/opentelemetry/http.rs:193-212   — OtlpHttpResponse + DriverResponse
+src/sinks/opentelemetry/http.rs:225-278   — OtlpHttpService::call
+src/sinks/opentelemetry/http.rs:286-312   — OtlpHttpRetryLogic (should_retry_response)
+src/sinks/opentelemetry/grpc.rs:37-40     — OtlpGrpcError (wraps tonic::Status)
+src/sinks/opentelemetry/grpc.rs:331-351   — OtlpRetryLogic (is_retriable_error classifies tonic codes)
 src/sinks/util/retries.rs:18-27           — RetryAction enum
 src/sinks/util/retries.rs:29-51           — RetryLogic trait
 src/sinks/util/retries.rs:143-218         — FibonacciRetryPolicy (uses should_retry_response + is_retriable_error)
@@ -74,12 +74,13 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - `EndpointBytesSent` must only be emitted for 2xx responses (successful delivery)
 **Tests**:
 - `test_otlp_http_response_event_status_2xx` — 200 returns `EventStatus::Delivered`
+- `test_otlp_http_response_event_status_3xx` — 301 returns `EventStatus::Rejected`
 - `test_otlp_http_response_event_status_4xx` — 400 returns `EventStatus::Rejected`
 - `test_otlp_http_response_event_status_5xx` — 500 returns `EventStatus::Errored`
 **Verify**: `cargo test -p sol --no-default-features --features api,sources-opentelemetry,sinks-opentelemetry otlp_http_response`
 **Acceptance criteria**:
 - [x] `OtlpHttpResponse` has a `status: StatusCode` field
-- [x] `event_status()` returns `Delivered` for 2xx, `Rejected` for 4xx, `Errored` for 5xx
+- [x] `event_status()` returns `Delivered` for 2xx, `Errored` for 5xx, `Rejected` for all others
 - [x] `OtlpHttpService::call()` returns `Ok` for all HTTP responses
 - [x] `EndpointBytesSent` only emitted on 2xx
 - [x] Connection/builder errors still return `Err(OtlpHttpError)`
@@ -95,6 +96,7 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - Must match `HttpRetryLogic::should_retry_response()` behavior: 429/408 → Retry, 501 → DontRetry, 5xx → Retry, 2xx → Successful, other → DontRetry
 - Reference: `src/sinks/util/http.rs:574-589`
 **Tests**:
+- `test_otlp_http_retry_logic_302` — 302 → not retryable
 - `test_otlp_http_retry_logic_400` — 400 → not retryable
 - `test_otlp_http_retry_logic_408` — 408 → retryable
 - `test_otlp_http_retry_logic_429` — 429 → retryable
@@ -127,6 +129,9 @@ src/sinks/doris/retry.rs                  — DorisRetryLogic (reference for cus
 - `test_otlp_grpc_retry_logic_deadline_exceeded` — DEADLINE_EXCEEDED → retriable
 - `test_otlp_grpc_retry_logic_resource_exhausted` — RESOURCE_EXHAUSTED → retriable
 - `test_otlp_grpc_retry_logic_internal` — INTERNAL → retriable
+- `test_otlp_grpc_retry_logic_unknown` — UNKNOWN → retriable
+- `test_otlp_grpc_retry_logic_aborted` — ABORTED → retriable
+- `test_otlp_grpc_retry_logic_cancelled` — CANCELLED → retriable
 - `test_otlp_grpc_retry_logic_invalid_argument` — INVALID_ARGUMENT → not retriable
 - `test_otlp_grpc_retry_logic_unimplemented` — UNIMPLEMENTED → not retriable
 - `test_otlp_grpc_retry_logic_permission_denied` — PERMISSION_DENIED → not retriable
