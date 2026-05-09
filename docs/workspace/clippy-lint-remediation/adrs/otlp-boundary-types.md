@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Typed boundary conversions for VRL ↔ OTLP
 
@@ -71,34 +71,36 @@ in each type's implementation — once — instead of at every call site.
 pub(crate) struct OtlpTimestamp(u64);
 
 impl OtlpTimestamp {
-    pub fn from_nanos(nanos: u64) -> Self {
+    pub(crate) fn from_nanos(nanos: u64) -> Self {
         Self(nanos)
     }
 
-    pub fn as_nanos(self) -> u64 {
+    pub(crate) fn as_nanos(self) -> u64 {
         self.0
     }
 
     #[expect(clippy::cast_possible_wrap, reason = "nanos fit in i64 until year 2262")]
-    pub fn to_vrl(self) -> i64 {
+    pub(crate) fn to_vrl(self) -> i64 {
         self.0 as i64
     }
 
     #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative")]
-    pub fn from_vrl(v: i64) -> Self {
+    pub(crate) fn from_vrl(v: i64) -> Self {
         Self(v.max(0) as u64)
     }
 
+    #[allow(dead_code)]
     #[expect(clippy::cast_possible_wrap, reason = "seconds fit in i64 until year 2262")]
     #[expect(clippy::cast_possible_truncation, reason = "modulo 10^9 < 2^30, fits u32")]
-    pub fn to_chrono(self) -> DateTime<Utc> {
+    pub(crate) fn to_chrono(self) -> DateTime<Utc> {
         let secs = (self.0 / 1_000_000_000) as i64;
         let nsecs = (self.0 % 1_000_000_000) as u32;
         Utc.timestamp_opt(secs, nsecs).single().unwrap_or_default()
     }
 
+    #[allow(dead_code)]
     #[expect(clippy::cast_sign_loss, reason = "timestamps are non-negative")]
-    pub fn from_chrono(ts: DateTime<Utc>) -> Self {
+    pub(crate) fn from_chrono(ts: DateTime<Utc>) -> Self {
         Self(ts.timestamp_nanos_opt().unwrap_or(0).max(0) as u64)
     }
 }
@@ -135,15 +137,17 @@ OtlpTimestamp::from_nanos(nanos).to_chrono()
 pub(crate) struct OtlpCount(u32);
 
 impl OtlpCount {
-    pub fn from_proto(v: u32) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn from_proto(v: u32) -> Self {
         Self(v)
     }
 
-    pub fn as_proto(self) -> u32 {
+    pub(crate) fn as_proto(self) -> u32 {
         self.0
     }
 
-    pub fn to_vrl(self) -> i64 {
+    #[allow(dead_code)]
+    pub(crate) fn to_vrl(self) -> i64 {
         i64::from(self.0)  // lossless: u32 fits in i64
     }
 
@@ -151,7 +155,11 @@ impl OtlpCount {
         clippy::cast_possible_truncation,
         reason = "proto field is u32; value round-trips through i64"
     )]
-    pub fn from_vrl(v: i64) -> Self {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "proto field is u32; value round-trips through i64"
+    )]
+    pub(crate) fn from_vrl(v: i64) -> Self {
         Self(v as u32)
     }
 }
@@ -191,15 +199,17 @@ dropped_attributes_count: OtlpCount::from_vrl(v.as_integer().unwrap_or(0)).as_pr
 pub(crate) struct OtlpEnumField(i32);
 
 impl OtlpEnumField {
-    pub fn from_proto(v: i32) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn from_proto(v: i32) -> Self {
         Self(v)
     }
 
-    pub fn as_proto(self) -> i32 {
+    pub(crate) fn as_proto(self) -> i32 {
         self.0
     }
 
-    pub fn to_vrl(self) -> i64 {
+    #[allow(dead_code)]
+    pub(crate) fn to_vrl(self) -> i64 {
         i64::from(self.0)  // lossless: i32 fits in i64
     }
 
@@ -207,7 +217,7 @@ impl OtlpEnumField {
         clippy::cast_possible_truncation,
         reason = "proto field is i32; value round-trips through i64"
     )]
-    pub fn from_vrl(v: i64) -> Self {
+    pub(crate) fn from_vrl(v: i64) -> Self {
         Self(v as i32)
     }
 }
@@ -243,11 +253,12 @@ self.record_mut().severity_number = OtlpEnumField::from_vrl(n).as_proto();
 pub(crate) struct OtlpMetricInt(i64);
 
 impl OtlpMetricInt {
-    pub fn from_proto(v: i64) -> Self {
+    pub(crate) fn from_proto(v: i64) -> Self {
         Self(v)
     }
 
-    pub fn as_proto(self) -> i64 {
+    #[allow(dead_code)]
+    pub(crate) fn as_proto(self) -> i64 {
         self.0
     }
 
@@ -255,7 +266,7 @@ impl OtlpMetricInt {
         clippy::cast_precision_loss,
         reason = "precise for |v| ≤ 2^53; OTLP metric values"
     )]
-    pub fn to_f64(self) -> f64 {
+    pub(crate) fn to_f64(self) -> f64 {
         self.0 as f64
     }
 }
@@ -321,6 +332,16 @@ This overrides the crate-wide `#![allow]` for this module only. The
 `#[expect]` annotations on `OtlpTimestamp` methods then work as designed —
 they acknowledge the lint locally and will warn if a future refactor removes
 the cast. No other modules are affected.
+
+### `#[allow(dead_code)]` on API surface methods
+
+Several `pub(crate)` methods (`to_chrono`, `from_chrono`, `from_proto`,
+`to_vrl`, `as_proto`) are not yet called outside `otel_conv.rs` — they exist
+as part of the boundary-type API for future consumers. These use
+`#[allow(dead_code)]` rather than `#[expect(dead_code)]` because `#[expect]`
+would fire an `unfulfilled_lint_expectations` error the moment a caller is
+added, which is the opposite of the desired behavior. `#[allow]` silently
+permits both states (used and unused) without churn.
 
 ## Consequences
 

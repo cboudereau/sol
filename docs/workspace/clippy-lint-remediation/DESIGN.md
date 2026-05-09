@@ -215,6 +215,17 @@ over `#[allow(...)]` for local annotations. `#[expect]` causes a warning if
 the lint no longer fires (e.g., after a future refactor removes the cast),
 preventing stale annotations.
 
+Exceptions where `#[allow]` is used instead:
+- **`dead_code` on API surface methods**: `pub(crate)` methods that exist as
+  part of a type's API but are not yet called use `#[allow(dead_code)]`.
+  `#[expect(dead_code)]` would fire an unfulfilled-expectation error the
+  moment a caller is added, which is counterproductive for API methods
+  intended for future use.
+- **Lint suppression inside `macro_rules!` bodies**: `#[expect]` is not viable
+  inside macro arm bodies because the expectation may be unfulfilled for call
+  sites where the expression type already satisfies the lint (e.g., passing
+  `f64` through a macro that casts `$value as f64`).
+
 ### <a id="nfr4"></a>NFR4 — CI coherence
 
 The GitHub Actions CI pipeline (`ci.yml`) enforces lint and format on every PR:
