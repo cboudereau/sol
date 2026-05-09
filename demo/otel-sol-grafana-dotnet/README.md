@@ -48,7 +48,7 @@ An OpenTelemetry dotnet webapi dashboard has been created during this post and a
 ## Deep Dive
 
 ### Dotnet Instrumentation setup
-References: 
+References:
 - [OTEL dotnet setup](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main?tab=readme-ov-file#getting-started)
 
 #### Automatic instrumentation
@@ -68,7 +68,7 @@ dotnet add package OpenTelemetry.Instrumentation.Process --version 0.5.0-beta.4
 
 #### Setup Metrics instrumentation and exporter
 
-References: 
+References:
 - [Built-in metrics](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/built-in-metrics)
 - [Quick setup from Grafana](https://grafana.com/docs/opentelemetry/instrumentation/dotnet/manual-instrumentation/)
 - [Dotnet ASP.NET healthcheck](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/diagnostic-health-checks)
@@ -146,7 +146,7 @@ builder
 ```
 
 ##### Custom traces
-References: 
+References:
 - [Add custom traces](https://opentelemetry.io/docs/languages/net/automatic/custom/)
 
 ```csharp

@@ -1,6 +1,6 @@
 # grafana/provisioning/dashboards/dashboard.yml
 apiVersion: 1
- 
+
 providers:
   - name: 'dashboards'
     type: file

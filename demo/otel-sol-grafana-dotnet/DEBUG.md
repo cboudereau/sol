@@ -91,4 +91,4 @@ dotnet dump analyze core_20240229_101513 -c 'dumpheap -stat' -c exit | more
 #### heapstat
 ```bash
 dumpheap -stat
-``` 
+```

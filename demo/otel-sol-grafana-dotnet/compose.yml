@@ -75,7 +75,7 @@ services:
       start_period: 5s
 
   client:
-    build: 
+    build:
       context: ./client
       dockerfile: ../dotnet.Dockerfile
     environment:
@@ -99,7 +99,7 @@ services:
           memory: 300M
 
   service:
-    build: 
+    build:
       context: ./service
       dockerfile: ../dotnet.Dockerfile
     environment:

@@ -1,7 +1,7 @@
 # docker compose run dev
 services:
   dev:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     volumes:
