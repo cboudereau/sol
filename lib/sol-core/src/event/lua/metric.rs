@@ -18,7 +18,10 @@ pub struct LuaOtelAttributes {
 }
 
 impl IntoLua for MetricKind {
-    #![expect(clippy::wrong_self_convention, reason = "trait method name defined by mlua")]
+    #![expect(
+        clippy::wrong_self_convention,
+        reason = "trait method name defined by mlua"
+    )]
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let kind = match self {
             MetricKind::Absolute => "absolute",
@@ -79,7 +82,10 @@ impl IntoLua for LuaOtelAttributes {
 }
 
 impl IntoLua for LuaMetric {
-    #![expect(clippy::wrong_self_convention, reason = "trait method name defined by mlua")]
+    #![expect(
+        clippy::wrong_self_convention,
+        reason = "trait method name defined by mlua"
+    )]
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let tbl = lua.create_table()?;
 
@@ -403,7 +409,10 @@ mod test {
         );
     }
 
-    #[expect(clippy::useless_vec, reason = "vec needed for slice comparison in test")]
+    #[expect(
+        clippy::useless_vec,
+        reason = "vec needed for slice comparison in test"
+    )]
     #[test]
     fn into_lua_distribution() {
         let metric = OtelMetric::new_histogram_from_samples(
@@ -611,7 +620,10 @@ mod test {
         );
     }
 
-    #[expect(clippy::useless_vec, reason = "vec needed for slice comparison in test")]
+    #[expect(
+        clippy::useless_vec,
+        reason = "vec needed for slice comparison in test"
+    )]
     #[test]
     fn from_lua_distribution() {
         let value = r#"{

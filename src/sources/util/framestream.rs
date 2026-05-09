@@ -1055,7 +1055,10 @@ mod test {
         pub fn new(content_type: String, multithreaded: bool, extra_routine: F) -> Self {
             Self {
                 content_type,
-                #[expect(clippy::cast_possible_truncation, reason = "test frame length fits in u32")]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "test frame length fits in u32"
+                )]
                 max_frame_length: bytesize::kib(100u64) as usize,
                 multithreaded,
                 max_frame_handling_tasks: 0,
@@ -1315,7 +1318,10 @@ mod test {
         Bytes::from(header.to_u32().to_be_bytes().to_vec())
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "test frame length fits in u32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test frame length fits in u32"
+    )]
     fn create_control_frame_with_content(
         header: ControlHeader,
         content_types: Vec<Bytes>,
@@ -1329,7 +1335,10 @@ mod test {
         Bytes::from(frame)
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "test frame length fits in u32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test frame length fits in u32"
+    )]
     fn assert_accept_frame(frame: &mut BytesMut, expected_content_type: Bytes) {
         //frame should start with 4 bytes saying ACCEPT
 

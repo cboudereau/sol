@@ -720,7 +720,10 @@ mod test {
         assert!(log.get_timestamp().is_some());
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "test data fits in target type")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test data fits in target type"
+    )]
     fn encode_req(seq: u32, pairs: &[(&str, &str)]) -> Bytes {
         let mut req = BytesMut::new();
         req.put_u8(b'2');

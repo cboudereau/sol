@@ -148,12 +148,12 @@ pub fn run_vrl(incoming: &JsValue, tz_str: &str) -> JsValue {
 
 #[wasm_bindgen]
 pub fn vector_version() -> String {
-    built_info::VECTOR_VERSION.to_string()
+    built_info::SOL_VERSION.to_string()
 }
 
 #[wasm_bindgen]
 pub fn vector_link() -> String {
-    built_info::VECTOR_LINK.to_string()
+    built_info::SOL_LINK.to_string()
 }
 
 #[wasm_bindgen]

@@ -1667,7 +1667,11 @@ mod integration_test {
     // - Consumer B skips receiving messages?
     #[ignore]
     #[tokio::test]
-    #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap, reason = "test data fits in target type")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "test data fits in target type"
+    )]
     async fn handles_rebalance() {
         // The test plan here is to:
         // - Set up one source instance, feeding into a pipeline that delays acks.

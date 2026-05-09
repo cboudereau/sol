@@ -1,0 +1,55 @@
+name: Checks
+
+on:
+  workflow_call:
+    inputs:
+      component-validation:
+        description: "Run component spec validation after tests"
+        type: boolean
+        default: false
+
+env:
+  VERBOSE: true
+  CI: true
+
+jobs:
+  check-fmt:
+    name: Check format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+      - run: make check-fmt
+
+  check-clippy:
+    name: Check clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+          protoc: true
+          libsasl2: true
+      - run: make check-clippy
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+          cargo-nextest: true
+          protoc: true
+          libsasl2: true
+      - name: Unit tests
+        run: make test
+        env:
+          CARGO_BUILD_JOBS: 5
+      - name: Component spec validation
+        if: ${{ inputs.component-validation }}
+        run: make test-component-validation
