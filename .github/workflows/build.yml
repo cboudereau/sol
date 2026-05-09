@@ -20,6 +20,43 @@ env:
   DOCKER_IMAGE: superbeeeeeee/sol
 
 jobs:
+  check-fmt:
+    name: Check format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+      - run: make check-fmt
+
+  check-clippy:
+    name: Check clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+          protoc: true
+          libsasl2: true
+      - run: make check-clippy
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup
+        with:
+          rust: true
+          cargo-nextest: true
+          protoc: true
+          libsasl2: true
+      - run: make test
+        env:
+          CARGO_BUILD_JOBS: 5
+
   generate-metadata:
     name: Generate version metadata
     runs-on: ubuntu-24.04
@@ -40,7 +77,11 @@ jobs:
     name: Build x86_64 DEB package
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    needs: generate-metadata
+    needs:
+      - check-fmt
+      - check-clippy
+      - test
+      - generate-metadata
     env:
       SOL_VERSION: ${{ needs.generate-metadata.outputs.sol_version }}
       SOL_BUILD_DESC: ${{ needs.generate-metadata.outputs.sol_build_desc }}
@@ -64,7 +105,11 @@ jobs:
     name: Build Windows x86_64 zip
     runs-on: windows-2025
     timeout-minutes: 90
-    needs: generate-metadata
+    needs:
+      - check-fmt
+      - check-clippy
+      - test
+      - generate-metadata
     env:
       SOL_VERSION: ${{ needs.generate-metadata.outputs.sol_version }}
       SOL_BUILD_DESC: ${{ needs.generate-metadata.outputs.sol_build_desc }}
