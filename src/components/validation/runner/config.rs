@@ -11,7 +11,7 @@ use crate::{
     },
     config::{BoxedSink, BoxedSource, BoxedTransform, ConfigBuilder},
     sinks::opentelemetry::{GrpcConfig, OpenTelemetryConfig, Protocol},
-    sources::vector::VectorConfig as VectorSourceConfig,
+    sources::{opentelemetry::grpc::LOGS, vector::VectorConfig as VectorSourceConfig},
     test_util::addr::next_addr,
 };
 
@@ -68,9 +68,11 @@ impl TopologyBuilder {
         let (input_edge, input_source) = build_input_edge();
         let (output_edge, output_sink) = build_output_edge();
 
+        let input_log_port = format!("{TEST_INPUT_SOURCE_NAME}.{LOGS}");
+
         let mut config_builder = ConfigBuilder::default();
         config_builder.add_source(TEST_INPUT_SOURCE_NAME, input_source);
-        config_builder.add_transform(TEST_TRANSFORM_NAME, &[TEST_INPUT_SOURCE_NAME], transform);
+        config_builder.add_transform(TEST_TRANSFORM_NAME, &[input_log_port.as_str()], transform);
         config_builder.add_sink(TEST_OUTPUT_SINK_NAME, &[TEST_TRANSFORM_NAME], output_sink);
 
         Self {
@@ -83,9 +85,11 @@ impl TopologyBuilder {
     fn from_sink(sink: BoxedSink) -> Self {
         let (input_edge, input_source) = build_input_edge();
 
+        let input_log_port = format!("{TEST_INPUT_SOURCE_NAME}.{LOGS}");
+
         let mut config_builder = ConfigBuilder::default();
         config_builder.add_source(TEST_INPUT_SOURCE_NAME, input_source);
-        config_builder.add_sink(TEST_SINK_NAME, &[TEST_INPUT_SOURCE_NAME], sink);
+        config_builder.add_sink(TEST_SINK_NAME, &[input_log_port.as_str()], sink);
 
         Self {
             config_builder,

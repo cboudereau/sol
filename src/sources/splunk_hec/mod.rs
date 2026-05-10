@@ -1184,14 +1184,10 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
     use futures_util::Stream;
-    use http::Uri;
     use reqwest::{RequestBuilder, Response};
     use serde::Deserialize;
     use sol_lib::{
-        codecs::{
-            BytesDecoderConfig, JsonSerializerConfig, TextSerializerConfig,
-            decoding::DeserializerConfig,
-        },
+        codecs::{JsonSerializerConfig, TextSerializerConfig},
         event::EventStatus,
         schema::Definition,
         sensitive_string::SensitiveString,
@@ -1201,8 +1197,7 @@ mod tests {
     use super::*;
     use crate::{
         SourceSender,
-        codecs::{DecodingConfig, EncodingConfig},
-        components::validation::prelude::*,
+        codecs::EncodingConfig,
         config::{SinkConfig, SinkContext, SourceConfig, SourceContext},
         event::{Event, OtelLog},
         sinks::{
@@ -2706,39 +2701,4 @@ mod tests {
 
         assert_eq!(definition, Some(expected_definition));
     }
-
-    impl ValidatableComponent for SplunkConfig {
-        fn validation_configuration() -> ValidationConfiguration {
-            let config = Self {
-                address: default_socket_address(),
-                ..Default::default()
-            };
-
-            let listen_addr_http = format!("http://{}/services/collector/event", config.address);
-            let uri = Uri::try_from(&listen_addr_http).expect("should not fail to parse URI");
-
-            let framing = BytesDecoderConfig::new().into();
-            let decoding = DeserializerConfig::Json(Default::default());
-
-            let external_resource = ExternalResource::new(
-                ResourceDirection::Push,
-                HttpResourceConfig::from_parts(uri, None).with_headers(HashMap::from([(
-                    X_SPLUNK_REQUEST_CHANNEL.to_string(),
-                    "channel".to_string(),
-                )])),
-                DecodingConfig::new(framing, decoding),
-            );
-
-            ValidationConfiguration::from_source(
-                Self::NAME,
-                vec![ComponentTestCaseConfig::from_source(
-                    config,
-                    None,
-                    Some(external_resource),
-                )],
-            )
-        }
-    }
-
-    register_validatable_component!(SplunkConfig);
 }

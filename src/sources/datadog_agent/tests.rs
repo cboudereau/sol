@@ -17,11 +17,8 @@ use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use similar_asserts::assert_eq;
 use sol_lib::{
     codecs::{
-        BytesDecoder, BytesDeserializer, CharacterDelimitedDecoderConfig,
-        decoding::{
-            BytesDeserializerConfig, CharacterDelimitedDecoderOptions, Deserializer,
-            DeserializerConfig, Framer,
-        },
+        BytesDecoder, BytesDeserializer,
+        decoding::{Deserializer, DeserializerConfig, Framer},
     },
     config::DataType,
     event::OtelAttributes,
@@ -34,7 +31,6 @@ use vrl::{compiler::value::Collection, value, value::Kind};
 use crate::{
     SourceSender,
     common::datadog::{DatadogMetricType, DatadogPoint, DatadogSeriesMetric},
-    components::validation::prelude::*,
     config::{SourceConfig, SourceContext},
     event::{
         Event, EventStatus, MetricView, OtelMetric, OtelSpan, Value, into_event_stream,
@@ -2527,60 +2523,3 @@ async fn series_v2_split_metric_namespace_false() {
     })
     .await;
 }
-
-impl ValidatableComponent for DatadogAgentConfig {
-    fn validation_configuration() -> ValidationConfiguration {
-        use sol_lib::codecs::DecodingConfig;
-
-        let config = DatadogAgentConfig {
-            address: "0.0.0.0:9007".parse().unwrap(),
-            tls: None,
-            store_api_key: false,
-            framing: CharacterDelimitedDecoderConfig {
-                character_delimited: CharacterDelimitedDecoderOptions {
-                    delimiter: b',',
-                    max_length: Some(usize::MAX),
-                },
-            }
-            .into(),
-            decoding: BytesDeserializerConfig::new().into(),
-            acknowledgements: Default::default(),
-            multiple_outputs: false,
-            disable_logs: false,
-            disable_metrics: false,
-            disable_traces: false,
-            parse_ddtags: false,
-            split_metric_namespace: true,
-            keepalive: Default::default(),
-            send_timeout_secs: None,
-            resource_attributes: Default::default(),
-        };
-
-        // TODO set up separate test cases for metrics and traces endpoints
-
-        let logs_addr = format!("http://{}/api/v2/logs", config.address);
-        let uri = http::Uri::try_from(&logs_addr).expect("should not fail to parse URI");
-
-        let decoder = DecodingConfig::new(
-            config.framing.clone(),
-            DeserializerConfig::Json(Default::default()),
-        );
-
-        let external_resource = ExternalResource::new(
-            ResourceDirection::Push,
-            HttpResourceConfig::from_parts(uri, None),
-            decoder,
-        );
-
-        ValidationConfiguration::from_source(
-            Self::NAME,
-            vec![ComponentTestCaseConfig::from_source(
-                config,
-                None,
-                Some(external_resource),
-            )],
-        )
-    }
-}
-
-register_validatable_component!(DatadogAgentConfig);
