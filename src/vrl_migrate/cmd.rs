@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -221,7 +223,7 @@ fn resolve_log_schema(path: Option<&Path>) -> Result<Option<MigrateLogSchema>, S
 
 fn strip_log_schema_section(source: &str) -> String {
     // Handle standalone [log_schema] section
-    let re_section = regex::Regex::new(r"(?m)^\[log_schema\]\s*\n(?:(?!\[)[^\n]*\n)*").unwrap();
+    let re_section = regex::Regex::new(r"(?m)^\[log_schema\]\s*\n(?:[^\[\n][^\n]*\n|\n)*").unwrap();
     let output = re_section.replace_all(source, "");
 
     // Handle dot-key form: log_schema.field = value

@@ -418,6 +418,7 @@ mod tests {
         let distro = OtelMetric::new_histogram_from_samples(
             "distro",
             MetricKind::Absolute,
+            #[allow(clippy::useless_vec)]
             &sol_lib::samples![1.0 => 10, 2.0 => 20],
         )
         .with_metadata(event_metadata())
@@ -453,6 +454,7 @@ mod tests {
         let histo = OtelMetric::new_histogram(
             "histo",
             MetricKind::Absolute,
+            #[allow(clippy::useless_vec)]
             &sol_lib::buckets![1.0 => 10, 2.0 => 20],
             30,
             50.0,
@@ -524,6 +526,7 @@ mod tests {
     async fn transform_summary() {
         let summary = OtelMetric::new_summary(
             "summary",
+            #[allow(clippy::useless_vec)]
             &sol_lib::quantiles![50.0 => 10.0, 90.0 => 20.0],
             30,
             50.0,

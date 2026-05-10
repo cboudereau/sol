@@ -190,6 +190,7 @@ impl SourceConfig for AwsEcsMetricsSourceConfig {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn aws_ecs_metrics(
     http_client: HttpClient,
     url: String,

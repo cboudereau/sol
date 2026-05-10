@@ -323,26 +323,26 @@ mod tests {
         transformer.transform(&mut event);
         let log = event.as_log();
         assert!(
-            !log.parse_path_and_get_value("a.b.c")
+            log.parse_path_and_get_value("a.b.c")
                 .ok()
                 .flatten()
-                .is_some()
+                .is_none()
         );
-        assert!(!log.parse_path_and_get_value("b").ok().flatten().is_some());
+        assert!(log.parse_path_and_get_value("b").ok().flatten().is_none());
         assert!(
-            !log.parse_path_and_get_value("b[1].x")
+            log.parse_path_and_get_value("b[1].x")
                 .ok()
                 .flatten()
-                .is_some()
+                .is_none()
         );
         assert!(
-            !log.parse_path_and_get_value("c[0].y")
+            log.parse_path_and_get_value("c[0].y")
                 .ok()
                 .flatten()
-                .is_some()
+                .is_none()
         );
-        assert!(!log.parse_path_and_get_value("d.z").ok().flatten().is_some());
-        assert!(!log.parse_path_and_get_value("e.a").ok().flatten().is_some());
+        assert!(log.parse_path_and_get_value("d.z").ok().flatten().is_none());
+        assert!(log.parse_path_and_get_value("e.a").ok().flatten().is_none());
 
         assert!(
             log.parse_path_and_get_value("a.b.d")
@@ -414,10 +414,10 @@ mod tests {
 
         // Event no longer contains the service field.
         assert!(
-            !log.parse_path_and_get_value("thing.service")
+            log.parse_path_and_get_value("thing.service")
                 .ok()
                 .flatten()
-                .is_some()
+                .is_none()
         );
 
         // But we can still get the service by meaning.

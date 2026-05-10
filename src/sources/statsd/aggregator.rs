@@ -348,7 +348,7 @@ impl ExpoBuckets {
         clippy::cast_possible_wrap,
         reason = "histogram bucket count bounded by max_size which fits i32"
     )]
-    fn span(&self) -> i32 {
+    const fn span(&self) -> i32 {
         self.counts.len() as i32
     }
 
@@ -902,7 +902,7 @@ mod tests {
         if let Some(MetricData::Sum(sum)) = &proto.data {
             assert_eq!(sum.data_points.len(), 1);
             assert!(
-                (sum.data_points[0].value.as_ref().unwrap().clone()
+                (*sum.data_points[0].value.as_ref().unwrap()
                     == NumberDataPointValue::AsDouble(4.5))
             );
         } else {

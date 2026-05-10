@@ -159,7 +159,7 @@ mod tests {
     fn test_parsing_valid_vector_namespace() {
         trace_init();
         test_util::test_parser(
-            || Parser::new(),
+            Parser::new,
             |bytes| Event::Log(OtelLog::from(value!(bytes))),
             valid_cases(),
         );
@@ -169,7 +169,7 @@ mod tests {
     fn test_parsing_valid_legacy_namespace() {
         trace_init();
         test_util::test_parser(
-            || Parser::new(),
+            Parser::new,
             |bytes| Event::Log(OtelLog::from(bytes)),
             valid_cases(),
         );

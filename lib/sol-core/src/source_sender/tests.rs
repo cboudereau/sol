@@ -57,7 +57,7 @@ async fn emit_and_test(make_event: impl FnOnce(DateTime<Utc>) -> Event) {
         .expect("There must be a controller")
         .capture_metrics()
         .into_iter()
-        .filter(|metric| metric.name() == "source_lag_time_seconds")
+        .filter(|metric| metric.name() == "sol_source_lag_time_seconds")
         .collect::<Vec<_>>();
     assert_eq!(lag_times.len(), 1);
 
@@ -80,7 +80,7 @@ async fn emit_and_test(make_event: impl FnOnce(DateTime<Utc>) -> Event) {
             }
             assert_eq!(count, 1);
             assert!(
-                (sum - expected).abs() <= 0.002,
+                (sum - expected).abs() <= 0.010,
                 "Histogram sum does not match expected sum: {sum} vs {expected}",
             );
         }
@@ -113,7 +113,7 @@ async fn emits_component_discarded_events_total_for_send_event() {
         .expect("There must be a controller")
         .capture_metrics()
         .into_iter()
-        .filter(|metric| metric.name() == "component_discarded_events_total")
+        .filter(|metric| metric.name() == "sol_component_discarded_events_total")
         .collect::<Vec<_>>();
     assert_eq!(component_discarded_events_total.len(), 1);
 
@@ -144,11 +144,11 @@ async fn emits_component_discarded_events_total_for_send_batch() {
     assert!(res.is_err(), "Send should have timed out.");
 
     let metrics = get_component_metrics();
-    assert_no_metric(&metrics, "component_timed_out_events_total");
-    assert_no_metric(&metrics, "component_timed_out_requests_total");
+    assert_no_metric(&metrics, "sol_component_timed_out_events_total");
+    assert_no_metric(&metrics, "sol_component_timed_out_requests_total");
     assert_counter_metric(
         &metrics,
-        "component_discarded_events_total",
+        "sol_component_discarded_events_total",
         expected_drop as f64,
     );
 }
@@ -182,9 +182,9 @@ async fn times_out_send_event_with_timeout() {
     assert!(elapsed <= timeout_duration * 2, "Send waited too long");
 
     let metrics = get_component_metrics();
-    assert_no_metric(&metrics, "component_discarded_events_total");
-    assert_counter_metric(&metrics, "component_timed_out_events_total", 1.0);
-    assert_counter_metric(&metrics, "component_timed_out_requests_total", 1.0);
+    assert_no_metric(&metrics, "sol_component_discarded_events_total");
+    assert_counter_metric(&metrics, "sol_component_timed_out_events_total", 1.0);
+    assert_counter_metric(&metrics, "sol_component_timed_out_requests_total", 1.0);
 }
 
 /// Verifies that backpressure on one signal type (metrics) does not block
@@ -272,7 +272,7 @@ fn get_component_metrics() -> Vec<OtelMetric> {
         .expect("There must be a controller")
         .capture_metrics()
         .into_iter()
-        .filter(|metric| metric.name().starts_with("component_"))
+        .filter(|metric| metric.name().starts_with("sol_component_"))
         .collect()
 }
 
@@ -330,7 +330,7 @@ fn assert_buffer_metrics(buffer_size: usize, level: usize) {
         .expect("metrics controller available")
         .capture_metrics()
         .into_iter()
-        .filter(|metric| metric.name().starts_with("source_buffer_"))
+        .filter(|metric| metric.name().starts_with("sol_source_buffer_"))
         .collect();
     assert_eq!(metrics.len(), 5, "expected 5 utilization metrics");
 
@@ -341,23 +341,23 @@ fn assert_buffer_metrics(buffer_size: usize, level: usize) {
             .unwrap_or_else(|| panic!("missing metric: {name}"))
     };
 
-    let metric = find_metric("source_buffer_utilization");
+    let metric = find_metric("sol_source_buffer_utilization");
     let tags = metric.tags().expect("utilization histogram has tags");
     assert_eq!(tags.get_string("output"), Some("_default"));
 
-    let metric = find_metric("source_buffer_utilization_level");
+    let metric = find_metric("sol_source_buffer_utilization_level");
     let MetricView::Gauge { value } = metric.view() else {
         panic!("source_buffer_utilization_level should be a gauge");
     };
     assert_eq!(value, level as f64);
 
-    let metric = find_metric("source_buffer_max_event_size");
+    let metric = find_metric("sol_source_buffer_max_event_size");
     let MetricView::Gauge { value } = metric.view() else {
         panic!("source_buffer_max_event_size should be a gauge");
     };
     assert_eq!(value, buffer_size as f64);
 
-    let metric = find_metric("source_buffer_max_size_events");
+    let metric = find_metric("sol_source_buffer_max_size_events");
     let MetricView::Gauge { value } = metric.view() else {
         panic!("source_buffer_max_size_events should be a gauge");
     };

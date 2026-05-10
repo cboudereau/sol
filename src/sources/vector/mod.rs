@@ -35,7 +35,7 @@ mod convert;
 mod service;
 
 // Include the generated protobuf modules.
-#[allow(warnings, clippy::pedantic, clippy::nursery)]
+#[allow(warnings, clippy::pedantic, clippy::nursery, clippy::clone_on_ref_ptr)]
 pub(crate) mod proto {
     pub mod event {
         include!(concat!(env!("OUT_DIR"), "/event.rs"));

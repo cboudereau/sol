@@ -66,14 +66,14 @@ pub enum ComponentMetricType {
 impl ComponentMetricType {
     const fn name(&self) -> &'static str {
         match self {
-            ComponentMetricType::EventsReceived => "component_received_events_total",
-            ComponentMetricType::EventsReceivedBytes => "component_received_event_bytes_total",
-            ComponentMetricType::ReceivedBytesTotal => "component_received_bytes_total",
-            ComponentMetricType::SentEventsTotal => "component_sent_events_total",
-            ComponentMetricType::SentBytesTotal => "component_sent_bytes_total",
-            ComponentMetricType::SentEventBytesTotal => "component_sent_event_bytes_total",
-            ComponentMetricType::ErrorsTotal => "component_errors_total",
-            ComponentMetricType::DiscardedEventsTotal => "component_discarded_events_total",
+            ComponentMetricType::EventsReceived => "sol_component_received_events_total",
+            ComponentMetricType::EventsReceivedBytes => "sol_component_received_event_bytes_total",
+            ComponentMetricType::ReceivedBytesTotal => "sol_component_received_bytes_total",
+            ComponentMetricType::SentEventsTotal => "sol_component_sent_events_total",
+            ComponentMetricType::SentBytesTotal => "sol_component_sent_bytes_total",
+            ComponentMetricType::SentEventBytesTotal => "sol_component_sent_event_bytes_total",
+            ComponentMetricType::ErrorsTotal => "sol_component_errors_total",
+            ComponentMetricType::DiscardedEventsTotal => "sol_component_discarded_events_total",
         }
     }
 }

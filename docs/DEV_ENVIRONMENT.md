@@ -119,6 +119,22 @@ git@github.com-cboudereau/sol.git
 
 Workspace root: `/home/clem/gh/sol`
 
+## Additional Cargo tools
+
+### cargo-nextest
+
+[cargo-nextest](https://nexte.st/) is used by CI (`make test`) to run unit tests. Install it with:
+
+```bash
+cargo install cargo-nextest --locked
+```
+
+Verify:
+
+```bash
+cargo nextest --version
+```
+
 ## Build commands
 
 ```bash
@@ -166,11 +182,14 @@ From `.cargo/config.toml`:
 
 ## Git configuration
 
-Ensure `core.fileMode` is enabled so git preserves executable bits on checkout:
+Ensure `core.fileMode` and `core.symlinks` are enabled:
 
 ```bash
 git config core.fileMode true
+git config core.symlinks true
 ```
+
+`core.symlinks` is required because some test data directories (e.g. `lib/sol-core/tests/data/ca`) are symbolic links. With `core.symlinks=false` (common default on WSL2), git checks them out as plain text files, breaking TLS tests with `NotADirectory` errors.
 
 Some test fixtures (e.g. `tests/data/journalctl`) are shell scripts that must be executable. If `core.fileMode` is `false`, git ignores permission bits and these files lose their execute flag, causing tests to fail with `PermissionDenied`.
 

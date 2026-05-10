@@ -1488,6 +1488,7 @@ mod tests {
         out.primary.into_events().next()
     }
 
+    #[allow(clippy::result_large_err)]
     fn transform_one_fallible(
         ft: &mut dyn SyncTransform,
         event: Event,
@@ -1870,8 +1871,8 @@ mod tests {
             .into_iter()
             .map(|metric| (metric.name().to_string(), metric))
             .collect::<BTreeMap<String, OtelMetric>>();
-        assert_eq!(metrics.get("component_discarded_events_total"), None);
-        assert_eq!(metrics.get("component_errors_total"), None);
+        assert_eq!(metrics.get("sol_component_discarded_events_total"), None);
+        assert_eq!(metrics.get("sol_component_errors_total"), None);
     }
     #[test]
     fn do_not_emit_metrics_when_dropped() {

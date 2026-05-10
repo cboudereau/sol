@@ -658,7 +658,7 @@ mod test {
         fn into_event(self) -> RecordedEvent {
             let message = self
                 .fields
-                .get("body")
+                .get("message")
                 .cloned()
                 .unwrap_or_else(|| String::from(""));
 

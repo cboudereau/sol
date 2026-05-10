@@ -154,6 +154,7 @@ impl UriExt for http::Uri {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apache_metrics(
     urls: Vec<http::Uri>,
     interval: Duration,

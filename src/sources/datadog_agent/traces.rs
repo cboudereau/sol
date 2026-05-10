@@ -445,7 +445,7 @@ fn handle_dd_trace_payload_v0(
                         &resource,
                         &scope,
                         &api_key,
-                        &[payload_version_attr.clone()],
+                        std::slice::from_ref(&payload_version_attr),
                     )
                 })
                 .collect::<Vec<_>>()

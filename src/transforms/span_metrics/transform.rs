@@ -504,12 +504,12 @@ mod tests {
         assert_eq!(events.len(), 2);
 
         // Check that http.method is in the metric attributes.
-        if let Event::Metric(m) = &events[0] {
-            if let Some(metric::Data::Sum(sum)) = &m.metric().data {
-                let attrs = &sum.data_points[0].attributes;
-                let method = attrs.iter().find(|kv| kv.key == "http.method");
-                assert!(method.is_some(), "http.method should be a dimension");
-            }
+        if let Event::Metric(m) = &events[0]
+            && let Some(metric::Data::Sum(sum)) = &m.metric().data
+        {
+            let attrs = &sum.data_points[0].attributes;
+            let method = attrs.iter().find(|kv| kv.key == "http.method");
+            assert!(method.is_some(), "http.method should be a dimension");
         }
     }
 

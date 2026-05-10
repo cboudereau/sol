@@ -789,13 +789,8 @@ impl AgentDDSketch {
         let mut prev_cdf = 0.0f64;
         let mut allocated: u64 = 0;
 
-        let all_bounds: Vec<f64> = bounds.to_vec();
-        for (i, &upper) in all_bounds.iter().enumerate() {
-            let cdf = if i + 1 == all_bounds.len() {
-                self.cdf_approx(upper)
-            } else {
-                self.cdf_approx(upper)
-            };
+        for &upper in bounds {
+            let cdf = self.cdf_approx(upper);
             let fraction = (cdf - prev_cdf).max(0.0);
             #[expect(
                 clippy::cast_precision_loss,

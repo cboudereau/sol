@@ -586,6 +586,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments, clippy::trivially_copy_pass_by_ref)]
     fn make_span(
         service: &str,
         trace_id: &[u8; 16],
@@ -633,6 +634,7 @@ mod tests {
         ))
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn client_span(service: &str, trace_id: &[u8; 16], span_id: &[u8; 8]) -> Event {
         make_span(
             service,
@@ -647,6 +649,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn server_span(
         service: &str,
         trace_id: &[u8; 16],

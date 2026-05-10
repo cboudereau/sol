@@ -219,17 +219,17 @@ fn unified_diff(original: &str, modified: &str, label: &str) -> String {
             ctx_end_j - ctx_start_j
         ));
 
-        for k in ctx_start_i..i {
-            out.push_str(&format!(" {}\n", orig_lines[k]));
+        for line in &orig_lines[ctx_start_i..i] {
+            out.push_str(&format!(" {line}\n"));
         }
-        for k in i..end_i {
-            out.push_str(&format!("-{}\n", orig_lines[k]));
+        for line in &orig_lines[i..end_i] {
+            out.push_str(&format!("-{line}\n"));
         }
-        for k in j..end_j {
-            out.push_str(&format!("+{}\n", mod_lines[k]));
+        for line in &mod_lines[j..end_j] {
+            out.push_str(&format!("+{line}\n"));
         }
-        for k in end_i..ctx_end_i {
-            out.push_str(&format!(" {}\n", orig_lines[k]));
+        for line in &orig_lines[end_i..ctx_end_i] {
+            out.push_str(&format!(" {line}\n"));
         }
 
         i = ctx_end_i;

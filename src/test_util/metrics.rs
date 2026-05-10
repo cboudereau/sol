@@ -54,9 +54,7 @@ impl<N: MetricNormalize> MetricState<N> {
 
         for otel in self.intermediate.into_metrics() {
             let series = otel.metric_series();
-            if !latest.contains_key(&series) {
-                latest.insert(series, otel);
-            }
+            latest.entry(series).or_insert(otel);
         }
 
         latest

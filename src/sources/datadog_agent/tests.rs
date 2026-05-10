@@ -976,7 +976,7 @@ async fn decode_series_endpoint_v1() {
             assert_eq!(metric.kind(), MetricKind::Absolute);
             assert!(matches!(metric.view(), MetricView::Gauge { value: 3.14 }));
             assert_tags(
-                &metric,
+                metric,
                 otel_tags!(
                     "resource.host.name" => "random_host",
                     "resource.source_type" => "datadog_agent",
@@ -1007,7 +1007,7 @@ async fn decode_series_endpoint_v1() {
             assert_eq!(metric.kind(), MetricKind::Absolute);
             assert!(matches!(metric.view(), MetricView::Gauge { value: 3.1415 }));
             assert_tags(
-                &metric,
+                metric,
                 otel_tags!(
                     "resource.host.name" => "random_host",
                     "resource.source_type" => "datadog_agent",
@@ -1053,7 +1053,7 @@ async fn decode_series_endpoint_v1() {
                         ),
                     },
                 );
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
 
             assert_eq!(
@@ -1086,7 +1086,7 @@ async fn decode_series_endpoint_v1() {
                     "resource.source_type" => "datadog_agent",
                 );
                 expected_tags.insert("foobar".to_string(), AnyValue { value: None });
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
 
             metric = events[4].as_metric();
@@ -1491,7 +1491,7 @@ async fn split_outputs() {
             assert_eq!(metric.kind(), MetricKind::Absolute);
             assert!(matches!(metric.view(), MetricView::Gauge { value: 3.14 }));
             assert_tags(
-                &metric,
+                metric,
                 otel_tags!(
                     "resource.host.name" => "random_host",
                     "resource.source_type" => "datadog_agent",
@@ -2171,7 +2171,7 @@ async fn decode_series_endpoint_v2() {
                         value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(10000)),
                     },
                 );
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
             assert_eq!(metric.namespace(), Some("namespace"));
 
@@ -2201,7 +2201,7 @@ async fn decode_series_endpoint_v2() {
                         value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(10000)),
                     },
                 );
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
             assert_eq!(metric.namespace(), Some("namespace"));
 
@@ -2246,7 +2246,7 @@ async fn decode_series_endpoint_v2() {
                         value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(10000)),
                     },
                 );
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
             assert_eq!(metric.namespace(), Some("another_namespace"));
 
@@ -2274,7 +2274,7 @@ async fn decode_series_endpoint_v2() {
                     "source_type_name" => "a_very_random_source_type_name",
                 );
                 expected_tags.insert("foobar".to_string(), AnyValue { value: None });
-                assert_tags(&metric, expected_tags);
+                assert_tags(metric, expected_tags);
             }
             assert_eq!(metric.namespace(), None);
 

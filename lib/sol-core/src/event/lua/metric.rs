@@ -45,6 +45,7 @@ impl FromLua for MetricKind {
 
 impl FromLua for OtelAttributes {
     fn from_lua(value: LuaValue, _: &Lua) -> LuaResult<Self> {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value};
         let LuaValue::Table(table) = value else {
             return Err(mlua::Error::FromLuaConversionError {
                 from: value.type_name(),
@@ -58,6 +59,24 @@ impl FromLua for OtelAttributes {
             match val {
                 LuaValue::String(s) => {
                     attrs.insert_string(key, s.to_string_lossy().clone());
+                }
+                LuaValue::Table(arr) => {
+                    let values: Vec<AnyValue> = arr
+                        .sequence_values::<LuaString>()
+                        .map(|r| {
+                            r.map(|s| AnyValue {
+                                value: Some(any_value::Value::StringValue(
+                                    s.to_string_lossy().clone(),
+                                )),
+                            })
+                        })
+                        .collect::<LuaResult<_>>()?;
+                    attrs.insert(
+                        key,
+                        AnyValue {
+                            value: Some(any_value::Value::ArrayValue(ArrayValue { values })),
+                        },
+                    );
                 }
                 LuaValue::Nil => {}
                 _ => {
@@ -77,6 +96,42 @@ impl IntoLua for LuaOtelAttributes {
     }
 }
 
+fn attrs_to_multi_value_table(lua: &Lua, attrs: &OtelAttributes) -> LuaResult<LuaTable> {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
+    let tags_tbl = lua.create_table()?;
+    for (key, any_val) in attrs.iter() {
+        match &any_val.value {
+            Some(OtelValueKind::ArrayValue(arr)) => {
+                let arr_tbl = lua.create_table()?;
+                for (i, item) in arr.values.iter().enumerate() {
+                    match &item.value {
+                        Some(OtelValueKind::StringValue(s)) => {
+                            arr_tbl.raw_set(i + 1, s.as_str())?;
+                        }
+                        Some(other) => {
+                            arr_tbl.raw_set(i + 1, format!("{other:?}"))?;
+                        }
+                        None => {}
+                    }
+                }
+                tags_tbl.raw_set(key.as_str(), arr_tbl)?;
+            }
+            Some(OtelValueKind::StringValue(s)) => {
+                let val_tbl = lua.create_table()?;
+                val_tbl.raw_set(1, s.as_str())?;
+                tags_tbl.raw_set(key.as_str(), val_tbl)?;
+            }
+            Some(other) => {
+                let val_tbl = lua.create_table()?;
+                val_tbl.raw_set(1, format!("{other:?}"))?;
+                tags_tbl.raw_set(key.as_str(), val_tbl)?;
+            }
+            None => {}
+        }
+    }
+    Ok(tags_tbl)
+}
+
 impl IntoLua for LuaMetric {
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let tbl = lua.create_table()?;
@@ -92,7 +147,11 @@ impl IntoLua for LuaMetric {
             tbl.raw_set("interval_ms", i.get())?;
         }
         if let Some(attrs) = self.otel.tags() {
-            tbl.raw_set("tags", LuaOtelAttributes { attrs })?;
+            if self.multi_value_tags {
+                tbl.raw_set("tags", attrs_to_multi_value_table(lua, &attrs)?)?;
+            } else {
+                tbl.raw_set("tags", LuaOtelAttributes { attrs })?;
+            }
         }
         tbl.raw_set("kind", self.otel.kind())?;
 

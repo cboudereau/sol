@@ -64,8 +64,7 @@ impl Parser {
         let mut container_id = None;
         let mut _timestamp: Option<u64> = None;
         let extra_start = if sampling.is_some() { 3 } else { 2 };
-        for i in extra_start..parts.len() {
-            let part = parts[i];
+        for &part in &parts[extra_start..] {
             if part.starts_with('#') {
                 tags = Some(parse_tags_d39(part)?);
             } else if part.starts_with("c:") && part.len() > 2 {
