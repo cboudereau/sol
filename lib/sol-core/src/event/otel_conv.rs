@@ -1,13 +1,14 @@
 #![deny(clippy::cast_possible_wrap)]
 #![deny(clippy::cast_sign_loss)]
 
+#[cfg(test)]
 use chrono::{DateTime, TimeZone, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) struct OtlpTimestamp(u64);
 
 impl OtlpTimestamp {
-    #[allow(dead_code)]
+    #[cfg(feature = "vrl")]
     pub(crate) fn from_nanos(nanos: u64) -> Self {
         Self(nanos)
     }
@@ -16,7 +17,7 @@ impl OtlpTimestamp {
         self.0
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "vrl")]
     #[expect(
         clippy::cast_possible_wrap,
         reason = "nanos fit in i64 until year 2262"
@@ -30,7 +31,7 @@ impl OtlpTimestamp {
         Self(v.max(0) as u64)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[expect(
         clippy::cast_possible_wrap,
         reason = "seconds fit in i64 until year 2262"
@@ -41,7 +42,7 @@ impl OtlpTimestamp {
         Utc.timestamp_opt(secs, nsecs).single().unwrap_or_default()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[expect(clippy::cast_sign_loss, reason = "timestamps are non-negative")]
     pub(crate) fn from_chrono(ts: DateTime<Utc>) -> Self {
         Self(ts.timestamp_nanos_opt().unwrap_or(0).max(0) as u64)

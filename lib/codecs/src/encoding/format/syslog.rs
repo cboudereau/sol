@@ -793,7 +793,6 @@ mod tests {
         let metric_event = Event::Metric(OtelMetric::new_histogram_from_samples(
             "metric1",
             MetricKind::Incremental,
-            #[allow(clippy::useless_vec)]
             &sol_core::samples![10.0 => 1],
         ));
 

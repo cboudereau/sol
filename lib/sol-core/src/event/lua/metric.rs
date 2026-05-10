@@ -459,10 +459,6 @@ mod test {
         );
     }
 
-    #[expect(
-        clippy::useless_vec,
-        reason = "vec needed for slice comparison in test"
-    )]
     #[test]
     fn into_lua_distribution() {
         let metric = OtelMetric::new_histogram_from_samples(
@@ -670,10 +666,6 @@ mod test {
         );
     }
 
-    #[expect(
-        clippy::useless_vec,
-        reason = "vec needed for slice comparison in test"
-    )]
     #[test]
     fn from_lua_distribution() {
         let value = r#"{

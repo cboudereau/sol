@@ -2504,10 +2504,6 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::useless_vec,
-        reason = "vec needed for slice comparison in test"
-    )]
     #[test]
     fn new_histogram_from_samples_has_overflow() {
         let metric = OtelMetric::new_histogram_from_samples(

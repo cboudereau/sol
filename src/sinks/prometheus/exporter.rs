@@ -1172,7 +1172,7 @@ mod tests {
 
         let sink = PrometheusExporter::new(config);
 
-        let samples_batches: Vec<Vec<Sample>> = vec![
+        let samples_batches = [
             samples!(1.0 => 1, 3.0 => 2),
             samples!(1.0 => 2, 2.9 => 1),
             samples!(1.0 => 4, 3.2 => 1),
