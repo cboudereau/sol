@@ -3,7 +3,7 @@ status: accepted
 ---
 # VRL ↔ OTLP cast safety strategy
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [NFR2](../DESIGN.md#nfr2), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR1](../designs/20260510_clippy-lint-remediation.md#fr1), [FR2](../designs/20260510_clippy-lint-remediation.md#fr2), [FR3](../designs/20260510_clippy-lint-remediation.md#fr3), [FR4](../designs/20260510_clippy-lint-remediation.md#fr4), [NFR2](../designs/20260510_clippy-lint-remediation.md#nfr2), [NFR3](../designs/20260510_clippy-lint-remediation.md#nfr3)
 
 ## Problem
 
@@ -120,7 +120,7 @@ wire type gets a newtype that encapsulates the cast and its safety reasoning:
 - **`OtlpEnumField(i32)`** (~16 sites): enums, scale, offset, `i32 ↔ i64`
 - **`OtlpMetricInt(i64)`** (~10 sites): integer metric values, `i64 → f64`
 
-See [otlp-boundary-types](./otlp-boundary-types.md) for the full type
+See [otlp-boundary-types](./0021-otlp-boundary-types.md) for the full type
 definitions, before/after examples, and the module-level `#[deny]` override
 needed for `cast_possible_wrap` and `cast_sign_loss` (which are crate-wide
 `#![allow]` in `lib.rs`).
@@ -131,7 +131,7 @@ cluster tightly and don't cross the VRL ↔ OTLP boundary.
 
 The conversion rules in this ADR remain the source of truth for **what** each
 cast means and **why** it is safe. The
-[otlp-boundary-types](./otlp-boundary-types.md) ADR decides **how** to
+[otlp-boundary-types](./0021-otlp-boundary-types.md) ADR decides **how** to
 implement them without repetition.
 
 ## Consequences

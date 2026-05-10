@@ -3,11 +3,11 @@ status: accepted
 ---
 # Typed boundary conversions for VRL ↔ OTLP
 
-Addresses: [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [NFR2](../DESIGN.md#nfr2), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR2](../designs/20260510_clippy-lint-remediation.md#fr2), [FR3](../designs/20260510_clippy-lint-remediation.md#fr3), [FR4](../designs/20260510_clippy-lint-remediation.md#fr4), [NFR2](../designs/20260510_clippy-lint-remediation.md#nfr2), [NFR3](../designs/20260510_clippy-lint-remediation.md#nfr3)
 
 ## Problem
 
-The [cast-safety-strategy](./cast-safety-strategy.md) ADR establishes that every
+The [cast-safety-strategy](./0018-cast-safety-strategy.md) ADR establishes that every
 `as` cast at the VRL ↔ OTLP boundary must carry an `#[expect]` with a reason.
 Applied literally to all 179 cast sites, this produces ~500 lines of repetitive
 annotations — the same 5–6 safety arguments copied dozens of times.
@@ -295,7 +295,7 @@ NDPValue::AsInt(i) => OtlpMetricInt::from_proto(*i).to_f64(),
 - **Exponential histogram bit math** (`(bits >> 52) as i32`,
   `value.ln().floor() as i32`, `(1u64 << scale) as f64`): Algorithm-specific
   casts that don't cross the VRL ↔ OTLP boundary. These keep `#[expect]` on the
-  enclosing function per the [cast-safety-strategy](./cast-safety-strategy.md).
+  enclosing function per the [cast-safety-strategy](./0018-cast-safety-strategy.md).
 
 - **Set cardinality** (`set.len() as f64`): `usize → f64`, not an OTLP wire
   type. Gets a local `#[expect]` — only ~3 sites.

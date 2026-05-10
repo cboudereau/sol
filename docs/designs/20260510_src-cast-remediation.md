@@ -1,11 +1,11 @@
 # Cast Remediation for src/ (sinks, sources, transforms) — Design Doc
 
-Amends: [clippy-lint-remediation](../clippy-lint-remediation/DESIGN.md) — extends
-Phase 2 of the [numeric conversion conventions ADR](../clippy-lint-remediation/adrs/numeric-conversion-conventions.md)
+Amends: [clippy-lint-remediation](./20260510_clippy-lint-remediation.md) — extends
+Phase 2 of the [numeric conversion conventions ADR](../adrs/0020-numeric-conversion-conventions.md)
 
 ## Context
 
-The [clippy-lint-remediation](../clippy-lint-remediation/DESIGN.md) workspace
+The [clippy-lint-remediation](./20260510_clippy-lint-remediation.md) workspace
 fixes all 400 clippy errors in `sol-core` (the library crate, which enforces
 `deny(clippy::pedantic)`). This workspace addresses the **other side** of the
 codebase: `src/` — the main crate containing sinks, sources, and transforms.
@@ -71,7 +71,7 @@ they're a prost code style issue.
 **Pattern 4 — Timestamp conversions** (~20 casts, 4%):
 `ts.timestamp_nanos_opt().unwrap_or(0) as u64`, nanos → chrono decomposition.
 Same patterns as `sol-core`; can reuse `OtlpTimestamp` from
-[clippy-lint-remediation Task 0](../clippy-lint-remediation/TASKS.md).
+[clippy-lint-remediation Task 0](./20260510_clippy-lint-remediation.md).
 
 **Pattern 5 — Length/count to f64** (~20 casts, 4%):
 `values.len() as f64`, `count as f64`. Precision loss negligible for collection
@@ -153,7 +153,7 @@ code is identical.
 ### <a id="nfr2"></a>NFR2 — Use `#[expect]` over `#[allow]`
 
 Following the convention from
-[clippy-lint-remediation NFR3](../clippy-lint-remediation/DESIGN.md#nfr3),
+[clippy-lint-remediation NFR3](./20260510_clippy-lint-remediation.md#nfr3),
 prefer `#[expect]` so stale annotations produce a compiler warning.
 
 ### <a id="nfr3"></a>NFR3 — Reuse `sol-core` boundary types where applicable
@@ -200,13 +200,13 @@ prevent any future bare `as` cast from compiling.
 ### Ordering
 
 This workspace depends on the
-[clippy-lint-remediation](../clippy-lint-remediation/TASKS.md) workspace
+[clippy-lint-remediation](./20260510_clippy-lint-remediation.md) workspace
 completing first (specifically Task 0, which creates the boundary types that
 `src/` timestamp conversions will reuse).
 
 Decisions:
-- [Numeric conversion conventions](../clippy-lint-remediation/adrs/numeric-conversion-conventions.md) — Phase 2 enforcement plan
-- [Cast safety strategy](../clippy-lint-remediation/adrs/cast-safety-strategy.md) — annotation conventions
+- [Numeric conversion conventions](../adrs/0020-numeric-conversion-conventions.md) — Phase 2 enforcement plan
+- [Cast safety strategy](../adrs/0018-cast-safety-strategy.md) — annotation conventions
 
 ## Cross-cutting Concerns
 

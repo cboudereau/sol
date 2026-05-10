@@ -3,7 +3,7 @@ status: accepted
 ---
 # Align OTLP sink retry logic with OTLP specification and base HttpRetryLogic
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3)
+Addresses: [FR1](../designs/20260510_otlp-sink-error-classification.md#fr1), [FR2](../designs/20260510_otlp-sink-error-classification.md#fr2), [FR3](../designs/20260510_otlp-sink-error-classification.md#fr3)
 
 ## Problem
 

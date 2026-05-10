@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Numeric conversion conventions for sinks, sources, and transforms
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR2](../DESIGN.md#nfr2), [NFR4](../DESIGN.md#nfr4)
+Addresses: [FR1](../designs/20260510_clippy-lint-remediation.md#fr1), [NFR2](../designs/20260510_clippy-lint-remediation.md#nfr2), [NFR4](../designs/20260510_clippy-lint-remediation.md#nfr4)
 
 ## Problem
 
@@ -74,7 +74,7 @@ Examples:
 Rationale:
 - Enabling `deny(pedantic)` on `src/` would trigger thousands of errors and is
   out of scope for this workspace
-- The conventions established in [cast-safety-strategy](./cast-safety-strategy.md)
+- The conventions established in [cast-safety-strategy](./0018-cast-safety-strategy.md)
   for the VRL ↔ OTLP boundary apply equally to all protocol boundaries
 - Sinks and sources can adopt `#[deny(clippy::cast_precision_loss)]` and
   `#[deny(clippy::cast_possible_truncation)]` at the module level as they are

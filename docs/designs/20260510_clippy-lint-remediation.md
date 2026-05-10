@@ -99,7 +99,7 @@ Sol moved the OTLP conversion code into `sol-core`, which has
 
 For crates without `deny(pedantic)` (like `src/`), Sol establishes
 **documented conventions** (see
-[numeric conversion conventions ADR](./adrs/numeric-conversion-conventions.md)):
+[numeric conversion conventions ADR](../adrs/0020-numeric-conversion-conventions.md)):
 every protocol-boundary cast must have either:
 - `.into()` for lossless widening (compiler-enforced)
 - A safety comment explaining the precision/truncation bound
@@ -107,7 +107,7 @@ every protocol-boundary cast must have either:
 This is enforced by code review, not by the compiler — the lint level does not
 change for `src/`. When a sink or source is next modified, the convention
 applies. See the
-[ADR enforcement plan](./adrs/numeric-conversion-conventions.md) for details.
+[ADR enforcement plan](../adrs/0020-numeric-conversion-conventions.md) for details.
 
 ## Functional Requirements
 
@@ -116,14 +116,14 @@ applies. See the
 The existing `deny(clippy::pedantic)` in `lib/sol-core/src/lib.rs` already
 enforces `cast_precision_loss` and `cast_possible_truncation`. Do **not** add
 crate-wide `#![allow(...)]` for these. Instead, replace boundary casts with
-[typed boundary conversions](./adrs/otlp-boundary-types.md), and annotate
+[typed boundary conversions](../adrs/0021-otlp-boundary-types.md), and annotate
 remaining non-boundary casts with `#[expect(..., reason = "...")]`.
 
 ### <a id="fr2"></a>FR2 — Fix or annotate all casts in otel_metric.rs
 
 Address all 53 casts in `otel_metric.rs` (23 `as i32`, 16 `as f64`, 5 `as u64`,
 7 `as i64`, 2 `as u32`). Each cast must be either:
-- Replaced with a [typed boundary conversion](./adrs/otlp-boundary-types.md)
+- Replaced with a [typed boundary conversion](../adrs/0021-otlp-boundary-types.md)
   (`OtlpTimestamp`, `OtlpCount`, `OtlpEnumField`, `OtlpMetricInt`)
 - Replaced with `.into()` for direct lossless widening (e.g., `u32 → f64`)
 - Annotated with function-level `#[expect(..., reason = "...")]` for
@@ -149,14 +149,14 @@ All 400 errors are fixable. The breakdown by lint category:
 |---|---|---|
 | `doc_markdown` | 81 | Add backticks in Sol-authored doc comments |
 | `redundant_closure` | 67 | `cargo clippy --fix` or manual |
-| `cast_possible_truncation` | 49 | Boundary types (`OtlpCount`, `OtlpEnumField`) or function-level `#[expect]` — see [ADR](./adrs/otlp-boundary-types.md) |
+| `cast_possible_truncation` | 49 | Boundary types (`OtlpCount`, `OtlpEnumField`) or function-level `#[expect]` — see [ADR](../adrs/0021-otlp-boundary-types.md) |
 | `cast_lossless` | 44 | Boundary types (`.to_vrl()` uses `.into()` internally) or direct `.into()` |
 | `collapsible_if` | 23 | `cargo clippy --fix` |
 | `map_unwrap_or` | 14 | `cargo clippy --fix` |
 | `single_match_else` | 13 | Rewrite as `if let` |
 | `needless_pass_by_value` | 13 | Change to `&T` |
 | `manual_let_else` | 11 | Rewrite as `let...else` |
-| `cast_precision_loss` | 10 | `OtlpMetricInt::to_f64()` or local `#[expect]` for non-boundary casts — see [ADR](./adrs/otlp-boundary-types.md) |
+| `cast_precision_loss` | 10 | `OtlpMetricInt::to_f64()` or local `#[expect]` for non-boundary casts — see [ADR](../adrs/0021-otlp-boundary-types.md) |
 | `match_same_arms` | 6 | Merge arms |
 | `missing_errors_doc` | 6 | Add `# Errors` doc section |
 | `return_self_not_must_use` | 6 | Add `#[must_use]` |
@@ -253,7 +253,7 @@ match the local dev command exactly. After this work, verify that:
   (`cast_precision_loss`: 263, `cast_sign_loss`: 42, `cast_possible_truncation`:
   37, `cast_lossless`: 37, `cast_possible_wrap`: 19). The patterns are highly
   repetitive — two files alone account for 36% of all warnings. The
-  [numeric conversion conventions ADR](./adrs/numeric-conversion-conventions.md)
+  [numeric conversion conventions ADR](../adrs/0020-numeric-conversion-conventions.md)
   establishes the rules; a dedicated workspace covers the remediation.
 - **Refactor the VRL Value type boundary**: The `i64 ↔ u64` mismatch is
   inherent to how VRL's `Value::Integer(i64)` represents all integers. Changing
@@ -336,7 +336,7 @@ Each cast gets one of four treatments:
 Rather than scattering `#[expect]` annotations across ~87 call sites with
 identical safety arguments, each OTLP wire type gets a newtype that
 encapsulates both the cast and its safety reasoning (see
-[otlp-boundary-types ADR](./adrs/otlp-boundary-types.md)):
+[otlp-boundary-types ADR](../adrs/0021-otlp-boundary-types.md)):
 
 | Newtype | Wraps | Sites | Key conversions |
 |---|---|---|---|
@@ -383,10 +383,10 @@ let cardinality = set.len() as f64;
 ```
 
 Decisions:
-- [VRL ↔ OTLP cast safety strategy](./adrs/cast-safety-strategy.md)
-- [Typed boundary conversions](./adrs/otlp-boundary-types.md)
-- [Inherited lint policy](./adrs/inherited-lint-policy.md)
-- [Numeric conversion conventions for sinks/sources/transforms](./adrs/numeric-conversion-conventions.md)
+- [VRL ↔ OTLP cast safety strategy](../adrs/0018-cast-safety-strategy.md)
+- [Typed boundary conversions](../adrs/0021-otlp-boundary-types.md)
+- [Inherited lint policy](../adrs/0019-inherited-lint-policy.md)
+- [Numeric conversion conventions for sinks/sources/transforms](../adrs/0020-numeric-conversion-conventions.md)
 
 ## Cross-cutting Concerns
 

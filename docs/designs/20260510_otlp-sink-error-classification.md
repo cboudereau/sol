@@ -93,7 +93,7 @@ The fix requires two changes per transport:
 1. **Refine `is_retriable_error()`** on `OtlpRetryLogic` to inspect `tonic::Status` code and only retry transient gRPC errors.
 
 Decisions:
-- [OTLP retry alignment](./adrs/otlp-retry-alignment.md)
+- [OTLP retry alignment](../adrs/0022-otlp-retry-alignment.md)
 
 ## Cross-cutting Concerns
 

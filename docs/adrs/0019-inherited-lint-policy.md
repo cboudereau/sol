@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Inherited lint policy for upstream Vector code
 
-Addresses: [FR6](../DESIGN.md#fr6), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR6](../designs/20260510_clippy-lint-remediation.md#fr6), [NFR1](../designs/20260510_clippy-lint-remediation.md#nfr1)
 
 ## Problem
 
