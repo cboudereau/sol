@@ -23,6 +23,8 @@ jobs:
   checks:
     name: Checks
     uses: ./.github/workflows/checks.yml
+    with:
+      component-validation: true
 
   generate-metadata:
     name: Generate version metadata
