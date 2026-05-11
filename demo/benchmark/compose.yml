@@ -4,7 +4,7 @@ services:
   # ── Single-instance services (noop + tail-sampling scenarios) ──
 
   sol:
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/${SOL_CONFIG:-noop.yaml}"]
     volumes:
       - ./sol/:/etc/sol/:ro
@@ -59,7 +59,7 @@ services:
   # ── Load-balanced services (lb-tail-sampling scenarios) ────────
 
   sol-lb:
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/lb.yaml"]
     volumes:
       - ./sol/:/etc/sol/:ro
@@ -80,7 +80,7 @@ services:
           memory: 1G
 
   sol-collector:
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/lb-collector.yaml"]
     volumes:
       - ./sol/:/etc/sol/:ro

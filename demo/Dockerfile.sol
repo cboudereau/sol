@@ -1,6 +1,6 @@
 ARG RUST_VERSION=1.92
 ARG DEBIAN_RELEASE=trixie
-ARG FEATURES=api,sources-opentelemetry,sources-internal_metrics,sources-host_metrics,sinks-console,sinks-opentelemetry,transforms-remap,transforms-tail_sampling,transforms-span_metrics,transforms-servicegraph
+ARG FEATURES=api,sources-opentelemetry,sources-internal_metrics,sources-host_metrics,sinks-blackhole,sinks-console,sinks-opentelemetry,sinks-prometheus,transforms-remap,transforms-tail_sampling,transforms-span_metrics,transforms-servicegraph
 
 FROM docker.io/rust:${RUST_VERSION}-${DEBIAN_RELEASE} AS builder
 RUN apt-get update && apt-get -y --no-install-recommends install \
