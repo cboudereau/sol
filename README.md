@@ -55,8 +55,19 @@ Sol diverges from Vector on protocol and architecture choices. The table below s
 ## Quick start
 
 ```bash
+docker run --rm -v $(pwd)/sol.yaml:/etc/sol/sol.yaml:ro superbeeeeeee/sol:latest --config /etc/sol/sol.yaml
+```
+
+Or run the binary directly:
+
+```bash
 sol --config /etc/sol/sol.yaml
 ```
+
+### Demos
+
+- **[OTLP drop-in replacement](demo/otel-drop-in/)** — run Sol side-by-side with the OpenTelemetry Collector Contrib and compare OTLP/JSON output
+- **[Full observability stack](demo/otel-sol-grafana-dotnet/)** — Sol gateway/loadbalancer/collector pipeline with Grafana, Loki, Mimir, and Tempo
 
 ## License
 
