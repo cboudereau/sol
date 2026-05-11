@@ -17,8 +17,6 @@ use crate::{
     tls::MaybeTlsSettings,
 };
 
-mod decompression;
-pub use self::decompression::{DecompressionAndMetrics, DecompressionAndMetricsLayer};
 
 pub async fn run_grpc_server<S>(
     address: SocketAddr,
@@ -43,7 +41,6 @@ where
 
     Server::builder()
         .layer(GrpcTraceLayer::new(span.clone()))
-        .layer(DecompressionAndMetricsLayer)
         .add_service(service)
         .serve_with_incoming_shutdown(stream, shutdown.map(|token| tx.send(token).unwrap()))
         .await?;
@@ -68,7 +65,6 @@ pub async fn run_grpc_server_with_routes(
 
     Server::builder()
         .layer(GrpcTraceLayer::new(span.clone()))
-        .layer(DecompressionAndMetricsLayer)
         .add_routes(routes)
         .serve_with_incoming_shutdown(stream, shutdown.map(|token| tx.send(token).unwrap()))
         .await?;
@@ -124,9 +120,10 @@ where
     }
 
     fn call(&mut self, req: http_1::Request<BoxBody>) -> Self::Future {
-        let mut path = req.uri().path().split('/');
-        let service = path.nth(1).unwrap_or("_unknown").to_owned();
-        let method = path.next().unwrap_or("_unknown").to_owned();
+        let path = req.uri().path();
+        let mut parts = path.split('/');
+        let service = parts.nth(1).unwrap_or("_unknown");
+        let method = parts.next().unwrap_or("_unknown");
 
         let request_span = error_span!(
             parent: &self.span,

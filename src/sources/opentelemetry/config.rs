@@ -145,30 +145,26 @@ impl SourceConfig for OpentelemetryConfig {
         let events_received = register!(EventsReceived);
 
         let grpc_tls_settings = MaybeTlsSettings::from_config(self.grpc.tls.as_ref(), true)?;
-
-        let log_service = LogsServiceServer::new(Service {
-            pipeline: cx.out.clone(),
+        let grpc_bytes_received =
+            register!(BytesReceived::from(Protocol::from("grpc")));
+        let grpc_service = Service {
+            pipeline: cx.out.clone().into_shared(),
             acknowledgements,
             events_received: events_received.clone(),
-        })
-        .accept_compressed(CompressionEncoding::Gzip)
-        .max_decoding_message_size(usize::MAX);
+            bytes_received: grpc_bytes_received,
+        };
 
-        let metrics_service = MetricsServiceServer::new(Service {
-            pipeline: cx.out.clone(),
-            acknowledgements,
-            events_received: events_received.clone(),
-        })
-        .accept_compressed(CompressionEncoding::Gzip)
-        .max_decoding_message_size(usize::MAX);
+        let log_service = LogsServiceServer::new(grpc_service.clone())
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
 
-        let trace_service = TraceServiceServer::new(Service {
-            pipeline: cx.out.clone(),
-            acknowledgements,
-            events_received: events_received.clone(),
-        })
-        .accept_compressed(CompressionEncoding::Gzip)
-        .max_decoding_message_size(usize::MAX);
+        let metrics_service = MetricsServiceServer::new(grpc_service.clone())
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
+
+        let trace_service = TraceServiceServer::new(grpc_service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
 
         let mut builder = RoutesBuilder::default();
         builder

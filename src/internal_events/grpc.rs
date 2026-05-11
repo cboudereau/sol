@@ -3,7 +3,7 @@ use std::time::Duration;
 use http_1::response::Response;
 use metrics::{counter, histogram};
 use sol_lib::NamedInternalEvent;
-use sol_lib::internal_event::{InternalEvent, error_stage, error_type};
+use sol_lib::internal_event::InternalEvent;
 use tonic::Code;
 
 const GRPC_STATUS_LABEL: &str = "grpc_status";
@@ -39,52 +39,6 @@ impl<B> InternalEvent for GrpcServerResponseSent<'_, B> {
     }
 }
 
-#[derive(Debug, NamedInternalEvent)]
-pub struct GrpcInvalidCompressionSchemeError<'a> {
-    pub status: &'a tonic::Status,
-}
-
-impl InternalEvent for GrpcInvalidCompressionSchemeError<'_> {
-    fn emit(self) {
-        error!(
-            message = "Invalid compression scheme.",
-            error = ?self.status.message(),
-            error_type = error_type::REQUEST_FAILED,
-            stage = error_stage::RECEIVING
-        );
-        counter!(
-            "component_errors_total",
-            "error_type" => error_type::REQUEST_FAILED,
-            "stage" => error_stage::RECEIVING,
-        )
-        .increment(1);
-    }
-}
-
-#[derive(Debug, NamedInternalEvent)]
-pub struct GrpcError<E> {
-    pub error: E,
-}
-
-impl<E> InternalEvent for GrpcError<E>
-where
-    E: std::fmt::Display,
-{
-    fn emit(self) {
-        error!(
-            message = "Grpc error.",
-            error = %self.error,
-            error_type = error_type::REQUEST_FAILED,
-            stage = error_stage::RECEIVING
-        );
-        counter!(
-            "component_errors_total",
-            "error_type" => error_type::REQUEST_FAILED,
-            "stage" => error_stage::RECEIVING,
-        )
-        .increment(1);
-    }
-}
 
 const fn grpc_code_to_name(code: Code) -> &'static str {
     match code {

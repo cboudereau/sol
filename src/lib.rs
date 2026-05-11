@@ -135,7 +135,9 @@ pub mod vector_windows;
 pub mod vrl_migrate;
 
 pub use sol_lib::{
-    Error, Result, event, metrics, schema, shutdown, source_sender::SourceSender, tcp, tls,
+    Error, Result, event, metrics, schema, shutdown,
+    source_sender::{SharedSourceSender, SourceSender},
+    tcp, tls,
 };
 
 static APP_NAME_SLUG: std::sync::OnceLock<String> = std::sync::OnceLock::new();

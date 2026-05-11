@@ -2,7 +2,7 @@ use futures::TryFutureExt;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
-    internal_event::{CountByteSize, InternalEventHandle as _, Registered},
+    internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered},
     opentelemetry::proto::collector::{
         logs::v1::{
             ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
@@ -20,7 +20,7 @@ use sol_lib::{
 use tonic::{Request, Response, Status};
 
 use crate::{
-    SourceSender,
+    SharedSourceSender,
     internal_events::{EventsReceived, StreamClosedError},
 };
 
@@ -30,9 +30,10 @@ pub const TRACES: &str = "traces";
 
 #[derive(Clone)]
 pub(crate) struct Service {
-    pub pipeline: SourceSender,
+    pub pipeline: SharedSourceSender,
     pub acknowledgements: bool,
     pub events_received: Registered<EventsReceived>,
+    pub bytes_received: Registered<BytesReceived>,
 }
 
 #[tonic::async_trait]
@@ -104,11 +105,11 @@ impl Service {
         let count = events.len();
         let byte_size = events.estimated_json_encoded_size_of();
         self.events_received.emit(CountByteSize(count, byte_size));
+        self.bytes_received.emit(ByteSize(byte_size.get()));
 
         let receiver = BatchNotifier::maybe_apply_to(self.acknowledgements, &mut events);
 
         self.pipeline
-            .clone()
             .send_batch_named(log_name, events)
             .map_err(|error| {
                 let message = error.to_string();

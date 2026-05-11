@@ -8,6 +8,7 @@ use futures::TryFutureExt;
 use sol_lib::{
     codecs::BytesDeserializerConfig,
     configurable::configurable_component,
+    internal_event::{BytesReceived, Protocol},
     opentelemetry::proto::collector::{
         logs::v1::logs_service_server::LogsServiceServer,
         metrics::v1::metrics_service_server::MetricsServiceServer,
@@ -116,9 +117,10 @@ impl SourceConfig for VectorConfig {
 
         // OTLP service (for native OTel clients).
         let otlp_service = Service {
-            pipeline: cx.out.clone(),
+            pipeline: cx.out.clone().into_shared(),
             acknowledgements,
             events_received: events_received.clone(),
+            bytes_received: register!(BytesReceived::from(Protocol::from("grpc"))),
         };
 
         let log_service = LogsServiceServer::new(otlp_service.clone())

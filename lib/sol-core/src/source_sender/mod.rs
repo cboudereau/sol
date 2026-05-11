@@ -15,7 +15,7 @@ mod tests;
 pub use builder::Builder;
 pub use errors::SendError;
 use output::Output;
-pub use sender::{SourceSender, SourceSenderItem};
+pub use sender::{SharedSourceSender, SourceSender, SourceSenderItem};
 
 pub const CHUNK_SIZE: usize = 1000;
 

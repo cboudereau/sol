@@ -1,6 +1,6 @@
 #[cfg(any(test, feature = "test"))]
 use std::time::Duration;
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use futures::Stream;
 #[cfg(any(test, feature = "test"))]
@@ -255,5 +255,38 @@ impl SourceSender {
             .expect("unknown output")
             .send_batch(events)
             .await
+    }
+
+    pub fn into_shared(self) -> SharedSourceSender {
+        SharedSourceSender::from_sender(self)
+    }
+}
+
+/// A shared version of [`SourceSender`] that uses per-output locking, allowing
+/// concurrent sends to different named outputs (e.g. logs, traces, metrics)
+/// without cross-signal contention.
+#[derive(Clone)]
+pub struct SharedSourceSender {
+    named_outputs: HashMap<String, Arc<tokio::sync::Mutex<Output>>>,
+}
+
+impl SharedSourceSender {
+    fn from_sender(sender: SourceSender) -> Self {
+        let named_outputs = sender
+            .named_outputs
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(tokio::sync::Mutex::new(v))))
+            .collect();
+        Self { named_outputs }
+    }
+
+    pub async fn send_batch_named<I, E>(&self, name: &str, events: I) -> Result<(), SendError>
+    where
+        E: Into<Event> + ByteSizeOf,
+        I: IntoIterator<Item = E>,
+        <I as IntoIterator>::IntoIter: ExactSizeIterator,
+    {
+        let output = self.named_outputs.get(name).expect("unknown output");
+        output.lock().await.send_batch(events).await
     }
 }

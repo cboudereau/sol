@@ -80,12 +80,12 @@ classDiagram
 **Verify**: `cargo test -p sol --lib sources::opentelemetry && cargo clippy`
 
 **Acceptance criteria**:
-- [ ] `DecompressionAndMetricsLayer` not used in `run_grpc_server` or `run_grpc_server_with_routes`
-- [ ] `decompression.rs` deleted (or emptied if re-exports are needed)
-- [ ] `Service` struct has `bytes_received` field and emits in `handle_events`
-- [ ] Gzip-compressed gRPC requests still work (tonic handles it)
-- [ ] `sources::vector` still compiles and works without the layer
-- [ ] Existing tests pass
+- [x] `DecompressionAndMetricsLayer` not used in `run_grpc_server` or `run_grpc_server_with_routes`
+- [x] `decompression.rs` deleted (or emptied if re-exports are needed)
+- [x] `Service` struct has `bytes_received` field and emits in `handle_events`
+- [ ] Gzip-compressed gRPC requests still work (tonic handles it) — needs benchmark validation
+- [x] `sources::vector` still compiles and works without the layer
+- [x] Existing tests pass
 
 **Depends on**: (none)
 **Time-box**: ~90 min
@@ -111,12 +111,12 @@ classDiagram
 **Verify**: `cargo test -p sol --lib sources::opentelemetry`
 
 **Acceptance criteria**:
-- [ ] `SharedSourceSender` type exists with per-output `Arc<tokio::sync::Mutex<Output>>`
-- [ ] `Service.pipeline` is `SharedSourceSender`
-- [ ] No `self.pipeline.clone()` in `handle_events`
-- [ ] Different signals (logs, traces, metrics) don't contend on the same lock
-- [ ] Concurrent requests handled without deadlock
-- [ ] Existing tests pass
+- [x] `SharedSourceSender` type exists with per-output `Arc<tokio::sync::Mutex<Output>>`
+- [x] `Service.pipeline` is `SharedSourceSender`
+- [x] No `self.pipeline.clone()` in `handle_events`
+- [x] Different signals (logs, traces, metrics) don't contend on the same lock
+- [ ] Concurrent requests handled without deadlock — needs benchmark validation
+- [x] Existing tests pass
 
 **Depends on**: (none)
 **Time-box**: ~60 min
@@ -137,9 +137,9 @@ classDiagram
 **Verify**: `cargo test -p sol --lib sources::util::grpc`
 
 **Acceptance criteria**:
-- [ ] No `to_owned()` calls in `GrpcTraceService::call`
-- [ ] Tracing span still records service and method names
-- [ ] Existing tests pass
+- [x] No `to_owned()` calls in `GrpcTraceService::call`
+- [x] Tracing span still records service and method names
+- [x] Existing tests pass
 
 **Depends on**: (none)
 **Time-box**: ~45 min
