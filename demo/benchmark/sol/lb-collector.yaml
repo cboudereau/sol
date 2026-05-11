@@ -1,0 +1,50 @@
+sources:
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:4317"
+
+  self_metrics:
+    type: internal_metrics
+
+transforms:
+  tail_sampling:
+    type: tail_sampling
+    inputs: ["otlp.traces"]
+    decision_wait_secs: 10
+    num_traces: 50000
+    policies:
+      - type: and
+        name: sampled-latency-policy
+        sub_policies:
+          - type: latency
+            name: latency-policy
+            threshold_ms: 100
+          - type: probabilistic
+            name: probabilistic-policy
+            sampling_percentage: 10.0
+      - type: latency
+        name: high-latency-policy
+        threshold_ms: 500
+      - type: and
+        name: sampled-error-policy
+        sub_policies:
+          - type: status_code
+            name: status-code-error-policy
+            status_codes: ["ERROR"]
+          - type: string_attribute
+            name: http-status-code-error-policy
+            key: error.type
+            values: [4..]
+            enabled_regex_matching: true
+            invert_match: true
+
+sinks:
+  blackhole:
+    type: blackhole
+    inputs: ["tail_sampling"]
+
+  prometheus:
+    type: prometheus_exporter
+    inputs: ["self_metrics"]
+    address: "0.0.0.0:9598"

@@ -1,0 +1,159 @@
+name: benchmark-sol-vs-otelcol
+
+services:
+  # ── Single-instance services (noop + tail-sampling scenarios) ──
+
+  sol:
+    image: superbeeeeeee/sol:latest
+    command: ["--config", "/etc/sol/${SOL_CONFIG:-noop.yaml}"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    ports:
+      - "4327:4317"
+      - "4328:4318"
+      - "9598:9598"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  vector:
+    image: timberio/vector:latest-alpine
+    command: ["--config", "/etc/vector/${VECTOR_CONFIG:-noop.yaml}"]
+    volumes:
+      - ./vector/:/etc/vector/:ro
+    networks:
+      - bench
+    ports:
+      - "4357:4317"
+      - "4358:4318"
+      - "9600:9598"
+    profiles:
+      - vector
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  otelcontribcol:
+    image: otel/opentelemetry-collector-contrib:0.122.0
+    command: "--config /etc/otelcol/${OTELCOL_CONFIG:-noop.yml}"
+    volumes:
+      - ./otelcontribcol/:/etc/otelcol/:ro
+    networks:
+      - bench
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  # ── Load-balanced services (lb-tail-sampling scenarios) ────────
+
+  sol-lb:
+    image: superbeeeeeee/sol:latest
+    command: ["--config", "/etc/sol/lb.yaml"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    ports:
+      - "4337:4317"
+      - "4338:4318"
+      - "9599:9598"
+    depends_on:
+      - sol-collector
+    profiles:
+      - lb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  sol-collector:
+    image: superbeeeeeee/sol:latest
+    command: ["--config", "/etc/sol/lb-collector.yaml"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    profiles:
+      - lb
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  otelcol-lb:
+    image: otel/opentelemetry-collector-contrib:0.122.0
+    command: "--config /etc/otelcol/lb.yml"
+    volumes:
+      - ./otelcontribcol/:/etc/otelcol/:ro
+    networks:
+      - bench
+    ports:
+      - "4347:4317"
+      - "4348:4318"
+      - "8889:8888"
+    depends_on:
+      - otelcol-collector
+    profiles:
+      - lb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  otelcol-collector:
+    image: otel/opentelemetry-collector-contrib:0.122.0
+    command: "--config /etc/otelcol/lb-collector.yml"
+    volumes:
+      - ./otelcontribcol/:/etc/otelcol/:ro
+    networks:
+      - bench
+    profiles:
+      - lb
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  # ── Infrastructure ─────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1h"
+    volumes:
+      - ./prometheus/:/etc/prometheus/:ro
+    networks:
+      - bench
+    ports:
+      - "9090:9090"
+
+  telemetrygen:
+    build:
+      context: ../../tests/e2e/opentelemetry-common
+      dockerfile: telemetrygen.Dockerfile
+    networks:
+      - bench
+    profiles:
+      - tools
+
+networks:
+  bench:

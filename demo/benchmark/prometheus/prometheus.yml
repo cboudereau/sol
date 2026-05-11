@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: sol
+    static_configs:
+      - targets: ["sol:9598"]
+
+  - job_name: vector
+    static_configs:
+      - targets: ["vector:9598"]
+
+  - job_name: otelcontribcol
+    static_configs:
+      - targets: ["otelcontribcol:8888"]
+
+  - job_name: sol-lb
+    static_configs:
+      - targets: ["sol-lb:9598"]
+
+  - job_name: sol-collector
+    dns_sd_configs:
+      - names: ["sol-collector"]
+        type: A
+        port: 9598
+
+  - job_name: otelcol-lb
+    static_configs:
+      - targets: ["otelcol-lb:8888"]
+
+  - job_name: otelcol-collector
+    dns_sd_configs:
+      - names: ["otelcol-collector"]
+        type: A
+        port: 8888

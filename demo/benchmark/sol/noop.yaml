@@ -1,0 +1,20 @@
+sources:
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:4317"
+    http:
+      address: "0.0.0.0:4318"
+
+  self_metrics:
+    type: internal_metrics
+
+sinks:
+  blackhole:
+    type: blackhole
+    inputs: ["otlp.logs", "otlp.metrics", "otlp.traces"]
+
+  prometheus:
+    type: prometheus_exporter
+    inputs: ["self_metrics"]
+    address: "0.0.0.0:9598"

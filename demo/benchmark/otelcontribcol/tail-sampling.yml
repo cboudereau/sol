@@ -1,0 +1,51 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  tail_sampling/latency-error:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: latency-policy
+        type: latency
+        latency: {threshold_ms: 100}
+      - name: error-policy
+        type: and
+        and:
+          and_sub_policy:
+            - name: status_code-error-policy
+              type: status_code
+              status_code: {status_codes: [ERROR]}
+            - name: http-status-code-error-policy
+              type: string_attribute
+              string_attribute:
+                key: error.type
+                values: [4..]
+                enabled_regex_matching: true
+                invert_match: true
+
+  tail_sampling/probabilistic:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic: {sampling_percentage: 10}
+
+exporters:
+  nop: {}
+
+service:
+  telemetry:
+    metrics:
+      address: "0.0.0.0:8888"
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling/latency-error, tail_sampling/probabilistic]
+      exporters: [nop]
