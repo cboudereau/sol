@@ -438,12 +438,15 @@ declare -a NOOP_SCENARIOS=(
   "noop-traces-grpc-10k|traces|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-traces-grpc-10k-gzip|traces|grpc|10000|4|$DEFAULT_DURATION||gzip"
   "noop-traces-grpc-50k|traces|grpc|50000|8|$DEFAULT_DURATION||"
+  "noop-traces-http-10k|traces|http|10000|4|$DEFAULT_DURATION||"
   "noop-logs-grpc-10k|logs|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-logs-grpc-10k-gzip|logs|grpc|10000|4|$DEFAULT_DURATION||gzip"
+  "noop-logs-grpc-50k|logs|grpc|50000|8|$DEFAULT_DURATION||"
   "noop-logs-http-10k|logs|http|10000|4|$DEFAULT_DURATION||"
   "noop-metrics-grpc-10k|metrics|grpc|10000|4|$DEFAULT_DURATION||"
+  "noop-metrics-grpc-10k-gzip|metrics|grpc|10000|4|$DEFAULT_DURATION||gzip"
+  "noop-metrics-grpc-50k|metrics|grpc|50000|8|$DEFAULT_DURATION||"
   "noop-metrics-http-10k|metrics|http|10000|4|$DEFAULT_DURATION||"
-  "noop-logs-grpc-50k|logs|grpc|50000|8|$DEFAULT_DURATION||"
 )
 
 declare -a TS_SCENARIOS=(

@@ -48,12 +48,15 @@ telemetrygen ──► sol-lb ──┬──► sol-collector-1         otelcol
 | `noop-traces-grpc-10k` | Sol, Vector, otelcol | traces | gRPC | none | Batched trace throughput |
 | `noop-traces-grpc-10k-gzip` | Sol, Vector, otelcol | traces | gRPC | gzip | Batched traces with compression |
 | `noop-traces-grpc-50k` | Sol, Vector, otelcol | traces | gRPC | none | Batched throughput at high load |
+| `noop-traces-http-10k` | Sol, Vector, otelcol | traces | HTTP | none | HTTP trace throughput baseline |
 | `noop-logs-grpc-10k` | Sol, Vector, otelcol | logs | gRPC | none | Per-request overhead (1 log/call) |
 | `noop-logs-grpc-10k-gzip` | Sol, Vector, otelcol | logs | gRPC | gzip | Per-request overhead with compression |
+| `noop-logs-grpc-50k` | Sol, Vector, otelcol | logs | gRPC | none | Per-request overhead at high load |
 | `noop-logs-http-10k` | Sol, Vector, otelcol | logs | HTTP | none | HTTP throughput baseline |
 | `noop-metrics-grpc-10k` | Sol, Vector, otelcol | metrics | gRPC | none | Metric per-request overhead |
+| `noop-metrics-grpc-10k-gzip` | Sol, Vector, otelcol | metrics | gRPC | gzip | Metric per-request with compression |
+| `noop-metrics-grpc-50k` | Sol, Vector, otelcol | metrics | gRPC | none | Metric throughput at high load |
 | `noop-metrics-http-10k` | Sol, Vector, otelcol | metrics | HTTP | none | HTTP metric throughput |
-| `noop-logs-grpc-50k` | Sol, Vector, otelcol | logs | gRPC | none | Per-request overhead at high load |
 | `tail-sampling-traces-grpc-10k` | Sol, otelcol | traces | gRPC | none | Tail sampling throughput |
 | `tail-sampling-traces-grpc-10k-gzip` | Sol, otelcol | traces | gRPC | gzip | Tail sampling with compression |
 | `tail-sampling-traces-grpc-50k` | Sol, otelcol | traces | gRPC | none | Tail sampling at high load |
@@ -102,9 +105,9 @@ Results are written to `results/RESULTS.md`.
 
 | Category | Scenarios | Systems | Duration |
 |----------|-----------|---------|----------|
-| Noop | 7 (traces gRPC 10k/50k, logs gRPC/HTTP 10k + gRPC 50k, metrics gRPC/HTTP 10k) | Sol, Vector, otelcol | 60s each |
-| Tail sampling | 2 (traces gRPC at 10k and 50k) | Sol, otelcol | 60s each |
-| Load-balanced tail sampling | 2 (traces gRPC at 10k and 50k) | Sol, otelcol | 60s each |
+| Noop | 12 (traces gRPC 10k/10k-gzip/50k + HTTP 10k, logs gRPC 10k/10k-gzip/50k + HTTP 10k, metrics gRPC 10k/10k-gzip/50k + HTTP 10k) | Sol, Vector, otelcol | 60s each |
+| Tail sampling | 3 (traces gRPC at 10k, 10k-gzip, 50k) | Sol, otelcol | 60s each |
+| Load-balanced tail sampling | 3 (traces gRPC at 10k, 10k-gzip, 50k) | Sol, otelcol | 60s each |
 | Sustained memory | 2 (noop-logs + tail-sampling-traces at 10k) | varies | 300s each |
 
 > **Note on batching**: telemetrygen traces are batched by default (many spans per gRPC call). Logs have no batch option (always 1 log per gRPC call). `--batch=false` for traces exists but is broken in telemetrygen v0.137.0 (gRPC channel never connects). Log scenarios naturally expose per-request overhead.
