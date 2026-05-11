@@ -18,9 +18,10 @@ services:
 
   # ── Sol (drop-in replacement) ─────────────────────────────────
   sol:
-    build:
-      context: ../..
-      dockerfile: demo/Dockerfile.sol
+    # build:
+    #   context: ../..
+    #   dockerfile: demo/Dockerfile.sol
+    image: superbeeeeeee/sol:latest
     command: ["--config", "/etc/sol/sol.yaml"]
     volumes:
       - ./sol/:/etc/sol/:ro
