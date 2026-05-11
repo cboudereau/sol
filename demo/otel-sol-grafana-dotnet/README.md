@@ -1,349 +1,203 @@
-# 2024-02-28 #10 OpenTelemetry Looks Good To Me for dotnet
+# Sol + Grafana LGTM stack
 
-This post has been adapted for dotnet from the [previous java post](../2024-01-31_OpenTelemetry_Looks_Good_To_Me/). A new dashboard is available for specific dotnet instrumentation: [OpenTelemetry dotnet webapi](https://grafana.com/grafana/dashboards/20568-opentelemetry-dotnet-webapi/).
-
-OpenTelemetry Collector Contrib configuration is the same as java since, both java and dotnet are using the same OTLP specification. This is a good things for SRE supporting multiple stacks and languages since the gateway configuration is common.
-
-## Disclaimer
-⚠️This demo is not a grafana labs production ready demo and used as local dev hands on and demo only.
-
-Security, scalling and so on will not be introduced and GrafanaCloud offers the best experience and a no brainer solution to start with.
+End-to-end observability demo with Sol as the telemetry pipeline, example apps (to produce telemetry), and the Grafana LGTM stack (Loki, Grafana, Tempo, Mimir).
 
 ## Architecture
 
-This demo includes 2 dotnet webapi applications (service and client) and a postgres database to use webserver and custom dotnet instrumentations.
+Two .NET webapi applications (client and service) send OTLP telemetry to a three-tier Sol pipeline:
 
-[OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib) has been used as a [Gateway](https://opentelemetry.io/docs/collector/deployment/gateway/)
+```mermaid
+graph TD
+    subgraph Apps
+        client[client<br/>.NET webapi]
+        service[service<br/>.NET webapi]
+        db[(PostgreSQL)]
+        client -- HTTP --> service
+        service -- SQL --> db
+    end
 
-![docker compose services](./docker-compose.png)
+    subgraph Sol Pipeline
+        gw[sol-gateway<br/>OTLP ingestion + host metrics]
+        lb[sol-loadbalancer<br/>trace_id consistent hashing]
+        col[sol-collector ×2<br/>tail sampling · span metrics · service graph]
+    end
+
+    client -- OTLP gRPC --> gw
+    service -- OTLP gRPC --> gw
+
+    gw -- traces --> lb
+    lb -- traces --> col
+
+    subgraph Grafana LGTM
+        loki[Loki<br/>logs]
+        mimir[Mimir<br/>metrics]
+        tempo[Tempo<br/>traces]
+        grafana[Grafana<br/>:3000]
+        loki --> grafana
+        mimir --> grafana
+        tempo --> grafana
+    end
+
+    gw -- logs --> loki
+    gw -- metrics --> mimir
+    gw -- self metrics --> mimir
+    col -- sampled traces --> tempo
+    col -- span metrics + service graph --> mimir
+```
+
+### Sol pipeline roles
+
+| Component | Config | Role |
+|---|---|---|
+| **sol-gateway** | [sol-gateway.yaml](./sol/sol-gateway.yaml) | OTLP ingestion, host metrics, resource attribute promotion, routes logs/metrics/traces to backends |
+| **sol-loadbalancer** | [sol-loadbalancer.yaml](./sol/sol-loadbalancer.yaml) | Consistent-hash routing on `trace_id` via DNS resolution to sol-collector replicas |
+| **sol-collector** | [sol-collector.yaml](./sol/sol-collector.yaml) | Tail sampling, span metrics, service graph generation, forwards to Tempo and Mimir |
+
+### Backends
+
+| Service | Purpose |
+|---|---|
+| **Grafana** | Dashboards and exploration (port 3000) |
+| **Loki** | Log storage |
+| **Mimir** | Metric storage (OTLP HTTP) |
+| **Tempo** | Trace storage (OTLP gRPC) |
+| **PostgreSQL** | Application database for the .NET service |
 
 ## Run locally
 
-### Run the docker compose
 ```bash
-git clone git@github.com:o11y-weekly/o11y-weekly.github.io.git
-cd o11y-weekly.github.io/2024-02-28_OpenTelemetry_Looks_Good_To_Me_dotnet/
-./up.sh
+docker compose up -d
 ```
-### Run Grafana
+
 Open Grafana: http://localhost:3000
 
-2 folders:
-- App: contains app dashboards
-- OpenTelemetry Collector Contrib: Gateway monitoring
+## Key Sol features demonstrated
 
-## Grafana Dashboards
+### Tail sampling
 
-### dotnet
-
-An OpenTelemetry dotnet webapi dashboard has been created during this post and availble at grafana dashboards:
-- [OpenTelemetry dotnet webapi](https://grafana.com/grafana/dashboards/20568-opentelemetry-dotnet-webapi/)
-
-### OpenTelemetry Collector Monitoring
-
-- [OpenTelemetry Collector Contrib pipeline monitoring](./grafana/provisioning/dashboards/OpenTelemetry%20Collector%20Contrib/OpenTelemetry%20Collector.json)
-
-- [OpenTelemetry Collector Contrib node exporter drop-in](https://grafana.com/grafana/dashboards/20376-opentelemetry-collector-hostmetrics-node-exporter/)
-
-## Deep Dive
-
-### Dotnet Instrumentation setup
-References:
-- [OTEL dotnet setup](https://github.com/open-telemetry/opentelemetry-dotnet/tree/main?tab=readme-ov-file#getting-started)
-
-#### Automatic instrumentation
-Reference : [Automatic instrumentation](../../2023-11-30_What_is_OpenTelemetry/#automatic)
-
-#### Manual instrumentation
-Reference : [Manual instrumentation](../../2023-11-30_What_is_OpenTelemetry/#manual)
-
-```bash
-dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol
-dotnet add package OpenTelemetry.Instrumentation.AspNetCore
-dotnet add package OpenTelemetry.Instrumentation.Http
-dotnet add package OpenTelemetry.Instrumentation.Runtime
-dotnet add package System.Diagnostics.DiagnosticSource
-dotnet add package OpenTelemetry.Instrumentation.Process --version 0.5.0-beta.4
-```
-
-#### Setup Metrics instrumentation and exporter
-
-References:
-- [Built-in metrics](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/built-in-metrics)
-- [Quick setup from Grafana](https://grafana.com/docs/opentelemetry/instrumentation/dotnet/manual-instrumentation/)
-- [Dotnet ASP.NET healthcheck](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/diagnostic-health-checks)
-
-⚠️Note that the process instrumentation is still in beta.
-
-```bash
-dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol
-dotnet add package OpenTelemetry.Instrumentation.AspNetCore
-dotnet add package OpenTelemetry.Instrumentation.Http
-dotnet add package OpenTelemetry.Instrumentation.Runtime
-dotnet add package System.Diagnostics.DiagnosticSource
-dotnet add package OpenTelemetry.Instrumentation.Process --version 0.5.0-beta.4
-```
-
-```csharp
-builder
-.Services
-    .AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(
-            serviceName: SERVICE_NAME,
-            serviceVersion: System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) // SemVer
-            )
-        .AddAttributes(new Dictionary<string, object>
-            {
-                { "host.name", Environment.MachineName }
-            })
-        )
-    .WithMetrics(opts => opts
-        .AddAspNetCoreInstrumentation()
-        .AddRuntimeInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddProcessInstrumentation()
-        .AddOtlpExporter()
-    );
-```
-
-#### Logs
-No file logger has been used in this setup but it is also possible to use otelcontrib-col as log scrapper to forward file log contents to telemetry backend.
-
-The OTLP log exporter has been used during this setup.
-
-```csharp
-builder
-.Logging.AddOpenTelemetry(logging =>
-    {
-        logging.IncludeFormattedMessage = true;
-        logging.AddOtlpExporter();
-    }
-)
-```
-
-#### Traces
-
-```csharp
-builder
-.Services
-    .AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(
-            serviceName: SERVICE_NAME,
-            serviceVersion: System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) // SemVer
-            )
-        .AddAttributes(new Dictionary<string, object>
-            {
-                { "host.name", Environment.MachineName }
-            })
-        )
-    .WithTracing(tracing => tracing
-        .AddAspNetCoreInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddNpgsql()
-        .AddSource(SERVICE_NAME)
-        .AddOtlpExporter()
-    );
-```
-
-##### Custom traces
-References:
-- [Add custom traces](https://opentelemetry.io/docs/languages/net/automatic/custom/)
-
-```csharp
-builder
-.Services
-    .AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(
-            serviceName: SERVICE_NAME,
-            serviceVersion: System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) // SemVer
-            )
-        .AddAttributes(new Dictionary<string, object>
-            {
-                { "host.name", Environment.MachineName }
-            })
-        )
-    .WithTracing(tracing => tracing
-        .AddAspNetCoreInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddNpgsql()
-        .AddSource("test") // register activity source "test"
-        .AddOtlpExporter()
-    );
-
-var REGISTERED_ACTIVITY = new ActivitySource("test"); // declare activity "test"
-var callSlowDependency = async (int counter, int delay) =>
-{
-    //start an activity "test" for "callSlowDependency"
-    using var activity = REGISTERED_ACTIVITY.StartActivity("callSlowDependency");
-    if (isEnabled(counter, LATENCY_RATIO))
-    {
-        activity?.SetTag("delay", delay);
-        await Task.Delay(delay);
-    }
-};
-```
-
-### OpenTelemetry Collector
-
-#### Gateway
-- [Gateway Configuration](./otelcontribcol/gateway/)
-
-#### Traces Tail Sampling
-
-Traces Tail sampling [configuration](./otelcontribcol/traces-collector/pipeline.traces.yml):
+The sol-collector assembles full traces and applies policies before forwarding to Tempo:
 
 ```yaml
-processors:
-  tail_sampling/latency-error:
-    decision_wait: 10s
+transforms:
+  tail_sampling:
+    type: tail_sampling
+    inputs: ["otlp.traces"]
+    decision_wait_secs: 10
     policies:
-      [
-        # skip traces where latencies are < 100ms
-        {
-          name: latency-policy,
-          type: latency,
-          latency: {threshold_ms: 100}
-        },
-        # keep only error traces by skipping 4XX errors
-        {
-          name: error-policy,
-          type: and,
-          and:
-            {
-              and_sub_policy:
-                [
-                  {
-                    name: status_code-error-policy,
-                    type: status_code,
-                    status_code: {status_codes: [ERROR]}
-                  },
-                  # exclude false positive like bad requests or not found
-                  {
-                    name: http-status-code-error-policy,
-                    type: string_attribute,
-                    string_attribute:
-                      {
-                        key: error.type,
-                        values: [4..],
-                        enabled_regex_matching: true,
-                        invert_match: true,
-                      },
-                  },
-                ]
-            }
-        }
-      ]
+      - type: and
+        name: sampled-latency-policy
+        sub_policies:
+          - type: latency
+            name: latency-policy
+            threshold_ms: 100
+          - type: probabilistic
+            name: probabilistic-policy
+            sampling_percentage: 10.0
+      - type: latency
+        name: high-latency-policy
+        threshold_ms: 500
+      - type: and
+        name: sampled-error-policy
+        sub_policies:
+          - type: status_code
+            name: status-code-error-policy
+            status_codes: ["ERROR"]
+          - type: string_attribute
+            name: http-status-code-error-policy
+            key: http.response.status_code
+            values: [4..]
+            enabled_regex_matching: true
+            invert_match: true
 ```
 
-## OpenTelemetry Collector Contrib Monitoring
+### Trace-aware load balancing
 
-### HostMetrics (node exporter)
+The sol-loadbalancer routes all spans for a trace to the same collector replica using consistent hashing on `trace_id`:
 
-Push host metrics to mimir
-
-[OpenTelemetry Collector HostMetrics configuration](./otelcontribcol/gateway/pipeline.agent.yml)
 ```yaml
-exporters:
-  debug:
-    verbosity: detailed
-  otlphttp/gateway/mimir:
-    endpoint: http://mimir:9009/otlp
-
-receivers:
-  # otelcontribcol metrics + host metrics
-  prometheus/gateway:
-    config:
-      scrape_configs:
-        - job_name: otelcol-contrib/gateway
-          scrape_interval: 10s
-          static_configs:
-            - targets: [0.0.0.0:8888]
-  hostmetrics/gateway:
-    collection_interval: 10s
-    scrapers:
-      cpu:
-        metrics:
-          system.cpu.logical.count:
-            enabled: true
-      memory:
-        metrics:
-          system.memory.utilization:
-            enabled: true
-          system.memory.limit:
-            enabled: true
-      load:
-      disk:
-      filesystem:
-        metrics:
-          system.filesystem.utilization:
-            enabled: true
-      network:
-      paging:
-      processes:
-      process:
-        mute_process_user_error: true
-        metrics:
-          process.cpu.utilization:
-            enabled: true
-          process.memory.utilization:
-            enabled: true
-          process.threads:
-            enabled: true
-          process.paging.faults:
-            enabled: true
-
-processors:
-  batch/gateway:
-  attributes/gateway:
-    actions:
-      - key: service.namespace
-        action: upsert
-        value: gateway
-      - key: service.name
-        action: upsert
-        value: otelcol-contrib/gateway
-  resourcedetection/system:
-    detectors: ["system"]
-    system:
-      hostname_sources: ["os"]
-  transform:
-    metric_statements:
-      - context: datapoint
-        statements:
-          - set(attributes["host.name"], resource.attributes["host.name"])
-          - set(attributes["process.command"], resource.attributes["process.command"])
-          - set(attributes["process.command_line"], resource.attributes["process.command_line"])
-          - set(attributes["process.executable.name"], resource.attributes["process.executable.name"])
-          - set(attributes["process.executable.path"], resource.attributes["process.executable.path"])
-          - set(attributes["process.owner"], resource.attributes["process.owner"])
-          - set(attributes["process.parent_pid"], resource.attributes["process.parent_pid"])
-          - set(attributes["process.pid"], resource.attributes["process.pid"])
-
-
-service:
-  telemetry:
-    metrics:
-      level: detailed
-    logs:
-      level: info
-
-  pipelines:
-    metrics/gateway:
-      receivers: [prometheus/gateway, hostmetrics/gateway]
-      processors: [attributes/gateway, resourcedetection/system, transform, batch/gateway]
-      exporters: [otlphttp/gateway/mimir]
+sinks:
+  otlp_traces:
+    type: opentelemetry
+    inputs: ["otlp.traces"]
+    protocol:
+      type: grpc
+      load_balancing:
+        routing_key: traceID
+        resolver:
+          type: dns
+          hostname: sol-collector
 ```
 
-### Pipeline
+### Service graph
 
-Detailed metrics are providen from OpenTelemetry Collector which should be activated:
+The sol-collector computes inter-service edge metrics from trace spans:
 
-[Telemetry service for OpenTelemetry Collector](./otelcontribcol/agent/pipeline.agent.yaml)
 ```yaml
-service:
-  telemetry:
-    metrics:
-      level: detailed
-    logs:
-      level: info
+transforms:
+  servicegraph:
+    type: servicegraph
+    inputs: ["otlp.traces"]
+    metrics_flush_interval_secs: 15
+    dimensions: ["db.system", "messaging.system"]
+    store:
+      ttl_secs: 2
+      max_items: 1000
 ```
+
+### Host metrics
+
+The sol-gateway collects host metrics and exports them with a `node_` prefix for node-exporter dashboard compatibility:
+
+```yaml
+sources:
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol
+```
+
+## Application workload
+
+Two .NET webapi applications generate realistic telemetry (logs, metrics, traces):
+
+- **client** — sends HTTP requests to the service, simulating end-user traffic
+- **service** — handles requests, queries a PostgreSQL database, and produces spans with configurable failure and latency ratios
+
+Both applications use the [OpenTelemetry .NET SDK](https://github.com/open-telemetry/opentelemetry-dotnet) with OTLP gRPC export to the sol-gateway. Any OTLP-capable application can replace them — Sol is language-agnostic.
+
+## Grafana dashboards
+
+Three pre-provisioned dashboards are available at http://localhost:3000:
+
+### Sol Pipeline
+
+[Dashboard JSON](./grafana/provisioning/dashboards/Sol/SOL%20Pipeline.json)
+
+Monitors the Sol pipeline internals — signal flows, per-component throughput, and error rates across all three Sol instances.
+
+| Section | Panels | What it shows |
+|---|---|---|
+| **Signal flows** | Traces / Metrics / Logs (received vs sent) | End-to-end event flow through the pipeline |
+| **Sources** | Received events/s, errors/s | Ingestion rate and source-level errors |
+| **Transforms** | Received/sent events/s, drop ratio | Transform throughput and data reduction |
+| **Sinks** | Sent events/s, retry rate, errors/s | Delivery health to Loki, Mimir, Tempo |
+| **Tail sampling** | Sampled/dropped by policy, dropped too early, effective sampling ratio | Sampling decisions and trace completeness |
+| **Service graph** | Inter-service edge metrics | Service-to-service call relationships |
+
+### Node Exporter (Sol host_metrics)
+
+[Dashboard JSON](./grafana/provisioning/dashboards/Sol/Node%20Exporter%20(host_metrics).json)
+
+Host metrics collected by the sol-gateway's `host_metrics` source, exported with a `node_` prefix for compatibility with the standard Node Exporter Full dashboard (Grafana ID 1860). Panels include CPU, memory, swap, disk, filesystem, and network.
+
+### OpenTelemetry .NET webapi
+
+[Dashboard JSON](./grafana/provisioning/dashboards/Apps/OpenTelemetry%20dotnet%20webapi.json) | [Grafana.com](https://grafana.com/grafana/dashboards/20568-opentelemetry-dotnet-webapi/)
+
+Application-level dashboard using the RED (Rate, Errors, Duration) and USE (Utilization, Saturation, Errors) methods. Shows ASP.NET request rates, error rates, latency distributions, runtime metrics (GC, thread pool), and HTTP client instrumentation for the .NET client and service applications.
+
+## Disclaimer
+
+This demo is for local development and hands-on exploration only. Security, scaling, and high availability are not addressed.
