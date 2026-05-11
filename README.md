@@ -47,7 +47,7 @@ Sol diverges from Vector on protocol and architecture choices. The table below s
 | **Resource / Scope** | Not populated on most sources | Sensible defaults on every metric source | Correct OTLP semantics out of the box — no manual enrichment transforms. |
 | **Sink normalization** | Global temporality setting | Per-sink temporality and ExponentialHistogram conversion | Each destination gets exactly the format it expects; no global compromise. |
 | **Encoding** | `Value` intermediary → proto conversion | Direct proto field encoding | Fewer allocations, lower latency on the serialization path. |
-| **Self-monitoring** | Internal metrics API | OTLP pipeline → Parquet → SQL with Grafana dashboards | Query pipeline health with SQL; ship with ready-made dashboards. |
+| **Self-monitoring** | Internal metrics API | Sol Pipeline dashboards | Pipeline ingestion monitoring and sink/source IO |
 | **Tail sampling** | `sample` transform (head-based / probabilistic only) | `tail_sampling` transform: assembles full traces, VRL policies, AND/OR composition, regex matching | Decide per-trace after all spans arrive — keep errors, slow requests, drop noise. Reduces storage costs without losing important traces. |
 | **Trace-aware load balancing** | No built-in trace routing | OTLP gRPC sink with consistent-hash routing on `trace_id` or `service.name` (static, DNS, K8s resolvers) | All spans for a trace land on the same collector — required for correct tail sampling in multi-instance deployments. |
 | **Migration** | — | Vector source for zero-downtime fleet migration | Drop-in replacement: existing Vector agents forward to Sol with no config change. |
