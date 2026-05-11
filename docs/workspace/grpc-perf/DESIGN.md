@@ -107,3 +107,23 @@ No regressions in `cargo test` for opentelemetry source and gRPC utility modules
 - **Observability**: `BytesReceived` metric must continue to report decompressed body size for both compressed and uncompressed requests.
 - **Backward compatibility**: no config changes required. Existing Sol/Vector configs work unchanged.
 - **Other gRPC sources**: the `DecompressionAndMetrics` and `GrpcTraceLayer` are shared by `sources::vector` and `sources::opentelemetry`. Changes affect both.
+
+## Post-implementation findings
+
+### NFR1 target not met — root cause reassessment
+
+Benchmark validation showed that removing root causes 1-3 (DecompressionAndMetrics layer, SourceSender clone, GrpcTraceLayer allocations) had **no measurable effect** on unbatched gRPC throughput. Sol=103/s still matches Vector=104/s.
+
+**Root cause #4 (HTTP/2 single-connection serialization) is the dominant bottleneck**, not the application-level layers. The Rust `h2`/`hyper`/`tonic` stack has fundamentally higher per-stream overhead than Go's `net/http2`:
+
+- HTTP/1.1 (separate connections per worker): ~4,800/s
+- gRPC/HTTP/2 (all workers share one connection): ~100/s — **48x gap**
+- otelcol (Go, same HTTP/2 constraint): ~4,300/s — Go handles H2 frame multiplexing ~43x faster
+
+The optimizations are still correct (cleaner code, -341 lines, 25% improvement on batched traces at 50k), but NFR1's 10x target requires addressing the H2-level bottleneck, which is outside the scope of this design.
+
+**Potential follow-up directions**:
+- Tonic HTTP/2 server configuration (initial window size, max concurrent streams)
+- Rust `h2` crate tuning or alternative HTTP/2 implementation
+- Multiple gRPC listener connections (if tonic supports it)
+- Upstream investigation in the `h2` crate for per-stream overhead

@@ -157,12 +157,34 @@ classDiagram
 **Verify**: `cd demo/benchmark && bash run.sh --scenario noop-logs-grpc-10k --duration 30`
 
 **Acceptance criteria**:
-- [ ] `noop-logs-grpc-10k` throughput > 1,000/s (10x improvement over 100/s baseline)
-- [ ] `noop-traces-grpc-10k` throughput >= 9,000/s (no regression)
-- [ ] `noop-logs-http-10k` throughput >= 4,500/s (no regression)
+- [ ] `noop-logs-grpc-10k` throughput > 1,000/s (10x improvement over 100/s baseline) — **NOT MET: 103/s** (see findings below)
+- [x] `noop-traces-grpc-10k` throughput >= 9,000/s (no regression) — **9,991/s**
+- [x] `noop-logs-http-10k` throughput >= 4,500/s (no regression) — **4,840/s**
 
 **Depends on**: tasks 1, 2, 3
 **Time-box**: ~30 min
+
+**Benchmark findings (outside-constitution discovery)**:
+
+The per-request gRPC optimizations (tasks 1-3) had **no measurable effect** on unbatched log/metric throughput. Sol=103/s matches Vector=104/s — confirming the bottleneck is NOT in the layers we removed.
+
+| Scenario | Sol | Vector | otelcol |
+|----------|-----|--------|---------|
+| logs-grpc-10k | 103/s | 104/s | 4,352/s |
+| logs-grpc-gzip | 257/s | 281/s | 1,919/s |
+| traces-grpc-10k | 9,991/s | 10,001/s | 10,167/s |
+| traces-grpc-50k | **35,243/s** | 28,109/s | 94,491/s |
+| logs-http-10k | 4,840/s | 5,238/s | 4,715/s |
+
+**Root cause**: HTTP/2 single-connection frame multiplexing in the Rust `h2`/`hyper`/`tonic` stack. gRPC mandates HTTP/2 — all workers share one TCP connection. The per-stream overhead in Rust's h2 crate dominates so completely that removing application-level layers doesn't help. Go's `net/http2` handles this ~45x more efficiently.
+
+**Evidence**:
+- HTTP/1.1 (separate connections): 4,840/s vs gRPC/H2 (shared connection): 103/s — **47x gap**
+- Batched traces (amortized per-request): 9,991/s — same as otelcol
+- Sol=Vector on every gRPC scenario — bottleneck is in shared Rust gRPC stack
+- traces-grpc-50k: Sol **25% faster** than Vector (35,243 vs 28,109) — optimizations help when H2 overhead is amortized
+
+**Next steps**: Investigate tonic HTTP/2 tuning (initial window size, max concurrent streams, connection-level flow control) or Rust h2 crate configuration.
 
 ## Sessions
 
