@@ -732,7 +732,7 @@ sources-websocket = ["dep:tokio-tungstenite"]
 sources-vector = ["dep:tonic", "sol-lib/opentelemetry", "protobuf-build", "dep:prost", "sources-opentelemetry"]
 
 # Transforms
-transforms = ["transforms-logs", "transforms-metrics"]
+transforms = ["transforms-logs", "transforms-metrics", "transforms-traces"]
 transforms-logs = [
   "transforms-aws_ec2_metadata",
   "transforms-dedupe",
@@ -778,6 +778,11 @@ transforms-sample = ["transforms-impl-sample"]
 transforms-tag_cardinality_limit = ["dep:bloomy", "dep:hashbrown"]
 transforms-throttle = ["dep:governor"]
 transforms-trace_to_log = []
+transforms-traces = [
+  "transforms-servicegraph",
+  "transforms-span_metrics",
+  "transforms-tail_sampling",
+]
 transforms-servicegraph = []
 transforms-span_metrics = []
 transforms-tail_sampling = []
