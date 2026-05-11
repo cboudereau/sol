@@ -193,6 +193,12 @@ git config core.symlinks true
 
 Some test fixtures (e.g. `tests/data/journalctl`) are shell scripts that must be executable. If `core.fileMode` is `false`, git ignores permission bits and these files lose their execute flag, causing tests to fail with `PermissionDenied`.
 
+If you already cloned with `core.symlinks=false`, git will have checked out symlinks as plain text files. After enabling the setting, restore them:
+
+```bash
+git checkout -- lib/sol-core/tests/data/ca lib/sol-core/tests/data/Multi_CA.crt
+```
+
 If you already cloned with `core.fileMode=false`, restore the permissions after changing the setting:
 
 ```bash
