@@ -5,8 +5,9 @@ use std::{io, path::Path, process::Command};
 
 use prost::Message as ProstMessage;
 use prost_reflect::{DescriptorPool, prost::Message as ProstReflectMessage};
-use sol_lib::opentelemetry::proto::{
-    DESCRIPTOR_BYTES, common::v1::any_value::Value as AnyValueEnum, resource::v1::Resource,
+use sol_lib::opentelemetry::proto::DESCRIPTOR_BYTES;
+use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
+    common::v1::any_value::Value as AnyValueEnum, resource::v1::Resource,
 };
 use vrl::value::Value as VrlValue;
 
