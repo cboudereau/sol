@@ -101,6 +101,20 @@ bash run.sh --scenario noop-logs-grpc-10k --duration 15
 
 Results are written to `results/RESULTS.md`.
 
+### Benchmarking local changes
+
+By default, `run.sh` pulls `superbeeeeeee/sol:latest` from Docker Hub. To benchmark your local working tree, build a local image first:
+
+```bash
+# From the repo root
+docker build -f demo/Dockerfile.sol -t sol:local .
+
+# Run benchmarks with the local image
+SOL_IMAGE=sol:local bash demo/benchmark/run.sh
+```
+
+The Docker build does a full release compilation inside the container (~10-15 min on first run, faster with cache). This is the only way to measure the impact of uncommitted or unpublished changes.
+
 ## Scenarios
 
 | Category | Scenarios | Systems | Duration |
