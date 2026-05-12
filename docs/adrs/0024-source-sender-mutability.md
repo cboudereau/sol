@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # SourceSender mutability in gRPC handlers
 

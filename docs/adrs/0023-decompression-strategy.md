@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Decompression strategy for gRPC requests
 

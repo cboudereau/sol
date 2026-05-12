@@ -1,2 +1,2 @@
 ## Active workspaces
-- [grpc-perf](docs/workspace/grpc-perf/TASKS.md) — Phase 4, awaiting review
+- [proto-unification](docs/workspace/proto-unification/TASKS.md) — Phase 4, awaiting review
