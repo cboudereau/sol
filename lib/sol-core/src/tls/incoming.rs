@@ -251,6 +251,7 @@ impl MaybeTlsIncomingStream<TcpStream> {
         peer_addr: SocketAddr,
         acceptor: Option<SslAcceptor>,
     ) -> Self {
+        let _ = stream.set_nodelay(true);
         let state = match acceptor {
             Some(acceptor) => StreamState::Accepting(
                 async move {

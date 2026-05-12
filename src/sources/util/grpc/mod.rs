@@ -4,6 +4,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::FutureExt;
@@ -17,6 +18,15 @@ use crate::{
     tls::MaybeTlsSettings,
 };
 
+
+fn grpc_server_builder() -> Server {
+    Server::builder()
+        .http2_adaptive_window(Some(true))
+        .initial_stream_window_size(1024 * 1024)
+        .initial_connection_window_size(2 * 1024 * 1024)
+        .http2_keepalive_interval(Some(Duration::from_secs(10)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(20)))
+}
 
 pub async fn run_grpc_server<S>(
     address: SocketAddr,
@@ -39,7 +49,7 @@ where
 
     info!(%address, "Building gRPC server.");
 
-    Server::builder()
+    grpc_server_builder()
         .layer(GrpcTraceLayer::new(span.clone()))
         .add_service(service)
         .serve_with_incoming_shutdown(stream, shutdown.map(|token| tx.send(token).unwrap()))
@@ -63,7 +73,7 @@ pub async fn run_grpc_server_with_routes(
 
     info!(%address, "Building gRPC server.");
 
-    Server::builder()
+    grpc_server_builder()
         .layer(GrpcTraceLayer::new(span.clone()))
         .add_routes(routes)
         .serve_with_incoming_shutdown(stream, shutdown.map(|token| tx.send(token).unwrap()))
