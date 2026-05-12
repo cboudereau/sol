@@ -1,5 +1,5 @@
 use sol_core::event::{Event, EventMetadata, OtelLog};
-use upstream_opentelemetry_proto::tonic::logs::v1::ResourceLogs;
+use upstream_opentelemetry_proto::tonic::logs::v1::{ResourceLogs, ScopeLogs};
 
 pub const RESOURCE_KEY: &str = "resources";
 pub const ATTRIBUTES_KEY: &str = "attributes";
@@ -28,6 +28,18 @@ pub fn resource_logs_into_events(rl: ResourceLogs) -> impl Iterator<Item = Event
             ))
         })
     })
+}
+
+pub fn otel_log_to_resource_logs(log: &OtelLog) -> ResourceLogs {
+    ResourceLogs {
+        resource: log.resource_proto(),
+        scope_logs: vec![ScopeLogs {
+            scope: log.scope_proto(),
+            log_records: vec![log.record_to_proto()],
+            schema_url: String::new(),
+        }],
+        schema_url: String::new(),
+    }
 }
 
 #[cfg(test)]

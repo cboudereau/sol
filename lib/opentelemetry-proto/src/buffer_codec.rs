@@ -19,8 +19,6 @@ use upstream_opentelemetry_proto::tonic::{
         trace::v1::ExportTraceServiceRequest,
     },
     common::v1::{AnyValue, KeyValue, any_value},
-    logs::v1::{ResourceLogs, ScopeLogs},
-    trace::v1::{ResourceSpans, ScopeSpans},
 };
 use vrl::value::Value;
 
@@ -108,20 +106,7 @@ fn otel_logs_to_export(otel_logs: &OtelLogArray) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: otel_logs
             .iter()
-            .map(|otel| {
-                let record = otel.record_to_proto();
-                let resource = otel.resource_proto();
-                let scope = otel.scope_proto();
-                ResourceLogs {
-                    resource,
-                    scope_logs: vec![ScopeLogs {
-                        scope,
-                        log_records: vec![record],
-                        schema_url: String::new(),
-                    }],
-                    schema_url: String::new(),
-                }
-            })
+            .map(crate::logs::otel_log_to_resource_logs)
             .collect(),
     }
 }
@@ -129,25 +114,10 @@ fn otel_logs_to_export(otel_logs: &OtelLogArray) -> ExportLogsServiceRequest {
 // --- OTel-native metrics ----------------------------------------------------
 
 fn otel_metrics_to_export(otel_metrics: &OtelMetricArray) -> ExportMetricsServiceRequest {
-    use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
-
     ExportMetricsServiceRequest {
         resource_metrics: otel_metrics
             .iter()
-            .map(|otel| {
-                let metric = otel.metric_proto().clone();
-                let resource = otel.resource_proto();
-                let scope = otel.scope_proto();
-                ResourceMetrics {
-                    resource,
-                    scope_metrics: vec![ScopeMetrics {
-                        scope,
-                        metrics: vec![metric],
-                        schema_url: String::new(),
-                    }],
-                    schema_url: String::new(),
-                }
-            })
+            .map(crate::metrics::otel_metric_to_resource_metrics)
             .collect(),
     }
 }
@@ -211,20 +181,7 @@ fn otel_spans_to_export(otel_spans: &OtelSpanArray) -> ExportTraceServiceRequest
     ExportTraceServiceRequest {
         resource_spans: otel_spans
             .iter()
-            .map(|otel| {
-                let span = otel.span_to_proto().clone();
-                let resource = otel.resource_proto();
-                let scope = otel.scope_proto();
-                ResourceSpans {
-                    resource,
-                    scope_spans: vec![ScopeSpans {
-                        scope,
-                        spans: vec![span],
-                        schema_url: String::new(),
-                    }],
-                    schema_url: String::new(),
-                }
-            })
+            .map(crate::spans::otel_span_to_resource_spans)
             .collect(),
     }
 }

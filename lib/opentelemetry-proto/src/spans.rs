@@ -1,5 +1,5 @@
 use sol_core::event::{Event, EventMetadata, OtelSpan};
-use upstream_opentelemetry_proto::tonic::trace::v1::ResourceSpans;
+use upstream_opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans};
 
 pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Event> {
     let resource = rs.resource;
@@ -15,6 +15,18 @@ pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Eve
             ))
         })
     })
+}
+
+pub fn otel_span_to_resource_spans(span: &OtelSpan) -> ResourceSpans {
+    ResourceSpans {
+        resource: span.resource_proto(),
+        scope_spans: vec![ScopeSpans {
+            scope: span.scope_proto(),
+            spans: vec![span.span_to_proto()],
+            schema_url: String::new(),
+        }],
+        schema_url: String::new(),
+    }
 }
 
 #[cfg(test)]

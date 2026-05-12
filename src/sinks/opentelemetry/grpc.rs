@@ -602,62 +602,12 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
 }
 
 // ---------------------------------------------------------------------------
-// Event → OtlpRequest conversion
+// Event → OtlpRequest conversion (delegates to sol-opentelemetry-proto)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn otel_metric_event_to_resource_metrics(
-    metric_event: &sol_lib::event::OtelMetric,
-) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::ResourceMetrics {
-    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::{
-        ResourceMetrics, ScopeMetrics,
-    };
-
-    ResourceMetrics {
-        resource: metric_event.resource_proto(),
-        scope_metrics: vec![ScopeMetrics {
-            scope: metric_event.scope_proto(),
-            metrics: vec![metric_event.metric_proto().clone()],
-            schema_url: String::new(),
-        }],
-        schema_url: String::new(),
-    }
-}
-
-pub(crate) fn otel_log_event_to_resource_logs(
-    log_event: &sol_lib::event::OtelLog,
-) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::logs::v1::ResourceLogs {
-    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::logs::v1::{
-        ResourceLogs, ScopeLogs,
-    };
-
-    ResourceLogs {
-        resource: log_event.resource_proto(),
-        scope_logs: vec![ScopeLogs {
-            scope: log_event.scope_proto(),
-            log_records: vec![log_event.record_to_proto()],
-            schema_url: String::new(),
-        }],
-        schema_url: String::new(),
-    }
-}
-
-pub(crate) fn otel_span_event_to_resource_spans(
-    span_event: &sol_lib::event::OtelSpan,
-) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::trace::v1::ResourceSpans {
-    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::trace::v1::{
-        ResourceSpans, ScopeSpans,
-    };
-
-    ResourceSpans {
-        resource: span_event.resource_proto(),
-        scope_spans: vec![ScopeSpans {
-            scope: span_event.scope_proto(),
-            spans: vec![span_event.span_to_proto().clone()],
-            schema_url: String::new(),
-        }],
-        schema_url: String::new(),
-    }
-}
+pub(crate) use sol_lib::opentelemetry::logs::otel_log_to_resource_logs as otel_log_event_to_resource_logs;
+pub(crate) use sol_lib::opentelemetry::metrics::otel_metric_to_resource_metrics as otel_metric_event_to_resource_metrics;
+pub(crate) use sol_lib::opentelemetry::spans::otel_span_to_resource_spans as otel_span_event_to_resource_spans;
 
 fn collection_into_request(col: EventCollection) -> OtlpRequest {
     use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{

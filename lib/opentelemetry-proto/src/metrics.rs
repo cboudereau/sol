@@ -1,5 +1,5 @@
 use sol_core::event::{Event, EventMetadata, OtelMetric};
-use upstream_opentelemetry_proto::tonic::metrics::v1::ResourceMetrics;
+use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
 
 pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item = Event> {
     let resource = rm.resource;
@@ -18,6 +18,18 @@ pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item =
                 ))
             })
         })
+}
+
+pub fn otel_metric_to_resource_metrics(metric: &OtelMetric) -> ResourceMetrics {
+    ResourceMetrics {
+        resource: metric.resource_proto(),
+        scope_metrics: vec![ScopeMetrics {
+            scope: metric.scope_proto(),
+            metrics: vec![metric.metric_proto()],
+            schema_url: String::new(),
+        }],
+        schema_url: String::new(),
+    }
 }
 
 #[cfg(test)]

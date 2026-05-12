@@ -8,18 +8,15 @@ use sol_core::{
     schema,
 };
 use sol_opentelemetry_proto::{
+    logs::otel_log_to_resource_logs, metrics::otel_metric_to_resource_metrics,
     proto::{
         DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
         TRACES_REQUEST_MESSAGE_TYPE,
     },
-    upstream_opentelemetry_proto::tonic::{
-        collector::{
-            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-            trace::v1::ExportTraceServiceRequest,
-        },
-        logs::v1::{ResourceLogs, ScopeLogs},
-        metrics::v1::{ResourceMetrics, ScopeMetrics},
-        trace::v1::{ResourceSpans, ScopeSpans},
+    spans::otel_span_to_resource_spans,
+    upstream_opentelemetry_proto::tonic::collector::{
+        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+        trace::v1::ExportTraceServiceRequest,
     },
 };
 use tokio_util::codec::Encoder;
@@ -134,43 +131,19 @@ impl Encoder<Event> for OtlpSerializer {
 
 fn otel_log_to_export_request(log_event: &OtelLog) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            resource: log_event.resource_proto(),
-            scope_logs: vec![ScopeLogs {
-                scope: log_event.scope_proto(),
-                log_records: vec![log_event.record_to_proto()],
-                schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
+        resource_logs: vec![otel_log_to_resource_logs(log_event)],
     }
 }
 
 fn otel_metric_to_export_request(metric_event: &OtelMetric) -> ExportMetricsServiceRequest {
     ExportMetricsServiceRequest {
-        resource_metrics: vec![ResourceMetrics {
-            resource: metric_event.resource_proto(),
-            scope_metrics: vec![ScopeMetrics {
-                scope: metric_event.scope_proto(),
-                metrics: vec![metric_event.metric_proto().clone()],
-                schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
+        resource_metrics: vec![otel_metric_to_resource_metrics(metric_event)],
     }
 }
 
 fn otel_span_to_export_request(span_event: &OtelSpan) -> ExportTraceServiceRequest {
     ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: span_event.resource_proto(),
-            scope_spans: vec![ScopeSpans {
-                scope: span_event.scope_proto(),
-                spans: vec![span_event.span_to_proto().clone()],
-                schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
+        resource_spans: vec![otel_span_to_resource_spans(span_event)],
     }
 }
 
