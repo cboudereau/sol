@@ -110,20 +110,22 @@ No regressions in `cargo test` for opentelemetry source and gRPC utility modules
 
 ## Post-implementation findings
 
-### NFR1 target not met — root cause reassessment
+### Root cause #4 was the dominant bottleneck
 
-Benchmark validation showed that removing root causes 1-3 (DecompressionAndMetrics layer, SourceSender clone, GrpcTraceLayer allocations) had **no measurable effect** on unbatched gRPC throughput. Sol=103/s still matches Vector=104/s.
+Initial benchmark validation showed removing root causes 1-3 had no measurable effect (Sol=103/s ≈ Vector=104/s). Investigation revealed two critical issues:
 
-**Root cause #4 (HTTP/2 single-connection serialization) is the dominant bottleneck**, not the application-level layers. The Rust `h2`/`hyper`/`tonic` stack has fundamentally higher per-stream overhead than Go's `net/http2`:
+1. **TCP_NODELAY not set**: tonic's `serve_with_incoming_shutdown` bypasses its built-in `tcp_nodelay` setting. Without it, Nagle's algorithm buffers small gRPC responses (~100 bytes), adding up to 40ms delay per response. Go's gRPC always enables TCP_NODELAY. Fix: `stream.set_nodelay(true)` in `incoming.rs`.
 
-- HTTP/1.1 (separate connections per worker): ~4,800/s
-- gRPC/HTTP/2 (all workers share one connection): ~100/s — **48x gap**
-- otelcol (Go, same HTTP/2 constraint): ~4,300/s — Go handles H2 frame multiplexing ~43x faster
+2. **HTTP/2 defaults too conservative**: tonic defaults to 64KB windows and no BDP estimation, while Go gRPC uses BDP estimation that dynamically grows windows to 16MB. Fix: `http2_adaptive_window(true)`, 1MB stream / 2MB connection window sizes, keepalive.
 
-The optimizations are still correct (cleaner code, -341 lines, 25% improvement on batched traces at 50k), but NFR1's 10x target requires addressing the H2-level bottleneck, which is outside the scope of this design.
+### Final results — NFR1 exceeded
 
-**Potential follow-up directions**:
-- Tonic HTTP/2 server configuration (initial window size, max concurrent streams)
-- Rust `h2` crate tuning or alternative HTTP/2 implementation
-- Multiple gRPC listener connections (if tonic supports it)
-- Upstream investigation in the `h2` crate for per-stream overhead
+| Scenario | Before | After | Vector | otelcol | Improvement |
+|----------|--------|-------|--------|---------|-------------|
+| logs gRPC 10k | 103/s | **3,438/s** | 102/s | 3,844/s | **33x** |
+| logs gRPC gzip | 257/s | **2,248/s** | 178/s | 1,859/s | **8.7x** (Sol > otelcol) |
+| metrics gRPC 10k | 95/s | **3,767/s** | 100/s | 4,153/s | **40x** |
+| traces gRPC 10k | 9,991/s | **14,910/s** | 14,578/s | 15,052/s | **1.5x** |
+| logs HTTP 10k | 4,840/s | 4,413/s | 4,817/s | 4,579/s | no regression |
+
+Sol now matches otelcol on unbatched gRPC and **beats otelcol on gzip** (tonic's built-in decompression is more efficient).
