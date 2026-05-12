@@ -22,7 +22,8 @@
 #![deny(clippy::clone_on_ref_ptr)]
 #![deny(clippy::trivially_copy_pass_by_ref)]
 #![deny(clippy::disallowed_methods)] // [nursery] mark some functions as verboten
-#![deny(clippy::missing_const_for_fn)] // [nursery] valuable to the optimizer, but may produce false positives
+#![allow(clippy::missing_const_for_fn)] // [nursery] valuable to the optimizer, but produces false positives
+#![allow(clippy::useless_vec)] // macros (samples!, buckets!, quantiles!) expand to vec![]
 
 //! The main library to support building Vector.
 

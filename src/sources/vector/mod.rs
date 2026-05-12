@@ -9,7 +9,7 @@ use sol_lib::{
     codecs::BytesDeserializerConfig,
     configurable::configurable_component,
     internal_event::{BytesReceived, Protocol},
-    opentelemetry::proto::collector::{
+    opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
         logs::v1::logs_service_server::LogsServiceServer,
         metrics::v1::metrics_service_server::MetricsServiceServer,
         trace::v1::trace_service_server::TraceServiceServer,

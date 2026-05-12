@@ -39,7 +39,7 @@ pub enum OtlpGrpcError {
     GrpcRequest { source: tonic::Status },
 }
 
-use sol_lib::opentelemetry::proto::collector::{
+use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
     logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
     metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
     trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
@@ -605,111 +605,54 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
 // Event → OtlpRequest conversion
 // ---------------------------------------------------------------------------
 
-/// Reconstruct a `ResourceMetrics` (opentelemetry-proto types) from an
-/// `OtelMetric` (otel-proto-types) via protobuf encode→decode.
 pub(crate) fn otel_metric_event_to_resource_metrics(
     metric_event: &sol_lib::event::OtelMetric,
-) -> sol_lib::opentelemetry::proto::metrics::v1::ResourceMetrics {
-    use prost::Message;
-    use sol_lib::opentelemetry::proto::{
-        common::v1::InstrumentationScope as SinkScope,
-        metrics::v1::{Metric as SinkMetric, ResourceMetrics, ScopeMetrics},
-        resource::v1::Resource as SinkResource,
+) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::ResourceMetrics {
+    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::{
+        ResourceMetrics, ScopeMetrics,
     };
-
-    let metric_bytes = metric_event.metric_proto().encode_to_vec();
-    let sink_metric =
-        SinkMetric::decode(bytes::Bytes::from(metric_bytes)).expect("Metric proto roundtrip");
-
-    let resource = metric_event.resource_proto().map(|r| {
-        let b = r.encode_to_vec();
-        SinkResource::decode(bytes::Bytes::from(b)).expect("Resource proto roundtrip")
-    });
-
-    let scope = metric_event.scope_proto().map(|s| {
-        let b = s.encode_to_vec();
-        SinkScope::decode(bytes::Bytes::from(b)).expect("Scope proto roundtrip")
-    });
 
     ResourceMetrics {
-        resource,
+        resource: metric_event.resource_proto(),
         scope_metrics: vec![ScopeMetrics {
-            scope,
-            metrics: vec![sink_metric],
+            scope: metric_event.scope_proto(),
+            metrics: vec![metric_event.metric_proto().clone()],
             schema_url: String::new(),
         }],
         schema_url: String::new(),
     }
 }
 
-/// Reconstruct a `ResourceLogs` (opentelemetry-proto types) from an
-/// `OtelLog` (otel-proto-types) via protobuf encode→decode.
 pub(crate) fn otel_log_event_to_resource_logs(
     log_event: &sol_lib::event::OtelLog,
-) -> sol_lib::opentelemetry::proto::logs::v1::ResourceLogs {
-    use prost::Message;
-    use sol_lib::opentelemetry::proto::{
-        common::v1::InstrumentationScope as SinkScope,
-        logs::v1::{LogRecord as SinkLogRecord, ResourceLogs, ScopeLogs},
-        resource::v1::Resource as SinkResource,
+) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::logs::v1::ResourceLogs {
+    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::logs::v1::{
+        ResourceLogs, ScopeLogs,
     };
 
-    let proto_record = log_event.record_to_proto();
-    let record_bytes = proto_record.encode_to_vec();
-    let sink_record =
-        SinkLogRecord::decode(bytes::Bytes::from(record_bytes)).expect("LogRecord proto roundtrip");
-
-    let resource = log_event.resource_proto().map(|r| {
-        let b = r.encode_to_vec();
-        SinkResource::decode(bytes::Bytes::from(b)).expect("Resource proto roundtrip")
-    });
-
-    let scope = log_event.scope_proto().map(|s| {
-        let b = s.encode_to_vec();
-        SinkScope::decode(bytes::Bytes::from(b)).expect("Scope proto roundtrip")
-    });
-
     ResourceLogs {
-        resource,
+        resource: log_event.resource_proto(),
         scope_logs: vec![ScopeLogs {
-            scope,
-            log_records: vec![sink_record],
+            scope: log_event.scope_proto(),
+            log_records: vec![log_event.record_to_proto()],
             schema_url: String::new(),
         }],
         schema_url: String::new(),
     }
 }
 
-/// Reconstruct a `ResourceSpans` (opentelemetry-proto types) from an
-/// `OtelSpan` (otel-proto-types) via protobuf encode→decode.
 pub(crate) fn otel_span_event_to_resource_spans(
     span_event: &sol_lib::event::OtelSpan,
-) -> sol_lib::opentelemetry::proto::trace::v1::ResourceSpans {
-    use prost::Message;
-    use sol_lib::opentelemetry::proto::{
-        common::v1::InstrumentationScope as SinkScope,
-        resource::v1::Resource as SinkResource,
-        trace::v1::{ResourceSpans, ScopeSpans, Span as SinkSpan},
+) -> sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::trace::v1::ResourceSpans {
+    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::trace::v1::{
+        ResourceSpans, ScopeSpans,
     };
 
-    let span_bytes = span_event.span_to_proto().encode_to_vec();
-    let sink_span = SinkSpan::decode(bytes::Bytes::from(span_bytes)).expect("Span proto roundtrip");
-
-    let resource = span_event.resource_proto().map(|r| {
-        let b = r.encode_to_vec();
-        SinkResource::decode(bytes::Bytes::from(b)).expect("Resource proto roundtrip")
-    });
-
-    let scope = span_event.scope_proto().map(|s| {
-        let b = s.encode_to_vec();
-        SinkScope::decode(bytes::Bytes::from(b)).expect("Scope proto roundtrip")
-    });
-
     ResourceSpans {
-        resource,
+        resource: span_event.resource_proto(),
         scope_spans: vec![ScopeSpans {
-            scope,
-            spans: vec![sink_span],
+            scope: span_event.scope_proto(),
+            spans: vec![span_event.span_to_proto().clone()],
             schema_url: String::new(),
         }],
         schema_url: String::new(),
@@ -717,16 +660,11 @@ pub(crate) fn otel_span_event_to_resource_spans(
 }
 
 fn collection_into_request(col: EventCollection) -> OtlpRequest {
-    use sol_lib::opentelemetry::proto::{
-        collector::{
-            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-            trace::v1::ExportTraceServiceRequest,
-        },
+    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
         logs::v1::ResourceLogs,
+        metrics::v1::ResourceMetrics,
         trace::v1::ResourceSpans,
     };
-
-    use sol_lib::opentelemetry::proto::metrics::v1::ResourceMetrics;
 
     let n = col.events.len();
     let mut log_resources: Vec<ResourceLogs> = vec![];
@@ -853,7 +791,7 @@ mod tests {
         // Verify data point attributes are preserved (this was the bug)
         let metric = &rm.scope_metrics[0].metrics[0];
         let dp_attrs = match &metric.data {
-            Some(sol_lib::opentelemetry::proto::metrics::v1::metric::Data::Sum(s)) => {
+            Some(sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(s)) => {
                 &s.data_points[0].attributes
             }
             _ => panic!("expected Sum metric"),

@@ -1,78 +1,38 @@
 use sol_core::event::{Event, EventMetadata, OtelMetric};
+use upstream_opentelemetry_proto::tonic::metrics::v1::ResourceMetrics;
 
-use super::proto::{
-    common::v1::InstrumentationScope, metrics::v1::ResourceMetrics, resource::v1::Resource,
-};
+pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item = Event> {
+    let resource = rm.resource;
+    rm.scope_metrics
+        .into_iter()
+        .flat_map(move |scope_metrics| {
+            let scope = scope_metrics.scope;
+            let resource = resource.clone();
 
-impl ResourceMetrics {
-    /// Convert into an iterator of `Event::OtelMetric`, preserving the proto
-    /// structs with zero field-level conversion. One event per OTel `Metric`.
-    pub fn into_otel_event_iter(self) -> impl Iterator<Item = Event> {
-        let resource = proto_convert_resource(self.resource);
-
-        self.scope_metrics
-            .into_iter()
-            .flat_map(move |scope_metrics| {
-                let scope = proto_convert_scope(scope_metrics.scope);
-                let resource = resource.clone();
-
-                scope_metrics.metrics.into_iter().map(move |metric| {
-                    let otel_metric = proto_convert_metric(metric);
-                    Event::Metric(OtelMetric::from_parts(
-                        otel_metric,
-                        resource.clone(),
-                        scope.clone(),
-                        EventMetadata::default(),
-                    ))
-                })
+            scope_metrics.metrics.into_iter().map(move |metric| {
+                Event::Metric(OtelMetric::from_parts(
+                    metric,
+                    resource.clone(),
+                    scope.clone(),
+                    EventMetadata::default(),
+                ))
             })
-    }
-}
-
-// --- Proto type conversion helpers (opentelemetry-proto ↔ otel-proto-types) ---
-
-fn proto_convert_resource(
-    r: Option<Resource>,
-) -> Option<upstream_opentelemetry_proto::tonic::resource::v1::Resource> {
-    use prost::Message;
-    let r = r?;
-    let bytes = r.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::resource::v1::Resource::decode(bytes::Bytes::from(bytes))
-        .ok()
-}
-
-fn proto_convert_scope(
-    s: Option<InstrumentationScope>,
-) -> Option<upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope> {
-    use prost::Message;
-    let s = s?;
-    let bytes = s.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::common::v1::InstrumentationScope::decode(
-        bytes::Bytes::from(bytes),
-    )
-    .ok()
-}
-
-fn proto_convert_metric(
-    m: super::proto::metrics::v1::Metric,
-) -> upstream_opentelemetry_proto::tonic::metrics::v1::Metric {
-    use prost::Message;
-    let bytes = m.encode_to_vec();
-    upstream_opentelemetry_proto::tonic::metrics::v1::Metric::decode(bytes::Bytes::from(bytes))
-        .expect("Metric proto decode failed on same-schema message")
+        })
 }
 
 #[cfg(test)]
 mod tests {
 
-    use crate::proto::{
+    use upstream_opentelemetry_proto::tonic::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         metrics::v1::{
-            AggregationTemporality, Gauge, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
-            metric, number_data_point::Value as NDPValue,
+            AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+            Sum, metric, number_data_point::Value as NDPValue,
         },
         resource::v1::Resource,
     };
+
+    use super::resource_metrics_into_events;
 
     fn make_resource_metrics() -> ResourceMetrics {
         ResourceMetrics {
@@ -93,10 +53,11 @@ mod tests {
                     dropped_attributes_count: 0,
                 }),
                 metrics: vec![
-                    super::super::proto::metrics::v1::Metric {
+                    Metric {
                         name: "request.count".to_string(),
                         description: "Total requests".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(metric::Data::Sum(Sum {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![KeyValue {
@@ -117,10 +78,11 @@ mod tests {
                             is_monotonic: true,
                         })),
                     },
-                    super::super::proto::metrics::v1::Metric {
+                    Metric {
                         name: "cpu.usage".to_string(),
                         description: String::new(),
                         unit: "%".to_string(),
+                        metadata: vec![],
                         data: Some(metric::Data::Gauge(Gauge {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![],
@@ -142,7 +104,7 @@ mod tests {
     #[test]
     fn otel_metric_event_iter_preserves_metric_names() {
         let rm = make_resource_metrics();
-        let events: Vec<_> = rm.into_otel_event_iter().collect();
+        let events: Vec<_> = resource_metrics_into_events(rm).collect();
         assert_eq!(events.len(), 2, "one event per OTel Metric");
 
         let m0 = events[0].as_otel_metric();
@@ -158,7 +120,7 @@ mod tests {
     #[test]
     fn otel_metric_event_iter_preserves_resource() {
         let rm = make_resource_metrics();
-        let events: Vec<_> = rm.into_otel_event_iter().collect();
+        let events: Vec<_> = resource_metrics_into_events(rm).collect();
 
         let m = events[0].as_otel_metric();
         let resource = m.resource_proto().expect("resource must be present");
@@ -169,7 +131,7 @@ mod tests {
     #[test]
     fn otel_metric_event_iter_preserves_scope() {
         let rm = make_resource_metrics();
-        let events: Vec<_> = rm.into_otel_event_iter().collect();
+        let events: Vec<_> = resource_metrics_into_events(rm).collect();
 
         let m = events[0].as_otel_metric();
         let scope = m.scope().expect("scope must be present");
@@ -180,11 +142,11 @@ mod tests {
     #[test]
     fn otel_metric_event_iter_preserves_data_points() {
         let rm = make_resource_metrics();
-        let events: Vec<_> = rm.into_otel_event_iter().collect();
+        let events: Vec<_> = resource_metrics_into_events(rm).collect();
 
         let m0 = events[0].as_otel_metric();
         match &m0.metric().data {
-            Some(upstream_opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum)) => {
+            Some(metric::Data::Sum(sum)) => {
                 assert_eq!(sum.data_points.len(), 1);
                 assert!(sum.is_monotonic);
                 assert_eq!(sum.data_points[0].time_unix_nano, 2_000_000_000);
@@ -194,7 +156,7 @@ mod tests {
 
         let m1 = events[1].as_otel_metric();
         match &m1.metric().data {
-            Some(upstream_opentelemetry_proto::tonic::metrics::v1::metric::Data::Gauge(gauge)) => {
+            Some(metric::Data::Gauge(gauge)) => {
                 assert_eq!(gauge.data_points.len(), 1);
                 assert_eq!(gauge.data_points[0].time_unix_nano, 3_000_000_000);
             }
@@ -208,10 +170,11 @@ mod tests {
             resource: None,
             scope_metrics: vec![ScopeMetrics {
                 scope: None,
-                metrics: vec![super::super::proto::metrics::v1::Metric {
+                metrics: vec![Metric {
                     name: "bare.metric".to_string(),
                     description: String::new(),
                     unit: String::new(),
+                    metadata: vec![],
                     data: Some(metric::Data::Gauge(Gauge {
                         data_points: vec![NumberDataPoint {
                             attributes: vec![],
@@ -227,7 +190,7 @@ mod tests {
             }],
             schema_url: String::new(),
         };
-        let events: Vec<_> = rm.into_otel_event_iter().collect();
+        let events: Vec<_> = resource_metrics_into_events(rm).collect();
         assert_eq!(events.len(), 1);
         let m = events[0].as_otel_metric();
         assert!(m.resource().is_none());

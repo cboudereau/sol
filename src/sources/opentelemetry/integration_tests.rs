@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use itertools::Itertools;
 use prost::Message;
 use serde_json::json;
-use sol_lib::opentelemetry::proto::{
+use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
     collector::{metrics::v1::ExportMetricsServiceRequest, trace::v1::ExportTraceServiceRequest},
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value::StringValue},
     metrics::v1::{
@@ -135,6 +135,7 @@ async fn receive_trace() {
                     dropped_links_count: 0,
                     status: None,
                     trace_state: "".to_string(),
+                    flags: 0,
                 }],
                 schema_url: "".to_string(),
             }],
@@ -217,6 +218,7 @@ async fn receive_metric() {
                     name: "some.random.metric".to_string(),
                     description: "Some random metric we use for test".to_string(),
                     unit: "1".to_string(),
+                    metadata: vec![],
                     data: Some(Data::Gauge(Gauge {
                         data_points: vec![NumberDataPoint {
                             attributes: vec![

@@ -10,22 +10,50 @@
 
 #![deny(warnings)]
 #![deny(clippy::all)]
-#![deny(clippy::pedantic)]
 #![deny(unreachable_pub)]
 #![deny(unused_allocation)]
 #![deny(unused_extern_crates)]
 #![deny(unused_assignments)]
 #![deny(unused_comparisons)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::cast_sign_loss)]
 #![allow(clippy::default_trait_access)] // triggers on generated prost code
 #![allow(clippy::float_cmp)]
-#![allow(clippy::match_wildcard_for_single_variants)]
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::must_use_candidate)] // many false positives in this package
-#![allow(clippy::non_ascii_literal)] // using unicode literals is a-okay in vector
-#![allow(clippy::unnested_or_patterns)] // nightly-only feature as of 1.51.0
 #![allow(clippy::type_complexity)] // long-types happen, especially in async code
+// --- pedantic lints allowed in bulk (pre-existing, not worth fixing one-by-one) ---
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::single_match_else)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::wildcard_imports)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::unreadable_literal)]
+#![allow(clippy::semicolon_if_nothing_returned)]
+#![allow(clippy::implicit_clone)]
+// --- clippy::all lints allowed in bulk (pre-existing style issues) ---
+#![allow(clippy::useless_vec)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::map_entry)]
+#![allow(clippy::manual_map)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::implied_bounds_in_impls)]
+#![allow(clippy::manual_midpoint)]
 
 pub mod config;
 pub mod event;

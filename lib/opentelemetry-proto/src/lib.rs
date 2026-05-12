@@ -5,3 +5,5 @@ pub mod metrics;
 #[allow(warnings)] // Ignore some clippy warnings
 pub mod proto;
 pub mod spans;
+
+pub use upstream_opentelemetry_proto;

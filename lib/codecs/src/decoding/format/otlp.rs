@@ -199,7 +199,7 @@ impl Deserializer for OtlpDeserializer {
 #[cfg(test)]
 mod tests {
     use prost::Message;
-    use sol_opentelemetry_proto::proto::{
+    use opentelemetry_proto::tonic::{
         collector::{
             logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
             trace::v1::ExportTraceServiceRequest,
@@ -263,6 +263,7 @@ mod tests {
                         name: "test_metric".to_string(),
                         description: String::new(),
                         unit: String::new(),
+                        metadata: vec![],
                         data: None,
                     }],
                     schema_url: String::new(),
@@ -299,6 +300,7 @@ mod tests {
                         links: vec![],
                         dropped_links_count: 0,
                         status: None,
+                        flags: 0,
                     }],
                     schema_url: String::new(),
                 }],

@@ -45,7 +45,9 @@ pub mod config {
 
 #[cfg(feature = "opentelemetry")]
 pub mod opentelemetry {
-    pub use sol_opentelemetry_proto::{buffer_codec, common, logs, metrics, proto, spans};
+    pub use sol_opentelemetry_proto::{
+        buffer_codec, common, logs, metrics, proto, spans, upstream_opentelemetry_proto,
+    };
 }
 
 #[cfg(feature = "prometheus")]

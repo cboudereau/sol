@@ -12,7 +12,7 @@ use sol_lib::{
     internal_event::{
         ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered,
     },
-    opentelemetry::proto::collector::{
+    opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         trace::v1::ExportTraceServiceRequest,
     },
@@ -416,7 +416,7 @@ fn decode_trace_body(
         request
             .resource_spans
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(sol_lib::opentelemetry::spans::resource_spans_into_events)
             .collect()
     };
 
@@ -440,7 +440,7 @@ fn decode_log_body(
         request
             .resource_logs
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(sol_lib::opentelemetry::logs::resource_logs_into_events)
             .collect()
     };
 
@@ -464,7 +464,7 @@ fn decode_metrics_body(
         request
             .resource_metrics
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(sol_lib::opentelemetry::metrics::resource_metrics_into_events)
             .collect()
     };
 

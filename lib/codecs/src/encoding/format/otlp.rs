@@ -7,18 +7,20 @@ use sol_core::{
     event::{Event, OtelLog, OtelMetric, OtelSpan},
     schema,
 };
-use sol_opentelemetry_proto::proto::{
-    DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
-    TRACES_REQUEST_MESSAGE_TYPE,
-    collector::{
-        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
-        trace::v1::ExportTraceServiceRequest,
+use sol_opentelemetry_proto::{
+    proto::{
+        DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
+        TRACES_REQUEST_MESSAGE_TYPE,
     },
-    common::v1::InstrumentationScope as ProtoScope,
-    logs::v1::{LogRecord as ProtoLogRecord, ResourceLogs, ScopeLogs},
-    metrics::v1::{Metric as ProtoMetric, ResourceMetrics, ScopeMetrics},
-    resource::v1::Resource as ProtoResource,
-    trace::v1::{ResourceSpans, ScopeSpans, Span as ProtoSpan},
+    upstream_opentelemetry_proto::tonic::{
+        collector::{
+            logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+            trace::v1::ExportTraceServiceRequest,
+        },
+        logs::v1::{ResourceLogs, ScopeLogs},
+        metrics::v1::{ResourceMetrics, ScopeMetrics},
+        trace::v1::{ResourceSpans, ScopeSpans},
+    },
 };
 use tokio_util::codec::Encoder;
 use vrl::protobuf::encode::Options;
@@ -113,43 +115,30 @@ impl Encoder<Event> for OtlpSerializer {
         match &event {
             Event::Log(log_event) => {
                 let request = otel_log_to_export_request(log_event);
-                request.encode(buffer).map_err(|e| e.to_string())?;
+                Message::encode(&request, buffer).map_err(|e| e.to_string())?;
                 Ok(())
             }
             Event::Metric(metric_event) => {
                 let request = otel_metric_to_export_request(metric_event);
-                request.encode(buffer).map_err(|e| e.to_string())?;
+                Message::encode(&request, buffer).map_err(|e| e.to_string())?;
                 Ok(())
             }
             Event::Trace(span_event) => {
                 let request = otel_span_to_export_request(span_event);
-                request.encode(buffer).map_err(|e| e.to_string())?;
+                Message::encode(&request, buffer).map_err(|e| e.to_string())?;
                 Ok(())
             }
         }
     }
 }
 
-fn proto_convert<S: Message, D: Message + Default>(src: &S) -> D {
-    D::decode(bytes::Bytes::from(src.encode_to_vec())).expect("proto roundtrip")
-}
-
 fn otel_log_to_export_request(log_event: &OtelLog) -> ExportLogsServiceRequest {
-    let proto_record = log_event.record_to_proto();
-    let record: ProtoLogRecord = proto_convert(&proto_record);
-    let resource = log_event
-        .resource_proto()
-        .map(|r| proto_convert::<_, ProtoResource>(&r));
-    let scope = log_event
-        .scope_proto()
-        .map(|s| proto_convert::<_, ProtoScope>(&s));
-
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
-            resource,
+            resource: log_event.resource_proto(),
             scope_logs: vec![ScopeLogs {
-                scope,
-                log_records: vec![record],
+                scope: log_event.scope_proto(),
+                log_records: vec![log_event.record_to_proto()],
                 schema_url: String::new(),
             }],
             schema_url: String::new(),
@@ -158,21 +147,12 @@ fn otel_log_to_export_request(log_event: &OtelLog) -> ExportLogsServiceRequest {
 }
 
 fn otel_metric_to_export_request(metric_event: &OtelMetric) -> ExportMetricsServiceRequest {
-    let proto = metric_event.metric_proto();
-    let metric: ProtoMetric = proto_convert(&proto);
-    let resource = metric_event
-        .resource_proto()
-        .map(|r| proto_convert::<_, ProtoResource>(&r));
-    let scope = metric_event
-        .scope_proto()
-        .map(|s| proto_convert::<_, ProtoScope>(&s));
-
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
-            resource,
+            resource: metric_event.resource_proto(),
             scope_metrics: vec![ScopeMetrics {
-                scope,
-                metrics: vec![metric],
+                scope: metric_event.scope_proto(),
+                metrics: vec![metric_event.metric_proto().clone()],
                 schema_url: String::new(),
             }],
             schema_url: String::new(),
@@ -181,20 +161,12 @@ fn otel_metric_to_export_request(metric_event: &OtelMetric) -> ExportMetricsServ
 }
 
 fn otel_span_to_export_request(span_event: &OtelSpan) -> ExportTraceServiceRequest {
-    let span: ProtoSpan = proto_convert(&span_event.span_to_proto());
-    let resource = span_event
-        .resource_proto()
-        .map(|r| proto_convert::<_, ProtoResource>(&r));
-    let scope = span_event
-        .scope_proto()
-        .map(|s| proto_convert::<_, ProtoScope>(&s));
-
     ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
-            resource,
+            resource: span_event.resource_proto(),
             scope_spans: vec![ScopeSpans {
-                scope,
-                spans: vec![span],
+                scope: span_event.scope_proto(),
+                spans: vec![span_event.span_to_proto().clone()],
                 schema_url: String::new(),
             }],
             schema_url: String::new(),
@@ -301,7 +273,7 @@ mod tests {
         assert!(!buf.is_empty());
 
         let decoded =
-            sol_opentelemetry_proto::proto::collector::logs::v1::ExportLogsServiceRequest::decode(
+            opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest::decode(
                 bytes::Bytes::from(buf.to_vec()),
             )
             .expect("must decode as ExportLogsServiceRequest");
@@ -350,7 +322,7 @@ mod tests {
         assert!(!buf.is_empty());
 
         let decoded =
-            sol_opentelemetry_proto::proto::collector::metrics::v1::ExportMetricsServiceRequest::decode(
+            opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest::decode(
                 bytes::Bytes::from(buf.to_vec()),
             )
             .expect("must decode as ExportMetricsServiceRequest");
@@ -387,7 +359,7 @@ mod tests {
         assert!(!buf.is_empty());
 
         let decoded =
-            sol_opentelemetry_proto::proto::collector::trace::v1::ExportTraceServiceRequest::decode(
+            opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest::decode(
                 bytes::Bytes::from(buf.to_vec()),
             )
             .expect("must decode as ExportTraceServiceRequest");

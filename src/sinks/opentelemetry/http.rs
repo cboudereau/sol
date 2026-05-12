@@ -396,7 +396,7 @@ fn collection_into_http_requests(
     col: EventCollection,
     encoding: OtlpHttpEncoding,
 ) -> Vec<OtlpHttpRequest> {
-    use sol_lib::opentelemetry::proto::{
+    use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
         collector::{
             logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
             trace::v1::ExportTraceServiceRequest,
@@ -480,7 +480,7 @@ enum OtlpSignal {
 }
 
 fn encode_otlp(
-    msg: &(impl prost::Message + Default),
+    msg: &(impl prost::Message + Default + serde::Serialize),
     encoding: OtlpHttpEncoding,
     signal: OtlpSignal,
 ) -> Bytes {
@@ -490,28 +490,10 @@ fn encode_otlp(
     }
 }
 
-fn proto_to_json<M: prost::Message + Default>(msg: &M, signal: OtlpSignal) -> Vec<u8> {
-    use opentelemetry_proto::tonic::collector::{
-        logs::v1::ExportLogsServiceRequest as UpstreamLogsReq,
-        metrics::v1::ExportMetricsServiceRequest as UpstreamMetricsReq,
-        trace::v1::ExportTraceServiceRequest as UpstreamTracesReq,
-    };
-    use prost::Message;
-
-    let proto_bytes = msg.encode_to_vec();
-
-    fn roundtrip_json<U: Message + Default + serde::Serialize>(bytes: &[u8]) -> Vec<u8> {
-        let upstream = U::decode(bytes).expect("proto roundtrip decode");
-        let mut value = serde_json::to_value(&upstream).expect("JSON serialization");
-        strip_nulls(&mut value);
-        serde_json::to_vec(&value).expect("JSON re-serialization")
-    }
-
-    match signal {
-        OtlpSignal::Logs => roundtrip_json::<UpstreamLogsReq>(&proto_bytes),
-        OtlpSignal::Metrics => roundtrip_json::<UpstreamMetricsReq>(&proto_bytes),
-        OtlpSignal::Traces => roundtrip_json::<UpstreamTracesReq>(&proto_bytes),
-    }
+fn proto_to_json(msg: &(impl serde::Serialize + prost::Message + Default), _signal: OtlpSignal) -> Vec<u8> {
+    let mut value = serde_json::to_value(msg).expect("JSON serialization");
+    strip_nulls(&mut value);
+    serde_json::to_vec(&value).expect("JSON re-serialization")
 }
 
 fn strip_nulls(value: &mut serde_json::Value) {

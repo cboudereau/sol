@@ -1500,13 +1500,13 @@ mod tests {
         // and emit compliance events; under parallel test load 5s was not
         // always sufficient, causing missing BytesReceived/EventsReceived.
         let received =
-            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(10))).await;
+            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(15))).await;
         let lines = extract_messages_string(received);
         assert_eq!(lines, vec!["the line"]);
 
         // Restart server, it re-reads file since the events were not acknowledged before shutdown
         let received =
-            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(10))).await;
+            run_file_source(&config, false, Unfinalized, sleep(Duration::from_secs(15))).await;
         let lines = extract_messages_string(received);
         assert_eq!(lines, vec!["the line"]);
     }

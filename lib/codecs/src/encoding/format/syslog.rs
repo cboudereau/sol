@@ -781,6 +781,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::useless_vec)]
     fn test_non_log_event_filtering() {
         let config = toml::from_str::<SyslogSerializerConfig>(
             r#"

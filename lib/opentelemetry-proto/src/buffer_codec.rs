@@ -13,18 +13,16 @@ use sol_core::event::{
     EventArray, LogArray, MetricArray, OtelLogArray, OtelMetricArray, OtelSpanArray, OtlpCodec,
     TraceArray,
 };
-use vrl::value::Value;
-
-use crate::proto::{
+use upstream_opentelemetry_proto::tonic::{
     collector::{
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         trace::v1::ExportTraceServiceRequest,
     },
-    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
-    logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-    resource::v1::Resource,
-    trace::v1::{ResourceSpans, ScopeSpans, Span},
+    common::v1::{AnyValue, KeyValue, any_value},
+    logs::v1::{ResourceLogs, ScopeLogs},
+    trace::v1::{ResourceSpans, ScopeSpans},
 };
+use vrl::value::Value;
 
 /// Wire format: `OtlpBufferBatch` protobuf.
 ///
@@ -104,15 +102,6 @@ fn event_array_to_batch(array: &EventArray) -> OtlpBufferBatch {
     }
 }
 
-/// Re-encode a prost Message from `upstream_opentelemetry_proto::tonic` to the equivalent
-/// `crate::proto` type. Both are generated from the same `.proto` files so the
-/// wire format is identical.
-fn transcode<S: prost::Message, D: prost::Message + Default>(src: &S) -> D {
-    let mut buf = Vec::with_capacity(src.encoded_len());
-    src.encode(&mut buf).expect("prost encode infallible");
-    D::decode(buf.as_slice()).expect("wire-compatible proto decode")
-}
-
 // --- OTel-native logs -------------------------------------------------------
 
 fn otel_logs_to_export(otel_logs: &OtelLogArray) -> ExportLogsServiceRequest {
@@ -120,10 +109,9 @@ fn otel_logs_to_export(otel_logs: &OtelLogArray) -> ExportLogsServiceRequest {
         resource_logs: otel_logs
             .iter()
             .map(|otel| {
-                let proto_record = otel.record_to_proto();
-                let record: LogRecord = transcode(&proto_record);
-                let resource: Option<Resource> = otel.resource_proto().map(|r| transcode(&r));
-                let scope: Option<InstrumentationScope> = otel.scope_proto().map(|s| transcode(&s));
+                let record = otel.record_to_proto();
+                let resource = otel.resource_proto();
+                let scope = otel.scope_proto();
                 ResourceLogs {
                     resource,
                     scope_logs: vec![ScopeLogs {
@@ -141,16 +129,15 @@ fn otel_logs_to_export(otel_logs: &OtelLogArray) -> ExportLogsServiceRequest {
 // --- OTel-native metrics ----------------------------------------------------
 
 fn otel_metrics_to_export(otel_metrics: &OtelMetricArray) -> ExportMetricsServiceRequest {
-    use crate::proto::metrics::v1::{Metric, ResourceMetrics, ScopeMetrics};
+    use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
 
     ExportMetricsServiceRequest {
         resource_metrics: otel_metrics
             .iter()
             .map(|otel| {
-                let proto = otel.metric_proto();
-                let metric: Metric = transcode(&proto);
-                let resource: Option<Resource> = otel.resource_proto().map(|r| transcode(&r));
-                let scope: Option<InstrumentationScope> = otel.scope_proto().map(|s| transcode(&s));
+                let metric = otel.metric_proto().clone();
+                let resource = otel.resource_proto();
+                let scope = otel.scope_proto();
                 ResourceMetrics {
                     resource,
                     scope_metrics: vec![ScopeMetrics {
@@ -225,9 +212,9 @@ fn otel_spans_to_export(otel_spans: &OtelSpanArray) -> ExportTraceServiceRequest
         resource_spans: otel_spans
             .iter()
             .map(|otel| {
-                let span: Span = transcode(&otel.span_to_proto());
-                let resource: Option<Resource> = otel.resource_proto().map(|r| transcode(&r));
-                let scope: Option<InstrumentationScope> = otel.scope_proto().map(|s| transcode(&s));
+                let span = otel.span_to_proto().clone();
+                let resource = otel.resource_proto();
+                let scope = otel.scope_proto();
                 ResourceSpans {
                     resource,
                     scope_spans: vec![ScopeSpans {
@@ -251,7 +238,9 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
         let logs: LogArray = req
             .resource_logs
             .into_iter()
-            .flat_map(|rl| rl.into_otel_event_iter().filter_map(|e| e.try_into_log()))
+            .flat_map(|rl| {
+                crate::logs::resource_logs_into_events(rl).filter_map(|e| e.try_into_log())
+            })
             .collect();
         EventArray::Logs(logs)
     } else if let Some(req) = batch.metrics {
@@ -259,7 +248,7 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
             .resource_metrics
             .into_iter()
             .flat_map(|rm| {
-                rm.into_otel_event_iter()
+                crate::metrics::resource_metrics_into_events(rm)
                     .filter_map(|e| e.try_into_otel_metric())
             })
             .collect();
@@ -271,7 +260,9 @@ fn batch_to_event_array(batch: OtlpBufferBatch) -> EventArray {
         let traces: TraceArray = req
             .resource_spans
             .into_iter()
-            .flat_map(|rs| rs.into_otel_event_iter().filter_map(|e| e.try_into_trace()))
+            .flat_map(|rs| {
+                crate::spans::resource_spans_into_events(rs).filter_map(|e| e.try_into_trace())
+            })
             .collect();
         EventArray::Traces(traces)
     } else {
@@ -298,7 +289,7 @@ pub fn value_into_any_value(v: Value) -> any_value::Value {
             any_value::Value::StringValue(ts.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
         }
         Value::Object(map) => {
-            use crate::proto::common::v1::KeyValueList;
+            use upstream_opentelemetry_proto::tonic::common::v1::KeyValueList;
             let kvs = map
                 .into_iter()
                 .map(|(k, val)| KeyValue {
@@ -311,7 +302,7 @@ pub fn value_into_any_value(v: Value) -> any_value::Value {
             any_value::Value::KvlistValue(KeyValueList { values: kvs })
         }
         Value::Array(arr) => {
-            use crate::proto::common::v1::ArrayValue;
+            use upstream_opentelemetry_proto::tonic::common::v1::ArrayValue;
             let vals = arr
                 .into_iter()
                 .map(|val| AnyValue {

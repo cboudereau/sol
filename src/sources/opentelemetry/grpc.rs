@@ -3,17 +3,22 @@ use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
     internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered},
-    opentelemetry::proto::collector::{
-        logs::v1::{
-            ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
-        },
-        metrics::v1::{
-            ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-            metrics_service_server::MetricsService,
-        },
-        trace::v1::{
-            ExportTraceServiceRequest, ExportTraceServiceResponse,
-            trace_service_server::TraceService,
+    opentelemetry::{
+        logs::resource_logs_into_events, metrics::resource_metrics_into_events,
+        spans::resource_spans_into_events,
+        upstream_opentelemetry_proto::tonic::collector::{
+            logs::v1::{
+                ExportLogsServiceRequest, ExportLogsServiceResponse,
+                logs_service_server::LogsService,
+            },
+            metrics::v1::{
+                ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+                metrics_service_server::MetricsService,
+            },
+            trace::v1::{
+                ExportTraceServiceRequest, ExportTraceServiceResponse,
+                trace_service_server::TraceService,
+            },
         },
     },
 };
@@ -46,7 +51,7 @@ impl TraceService for Service {
             .into_inner()
             .resource_spans
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_spans_into_events)
             .collect();
         self.handle_events(events, TRACES).await?;
 
@@ -66,7 +71,7 @@ impl LogsService for Service {
             .into_inner()
             .resource_logs
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_logs_into_events)
             .collect();
         self.handle_events(events, LOGS).await?;
 
@@ -86,7 +91,7 @@ impl MetricsService for Service {
             .into_inner()
             .resource_metrics
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_metrics_into_events)
             .collect();
         self.handle_events(events, METRICS).await?;
 

@@ -21,7 +21,7 @@ use futures_util::StreamExt;
 use opentelemetry_proto::tonic::metrics::v1::metric::Data as OtelMetricData;
 use prost::Message;
 use similar_asserts::assert_eq;
-use sol_lib::opentelemetry::proto::{
+use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
     collector::{
         logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
         metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
@@ -220,6 +220,7 @@ async fn receive_sum_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Sum(Sum {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![
@@ -239,7 +240,7 @@ async fn receive_sum_metric() {
                                 time_unix_nano: event_time_nanos,
                                 exemplars: vec![],
                                 flags: 0,
-                                value: Some(sol_lib::opentelemetry::proto::metrics::v1::number_data_point::Value::AsDouble(42.0)),
+                                value: Some(sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(42.0)),
                             }],
                             aggregation_temporality: AggregationTemporality::Cumulative as i32,
                             // monotonic =  incremental
@@ -318,6 +319,7 @@ async fn receive_sum_non_monotonic_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Sum(Sum {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![
@@ -337,7 +339,7 @@ async fn receive_sum_non_monotonic_metric() {
                                 time_unix_nano: event_time_nanos,
                                 exemplars: vec![],
                                 flags: 0,
-                                value: Some(sol_lib::opentelemetry::proto::metrics::v1::number_data_point::Value::AsDouble(42.0)),
+                                value: Some(sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(42.0)),
                             }],
                             aggregation_temporality: AggregationTemporality::Cumulative as i32,
                             // monotonic =  incremental
@@ -409,6 +411,7 @@ async fn receive_gauge_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Gauge(Gauge {
                             data_points: vec![NumberDataPoint {
                                 attributes: vec![
@@ -428,7 +431,7 @@ async fn receive_gauge_metric() {
                                 time_unix_nano: event_time_nanos,
                                 exemplars: vec![],
                                 flags: 0,
-                                value: Some(sol_lib::opentelemetry::proto::metrics::v1::number_data_point::Value::AsDouble(42.0)),
+                                value: Some(sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(42.0)),
                             }],
                         })),
                     }],
@@ -495,6 +498,7 @@ async fn receive_histogram_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Histogram(Histogram {
                             aggregation_temporality: AggregationTemporality::Cumulative as i32,
                             data_points: vec![HistogramDataPoint {
@@ -598,6 +602,7 @@ async fn receive_histogram_delta_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Histogram(Histogram {
                             aggregation_temporality: AggregationTemporality::Delta as i32,
                             data_points: vec![HistogramDataPoint {
@@ -701,6 +706,7 @@ async fn receive_expontential_histogram_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::ExponentialHistogram(ExponentialHistogram {
                             aggregation_temporality: AggregationTemporality::Cumulative as i32,
                             data_points: vec![ExponentialHistogramDataPoint {
@@ -819,6 +825,7 @@ async fn receive_summary_metric() {
                         name: "some.random.metric".to_string(),
                         description: "Some random metric we use for test".to_string(),
                         unit: "1".to_string(),
+                        metadata: vec![],
                         data: Some(Data::Summary(Summary {
                             data_points: vec![SummaryDataPoint {
                                 attributes: vec![

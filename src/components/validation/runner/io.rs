@@ -1,6 +1,10 @@
 use sol_lib::{
     event::Event,
-    opentelemetry::proto::collector::{
+    opentelemetry::{
+        logs::resource_logs_into_events, metrics::resource_metrics_into_events,
+        spans::resource_spans_into_events,
+    },
+    opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
         logs::v1::{
             ExportLogsServiceRequest, ExportLogsServiceResponse,
             logs_service_client::LogsServiceClient, logs_service_server::LogsService,
@@ -62,7 +66,7 @@ impl LogsService for EventForwardService {
             .into_inner()
             .resource_logs
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_logs_into_events)
             .collect();
         self.tx
             .send(events)
@@ -84,7 +88,7 @@ impl MetricsService for EventForwardService {
             .into_inner()
             .resource_metrics
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_metrics_into_events)
             .collect();
         self.tx
             .send(events)
@@ -106,7 +110,7 @@ impl TraceService for EventForwardService {
             .into_inner()
             .resource_spans
             .into_iter()
-            .flat_map(|v| v.into_otel_event_iter())
+            .flat_map(resource_spans_into_events)
             .collect();
         self.tx
             .send(events)
