@@ -1,7 +1,6 @@
 use sol_lib::opentelemetry::proto::LOGS_REQUEST_MESSAGE_TYPE;
 use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
-    collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::any_value::Value as AnyValueEnum,
+    collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value as AnyValueEnum,
 };
 
 use crate::opentelemetry::{
