@@ -8,7 +8,8 @@ use sol_core::{
     schema,
 };
 use sol_opentelemetry_proto::{
-    logs::otel_log_to_resource_logs, metrics::otel_metric_to_resource_metrics,
+    logs::otel_log_to_resource_logs,
+    metrics::otel_metric_to_resource_metrics,
     proto::{
         DESCRIPTOR_BYTES, LOGS_REQUEST_MESSAGE_TYPE, METRICS_REQUEST_MESSAGE_TYPE,
         TRACES_REQUEST_MESSAGE_TYPE,

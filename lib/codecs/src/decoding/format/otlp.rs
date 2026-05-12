@@ -198,7 +198,6 @@ impl Deserializer for OtlpDeserializer {
 
 #[cfg(test)]
 mod tests {
-    use prost::Message;
     use opentelemetry_proto::tonic::{
         collector::{
             logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
@@ -209,6 +208,7 @@ mod tests {
         resource::v1::Resource,
         trace::v1::{ResourceSpans, ScopeSpans, Span},
     };
+    use prost::Message;
 
     use super::*;
 

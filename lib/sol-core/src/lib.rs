@@ -17,7 +17,8 @@
 #![deny(unused_comparisons)]
 #![allow(clippy::default_trait_access)] // triggers on generated prost code
 #![allow(clippy::float_cmp)]
-#![allow(clippy::type_complexity)] // long-types happen, especially in async code
+#![allow(clippy::type_complexity)]
+// long-types happen, especially in async code
 // --- pedantic lints allowed in bulk (pre-existing, not worth fixing one-by-one) ---
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::redundant_closure_for_method_calls)]

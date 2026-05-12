@@ -3,21 +3,19 @@ use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMet
 
 pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item = Event> {
     let resource = rm.resource;
-    rm.scope_metrics
-        .into_iter()
-        .flat_map(move |scope_metrics| {
-            let scope = scope_metrics.scope;
-            let resource = resource.clone();
+    rm.scope_metrics.into_iter().flat_map(move |scope_metrics| {
+        let scope = scope_metrics.scope;
+        let resource = resource.clone();
 
-            scope_metrics.metrics.into_iter().map(move |metric| {
-                Event::Metric(OtelMetric::from_parts(
-                    metric,
-                    resource.clone(),
-                    scope.clone(),
-                    EventMetadata::default(),
-                ))
-            })
+        scope_metrics.metrics.into_iter().map(move |metric| {
+            Event::Metric(OtelMetric::from_parts(
+                metric,
+                resource.clone(),
+                scope.clone(),
+                EventMetadata::default(),
+            ))
         })
+    })
 }
 
 pub fn otel_metric_to_resource_metrics(metric: &OtelMetric) -> ResourceMetrics {

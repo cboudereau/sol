@@ -39,7 +39,6 @@ impl<B> InternalEvent for GrpcServerResponseSent<'_, B> {
     }
 }
 
-
 const fn grpc_code_to_name(code: Code) -> &'static str {
     match code {
         Code::Ok => "Ok",

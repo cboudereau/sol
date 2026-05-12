@@ -2,9 +2,12 @@ use futures::TryFutureExt;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
-    internal_event::{ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered},
+    internal_event::{
+        ByteSize, BytesReceived, CountByteSize, InternalEventHandle as _, Registered,
+    },
     opentelemetry::{
-        logs::resource_logs_into_events, metrics::resource_metrics_into_events,
+        logs::resource_logs_into_events,
+        metrics::resource_metrics_into_events,
         spans::resource_spans_into_events,
         upstream_opentelemetry_proto::tonic::collector::{
             logs::v1::{

@@ -490,7 +490,10 @@ fn encode_otlp(
     }
 }
 
-fn proto_to_json(msg: &(impl serde::Serialize + prost::Message + Default), _signal: OtlpSignal) -> Vec<u8> {
+fn proto_to_json(
+    msg: &(impl serde::Serialize + prost::Message + Default),
+    _signal: OtlpSignal,
+) -> Vec<u8> {
     let mut value = serde_json::to_value(msg).expect("JSON serialization");
     strip_nulls(&mut value);
     serde_json::to_vec(&value).expect("JSON re-serialization")

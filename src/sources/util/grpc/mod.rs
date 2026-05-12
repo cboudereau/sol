@@ -18,7 +18,6 @@ use crate::{
     tls::MaybeTlsSettings,
 };
 
-
 fn grpc_server_builder() -> Server {
     Server::builder()
         .http2_adaptive_window(Some(true))

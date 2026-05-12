@@ -611,9 +611,7 @@ pub(crate) use sol_lib::opentelemetry::spans::otel_span_to_resource_spans as ote
 
 fn collection_into_request(col: EventCollection) -> OtlpRequest {
     use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
-        logs::v1::ResourceLogs,
-        metrics::v1::ResourceMetrics,
-        trace::v1::ResourceSpans,
+        logs::v1::ResourceLogs, metrics::v1::ResourceMetrics, trace::v1::ResourceSpans,
     };
 
     let n = col.events.len();

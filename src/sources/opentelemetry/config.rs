@@ -145,8 +145,7 @@ impl SourceConfig for OpentelemetryConfig {
         let events_received = register!(EventsReceived);
 
         let grpc_tls_settings = MaybeTlsSettings::from_config(self.grpc.tls.as_ref(), true)?;
-        let grpc_bytes_received =
-            register!(BytesReceived::from(Protocol::from("grpc")));
+        let grpc_bytes_received = register!(BytesReceived::from(Protocol::from("grpc")));
         let grpc_service = Service {
             pipeline: cx.out.clone().into_shared(),
             acknowledgements,

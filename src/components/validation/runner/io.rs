@@ -1,9 +1,5 @@
 use sol_lib::{
     event::Event,
-    opentelemetry::{
-        logs::resource_logs_into_events, metrics::resource_metrics_into_events,
-        spans::resource_spans_into_events,
-    },
     opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
         logs::v1::{
             ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -20,6 +16,10 @@ use sol_lib::{
             trace_service_client::TraceServiceClient, trace_service_server::TraceService,
             trace_service_server::TraceServiceServer,
         },
+    },
+    opentelemetry::{
+        logs::resource_logs_into_events, metrics::resource_metrics_into_events,
+        spans::resource_spans_into_events,
     },
     shutdown::ShutdownSignal,
     tls::MaybeTlsSettings,
