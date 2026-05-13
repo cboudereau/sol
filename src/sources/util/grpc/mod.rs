@@ -25,6 +25,7 @@ fn grpc_server_builder() -> Server {
         .initial_connection_window_size(2 * 1024 * 1024)
         .http2_keepalive_interval(Some(Duration::from_secs(10)))
         .http2_keepalive_timeout(Some(Duration::from_secs(20)))
+        .max_concurrent_streams(1024)
 }
 
 pub async fn run_grpc_server<S>(
