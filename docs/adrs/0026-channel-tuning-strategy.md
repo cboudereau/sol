@@ -1,9 +1,7 @@
 ---
-status: draft
+status: accepted
 ---
 # Channel tuning strategy: match server defaults vs independent values
-
-Addresses: [FR1](../DESIGN.md#fr1), [FR3](../DESIGN.md#fr3), [NFR1](../DESIGN.md#nfr1)
 
 ## Problem
 

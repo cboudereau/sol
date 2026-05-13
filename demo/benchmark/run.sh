@@ -45,7 +45,7 @@ mkdir -p "$RAW_DIR"
   docker version --format '{{.Server.Version}}' 2>/dev/null | xargs -I{} echo "Docker: {}"
   echo ""
   echo "=== Images ==="
-  echo "Sol: $(docker run --rm superbeeeeeee/sol:latest --version 2>&1 || echo 'N/A')"
+  echo "Sol: $(docker run --rm "${SOL_IMAGE:-superbeeeeeee/sol:latest}" --version 2>&1 || echo 'N/A')"
   echo "Vector: $(docker run --rm timberio/vector:latest-alpine --version 2>&1 || echo 'N/A')"
   echo "otelcol: otel/opentelemetry-collector-contrib:0.122.0"
 } > "$RAW_DIR/system-info.txt" 2>&1
@@ -546,7 +546,7 @@ HEADER
   # Tail sampling table (2 systems)
   echo '## Tail Sampling Pipeline (Sol vs otelcol only — Vector has no tail_sampling)' >> "$report"
   echo '' >> "$report"
-  echo '> otelcontribcol uses TWO sequential tail_sampling processors (double buffer). Sol uses ONE transform (single buffer).' >> "$report"
+  echo '> Both systems use two sequential tail_sampling stages (Sol: two transforms, otelcol: two processors).' >> "$report"
   echo '' >> "$report"
   echo '| Scenario | Sol rate | otelcol rate | Sol CPU | otelcol CPU | Sol Mem | otelcol Mem |' >> "$report"
   echo '|----------|---------|-------------|---------|------------|---------|------------|' >> "$report"

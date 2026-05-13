@@ -36,7 +36,7 @@ telemetrygen ──► sol-lb ──┬──► sol-collector-1         otelcol
 | OTLP gRPC receiver | yes | yes | yes |
 | OTLP HTTP receiver | yes | yes | yes |
 | Null sink | `blackhole` | `blackhole` | `nop` |
-| Tail sampling | 1 transform, first-match-wins policies | N/A | 2 sequential processors (double buffer) |
+| Tail sampling | 2 sequential transforms | N/A | 2 sequential processors |
 | Load balancing | OTLP sink + `load_balancing` block | N/A | Dedicated `loadbalancing` exporter |
 | TraceID consistent hash | yes | N/A | yes |
 | Internal metrics prefix | `sol_sol_*` | `vector_*` | `otelcol_*` |
@@ -68,19 +68,19 @@ telemetrygen ──► sol-lb ──┬──► sol-collector-1         otelcol
 
 | Condition | Observation | Explanation |
 |-----------|-------------|-------------|
-| Batched traces (gRPC) | Sol ~= otelcol at 10k; otelcol wins at 50k | Per-request overhead amortized in batch; at high load, Go's gRPC scales better |
-| Logs/metrics (gRPC, 1/call, no compression) | otelcol ~45x faster than Sol/Vector | Sol/Vector ~10ms per gRPC call vs otelcol ~0.2ms — inherited from Vector |
-| Logs/metrics (gRPC, 1/call, gzip) | Sol 2.5x better than uncompressed; otelcol 2x worse | Sol's DecompressionAndMetrics layer runs anyway — gzip just exercises the intended path |
-| Logs/metrics (HTTP) | Sol/Vector >= otelcol | HTTP path avoids the gRPC DecompressionAndMetrics layer — Sol wins |
-| Sol vs Vector (noop) | Near-identical on gRPC and HTTP | Confirms gRPC overhead is inherited from Vector, not a Sol regression |
-| Tail sampling (batched) | Comparable throughput at 10k; otelcol better at 50k | Both handle the sampling pipeline |
-| LB topology | Sol ~100/s vs otelcol ~10k+/s | Sol LB → collector forwarding hits the same gRPC per-request overhead |
+| Batched traces (gRPC) | Sol ~= otelcol at 10k; otelcol wins at 50k (~87%) | At high load, Go's gRPC H2 stack scales better than tonic 0.12 |
+| Logs/metrics (gRPC, 1/call) | Sol beats otelcol (4.4k vs 3.9k/s) | Sol's optimized gRPC path with TCP_NODELAY + tuned H2 windows |
+| Logs/metrics (gRPC, gzip) | Sol beats otelcol (2.7k vs 1.8k/s) | tonic's built-in decompression more efficient than Go's |
+| Logs/metrics (HTTP) | Sol >= otelcol | Both perform well on HTTP; Sol slightly ahead |
+| Sol vs Vector (noop gRPC) | Sol 40x+ faster on unbatched | Sol's gRPC optimizations (TCP_NODELAY, H2 tuning, DecompressionAndMetrics removal) |
+| Tail sampling (50k) | Sol wins (56k vs 47k/s) with less CPU | Sol's tail sampling is efficient under real workload |
+| LB topology (50k) | Sol wins (51k vs 47k/s) with 44% less CPU | Client-side H2 tuning + efficient routing |
 
 ### OTLP compression (per spec)
 
 | | OTLP spec | otelcol default | Sol/Vector support |
 |---|---|---|---|
-| gRPC | `gzip`, `none` | exporter: `gzip`; receiver: accepts all | gzip only (via `DecompressionAndMetricsLayer`) |
+| gRPC | `gzip`, `none` | exporter: `gzip`; receiver: accepts all | gzip (via tonic built-in decompression) |
 | HTTP | `gzip` | exporter: `gzip`; receiver: gzip, zstd, zlib, snappy, deflate, lz4 | gzip, deflate, snappy, zstd |
 
 > In production, OTLP exporters default to `gzip` compression. The `none` (uncompressed) scenarios represent a non-default configuration. The `gzip` scenarios represent the realistic default.
@@ -101,19 +101,18 @@ bash run.sh --scenario noop-logs-grpc-10k --duration 15
 
 Results are written to `results/RESULTS.md`.
 
-### Benchmarking local changes
+### Benchmarking a specific image
 
-By default, `run.sh` pulls `superbeeeeeee/sol:latest` from Docker Hub. To benchmark your local working tree, build a local image first:
+By default, `run.sh` pulls `superbeeeeeee/sol:latest` from Docker Hub. Override with `SOL_IMAGE`:
 
 ```bash
-# From the repo root
-docker build -f demo/Dockerfile.sol -t sol:local .
+# Use a CI-built PR image
+SOL_IMAGE=superbeeeeeee/sol:pr-42 bash demo/benchmark/run.sh
 
-# Run benchmarks with the local image
+# Use a locally built image
+docker build -f demo/Dockerfile.sol -t sol:local .
 SOL_IMAGE=sol:local bash demo/benchmark/run.sh
 ```
-
-The Docker build does a full release compilation inside the container (~10-15 min on first run, faster with cache). This is the only way to measure the impact of uncommitted or unpublished changes.
 
 ## Scenarios
 
@@ -143,7 +142,7 @@ The Docker build does a full release compilation inside the container (~10-15 mi
 - CPU/memory from `docker stats` polling (identical measurement for all)
 
 **Known differences** (documented, not hidden):
-- **Tail sampling**: otelcontribcol uses 2 sequential processors (double buffer); Sol uses 1 transform (single buffer). This is architectural — otelcol can't express Sol's policy composition in one processor.
+- **Tail sampling**: both systems use 2 sequential stages (Sol: two transforms, otelcol: two processors) with equivalent policies (latency-error filtering → probabilistic sampling).
 - **Load balancing**: otelcontribcol uses a dedicated `loadbalancing` exporter; Sol uses the standard OTLP sink with a `load_balancing` config block.
 - **Vector scope**: Vector participates only in noop scenarios — it has no tail_sampling or load_balancing. Its role is baseline regression detection for Sol (same codebase fork).
 - **telemetrygen batching**: Traces have `--batch` flag (default true). Logs and metrics have no batch option (1 event per gRPC call). `nobatch` variants isolate per-request overhead.

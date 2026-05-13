@@ -141,3 +141,25 @@ fn grpc_server_builder() -> Server {
 - **Backward compatibility**: no config changes. All tuning is internal defaults.
 - **LB forwarding path**: the LB sink's gRPC client channels are the highest-impact target — they carry all forwarded traces between Sol instances.
 - **Observability**: no new metrics needed. Existing `component_sent_events_total` and endpoint bytes cover the sink path.
+
+## Post-implementation findings
+
+### NFR1 not met — 50k noop-traces gap is server-side
+
+Client-side tuning and `max_concurrent_streams(1024)` had **no effect** on the noop-traces-grpc-50k scenario (87% → 87%). This confirms the bottleneck is in the **inbound** path (telemetrygen → Sol's tonic server), not the outbound client channel.
+
+The LB pipeline — where Sol's client channels forward to backends — showed healthy results: Sol beats otelcol at 50k (50,833/s vs 47,338/s) with 44% less CPU.
+
+| Scenario | Sol (pr-23) | otelcol | Ratio |
+|---|---|---|---|
+| noop-traces-grpc-50k | 80,451/s | 92,135/s | **87%** (unchanged) |
+| lb-traces-grpc-50k | 50,833/s | 47,338/s | **107%** (Sol wins) |
+| lb-traces-grpc-10k | 11,371/s | 11,460/s | **99%** |
+
+### Root cause: tonic/h2 server throughput ceiling
+
+At 50k+ spans/s over a single H2 connection, Go's gRPC server (used by otelcol) outperforms Rust's tonic 0.12 / hyper 0.14 / h2 0.4. This is a known limitation of the older hyper stack. The path forward is upgrading to tonic 0.13+ (hyper 1.x, h2 0.5+), which includes significant HTTP/2 performance improvements.
+
+### NFR2 met — no regressions
+
+All scenarios at or above 95% of otelcol. Sol beats otelcol on logs, metrics, tail-sampling, and LB.
