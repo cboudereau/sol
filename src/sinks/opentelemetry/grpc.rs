@@ -1,6 +1,7 @@
 use std::{
     num::NonZeroUsize,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::{BatcherSettings, DriverResponse, batcher::data::BatchReduce},
 };
+use tonic::transport::Endpoint;
 use tonic::{IntoRequest, transport::Channel};
 use tower::{Service, ServiceBuilder};
 
@@ -105,6 +107,18 @@ impl GenerateConfig for GrpcConfig {
     }
 }
 
+fn build_otlp_channel(uri: Uri) -> Channel {
+    Endpoint::from(uri)
+        .http2_adaptive_window(true)
+        .initial_stream_window_size(1024 * 1024)
+        .initial_connection_window_size(2 * 1024 * 1024)
+        .http2_keep_alive_interval(Duration::from_secs(10))
+        .keep_alive_timeout(Duration::from_secs(20))
+        .tcp_nodelay(true)
+        .connect_timeout(Duration::from_secs(5))
+        .connect_lazy()
+}
+
 impl GrpcConfig {
     pub async fn build(&self, _cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         if let Some(lb_config) = &self.load_balancing {
@@ -119,7 +133,7 @@ impl GrpcConfig {
             .parse()
             .map_err(|e| format!("invalid endpoint URI: {e}"))?;
 
-        let channel = Channel::builder(endpoint).connect_lazy();
+        let channel = build_otlp_channel(endpoint);
         let service = OtlpGrpcService::new(channel, self.endpoint.clone(), self.compression);
         let batch = self
             .batch
@@ -459,7 +473,7 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
                 warn!(message = "Skipping backend with invalid URI.", endpoint = %ep);
                 continue;
             };
-            let channel = Channel::builder(uri).connect_lazy();
+            let channel = build_otlp_channel(uri);
             services.insert(
                 ep.clone(),
                 OtlpGrpcService::new(channel, ep.clone(), self.compression),
@@ -499,7 +513,7 @@ impl StreamSink<Event> for LoadBalancedOtlpGrpcSink {
                 for ep in &new_endpoints {
                     if !services.contains_key(ep) {
                         if let Some(uri) = parse_endpoint_uri(ep) {
-                            let channel = Channel::builder(uri).connect_lazy();
+                            let channel = build_otlp_channel(uri);
                             services.insert(
                                 ep.clone(),
                                 OtlpGrpcService::new(channel, ep.clone(), self.compression),

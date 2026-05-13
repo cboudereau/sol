@@ -1,0 +1,154 @@
+# Tonic Stack Upgrade — Design Doc
+
+**Status: EXPERIMENTAL** — research found no documented performance improvement, but the upgrade could be attempted and validated with `demo/benchmark`. See [Research findings](#research-findings) below.
+
+## Context
+
+Amends: [designs/20260513_grpc-stack-tuning.md](../../designs/20260513_grpc-stack-tuning.md)
+
+The [gRPC stack tuning](../../designs/20260513_grpc-stack-tuning.md) work tuned client-side and server-side H2 parameters but could not close the **noop-traces-grpc-50k gap** (Sol 80,451/s vs otelcol 92,135/s = 87%). Post-implementation analysis confirmed the bottleneck is tonic 0.12's server-side H2 throughput ceiling — at 50k+ spans/s over a single H2 connection, Go's gRPC outperforms Rust's tonic 0.12 / hyper 0.14 / h2 0.4.
+
+The project is in a **hybrid dependency state**:
+
+| Layer | Current (hyper 0.14 ecosystem) | Target (hyper 1.x ecosystem) |
+|---|---|---|
+| tonic | 0.12.3 | 0.13+ |
+| hyper | 0.14.32 (pinned, `backports` feature) | 1.x |
+| http | 0.2.9 (pinned) + `http-1` alias for 1.3 | 1.x only |
+| http-body | 0.4.6 + `http-body-1` alias for 1.0 | 1.0 only |
+| h2 | 0.4.11 | 0.4.x (unchanged) |
+| tower | 0.5.2 | 0.5.x (unchanged) |
+| tower-http | 0.4.4 | 0.6+ |
+| axum | 0.6.20 (pinned) | 0.7+ |
+| hyper-openssl | 0.9.x | 0.10+ |
+| hyper-proxy | 0.9.x | replacement needed |
+| aws-smithy-runtime | `connector-hyper-0-14-x` | `connector-hyper-1-x` |
+
+**Key finding**: tonic 0.12 already uses hyper 1 / http 1 / http-body 1 internally. The tonic 0.12 → 0.13 change is small (tower 0.4 → 0.5, `NamedService` import path). The **real migration** is Sol's direct dependencies on hyper 0.14, http 0.2, http-body 0.4, tower-http 0.4, and hyper-openssl 0.9.
+
+### Scope assessment
+
+| Area | Files affected | Complexity |
+|---|---|---|
+| tonic gRPC sources/sinks | ~10 | Low — already uses `http_1::` types |
+| HTTP sinks (hyper::Body) | ~20 | Medium — Body type replacement |
+| HTTP client (`src/http.rs`) | 1 | High — core infrastructure |
+| tower-http layers | ~12 | Medium — API changes |
+| axum (API server) | ~1 | Low |
+| TLS (hyper-openssl) | ~5 | High — connector rewrite |
+| AWS sinks (smithy) | ~5 | Medium — feature flag change |
+
+## Functional Requirements
+
+### <a id="fr1"></a>FR1 — Upgrade tonic to 0.13+
+
+Update tonic dependency and fix breaking changes:
+- `NamedService` moved from `tonic::transport` to `tonic::server`
+- Interceptor API changes
+- tower 0.5 (already used — no change needed)
+
+### <a id="fr2"></a>FR2 — Migrate hyper 0.14 → 1.x
+
+Replace all direct hyper 0.14 usage:
+- `hyper::Body` → `http-body-util` types or `BoxBody`
+- `hyper::Client` → `hyper_util::client::legacy::Client`
+- `hyper::Server` → removed (use `hyper_util::server`)
+- Response/Request types use `http 1.x`
+
+### <a id="fr3"></a>FR3 — Unify http/http-body to single version
+
+Remove the dual-version aliases (`http` 0.2 + `http-1` 1.x, `http-body` 0.4 + `http-body-1` 1.0). All code uses http 1.x and http-body 1.0 only.
+
+### <a id="fr4"></a>FR4 — Upgrade tower-http to 0.6+
+
+tower-http 0.4 depends on http 0.2. Upgrade to 0.6+ which supports http 1.x.
+
+### <a id="fr5"></a>FR5 — Upgrade TLS connector
+
+Replace hyper-openssl 0.9 (hyper 0.14) with hyper-openssl 0.10+ (hyper 1.x), or an equivalent TLS connector.
+
+### <a id="fr6"></a>FR6 — Upgrade axum to 0.7+
+
+axum 0.6 depends on hyper 0.14. Upgrade to 0.7+ for hyper 1.x support.
+
+## Non-Functional Requirements
+
+### <a id="nfr1"></a>NFR1 — Close 50k traces gap
+
+noop-traces-grpc-50k throughput must reach ≥95% of otelcol (currently 87%). Target: ≥86,000 spans/s.
+
+### <a id="nfr2"></a>NFR2 — No regression on existing scenarios
+
+All scenarios currently at ≥95% of otelcol must remain at ≥95%.
+
+### <a id="nfr3"></a>NFR3 — All existing tests pass
+
+All CI checks must pass:
+- `cargo fmt --all --check` (fix formatting issues with `cargo fmt`)
+- `make check-clippy`
+- `make test`
+- `make test-component-validation`
+
+### <a id="nfr4"></a>NFR4 — No new dependencies
+
+The upgrade should replace existing crates with their successors (hyper-openssl 0.9 → 0.10), not add new ones beyond what's needed for the migration (e.g., `hyper-util`, `http-body-util` are expected additions).
+
+## Non-goals
+
+- **Rewriting the HTTP client abstraction**: the `HttpClient` wrapper in `src/http.rs` can be updated to use hyper 1.x APIs while keeping the same external interface. No architectural redesign.
+- **async-tungstenite / websocket upgrades**: if websocket dependencies pin hyper 0.14, they can temporarily coexist via the existing dual-version pattern until their own upgrade is released.
+- **Performance tuning beyond the upgrade**: the upgrade itself is expected to improve H2 throughput. Further tuning (different window sizes, connection pooling) is separate work.
+
+## Rabbit holes
+
+- **hyper-proxy replacement**: `hyper-proxy` 0.9 may not have a hyper 1.x version. Cap: check if `hyper-proxy2` or `http-proxy` exists; if not, evaluate whether proxy support can be dropped or shimmed. Don't write a custom proxy connector.
+- **AWS SDK compatibility**: `aws-smithy-runtime` may not yet support `connector-hyper-1-x`. Cap: check the latest version; if not available, keep the 0.14 connector for AWS sinks only (isolated behind a feature flag). Don't block the entire migration on AWS.
+- **Compile-time explosion**: having both hyper 0.14 and 1.x during migration doubles compile units. Cap: migrate in one pass, don't leave both versions in Cargo.toml longer than needed.
+
+## Design
+
+### Migration strategy
+
+**Big-bang in workspace Cargo.toml, incremental per-crate fixes.** Update the root `Cargo.toml` dependency versions first, then fix compilation errors crate by crate. This is the standard Rust approach for ecosystem-wide version bumps.
+
+### Migration order
+
+1. **Cargo.toml**: bump tonic, remove http/http-body dual aliases, add hyper-util + http-body-util
+2. **tonic gRPC code** (~10 files): fix `NamedService` import, update interceptors
+3. **HTTP client** (`src/http.rs`): migrate `hyper::Client` → `hyper_util::client::legacy::Client`, `hyper::Body` → new body types
+4. **HTTP sinks** (~20 files): update `Request<Body>` / `Response<Body>` signatures
+5. **tower-http layers** (~12 files): upgrade to 0.6 API
+6. **TLS** (~5 files): hyper-openssl 0.10
+7. **axum** (~1 file): 0.7 API changes
+8. **AWS** (~5 files): smithy connector feature flag
+
+### Decisions
+
+- [Migration strategy](./adrs/migration-strategy.md)
+
+## Cross-cutting Concerns
+
+- **Feature flags**: some sinks are behind feature flags. Migration must cover ALL enabled features, not just the default build.
+- **CI**: the existing CI pipeline (`cargo check`, `cargo clippy`, `cargo test`) validates correctness. No new CI steps needed.
+- **Rollback**: if the migration stalls, the workspace can be abandoned — all changes are on a branch. The current hyper 0.14 stack is functional.
+
+## <a id="research-findings"></a>Research findings — upgrade deferred
+
+Research into the upgrade path found **no documented performance improvement** that would justify the migration effort (~60 files, multi-day work):
+
+- **hyper 1.x**: an API redesign, not a performance release. [Issue #3164](https://github.com/hyperium/hyper/issues/3164) reported hyper 1.x being **1.8x slower** than 0.14 in a gateway proxy benchmark. No performance claims in the release notes.
+- **h2 0.4.x**: incremental correctness fixes (header decoding, flow control padding, capacity reclamation). Useful but no step-change in throughput. No benchmark numbers cited.
+- **tonic 0.13**: primarily a prost 0.13 update. The one meaningful optimization (buffer amortization, PR #1423) is already in tonic 0.12.
+- **TechEmpower**: no version-to-version comparison available for hyper.
+
+### Conclusion
+
+The 50k noop-traces gap (87% of otelcol) is not caused by outdated crate versions. It is a fundamental characteristic of the h2/tonic server-side flow control implementation vs Go's gRPC. Upgrading the stack would be a large effort with no expected throughput payoff.
+
+The upgrade remains valuable for **ecosystem hygiene** (removing dual http/http-body versions, staying on supported crates). If attempted, the `demo/benchmark` suite provides a concrete before/after validation — run `bash run.sh` with the current image as baseline, then with the upgraded image to measure actual impact.
+
+### When to revisit
+
+- A new h2 or tonic release cites HTTP/2 throughput improvements with benchmarks
+- A dependency (e.g., AWS SDK, tower-http) drops hyper 0.14 support
+- The dual http/http-body version situation causes maintainability issues
