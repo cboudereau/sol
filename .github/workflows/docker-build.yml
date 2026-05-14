@@ -46,11 +46,36 @@ jobs:
           name: sol-${{ inputs.sol-version }}-x86_64-unknown-linux-gnu
           path: target/artifacts/sol*
 
+  build-static:
+    name: Build x86_64 static musl binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOL_VERSION: ${{ inputs.sol-version }}
+      SOL_BUILD_DESC: ${{ inputs.sol-build-desc }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Bootstrap runner environment
+        run: |
+          sudo -E bash scripts/environment/bootstrap-ubuntu-24.04.sh
+          bash scripts/environment/prepare.sh --modules=rustup
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - name: Build static binary
+        run: cargo build --release --no-default-features --features default --target x86_64-unknown-linux-musl
+      - name: Package archive
+        run: NATIVE_BUILD=false TARGET=x86_64-unknown-linux-musl cargo vdev package archive
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sol-${{ inputs.sol-version }}-x86_64-unknown-linux-musl
+          path: target/artifacts/sol*
+
   build-docker:
     name: Build & push Docker images
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [build-deb]
+    needs: [build-deb, build-static]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -58,12 +83,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sol-${{ inputs.sol-version }}-x86_64-unknown-linux-gnu
-          path: /tmp/deb-artifacts/
+          path: distribution/docker/debian/
 
-      - name: Distribute DEB to Docker contexts
-        run: |
-          cp /tmp/deb-artifacts/sol_*.deb distribution/docker/debian/
-          cp /tmp/deb-artifacts/sol_*.deb distribution/docker/distroless-libc/
+      - name: Download static artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sol-${{ inputs.sol-version }}-x86_64-unknown-linux-musl
+          path: distribution/docker/distroless-static/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
@@ -118,7 +144,7 @@ jobs:
       - name: Build and push Distroless image
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
-          context: distribution/docker/distroless-libc
+          context: distribution/docker/distroless-static
           push: true
           tags: ${{ steps.tags.outputs.distroless }}
           platforms: linux/amd64
