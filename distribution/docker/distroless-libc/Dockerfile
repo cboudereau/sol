@@ -16,7 +16,6 @@ LABEL org.opencontainers.image.url="https://github.com/cboudereau/sol"
 LABEL org.opencontainers.image.source="https://github.com/cboudereau/sol"
 LABEL org.opencontainers.image.documentation="https://github.com/cboudereau/sol"
 
-COPY --from=builder /usr/lib/*-linux-gnu/libz.so.1 /usr/lib/
 COPY --from=builder /usr/bin/sol /usr/bin/sol
 COPY --from=builder /usr/share/doc/sol /usr/share/doc/sol
 COPY --from=builder /usr/share/sol /usr/share/sol
