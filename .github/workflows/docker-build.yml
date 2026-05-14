@@ -62,7 +62,7 @@ jobs:
           sudo apt-get install -y musl-tools
           rustup target add x86_64-unknown-linux-musl
       - name: Build static binary
-        run: cargo build --release --no-default-features --features default --target x86_64-unknown-linux-musl
+        run: cargo build --release --target x86_64-unknown-linux-musl
       - name: Package archive
         run: NATIVE_BUILD=false TARGET=x86_64-unknown-linux-musl cargo vdev package archive
       - name: Upload artifacts
