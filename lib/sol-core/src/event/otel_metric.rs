@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 pub use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 pub use opentelemetry_proto::tonic::common::v1::KeyValue;
@@ -129,10 +131,10 @@ impl std::fmt::Display for MetricView<'_> {
 pub struct OtelMetric {
     pub(crate) metric: OtelMetricProto,
     pub(crate) dp_attrs: Vec<OtelAttributes>,
-    pub(crate) resource: Option<Resource>,
-    pub(crate) resource_attrs: OtelAttributes,
-    pub(crate) scope: Option<InstrumentationScope>,
-    pub(crate) scope_attrs: OtelAttributes,
+    pub(crate) resource: Option<Arc<Resource>>,
+    pub(crate) resource_attrs: Arc<OtelAttributes>,
+    pub(crate) scope: Option<Arc<InstrumentationScope>>,
+    pub(crate) scope_attrs: Arc<OtelAttributes>,
     pub(crate) metadata: EventMetadata,
     pub(crate) set_values: Option<BTreeSet<String>>,
     pub(crate) kind_override: Option<super::MetricKind>,
@@ -197,9 +199,9 @@ impl OtelMetric {
             metric,
             dp_attrs,
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata: EventMetadata::default(),
             set_values: None,
             kind_override: None,
@@ -507,6 +509,28 @@ impl OtelMetric {
         Self {
             metric,
             dp_attrs,
+            resource: resource.map(Arc::new),
+            resource_attrs: Arc::new(resource_attrs),
+            scope: scope.map(Arc::new),
+            scope_attrs: Arc::new(scope_attrs),
+            metadata,
+            set_values: None,
+            kind_override: None,
+        }
+    }
+
+    pub fn from_parts_shared(
+        mut metric: OtelMetricProto,
+        resource: Option<Arc<Resource>>,
+        resource_attrs: Arc<OtelAttributes>,
+        scope: Option<Arc<InstrumentationScope>>,
+        scope_attrs: Arc<OtelAttributes>,
+        metadata: EventMetadata,
+    ) -> Self {
+        let dp_attrs = extract_dp_attrs(&mut metric);
+        Self {
+            metric,
+            dp_attrs,
             resource,
             resource_attrs,
             scope,
@@ -526,14 +550,8 @@ impl OtelMetric {
         EventMetadata,
     ) {
         populate_dp_attrs(&mut self.metric, &self.dp_attrs);
-        let resource = self.resource.map(|mut r| {
-            r.attributes = self.resource_attrs.to_key_values();
-            r
-        });
-        let scope = self.scope.map(|mut s| {
-            s.attributes = self.scope_attrs.to_key_values();
-            s
-        });
+        let resource = resource_to_proto(self.resource.as_deref(), &self.resource_attrs);
+        let scope = scope_to_proto(self.scope.as_deref(), &self.scope_attrs);
         (self.metric, resource, scope, self.metadata)
     }
 
@@ -552,15 +570,15 @@ impl OtelMetric {
     }
 
     pub fn resource(&self) -> Option<&Resource> {
-        self.resource.as_ref()
+        self.resource.as_deref()
     }
 
     pub fn resource_proto(&self) -> Option<Resource> {
-        resource_to_proto(self.resource.as_ref(), &self.resource_attrs)
+        resource_to_proto(self.resource.as_deref(), &self.resource_attrs)
     }
 
     pub fn scope_proto(&self) -> Option<InstrumentationScope> {
-        scope_to_proto(self.scope.as_ref(), &self.scope_attrs)
+        scope_to_proto(self.scope.as_deref(), &self.scope_attrs)
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
@@ -569,8 +587,8 @@ impl OtelMetric {
         for (k, v) in self.resource_attrs.iter() {
             new_attrs.insert(k.clone(), v.clone());
         }
-        self.resource_attrs = new_attrs;
-        self.resource = Some(resource);
+        self.resource_attrs = Arc::new(new_attrs);
+        self.resource = Some(Arc::new(resource));
     }
 
     pub fn resource_attrs(&self) -> &OtelAttributes {
@@ -582,12 +600,12 @@ impl OtelMetric {
     }
 
     pub fn scope(&self) -> Option<&InstrumentationScope> {
-        self.scope.as_ref()
+        self.scope.as_deref()
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes));
-        self.scope = Some(scope);
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope = Some(Arc::new(scope));
     }
 
     pub fn metadata(&self) -> &EventMetadata {
@@ -693,12 +711,12 @@ impl OtelMetric {
 
     pub fn set_resource_attribute(&mut self, key: String, value: AnyValue) {
         if self.resource.is_none() {
-            self.resource = Some(Resource {
+            self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
-            });
+            }));
         }
-        self.resource_attrs.insert(key, value);
+        Arc::make_mut(&mut self.resource_attrs).insert(key, value);
     }
 
     // -----------------------------------------------------------------------
@@ -813,12 +831,12 @@ impl OtelMetric {
     pub fn with_namespace(mut self, namespace: Option<impl Into<String>>) -> Self {
         if let Some(ns) = namespace {
             if self.resource.is_none() {
-                self.resource = Some(Resource {
+                self.resource = Some(Arc::new(Resource {
                     attributes: Vec::new(),
                     dropped_attributes_count: 0,
-                });
+                }));
             }
-            self.resource_attrs
+            Arc::make_mut(&mut self.resource_attrs)
                 .insert(f::METRIC_NAMESPACE.to_string(), string_value(ns.into()));
         }
         self
@@ -2096,9 +2114,9 @@ impl ByteSizeOf for OtelMetric {
         self.metric.encoded_len()
             + self
                 .resource
-                .as_ref()
+                .as_deref()
                 .map_or(0, prost::Message::encoded_len)
-            + self.scope.as_ref().map_or(0, prost::Message::encoded_len)
+            + self.scope.as_deref().map_or(0, prost::Message::encoded_len)
             + self.metadata.allocated_bytes()
     }
 }
@@ -2225,12 +2243,12 @@ impl Serialize for OtelMetric {
         }
 
         if self.resource.is_some() || !self.resource_attrs.is_empty() {
-            let mut res = self.resource.clone().unwrap_or_default();
+            let mut res = self.resource.as_deref().cloned().unwrap_or_default();
             res.attributes = self.resource_attrs.to_key_values();
             map.serialize_entry(f::RESOURCE, &SerializableResource(&res))?;
         }
         if self.scope.is_some() || !self.scope_attrs.is_empty() {
-            let mut scope = self.scope.clone().unwrap_or_default();
+            let mut scope = self.scope.as_deref().cloned().unwrap_or_default();
             scope.attributes = self.scope_attrs.to_key_values();
             map.serialize_entry(f::SCOPE, &SerializableScope(&scope))?;
         }

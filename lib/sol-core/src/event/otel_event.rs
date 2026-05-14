@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 pub use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::{
     InstrumentationScope, KeyValue, any_value::Value as OtelValueKind,
@@ -777,10 +779,10 @@ pub(super) fn otel_value_to_str_ref(v: &OtelValueKind) -> &str {
 pub struct OtelLog {
     pub(crate) record: LogRecord,
     pub(crate) record_attrs: OtelAttributes,
-    pub(crate) resource: Option<Resource>,
-    pub(crate) resource_attrs: OtelAttributes,
-    pub(crate) scope: Option<InstrumentationScope>,
-    pub(crate) scope_attrs: OtelAttributes,
+    pub(crate) resource: Option<Arc<Resource>>,
+    pub(crate) resource_attrs: Arc<OtelAttributes>,
+    pub(crate) scope: Option<Arc<InstrumentationScope>>,
+    pub(crate) scope_attrs: Arc<OtelAttributes>,
     pub(crate) metadata: EventMetadata,
 }
 
@@ -791,9 +793,9 @@ impl OtelLog {
             record,
             record_attrs,
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata: EventMetadata::default(),
         }
     }
@@ -813,9 +815,9 @@ impl OtelLog {
             },
             record_attrs: OtelAttributes::new(),
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata: EventMetadata::default(),
         }
     }
@@ -842,9 +844,9 @@ impl OtelLog {
                     },
                     record_attrs: OtelAttributes::new(),
                     resource: None,
-                    resource_attrs: OtelAttributes::new(),
+                    resource_attrs: Arc::new(OtelAttributes::new()),
                     scope: None,
-                    scope_attrs: OtelAttributes::new(),
+                    scope_attrs: Arc::new(OtelAttributes::new()),
                     metadata: EventMetadata::default(),
                 }
             }
@@ -866,6 +868,26 @@ impl OtelLog {
             .as_mut()
             .map(|s| OtelAttributes::from_key_values(std::mem::take(&mut s.attributes)))
             .unwrap_or_default();
+        Self {
+            record,
+            record_attrs,
+            resource: resource.map(Arc::new),
+            resource_attrs: Arc::new(resource_attrs),
+            scope: scope.map(Arc::new),
+            scope_attrs: Arc::new(scope_attrs),
+            metadata,
+        }
+    }
+
+    pub fn from_parts_shared(
+        mut record: LogRecord,
+        resource: Option<Arc<Resource>>,
+        resource_attrs: Arc<OtelAttributes>,
+        scope: Option<Arc<InstrumentationScope>>,
+        scope_attrs: Arc<OtelAttributes>,
+        metadata: EventMetadata,
+    ) -> Self {
+        let record_attrs = OtelAttributes::from_key_values(std::mem::take(&mut record.attributes));
         Self {
             record,
             record_attrs,
@@ -929,14 +951,8 @@ impl OtelLog {
         EventMetadata,
     ) {
         self.record.attributes = self.record_attrs.to_key_values();
-        let resource = self.resource.map(|mut r| {
-            r.attributes = self.resource_attrs.to_key_values();
-            r
-        });
-        let scope = self.scope.map(|mut s| {
-            s.attributes = self.scope_attrs.to_key_values();
-            s
-        });
+        let resource = resource_to_proto(self.resource.as_deref(), &self.resource_attrs);
+        let scope = scope_to_proto(self.scope.as_deref(), &self.scope_attrs);
         (self.record, resource, scope, self.metadata)
     }
 
@@ -964,30 +980,30 @@ impl OtelLog {
     }
 
     pub fn resource(&self) -> Option<&Resource> {
-        self.resource.as_ref()
+        self.resource.as_deref()
     }
 
     pub fn resource_proto(&self) -> Option<Resource> {
-        resource_to_proto(self.resource.as_ref(), &self.resource_attrs)
+        resource_to_proto(self.resource.as_deref(), &self.resource_attrs)
     }
 
     pub fn scope_proto(&self) -> Option<InstrumentationScope> {
-        scope_to_proto(self.scope.as_ref(), &self.scope_attrs)
+        scope_to_proto(self.scope.as_deref(), &self.scope_attrs)
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
         self.resource_attrs =
-            OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
-        self.resource = Some(resource);
+            Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes)));
+        self.resource = Some(Arc::new(resource));
     }
 
     pub fn scope(&self) -> Option<&InstrumentationScope> {
-        self.scope.as_ref()
+        self.scope.as_deref()
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes));
-        self.scope = Some(scope);
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope = Some(Arc::new(scope));
     }
 
     pub fn metadata(&self) -> &EventMetadata {
@@ -1114,17 +1130,17 @@ impl OtelLog {
     /// Ensure the resource object exists, creating it if absent.
     fn ensure_resource(&mut self) {
         if self.resource.is_none() {
-            self.resource = Some(Resource {
+            self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
-            });
+            }));
         }
     }
 
     /// Set a resource attribute (e.g. `host.name`, `source_type`).
     pub fn set_resource_attribute(&mut self, key: String, value: AnyValue) {
         self.ensure_resource();
-        self.resource_attrs.insert(key, value);
+        Arc::make_mut(&mut self.resource_attrs).insert(key, value);
     }
 
     /// Set the `observed_time_unix_nano` (ingest timestamp) from a chrono `DateTime`.
@@ -1536,7 +1552,7 @@ impl OtelLog {
                 if remaining.len() == 1 {
                     let key = remaining[0].as_str();
                     let old = self.resource_attrs.get(key).map(any_value_to_vrl);
-                    self.resource_attrs
+                    Arc::make_mut(&mut self.resource_attrs)
                         .insert(key.to_string(), vrl_value_to_any_value(&value));
                     old
                 } else {
@@ -1546,13 +1562,13 @@ impl OtelLog {
                         .get(key)
                         .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                     let old = insert_value_at(&mut v, &remaining[1..], value);
-                    self.resource_attrs
+                    Arc::make_mut(&mut self.resource_attrs)
                         .insert(key.to_string(), vrl_value_to_any_value(&v));
                     old
                 }
             }
             f::SCOPE => {
-                let scope = self.scope.get_or_insert_with(InstrumentationScope::default);
+                let scope = Arc::make_mut(self.scope.get_or_insert_with(|| Arc::new(InstrumentationScope::default())));
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
@@ -1591,14 +1607,14 @@ impl OtelLog {
                                 for (k, v) in map {
                                     new_attrs.insert(k.to_string(), vrl_value_to_any_value(v));
                                 }
-                                self.scope_attrs = new_attrs;
+                                self.scope_attrs = Arc::new(new_attrs);
                             }
                             old
                         } else {
                             let key = remaining[1].as_str();
                             if remaining.len() == 2 {
                                 let old = self.scope_attrs.get(key).map(any_value_to_vrl);
-                                self.scope_attrs
+                                Arc::make_mut(&mut self.scope_attrs)
                                     .insert(key.to_string(), vrl_value_to_any_value(&value));
                                 old
                             } else {
@@ -1607,7 +1623,7 @@ impl OtelLog {
                                     .get(key)
                                     .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                                 let old = insert_value_at(&mut v, &remaining[2..], value);
-                                self.scope_attrs
+                                Arc::make_mut(&mut self.scope_attrs)
                                     .insert(key.to_string(), vrl_value_to_any_value(&v));
                                 old
                             }
@@ -1762,10 +1778,10 @@ impl OtelLog {
     fn remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(&mut self.resource_attrs, &fields[1..], prune),
+            f::RESOURCE => remove_resource_subpath(Arc::make_mut(&mut self.resource_attrs), &fields[1..], prune),
             f::SCOPE => remove_scope_subpath(
-                self.scope.as_mut(),
-                &mut self.scope_attrs,
+                self.scope.as_mut().map(Arc::make_mut),
+                Arc::make_mut(&mut self.scope_attrs),
                 &fields[1..],
                 prune,
             ),
@@ -1867,9 +1883,9 @@ impl OtelLog {
         }
         append_canonical_resource_scope(
             &mut map,
-            self.resource.as_ref(),
+            self.resource.as_deref(),
             &self.resource_attrs,
-            self.scope.as_ref(),
+            self.scope.as_deref(),
             &self.scope_attrs,
         );
 
@@ -1884,9 +1900,9 @@ impl OtelLog {
             record: LogRecord::default(),
             record_attrs: OtelAttributes::new(),
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata,
         };
         out.apply_value_map(value);
@@ -1938,9 +1954,9 @@ impl OtelLog {
                 };
                 self.record_attrs = OtelAttributes::new();
                 self.resource = None;
-                self.resource_attrs = OtelAttributes::new();
+                self.resource_attrs = Arc::new(OtelAttributes::new());
                 self.scope = None;
-                self.scope_attrs = OtelAttributes::new();
+                self.scope_attrs = Arc::new(OtelAttributes::new());
                 return;
             }
         };
@@ -2032,11 +2048,11 @@ impl OtelLog {
         };
 
         let (resource, resource_attrs) = restore_resource(&mut map);
-        self.resource = resource;
-        self.resource_attrs = resource_attrs;
+        self.resource = resource.map(Arc::new);
+        self.resource_attrs = Arc::new(resource_attrs);
         let (scope, scope_attrs) = restore_scope(&mut map);
-        self.scope = scope;
-        self.scope_attrs = scope_attrs;
+        self.scope = scope.map(Arc::new);
+        self.scope_attrs = Arc::new(scope_attrs);
 
         // Handle OTLP JSON "attributes" array format:
         // [{"key":"k","value":{"stringValue":"v"}}, ...]
@@ -2369,9 +2385,9 @@ impl OtelLog {
             record: LogRecord::default(),
             record_attrs: OtelAttributes::new(),
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata,
         }
     }
@@ -2397,10 +2413,10 @@ impl OtelLog {
 pub struct OtelSpan {
     pub(crate) span: Span,
     pub(crate) span_attrs: OtelAttributes,
-    pub(crate) resource: Option<Resource>,
-    pub(crate) resource_attrs: OtelAttributes,
-    pub(crate) scope: Option<InstrumentationScope>,
-    pub(crate) scope_attrs: OtelAttributes,
+    pub(crate) resource: Option<Arc<Resource>>,
+    pub(crate) resource_attrs: Arc<OtelAttributes>,
+    pub(crate) scope: Option<Arc<InstrumentationScope>>,
+    pub(crate) scope_attrs: Arc<OtelAttributes>,
     pub(crate) metadata: EventMetadata,
 }
 
@@ -2411,9 +2427,9 @@ impl OtelSpan {
             span,
             span_attrs,
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata: EventMetadata::default(),
         }
     }
@@ -2449,9 +2465,9 @@ impl OtelSpan {
             span: Span::default(),
             span_attrs: OtelAttributes::new(),
             resource: None,
-            resource_attrs: OtelAttributes::new(),
+            resource_attrs: Arc::new(OtelAttributes::new()),
             scope: None,
-            scope_attrs: OtelAttributes::new(),
+            scope_attrs: Arc::new(OtelAttributes::new()),
             metadata,
         };
         out.apply_value_map(value);
@@ -2476,6 +2492,26 @@ impl OtelSpan {
         Self {
             span,
             span_attrs,
+            resource: resource.map(Arc::new),
+            resource_attrs: Arc::new(resource_attrs),
+            scope: scope.map(Arc::new),
+            scope_attrs: Arc::new(scope_attrs),
+            metadata,
+        }
+    }
+
+    pub fn from_parts_shared(
+        span: Span,
+        span_attrs: OtelAttributes,
+        resource: Option<Arc<Resource>>,
+        resource_attrs: Arc<OtelAttributes>,
+        scope: Option<Arc<InstrumentationScope>>,
+        scope_attrs: Arc<OtelAttributes>,
+        metadata: EventMetadata,
+    ) -> Self {
+        Self {
+            span,
+            span_attrs,
             resource,
             resource_attrs,
             scope,
@@ -2494,14 +2530,8 @@ impl OtelSpan {
     ) {
         let mut span = self.span;
         span.attributes = self.span_attrs.to_key_values();
-        let resource = self.resource.map(|mut r| {
-            r.attributes = self.resource_attrs.to_key_values();
-            r
-        });
-        let scope = self.scope.map(|mut s| {
-            s.attributes = self.scope_attrs.to_key_values();
-            s
-        });
+        let resource = resource_to_proto(self.resource.as_deref(), &self.resource_attrs);
+        let scope = scope_to_proto(self.scope.as_deref(), &self.scope_attrs);
         (span, resource, scope, self.metadata)
     }
 
@@ -2523,21 +2553,21 @@ impl OtelSpan {
     }
 
     pub fn resource(&self) -> Option<&Resource> {
-        self.resource.as_ref()
+        self.resource.as_deref()
     }
 
     pub fn resource_proto(&self) -> Option<Resource> {
-        resource_to_proto(self.resource.as_ref(), &self.resource_attrs)
+        resource_to_proto(self.resource.as_deref(), &self.resource_attrs)
     }
 
     pub fn scope_proto(&self) -> Option<InstrumentationScope> {
-        scope_to_proto(self.scope.as_ref(), &self.scope_attrs)
+        scope_to_proto(self.scope.as_deref(), &self.scope_attrs)
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
         self.resource_attrs =
-            OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes));
-        self.resource = Some(resource);
+            Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes)));
+        self.resource = Some(Arc::new(resource));
     }
 
     pub fn resource_attrs(&self) -> &OtelAttributes {
@@ -2549,12 +2579,12 @@ impl OtelSpan {
     }
 
     pub fn scope(&self) -> Option<&InstrumentationScope> {
-        self.scope.as_ref()
+        self.scope.as_deref()
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes));
-        self.scope = Some(scope);
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope = Some(Arc::new(scope));
     }
 
     pub fn metadata(&self) -> &EventMetadata {
@@ -2619,12 +2649,12 @@ impl OtelSpan {
 
     pub fn set_resource_attribute(&mut self, key: String, value: AnyValue) {
         if self.resource.is_none() {
-            self.resource = Some(Resource {
+            self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
-            });
+            }));
         }
-        self.resource_attrs.insert(key, value);
+        Arc::make_mut(&mut self.resource_attrs).insert(key, value);
     }
 
     pub fn add_finalizer(&mut self, finalizer: EventFinalizer) {
@@ -2755,11 +2785,11 @@ impl OtelSpan {
         };
 
         let (resource, resource_attrs) = restore_resource(&mut map);
-        self.resource = resource;
-        self.resource_attrs = resource_attrs;
+        self.resource = resource.map(Arc::new);
+        self.resource_attrs = Arc::new(resource_attrs);
         let (scope, scope_attrs) = restore_scope(&mut map);
-        self.scope = scope;
-        self.scope_attrs = scope_attrs;
+        self.scope = scope.map(Arc::new);
+        self.scope_attrs = Arc::new(scope_attrs);
 
         let trace_state = match map.remove("trace_state") {
             Some(Value::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap_or_default(),
@@ -3304,15 +3334,15 @@ impl OtelSpan {
             f::RESOURCE => {
                 let remaining = &fields[1..];
                 if self.resource.is_none() {
-                    self.resource = Some(Resource {
+                    self.resource = Some(Arc::new(Resource {
                         attributes: Vec::new(),
                         dropped_attributes_count: 0,
-                    });
+                    }));
                 }
                 if remaining.len() == 1 {
                     let key = remaining[0].as_str();
                     let old = self.resource_attrs.get(key).map(any_value_to_vrl);
-                    self.resource_attrs
+                    Arc::make_mut(&mut self.resource_attrs)
                         .insert(key.to_string(), vrl_value_to_any_value(&value));
                     old
                 } else {
@@ -3322,14 +3352,14 @@ impl OtelSpan {
                         .get(key)
                         .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                     let old = insert_value_at(&mut v, &remaining[1..], value);
-                    self.resource_attrs
+                    Arc::make_mut(&mut self.resource_attrs)
                         .insert(key.to_string(), vrl_value_to_any_value(&v));
                     old
                 }
             }
             f::SCOPE => {
                 let remaining = &fields[1..];
-                let scope = self.scope.get_or_insert_with(InstrumentationScope::default);
+                let scope = Arc::make_mut(self.scope.get_or_insert_with(|| Arc::new(InstrumentationScope::default())));
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
                         let old = if scope.name.is_empty() {
@@ -3362,7 +3392,7 @@ impl OtelSpan {
                             Some(Value::Object(self.scope_attrs.to_object_map()))
                         };
                         if let Value::Object(map) = &value {
-                            self.scope_attrs = OtelAttributes::from_object_map(map);
+                            self.scope_attrs = Arc::new(OtelAttributes::from_object_map(map));
                         }
                         old
                     }
@@ -3370,7 +3400,7 @@ impl OtelSpan {
                         let key = remaining[1].as_str();
                         if remaining.len() == 2 {
                             let old = self.scope_attrs.get(key).map(any_value_to_vrl);
-                            self.scope_attrs
+                            Arc::make_mut(&mut self.scope_attrs)
                                 .insert(key.to_string(), vrl_value_to_any_value(&value));
                             old
                         } else {
@@ -3379,7 +3409,7 @@ impl OtelSpan {
                                 .get(key)
                                 .map_or(Value::Object(ObjectMap::new()), any_value_to_vrl);
                             let old = insert_value_at(&mut v, &remaining[2..], value);
-                            self.scope_attrs
+                            Arc::make_mut(&mut self.scope_attrs)
                                 .insert(key.to_string(), vrl_value_to_any_value(&v));
                             old
                         }
@@ -3608,10 +3638,10 @@ impl OtelSpan {
     fn span_remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(&mut self.resource_attrs, &fields[1..], prune),
+            f::RESOURCE => remove_resource_subpath(Arc::make_mut(&mut self.resource_attrs), &fields[1..], prune),
             f::SCOPE => remove_scope_subpath(
-                self.scope.as_mut(),
-                &mut self.scope_attrs,
+                self.scope.as_mut().map(Arc::make_mut),
+                Arc::make_mut(&mut self.scope_attrs),
                 &fields[1..],
                 prune,
             ),
@@ -3793,9 +3823,9 @@ impl OtelSpan {
         }
         append_canonical_resource_scope(
             &mut map,
-            self.resource.as_ref(),
+            self.resource.as_deref(),
             &self.resource_attrs,
-            self.scope.as_ref(),
+            self.scope.as_deref(),
             &self.scope_attrs,
         );
 
@@ -3826,8 +3856,8 @@ macro_rules! impl_otel_event_traits {
         impl ByteSizeOf for $ty {
             fn allocated_bytes(&self) -> usize {
                 self.$proto_field.encoded_len()
-                    + self.resource.as_ref().map_or(0, |r| r.encoded_len())
-                    + self.scope.as_ref().map_or(0, |s| s.encoded_len())
+                    + self.resource.as_deref().map_or(0, prost::Message::encoded_len)
+                    + self.scope.as_deref().map_or(0, prost::Message::encoded_len)
                     + self.metadata.allocated_bytes()
             }
         }
@@ -4618,7 +4648,7 @@ mod tests {
         // Scope lookup
         let otel_with_scope = OtelMetric::from_parts(
             otel.metric.clone(),
-            otel.resource.clone(),
+            otel.resource.as_deref().cloned(),
             Some(InstrumentationScope {
                 name: "my-scope".into(),
                 version: "1.0".into(),
@@ -5144,12 +5174,12 @@ mod tests {
     #[test]
     fn multi_segment_scope_get_insert_remove() {
         let mut log = OtelLog::new(LogRecord::default());
-        log.scope = Some(InstrumentationScope {
+        log.scope = Some(Arc::new(InstrumentationScope {
             name: "my-lib".to_string(),
             version: "1.0".to_string(),
             attributes: vec![],
             dropped_attributes_count: 0,
-        });
+        }));
 
         assert_eq!(
             log.get(event_path!("scope", "name")),

@@ -1,17 +1,41 @@
+use std::sync::Arc;
+
 use sol_core::event::{Event, EventMetadata, OtelMetric};
+use sol_core::event::otel_attributes::OtelAttributes;
 use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
 
 pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item = Event> {
-    let resource = rm.resource;
+    let (resource, resource_attrs) = match rm.resource {
+        Some(mut r) => {
+            let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                &mut r.attributes,
+            )));
+            (Some(Arc::new(r)), attrs)
+        }
+        None => (None, Arc::new(OtelAttributes::new())),
+    };
+
     rm.scope_metrics.into_iter().flat_map(move |scope_metrics| {
-        let scope = scope_metrics.scope;
+        let (scope, scope_attrs) = match scope_metrics.scope {
+            Some(mut s) => {
+                let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                    &mut s.attributes,
+                )));
+                (Some(Arc::new(s)), attrs)
+            }
+            None => (None, Arc::new(OtelAttributes::new())),
+        };
+
         let resource = resource.clone();
+        let resource_attrs = resource_attrs.clone();
 
         scope_metrics.metrics.into_iter().map(move |metric| {
-            Event::Metric(OtelMetric::from_parts(
+            Event::Metric(OtelMetric::from_parts_shared(
                 metric,
                 resource.clone(),
+                resource_attrs.clone(),
                 scope.clone(),
+                scope_attrs.clone(),
                 EventMetadata::default(),
             ))
         })

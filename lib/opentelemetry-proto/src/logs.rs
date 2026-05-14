@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use sol_core::event::{Event, EventMetadata, OtelLog};
+use sol_core::event::otel_attributes::OtelAttributes;
 use upstream_opentelemetry_proto::tonic::logs::v1::{ResourceLogs, ScopeLogs};
 
 pub const RESOURCE_KEY: &str = "resources";
@@ -15,15 +18,37 @@ pub const DROPPED_ATTRIBUTES_COUNT_KEY: &str = "dropped_attributes_count";
 pub const FLAGS_KEY: &str = "flags";
 
 pub fn resource_logs_into_events(rl: ResourceLogs) -> impl Iterator<Item = Event> {
-    let resource = rl.resource;
+    let (resource, resource_attrs) = match rl.resource {
+        Some(mut r) => {
+            let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                &mut r.attributes,
+            )));
+            (Some(Arc::new(r)), attrs)
+        }
+        None => (None, Arc::new(OtelAttributes::new())),
+    };
+
     rl.scope_logs.into_iter().flat_map(move |scope_log| {
-        let scope = scope_log.scope;
+        let (scope, scope_attrs) = match scope_log.scope {
+            Some(mut s) => {
+                let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                    &mut s.attributes,
+                )));
+                (Some(Arc::new(s)), attrs)
+            }
+            None => (None, Arc::new(OtelAttributes::new())),
+        };
+
         let resource = resource.clone();
+        let resource_attrs = resource_attrs.clone();
+
         scope_log.log_records.into_iter().map(move |log_record| {
-            Event::Log(OtelLog::from_parts(
+            Event::Log(OtelLog::from_parts_shared(
                 log_record,
                 resource.clone(),
+                resource_attrs.clone(),
                 scope.clone(),
+                scope_attrs.clone(),
                 EventMetadata::default(),
             ))
         })
