@@ -2,9 +2,9 @@
 
 ## Context
 
-Amends: [20260514_h2-flow-control-tuning.md](../../designs/20260514_h2-flow-control-tuning.md)
+Amends: [20260514_h2-flow-control-tuning.md](./20260514_h2-flow-control-tuning.md)
 
-The [H2 flow control tuning](../../designs/20260514_h2-flow-control-tuning.md) work confirmed that the **noop-traces-grpc-50k throughput gap** (Sol 87% of otelcol) and the **tail sampling memory gap** (Sol 1.7x of otelcol) are not caused by H2 configuration. Root cause analysis traced both issues to the per-span deserialization model:
+The [H2 flow control tuning](./20260514_h2-flow-control-tuning.md) work confirmed that the **noop-traces-grpc-50k throughput gap** (Sol 87% of otelcol) and the **tail sampling memory gap** (Sol 1.7x of otelcol) are not caused by H2 configuration. Root cause analysis traced both issues to the per-span deserialization model:
 
 - **Sol**: `resource_spans_into_events()` deep-clones `Resource` and `InstrumentationScope` for every span. At 50k spans/s this creates ~100k deep clones/s (resource + scope), each involving `Vec<KeyValue>` and `BTreeMap<String, AnyValue>` allocations.
 - **otelcol**: Go's `pdata.Traces` wraps protobuf with shared backing memory. No per-span cloning.
@@ -68,7 +68,7 @@ CI checks: `cargo fmt --all --check`, `cargo clippy`, `cargo check`.
 
 ## Design
 
-### Implemented change ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2), [FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4))
+### Implemented change ([FR1](#fr1), [FR2](#fr2), [FR3](#fr3), [FR4](#fr4))
 
 Struct fields changed from owned to Arc-wrapped:
 
@@ -98,7 +98,7 @@ pub fn set_resource_attribute(&mut self, key: String, value: AnyValue) {
 
 ### Decisions
 
-- [Arc sharing strategy](./adrs/arc-sharing-strategy.md)
+- [Arc sharing strategy](../adrs/0032-arc-sharing-strategy.md)
 
 ## Experiment Results
 
@@ -131,20 +131,24 @@ Zero regressions across all 18 scenarios.
 
 The remaining 88.7% ratio (Sol 86,895/s vs otelcol 97,918/s) is the only scenario where Sol trails otelcol by >5%. Analysis:
 
-1. **Not allocation overhead**: Arc optimization eliminated per-span cloning. Logs/metrics (same clone path) now exceed otelcol. The traces path has additional overhead from span-specific field extraction (trace_id, span_id, status, links, events) that logs/metrics don't have.
+1. **Not allocation overhead**: Arc optimization eliminated per-span cloning. Logs/metrics (same clone path) now exceed otelcol. Code analysis confirmed the gRPC handler path (`grpc.rs:48-105`) is identical for all three signals — the same `handle_events()` function, same tonic server config, same blackhole sink.
 
-2. **Not H2 configuration**: the [H2 tuning workspace](../../designs/20260514_h2-flow-control-tuning.md) tested multiple H2 configurations with no improvement.
+2. **Not H2 configuration**: the [H2 tuning workspace](./20260514_h2-flow-control-tuning.md) tested multiple H2 configurations with no improvement. Server is already tuned: 1 MB stream window, 2 MB connection window, adaptive window, 1024 max concurrent streams.
 
-3. **tonic/h2 server-side throughput ceiling**: at 50k spans/s with 8 workers, Sol saturates at ~87k/s while otelcol reaches ~98k/s. Go's gRPC implementation handles HTTP/2 flow control and stream multiplexing differently — this is a fundamental implementation difference, not a configuration issue.
+3. **Not crate versions**: the [tonic-stack-upgrade workspace](../tonic-stack-upgrade/DESIGN.md) researched tonic 0.13 / hyper 1.x / h2 0.4 and found no documented throughput improvement. hyper 1.x is an API redesign, not a performance release. tonic 0.13 is primarily a prost 0.13 update. The upgrade remains valuable for ecosystem hygiene but not for closing this gap.
 
-4. **CPU utilization gap**: Sol 53.7% vs otelcol 68.2% — Sol cannot utilize as much CPU, suggesting the bottleneck is in the HTTP/2 stack (connection-level serialization), not in application-level processing.
+4. **Batching amplifies the H2 bottleneck**: `telemetrygen traces` batches many spans per gRPC call (fewer, larger requests), while `telemetrygen logs` sends 1 log per call (many small requests). At 50k spans/s, the traces path sends fewer but heavier H2 frames through a single connection, hitting the flow control window ceiling. Logs send many small frames that multiplex efficiently within the same H2 connection — this is why logs (110%) exceed otelcol while traces (88.7%) do not.
+
+5. **tonic/h2 server-side throughput ceiling**: at 50k spans/s with 8 workers, Sol saturates at ~87k/s while otelcol reaches ~98k/s. Go's gRPC implementation handles HTTP/2 flow control and stream multiplexing differently — this is a fundamental implementation difference, not a configuration issue.
+
+6. **CPU utilization gap**: Sol 53.7% vs otelcol 68.2% — Sol cannot utilize as much CPU, suggesting the bottleneck is in the HTTP/2 stack (connection-level serialization), not in application-level processing.
 
 ### Path forward
 
-The noop-traces-grpc-50k gap can only be closed by:
-1. **Upstream tonic/h2 improvement** — a new release with HTTP/2 throughput gains
+The noop-traces-grpc-50k gap cannot be closed by application-level optimization. It requires:
+1. **Upstream tonic/h2 improvement** — a new release with HTTP/2 throughput gains (benchmark before/after with `demo/benchmark`)
 2. **Multiple H2 connections** — client-side connection pooling to bypass single-connection bottleneck
-3. **Hyper 1.x migration** — if future versions address the flow control gap
+3. **Hyper 1.x migration** — only if future versions address the flow control gap (current research shows no improvement)
 
 ## Summary — Priority Ranking
 

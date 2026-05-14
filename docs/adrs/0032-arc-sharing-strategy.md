@@ -3,7 +3,7 @@ status: accepted
 ---
 # Arc sharing strategy for Resource, Scope, and attributes
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [NFR1](../DESIGN.md#nfr1), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR1](../designs/20260514_arc-zero-copy-optimization.md#fr1), [FR2](../designs/20260514_arc-zero-copy-optimization.md#fr2), [FR3](../designs/20260514_arc-zero-copy-optimization.md#fr3), [FR4](../designs/20260514_arc-zero-copy-optimization.md#fr4), [NFR1](../designs/20260514_arc-zero-copy-optimization.md#nfr1), [NFR2](../designs/20260514_arc-zero-copy-optimization.md#nfr2)
 
 ## Problem
 
