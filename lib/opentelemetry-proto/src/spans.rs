@@ -1,16 +1,43 @@
+use std::sync::Arc;
+
+use sol_core::event::otel_attributes::OtelAttributes;
 use sol_core::event::{Event, EventMetadata, OtelSpan};
 use upstream_opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans};
 
 pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Event> {
-    let resource = rs.resource;
+    let (resource, resource_attrs) = match rs.resource {
+        Some(mut r) => {
+            let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                &mut r.attributes,
+            )));
+            (Some(Arc::new(r)), attrs)
+        }
+        None => (None, Arc::new(OtelAttributes::new())),
+    };
+
     rs.scope_spans.into_iter().flat_map(move |scope_spans| {
-        let scope = scope_spans.scope;
+        let (scope, scope_attrs) = match scope_spans.scope {
+            Some(mut s) => {
+                let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+                    &mut s.attributes,
+                )));
+                (Some(Arc::new(s)), attrs)
+            }
+            None => (None, Arc::new(OtelAttributes::new())),
+        };
+
         let resource = resource.clone();
-        scope_spans.spans.into_iter().map(move |span| {
-            Event::Trace(OtelSpan::from_parts(
+        let resource_attrs = resource_attrs.clone();
+
+        scope_spans.spans.into_iter().map(move |mut span| {
+            let span_attrs = OtelAttributes::from_key_values(std::mem::take(&mut span.attributes));
+            Event::Trace(OtelSpan::from_parts_shared(
                 span,
+                span_attrs,
                 resource.clone(),
+                resource_attrs.clone(),
                 scope.clone(),
+                scope_attrs.clone(),
                 EventMetadata::default(),
             ))
         })
