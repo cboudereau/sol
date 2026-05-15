@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use sol_core::event::{Event, EventMetadata, OtelLog};
 use sol_core::event::otel_attributes::OtelAttributes;
+use sol_core::event::{Event, EventMetadata, OtelLog};
 use upstream_opentelemetry_proto::tonic::logs::v1::{ResourceLogs, ScopeLogs};
 
 pub const RESOURCE_KEY: &str = "resources";

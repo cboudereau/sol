@@ -604,7 +604,9 @@ impl OtelMetric {
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+            &mut scope.attributes,
+        )));
         self.scope = Some(Arc::new(scope));
     }
 

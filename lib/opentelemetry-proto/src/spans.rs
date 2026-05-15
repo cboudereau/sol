@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use sol_core::event::{Event, EventMetadata, OtelSpan};
 use sol_core::event::otel_attributes::OtelAttributes;
+use sol_core::event::{Event, EventMetadata, OtelSpan};
 use upstream_opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans};
 
 pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Event> {

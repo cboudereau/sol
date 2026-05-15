@@ -992,8 +992,9 @@ impl OtelLog {
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
-        self.resource_attrs =
-            Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes)));
+        self.resource_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+            &mut resource.attributes,
+        )));
         self.resource = Some(Arc::new(resource));
     }
 
@@ -1002,7 +1003,9 @@ impl OtelLog {
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+            &mut scope.attributes,
+        )));
         self.scope = Some(Arc::new(scope));
     }
 
@@ -1568,7 +1571,10 @@ impl OtelLog {
                 }
             }
             f::SCOPE => {
-                let scope = Arc::make_mut(self.scope.get_or_insert_with(|| Arc::new(InstrumentationScope::default())));
+                let scope = Arc::make_mut(
+                    self.scope
+                        .get_or_insert_with(|| Arc::new(InstrumentationScope::default())),
+                );
                 let remaining = &fields[1..];
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
@@ -1778,7 +1784,11 @@ impl OtelLog {
     fn remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(Arc::make_mut(&mut self.resource_attrs), &fields[1..], prune),
+            f::RESOURCE => remove_resource_subpath(
+                Arc::make_mut(&mut self.resource_attrs),
+                &fields[1..],
+                prune,
+            ),
             f::SCOPE => remove_scope_subpath(
                 self.scope.as_mut().map(Arc::make_mut),
                 Arc::make_mut(&mut self.scope_attrs),
@@ -2565,8 +2575,9 @@ impl OtelSpan {
     }
 
     pub fn set_resource(&mut self, mut resource: Resource) {
-        self.resource_attrs =
-            Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut resource.attributes)));
+        self.resource_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+            &mut resource.attributes,
+        )));
         self.resource = Some(Arc::new(resource));
     }
 
@@ -2583,7 +2594,9 @@ impl OtelSpan {
     }
 
     pub fn set_scope(&mut self, mut scope: InstrumentationScope) {
-        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(&mut scope.attributes)));
+        self.scope_attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
+            &mut scope.attributes,
+        )));
         self.scope = Some(Arc::new(scope));
     }
 
@@ -3359,7 +3372,10 @@ impl OtelSpan {
             }
             f::SCOPE => {
                 let remaining = &fields[1..];
-                let scope = Arc::make_mut(self.scope.get_or_insert_with(|| Arc::new(InstrumentationScope::default())));
+                let scope = Arc::make_mut(
+                    self.scope
+                        .get_or_insert_with(|| Arc::new(InstrumentationScope::default())),
+                );
                 match remaining[0].as_str() {
                     f::NAME if remaining.len() == 1 => {
                         let old = if scope.name.is_empty() {
@@ -3638,7 +3654,11 @@ impl OtelSpan {
     fn span_remove_field_path(&mut self, fields: &[String], prune: bool) -> Option<Value> {
         debug_assert!(fields.len() >= 2);
         match fields[0].as_str() {
-            f::RESOURCE => remove_resource_subpath(Arc::make_mut(&mut self.resource_attrs), &fields[1..], prune),
+            f::RESOURCE => remove_resource_subpath(
+                Arc::make_mut(&mut self.resource_attrs),
+                &fields[1..],
+                prune,
+            ),
             f::SCOPE => remove_scope_subpath(
                 self.scope.as_mut().map(Arc::make_mut),
                 Arc::make_mut(&mut self.scope_attrs),
@@ -3856,7 +3876,10 @@ macro_rules! impl_otel_event_traits {
         impl ByteSizeOf for $ty {
             fn allocated_bytes(&self) -> usize {
                 self.$proto_field.encoded_len()
-                    + self.resource.as_deref().map_or(0, prost::Message::encoded_len)
+                    + self
+                        .resource
+                        .as_deref()
+                        .map_or(0, prost::Message::encoded_len)
                     + self.scope.as_deref().map_or(0, prost::Message::encoded_len)
                     + self.metadata.allocated_bytes()
             }
