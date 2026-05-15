@@ -366,7 +366,7 @@ use crate::event::Event;
 pub fn extract_routing_key(event: &Event, routing_key: &RoutingKey) -> Vec<u8> {
     match routing_key {
         RoutingKey::TraceID => match event {
-            Event::Trace(span) => span.span().trace_id.clone(),
+            Event::Trace(span) => span.trace_id().to_vec(),
             Event::Log(log) => {
                 service_name_from_resource(log.resource_proto().as_ref()).into_bytes()
             }

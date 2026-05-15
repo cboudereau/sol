@@ -328,14 +328,8 @@ fn value_to_otel_log_event(value: Value, metadata: EventMetadata) -> OtelLog {
 fn otel_span_event_to_value(event: &OtelSpan) -> Value {
     let span_proto = event.span();
     let mut map = ObjectMap::new();
-    map.insert(
-        f::SPAN_TRACE_ID.into(),
-        hex_encode_bytes(event.trace_id()),
-    );
-    map.insert(
-        f::SPAN_SPAN_ID.into(),
-        hex_encode_bytes(event.span_id()),
-    );
+    map.insert(f::SPAN_TRACE_ID.into(), hex_encode_bytes(event.trace_id()));
+    map.insert(f::SPAN_SPAN_ID.into(), hex_encode_bytes(event.span_id()));
     map.insert(
         "trace_state".into(),
         Value::Bytes(span_proto.trace_state.clone().into()),
