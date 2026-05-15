@@ -1,6 +1,6 @@
 # Tonic Stack Upgrade — Design Doc
 
-**Status: DEFERRED** — research found no throughput improvement; the 50k traces gap is fundamental to h2/tonic vs Go gRPC, not a version issue. Upgrade remains valuable for ecosystem hygiene only. See [Research findings](#research-findings).
+**Status: EXPERIMENTAL** — research found no documented performance improvement, but no benchmark was run to verify. The upgrade could reveal undocumented gains — validate with `demo/benchmark`. See [Research findings](#research-findings).
 
 ## Context
 
