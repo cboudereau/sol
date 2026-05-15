@@ -120,18 +120,18 @@ impl ServiceGraph {
         match kind {
             SpanKind::Client | SpanKind::Producer => {
                 let key = EdgeKey {
-                    trace_id: Self::to_trace_id(otel_span.trace_id()),
-                    span_id: Self::to_span_id(otel_span.span_id()),
+                    trace_id: Self::to_trace_id(&span.trace_id),
+                    span_id: Self::to_span_id(&span.span_id),
                 };
                 self.upsert_client(&key, otel_span);
             }
             SpanKind::Server | SpanKind::Consumer => {
-                if otel_span.parent_span_id().is_empty() {
+                if span.parent_span_id.is_empty() {
                     return;
                 }
                 let key = EdgeKey {
-                    trace_id: Self::to_trace_id(otel_span.trace_id()),
-                    span_id: Self::to_span_id(otel_span.parent_span_id()),
+                    trace_id: Self::to_trace_id(&span.trace_id),
+                    span_id: Self::to_span_id(&span.parent_span_id),
                 };
                 self.upsert_server(&key, otel_span);
             }

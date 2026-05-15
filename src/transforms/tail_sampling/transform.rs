@@ -97,7 +97,7 @@ impl TailSampling {
     fn extract_trace_id(event: &Event) -> TraceId {
         match event {
             Event::Trace(otel_span) => {
-                let bytes = otel_span.trace_id();
+                let bytes = &otel_span.span().trace_id;
                 let mut id = [0u8; 16];
                 let len = bytes.len().min(16);
                 id[..len].copy_from_slice(&bytes[..len]);

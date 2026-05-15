@@ -1319,8 +1319,12 @@ impl OtelLog {
             f::SEVERITY_NUMBER if self.record.severity_number != 0 => {
                 Some(Value::Integer(i64::from(self.record.severity_number)))
             }
-            f::LOG_TRACE_ID if self.trace_id != EMPTY_16 => Some(hex_encode(&self.trace_id)),
-            f::LOG_SPAN_ID if self.span_id != EMPTY_8 => Some(hex_encode(&self.span_id)),
+            f::LOG_TRACE_ID if self.trace_id != EMPTY_16 => {
+                Some(hex_encode(&self.trace_id))
+            }
+            f::LOG_SPAN_ID if self.span_id != EMPTY_8 => {
+                Some(hex_encode(&self.span_id))
+            }
             f::TIME_UNIX_NANO if self.record.time_unix_nano != 0 => {
                 Some(Value::Integer(self.record.time_unix_nano as i64))
             }
@@ -3119,8 +3123,12 @@ impl OtelSpan {
             f::NAME if !self.span.name.is_empty() => {
                 Some(Value::Bytes(self.span.name.clone().into()))
             }
-            f::SPAN_TRACE_ID if self.trace_id != EMPTY_16 => Some(hex_encode(&self.trace_id)),
-            f::SPAN_SPAN_ID if self.span_id != EMPTY_8 => Some(hex_encode(&self.span_id)),
+            f::SPAN_TRACE_ID if self.trace_id != EMPTY_16 => {
+                Some(hex_encode(&self.trace_id))
+            }
+            f::SPAN_SPAN_ID if self.span_id != EMPTY_8 => {
+                Some(hex_encode(&self.span_id))
+            }
             f::PARENT_SPAN_ID if self.parent_span_id != EMPTY_8 => {
                 Some(hex_encode(&self.parent_span_id))
             }
@@ -3828,7 +3836,10 @@ impl OtelSpan {
             map.insert(f::SPAN_SPAN_ID.into(), hex_encode(&self.span_id));
         }
         if self.parent_span_id != EMPTY_8 {
-            map.insert(f::PARENT_SPAN_ID.into(), hex_encode(&self.parent_span_id));
+            map.insert(
+                f::PARENT_SPAN_ID.into(),
+                hex_encode(&self.parent_span_id),
+            );
         }
         if self.span.start_time_unix_nano != 0 {
             map.insert(
