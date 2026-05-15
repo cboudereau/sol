@@ -184,11 +184,11 @@ fn otel_log_event_to_value(event: &OtelLog) -> Value {
             Value::Integer(OtlpTimestamp::from_nanos(record.observed_time_unix_nano).to_vrl()),
         );
     }
-    if !event.trace_id().is_empty() {
-        map.insert(f::LOG_TRACE_ID.into(), hex_encode_bytes(event.trace_id()));
+    if !record.trace_id.is_empty() {
+        map.insert(f::LOG_TRACE_ID.into(), hex_encode_bytes(&record.trace_id));
     }
-    if !event.span_id().is_empty() {
-        map.insert(f::LOG_SPAN_ID.into(), hex_encode_bytes(event.span_id()));
+    if !record.span_id.is_empty() {
+        map.insert(f::LOG_SPAN_ID.into(), hex_encode_bytes(&record.span_id));
     }
     if record.flags != 0 {
         map.insert(f::LOG_FLAGS.into(), Value::Integer(i64::from(record.flags)));
