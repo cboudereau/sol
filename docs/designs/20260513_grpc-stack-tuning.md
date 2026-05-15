@@ -80,7 +80,7 @@ All scenarios currently at ≥95% of otelcol must remain at ≥95%. Specifically
 - **Server-side connection limits / max_connection_age**: these are operational settings that depend on deployment topology. Not in scope for a performance-focused change.
 - **Compression negotiation**: both sides already support gzip. No change needed.
 - **Connection pooling / multiple connections**: tonic's `Channel` multiplexes over a single H2 connection by design. Adding multiple connections requires `Channel::balance_list` or a custom connector — significantly more complex. Not in scope unless NFR1 cannot be met with window tuning alone.
-- **Stack dependency upgrade (tonic 0.12 → 0.13+, hyper 0.14 → 1.x)**: valuable but separate scope. The tuning parameters use the same API across versions — optimize first, upgrade later. Recommended as the next step after this work lands.
+- **Stack dependency upgrade (tonic 0.12 → 0.13+, hyper 0.14 → 1.x)**: valuable but separate scope. The tuning parameters use the same API across versions — optimize first, upgrade later. ~~Recommended as the next step after this work lands.~~ **Update**: [tonic-stack-upgrade research](../workspace/tonic-stack-upgrade/DESIGN.md) found no documented throughput improvement from the upgrade — hyper 1.x is an API redesign, not a performance release.
 
 ## Rabbit holes
 
@@ -158,7 +158,7 @@ The LB pipeline — where Sol's client channels forward to backends — showed h
 
 ### Root cause: tonic/h2 server throughput ceiling
 
-At 50k+ spans/s over a single H2 connection, Go's gRPC server (used by otelcol) outperforms Rust's tonic 0.12 / hyper 0.14 / h2 0.4. This is a known limitation of the older hyper stack. The path forward is upgrading to tonic 0.13+ (hyper 1.x, h2 0.5+), which includes significant HTTP/2 performance improvements.
+At 50k+ spans/s over a single H2 connection, Go's gRPC server (used by otelcol) outperforms Rust's tonic 0.12 / hyper 0.14 / h2 0.4. ~~This is a known limitation of the older hyper stack. The path forward is upgrading to tonic 0.13+ (hyper 1.x, h2 0.5+), which includes significant HTTP/2 performance improvements.~~ **Update**: [tonic-stack-upgrade research](../workspace/tonic-stack-upgrade/DESIGN.md) found this is not a version-specific limitation — hyper 1.x showed no throughput improvement (and was [1.8x slower](https://github.com/hyperium/hyper/issues/3164) in one proxy benchmark). The gap is fundamental to h2/tonic's HTTP/2 flow control implementation vs Go's gRPC. See [arc-zero-copy gap analysis](./20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis) for full investigation.
 
 ### NFR2 met — no regressions
 

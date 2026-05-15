@@ -135,7 +135,7 @@ The remaining 88.7% ratio (Sol 86,895/s vs otelcol 97,918/s) is the only scenari
 
 2. **Not H2 configuration**: the [H2 tuning workspace](./20260514_h2-flow-control-tuning.md) tested multiple H2 configurations with no improvement. Server is already tuned: 1 MB stream window, 2 MB connection window, adaptive window, 1024 max concurrent streams.
 
-3. **Not crate versions**: the [tonic-stack-upgrade workspace](../tonic-stack-upgrade/DESIGN.md) researched tonic 0.13 / hyper 1.x / h2 0.4 and found no documented throughput improvement. hyper 1.x is an API redesign, not a performance release. tonic 0.13 is primarily a prost 0.13 update. The upgrade remains valuable for ecosystem hygiene but not for closing this gap.
+3. **Not crate versions**: the [tonic-stack-upgrade workspace](../workspace/tonic-stack-upgrade/DESIGN.md) researched tonic 0.13 / hyper 1.x / h2 0.4 and found no documented throughput improvement. hyper 1.x is an API redesign, not a performance release. tonic 0.13 is primarily a prost 0.13 update. The upgrade remains valuable for ecosystem hygiene but not for closing this gap.
 
 4. **Batching amplifies the H2 bottleneck**: `telemetrygen traces` batches many spans per gRPC call (fewer, larger requests), while `telemetrygen logs` sends 1 log per call (many small requests). At 50k spans/s, the traces path sends fewer but heavier H2 frames through a single connection, hitting the flow control window ceiling. Logs send many small frames that multiplex efficiently within the same H2 connection — this is why logs (110%) exceed otelcol while traces (88.7%) do not.
 
@@ -145,10 +145,9 @@ The remaining 88.7% ratio (Sol 86,895/s vs otelcol 97,918/s) is the only scenari
 
 ### Path forward
 
-The noop-traces-grpc-50k gap cannot be closed by application-level optimization. It requires:
-1. **Upstream tonic/h2 improvement** — a new release with HTTP/2 throughput gains (benchmark before/after with `demo/benchmark`)
+The noop-traces-grpc-50k gap cannot be closed by application-level optimization or crate upgrades ([tonic-stack-upgrade research](../workspace/tonic-stack-upgrade/DESIGN.md) confirmed hyper 1.x and tonic 0.13 offer no throughput improvement). It requires:
+1. **Upstream h2 crate improvement** — a new release that specifically cites HTTP/2 throughput gains with benchmarks (validate with `demo/benchmark`)
 2. **Multiple H2 connections** — client-side connection pooling to bypass single-connection bottleneck
-3. **Hyper 1.x migration** — only if future versions address the flow control gap (current research shows no improvement)
 
 ## Summary — Priority Ranking
 
