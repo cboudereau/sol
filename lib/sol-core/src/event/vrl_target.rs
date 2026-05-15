@@ -330,11 +330,11 @@ fn otel_span_event_to_value(event: &OtelSpan) -> Value {
     let mut map = ObjectMap::new();
     map.insert(
         f::SPAN_TRACE_ID.into(),
-        hex_encode_bytes(event.trace_id()),
+        hex_encode_bytes(&span_proto.trace_id),
     );
     map.insert(
         f::SPAN_SPAN_ID.into(),
-        hex_encode_bytes(event.span_id()),
+        hex_encode_bytes(&span_proto.span_id),
     );
     map.insert(
         "trace_state".into(),
@@ -342,7 +342,7 @@ fn otel_span_event_to_value(event: &OtelSpan) -> Value {
     );
     map.insert(
         f::PARENT_SPAN_ID.into(),
-        hex_encode_bytes(event.parent_span_id()),
+        hex_encode_bytes(&span_proto.parent_span_id),
     );
     map.insert(f::NAME.into(), Value::Bytes(span_proto.name.clone().into()));
     map.insert(

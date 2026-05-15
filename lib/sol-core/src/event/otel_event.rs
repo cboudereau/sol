@@ -2422,9 +2422,6 @@ impl OtelLog {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtelSpan {
     pub(crate) span: Span,
-    pub(crate) trace_id: [u8; 16],
-    pub(crate) span_id: [u8; 8],
-    pub(crate) parent_span_id: [u8; 8],
     pub(crate) span_attrs: OtelAttributes,
     pub(crate) resource: Option<Arc<Resource>>,
     pub(crate) resource_attrs: Arc<OtelAttributes>,
@@ -2433,50 +2430,11 @@ pub struct OtelSpan {
     pub(crate) metadata: EventMetadata,
 }
 
-fn take_id_16(v: &mut Vec<u8>) -> [u8; 16] {
-    let mut id = [0u8; 16];
-    let len = v.len().min(16);
-    id[..len].copy_from_slice(&v[..len]);
-    *v = Vec::new();
-    id
-}
-
-fn take_id_8(v: &mut Vec<u8>) -> [u8; 8] {
-    let mut id = [0u8; 8];
-    let len = v.len().min(8);
-    id[..len].copy_from_slice(&v[..len]);
-    *v = Vec::new();
-    id
-}
-
-fn vec_to_id_16(v: Vec<u8>) -> [u8; 16] {
-    let mut id = [0u8; 16];
-    let len = v.len().min(16);
-    id[..len].copy_from_slice(&v[..len]);
-    id
-}
-
-fn vec_to_id_8(v: Vec<u8>) -> [u8; 8] {
-    let mut id = [0u8; 8];
-    let len = v.len().min(8);
-    id[..len].copy_from_slice(&v[..len]);
-    id
-}
-
-const EMPTY_16: [u8; 16] = [0u8; 16];
-const EMPTY_8: [u8; 8] = [0u8; 8];
-
 impl OtelSpan {
     pub fn new(mut span: Span) -> Self {
         let span_attrs = OtelAttributes::from_key_values(std::mem::take(&mut span.attributes));
-        let trace_id = take_id_16(&mut span.trace_id);
-        let span_id = take_id_8(&mut span.span_id);
-        let parent_span_id = take_id_8(&mut span.parent_span_id);
         Self {
             span,
-            trace_id,
-            span_id,
-            parent_span_id,
             span_attrs,
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -2497,9 +2455,6 @@ impl OtelSpan {
         }
         Self {
             span: Span::default(),
-            trace_id: [0u8; 16],
-            span_id: [0u8; 8],
-            parent_span_id: [0u8; 8],
             span_attrs,
             resource: log.resource,
             resource_attrs: log.resource_attrs,
@@ -2518,9 +2473,6 @@ impl OtelSpan {
     pub fn from_value_map(value: Value, metadata: EventMetadata) -> Self {
         let mut out = Self {
             span: Span::default(),
-            trace_id: [0u8; 16],
-            span_id: [0u8; 8],
-            parent_span_id: [0u8; 8],
             span_attrs: OtelAttributes::new(),
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -2539,9 +2491,6 @@ impl OtelSpan {
         metadata: EventMetadata,
     ) -> Self {
         let span_attrs = OtelAttributes::from_key_values(std::mem::take(&mut span.attributes));
-        let trace_id = take_id_16(&mut span.trace_id);
-        let span_id = take_id_8(&mut span.span_id);
-        let parent_span_id = take_id_8(&mut span.parent_span_id);
         let resource_attrs = resource
             .as_mut()
             .map(|r| OtelAttributes::from_key_values(std::mem::take(&mut r.attributes)))
@@ -2552,9 +2501,6 @@ impl OtelSpan {
             .unwrap_or_default();
         Self {
             span,
-            trace_id,
-            span_id,
-            parent_span_id,
             span_attrs,
             resource: resource.map(Arc::new),
             resource_attrs: Arc::new(resource_attrs),
@@ -2565,7 +2511,7 @@ impl OtelSpan {
     }
 
     pub fn from_parts_shared(
-        mut span: Span,
+        span: Span,
         span_attrs: OtelAttributes,
         resource: Option<Arc<Resource>>,
         resource_attrs: Arc<OtelAttributes>,
@@ -2573,14 +2519,8 @@ impl OtelSpan {
         scope_attrs: Arc<OtelAttributes>,
         metadata: EventMetadata,
     ) -> Self {
-        let trace_id = take_id_16(&mut span.trace_id);
-        let span_id = take_id_8(&mut span.span_id);
-        let parent_span_id = take_id_8(&mut span.parent_span_id);
         Self {
             span,
-            trace_id,
-            span_id,
-            parent_span_id,
             span_attrs,
             resource,
             resource_attrs,
@@ -2599,9 +2539,6 @@ impl OtelSpan {
         EventMetadata,
     ) {
         let mut span = self.span;
-        span.trace_id = self.trace_id.to_vec();
-        span.span_id = self.span_id.to_vec();
-        span.parent_span_id = self.parent_span_id.to_vec();
         span.attributes = self.span_attrs.to_key_values();
         let resource = resource_to_proto(self.resource.as_deref(), &self.resource_attrs);
         let scope = scope_to_proto(self.scope.as_deref(), &self.scope_attrs);
@@ -2613,9 +2550,6 @@ impl OtelSpan {
     /// (OTLP codec, buffer encoding, gRPC sink).
     pub fn span_to_proto(&self) -> Span {
         let mut span = self.span.clone();
-        span.trace_id = self.trace_id.to_vec();
-        span.span_id = self.span_id.to_vec();
-        span.parent_span_id = self.parent_span_id.to_vec();
         span.attributes = self.span_attrs.to_key_values();
         span
     }
@@ -2679,27 +2613,15 @@ impl OtelSpan {
     }
 
     pub fn trace_id(&self) -> &[u8] {
-        if self.trace_id == EMPTY_16 {
-            &[]
-        } else {
-            &self.trace_id
-        }
+        &self.span.trace_id
     }
 
     pub fn span_id(&self) -> &[u8] {
-        if self.span_id == EMPTY_8 {
-            &[]
-        } else {
-            &self.span_id
-        }
+        &self.span.span_id
     }
 
     pub fn parent_span_id(&self) -> &[u8] {
-        if self.parent_span_id == EMPTY_8 {
-            &[]
-        } else {
-            &self.parent_span_id
-        }
+        &self.span.parent_span_id
     }
 
     pub fn start_time_unix_nano(&self) -> u64 {
@@ -3077,14 +2999,14 @@ impl OtelSpan {
             f::NAME if !self.span.name.is_empty() => {
                 Some(Value::Bytes(self.span.name.clone().into()))
             }
-            f::SPAN_TRACE_ID if self.trace_id != EMPTY_16 => {
-                Some(hex_encode(&self.trace_id))
+            f::SPAN_TRACE_ID if !self.span.trace_id.is_empty() => {
+                Some(hex_encode(&self.span.trace_id))
             }
-            f::SPAN_SPAN_ID if self.span_id != EMPTY_8 => {
-                Some(hex_encode(&self.span_id))
+            f::SPAN_SPAN_ID if !self.span.span_id.is_empty() => {
+                Some(hex_encode(&self.span.span_id))
             }
-            f::PARENT_SPAN_ID if self.parent_span_id != EMPTY_8 => {
-                Some(hex_encode(&self.parent_span_id))
+            f::PARENT_SPAN_ID if !self.span.parent_span_id.is_empty() => {
+                Some(hex_encode(&self.span.parent_span_id))
             }
             f::START_TIME if self.span.start_time_unix_nano != 0 => {
                 nanos_to_timestamp(self.span.start_time_unix_nano)
@@ -3291,13 +3213,13 @@ impl OtelSpan {
                 old
             }
             f::SPAN_TRACE_ID => {
-                let old = if self.trace_id == EMPTY_16 {
+                let old = if self.span.trace_id.is_empty() {
                     None
                 } else {
-                    Some(hex_encode(&self.trace_id))
+                    Some(hex_encode(&self.span.trace_id))
                 };
                 if let Some(decoded) = hex_decode(&value) {
-                    self.trace_id = vec_to_id_16(decoded);
+                    self.span.trace_id = decoded;
                 } else {
                     self.span_attrs
                         .insert(f::SPAN_TRACE_ID.to_string(), vrl_value_to_any_value(&value));
@@ -3305,13 +3227,13 @@ impl OtelSpan {
                 old
             }
             f::SPAN_SPAN_ID => {
-                let old = if self.span_id == EMPTY_8 {
+                let old = if self.span.span_id.is_empty() {
                     None
                 } else {
-                    Some(hex_encode(&self.span_id))
+                    Some(hex_encode(&self.span.span_id))
                 };
                 if let Some(decoded) = hex_decode(&value) {
-                    self.span_id = vec_to_id_8(decoded);
+                    self.span.span_id = decoded;
                 } else {
                     self.span_attrs
                         .insert(f::SPAN_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
@@ -3319,13 +3241,13 @@ impl OtelSpan {
                 old
             }
             f::PARENT_SPAN_ID => {
-                let old = if self.parent_span_id == EMPTY_8 {
+                let old = if self.span.parent_span_id.is_empty() {
                     None
                 } else {
-                    Some(hex_encode(&self.parent_span_id))
+                    Some(hex_encode(&self.span.parent_span_id))
                 };
                 if let Some(decoded) = hex_decode(&value) {
-                    self.parent_span_id = vec_to_id_8(decoded);
+                    self.span.parent_span_id = decoded;
                 } else {
                     self.span_attrs.insert(
                         f::PARENT_SPAN_ID.to_string(),
@@ -3634,27 +3556,27 @@ impl OtelSpan {
                 old
             }
             f::SPAN_TRACE_ID => {
-                if self.trace_id == EMPTY_16 {
+                if self.span.trace_id.is_empty() {
                     return None;
                 }
-                let old = Some(hex_encode(&self.trace_id));
-                self.trace_id = EMPTY_16;
+                let old = Some(hex_encode(&self.span.trace_id));
+                self.span.trace_id.clear();
                 old
             }
             f::SPAN_SPAN_ID => {
-                if self.span_id == EMPTY_8 {
+                if self.span.span_id.is_empty() {
                     return None;
                 }
-                let old = Some(hex_encode(&self.span_id));
-                self.span_id = EMPTY_8;
+                let old = Some(hex_encode(&self.span.span_id));
+                self.span.span_id.clear();
                 old
             }
             f::PARENT_SPAN_ID => {
-                if self.parent_span_id == EMPTY_8 {
+                if self.span.parent_span_id.is_empty() {
                     return None;
                 }
-                let old = Some(hex_encode(&self.parent_span_id));
-                self.parent_span_id = EMPTY_8;
+                let old = Some(hex_encode(&self.span.parent_span_id));
+                self.span.parent_span_id.clear();
                 old
             }
             f::START_TIME | f::START_TIME_UNIX_NANO => {
@@ -3783,16 +3705,16 @@ impl OtelSpan {
         if !self.span.name.is_empty() {
             map.insert(f::NAME.into(), Value::Bytes(self.span.name.clone().into()));
         }
-        if self.trace_id != EMPTY_16 {
-            map.insert(f::SPAN_TRACE_ID.into(), hex_encode(&self.trace_id));
+        if !self.span.trace_id.is_empty() {
+            map.insert(f::SPAN_TRACE_ID.into(), hex_encode(&self.span.trace_id));
         }
-        if self.span_id != EMPTY_8 {
-            map.insert(f::SPAN_SPAN_ID.into(), hex_encode(&self.span_id));
+        if !self.span.span_id.is_empty() {
+            map.insert(f::SPAN_SPAN_ID.into(), hex_encode(&self.span.span_id));
         }
-        if self.parent_span_id != EMPTY_8 {
+        if !self.span.parent_span_id.is_empty() {
             map.insert(
                 f::PARENT_SPAN_ID.into(),
-                hex_encode(&self.parent_span_id),
+                hex_encode(&self.span.parent_span_id),
             );
         }
         if self.span.start_time_unix_nano != 0 {
@@ -4177,16 +4099,16 @@ impl Serialize for OtelSpan {
         if !self.span.name.is_empty() {
             map.serialize_entry(f::NAME, &self.span.name)?;
         }
-        if self.trace_id != EMPTY_16 {
-            map.serialize_entry(f::TRACE_ID_CC, &hex_encode_bytes(&self.trace_id))?;
+        if !self.span.trace_id.is_empty() {
+            map.serialize_entry(f::TRACE_ID_CC, &hex_encode_bytes(&self.span.trace_id))?;
         }
-        if self.span_id != EMPTY_8 {
-            map.serialize_entry(f::SPAN_ID_CC, &hex_encode_bytes(&self.span_id))?;
+        if !self.span.span_id.is_empty() {
+            map.serialize_entry(f::SPAN_ID_CC, &hex_encode_bytes(&self.span.span_id))?;
         }
-        if self.parent_span_id != EMPTY_8 {
+        if !self.span.parent_span_id.is_empty() {
             map.serialize_entry(
                 f::PARENT_SPAN_ID_CC,
-                &hex_encode_bytes(&self.parent_span_id),
+                &hex_encode_bytes(&self.span.parent_span_id),
             )?;
         }
         if self.span.kind != 0 {
