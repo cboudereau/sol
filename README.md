@@ -19,8 +19,6 @@ Sol is a fork of [Datadog Vector](https://github.com/vectordotdev/vector). The t
 
 | | **Vector** | **Sol** |
 |---|---|---|
-| **Maintainer** | Datadog | Independent (Clément Boudereau) |
-| **License** | MPL-2.0 | MPL-2.0 (unchanged) |
 | **Binary name** | `vector` | `sol` |
 | **Config path** | `/etc/vector/vector.yaml` | `/etc/sol/sol.yaml` |
 | **Data directory** | `/var/lib/vector/` | `/var/lib/sol/` |
@@ -75,7 +73,7 @@ Benchmarked against **otelcontribcol 0.122.0** (Go) and **Vector 0.55.0** (Rust)
 |---|---|---|---|---|
 | Traces gRPC 50k | 53.7% | 68.2% | 13 MiB | 57 MiB |
 | Logs gRPC 10k | 194% | 220% | 11 MiB | 48 MiB |
-| Tail sampling 10k | 7.9% | 14.0% | 248 MiB | 201 MiB |
+| Tail sampling 10k | 7.7% | 41.9% | 160 MiB | 196 MiB |
 | Tail sampling 50k | 88.6% | 117% | 332 MiB | 212 MiB |
 | LB + tail sampling 50k | 135% | 233% | 343 MiB | 310 MiB |
 
