@@ -1,6 +1,6 @@
 # Tonic Stack Upgrade — Design Doc
 
-**Status: EXPERIMENTAL** — research found no documented performance improvement, but the upgrade could be attempted and validated with `demo/benchmark`. See [Research findings](#research-findings) below.
+**Status: DEFERRED** — research found no throughput improvement; the 50k traces gap is fundamental to h2/tonic vs Go gRPC, not a version issue. Upgrade remains valuable for ecosystem hygiene only. See [Research findings](#research-findings).
 
 ## Context
 
@@ -73,9 +73,9 @@ axum 0.6 depends on hyper 0.14. Upgrade to 0.7+ for hyper 1.x support.
 
 ## Non-Functional Requirements
 
-### <a id="nfr1"></a>NFR1 — Close 50k traces gap
+### <a id="nfr1"></a>~~NFR1 — Close 50k traces gap~~ → moved to Non-goals
 
-noop-traces-grpc-50k throughput must reach ≥95% of otelcol (currently 87%). Target: ≥86,000 spans/s.
+~~noop-traces-grpc-50k throughput must reach ≥95% of otelcol (currently 87%). Target: ≥86,000 spans/s.~~ **Invalidated**: [arc-zero-copy gap analysis](../../designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis) confirmed the gap is fundamental to h2/tonic's HTTP/2 implementation, not a version issue. Research found no throughput improvement from hyper 1.x or tonic 0.13.
 
 ### <a id="nfr2"></a>NFR2 — No regression on existing scenarios
 
@@ -97,7 +97,8 @@ The upgrade should replace existing crates with their successors (hyper-openssl 
 
 - **Rewriting the HTTP client abstraction**: the `HttpClient` wrapper in `src/http.rs` can be updated to use hyper 1.x APIs while keeping the same external interface. No architectural redesign.
 - **async-tungstenite / websocket upgrades**: if websocket dependencies pin hyper 0.14, they can temporarily coexist via the existing dual-version pattern until their own upgrade is released.
-- **Performance tuning beyond the upgrade**: the upgrade itself is expected to improve H2 throughput. Further tuning (different window sizes, connection pooling) is separate work.
+- **Closing the noop-traces-grpc-50k gap**: research confirmed the gap is fundamental to h2/tonic vs Go gRPC, not a version issue. See [arc-zero-copy gap analysis](../../designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis).
+- **Performance tuning beyond the upgrade**: the upgrade is not expected to improve H2 throughput. Connection pooling or upstream h2 changes are separate work.
 
 ## Rabbit holes
 
