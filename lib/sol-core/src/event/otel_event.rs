@@ -778,6 +778,8 @@ pub(super) fn otel_value_to_str_ref(v: &OtelValueKind) -> &str {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtelLog {
     pub(crate) record: LogRecord,
+    pub(crate) trace_id: [u8; 16],
+    pub(crate) span_id: [u8; 8],
     pub(crate) record_attrs: OtelAttributes,
     pub(crate) resource: Option<Arc<Resource>>,
     pub(crate) resource_attrs: Arc<OtelAttributes>,
@@ -789,8 +791,12 @@ pub struct OtelLog {
 impl OtelLog {
     pub fn new(mut record: LogRecord) -> Self {
         let record_attrs = OtelAttributes::from_key_values(std::mem::take(&mut record.attributes));
+        let trace_id = take_id_16(&mut record.trace_id);
+        let span_id = take_id_8(&mut record.span_id);
         Self {
             record,
+            trace_id,
+            span_id,
             record_attrs,
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -813,6 +819,8 @@ impl OtelLog {
                 }),
                 ..Default::default()
             },
+            trace_id: EMPTY_16,
+            span_id: EMPTY_8,
             record_attrs: OtelAttributes::new(),
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -842,6 +850,8 @@ impl OtelLog {
                         body: Some(body),
                         ..Default::default()
                     },
+                    trace_id: EMPTY_16,
+                    span_id: EMPTY_8,
                     record_attrs: OtelAttributes::new(),
                     resource: None,
                     resource_attrs: Arc::new(OtelAttributes::new()),
@@ -860,6 +870,8 @@ impl OtelLog {
         metadata: EventMetadata,
     ) -> Self {
         let record_attrs = OtelAttributes::from_key_values(std::mem::take(&mut record.attributes));
+        let trace_id = take_id_16(&mut record.trace_id);
+        let span_id = take_id_8(&mut record.span_id);
         let resource_attrs = resource
             .as_mut()
             .map(|r| OtelAttributes::from_key_values(std::mem::take(&mut r.attributes)))
@@ -870,6 +882,8 @@ impl OtelLog {
             .unwrap_or_default();
         Self {
             record,
+            trace_id,
+            span_id,
             record_attrs,
             resource: resource.map(Arc::new),
             resource_attrs: Arc::new(resource_attrs),
@@ -888,8 +902,12 @@ impl OtelLog {
         metadata: EventMetadata,
     ) -> Self {
         let record_attrs = OtelAttributes::from_key_values(std::mem::take(&mut record.attributes));
+        let trace_id = take_id_16(&mut record.trace_id);
+        let span_id = take_id_8(&mut record.span_id);
         Self {
             record,
+            trace_id,
+            span_id,
             record_attrs,
             resource,
             resource_attrs,
@@ -951,6 +969,12 @@ impl OtelLog {
         EventMetadata,
     ) {
         self.record.attributes = self.record_attrs.to_key_values();
+        if self.trace_id != EMPTY_16 {
+            self.record.trace_id = self.trace_id.to_vec();
+        }
+        if self.span_id != EMPTY_8 {
+            self.record.span_id = self.span_id.to_vec();
+        }
         let resource = resource_to_proto(self.resource.as_deref(), &self.resource_attrs);
         let scope = scope_to_proto(self.scope.as_deref(), &self.scope_attrs);
         (self.record, resource, scope, self.metadata)
@@ -967,6 +991,12 @@ impl OtelLog {
     pub fn record_to_proto(&self) -> LogRecord {
         let mut r = self.record.clone();
         r.attributes = self.record_attrs.to_key_values();
+        if self.trace_id != EMPTY_16 {
+            r.trace_id = self.trace_id.to_vec();
+        }
+        if self.span_id != EMPTY_8 {
+            r.span_id = self.span_id.to_vec();
+        }
         r
     }
 
@@ -1057,11 +1087,19 @@ impl OtelLog {
     }
 
     pub fn trace_id(&self) -> &[u8] {
-        &self.record.trace_id
+        if self.trace_id == EMPTY_16 {
+            &[]
+        } else {
+            &self.trace_id
+        }
     }
 
     pub fn span_id(&self) -> &[u8] {
-        &self.record.span_id
+        if self.span_id == EMPTY_8 {
+            &[]
+        } else {
+            &self.span_id
+        }
     }
 
     /// Merge another `OtelLog`'s body into this one (concatenate string bodies).
@@ -1281,11 +1319,11 @@ impl OtelLog {
             f::SEVERITY_NUMBER if self.record.severity_number != 0 => {
                 Some(Value::Integer(i64::from(self.record.severity_number)))
             }
-            f::LOG_TRACE_ID if !self.record.trace_id.is_empty() => {
-                Some(hex_encode(&self.record.trace_id))
+            f::LOG_TRACE_ID if self.trace_id != EMPTY_16 => {
+                Some(hex_encode(&self.trace_id))
             }
-            f::LOG_SPAN_ID if !self.record.span_id.is_empty() => {
-                Some(hex_encode(&self.record.span_id))
+            f::LOG_SPAN_ID if self.span_id != EMPTY_8 => {
+                Some(hex_encode(&self.span_id))
             }
             f::TIME_UNIX_NANO if self.record.time_unix_nano != 0 => {
                 Some(Value::Integer(self.record.time_unix_nano as i64))
@@ -1467,13 +1505,13 @@ impl OtelLog {
                 old
             }
             f::LOG_TRACE_ID => {
-                let old = if self.record.trace_id.is_empty() {
+                let old = if self.trace_id == EMPTY_16 {
                     None
                 } else {
-                    Some(hex_encode(&self.record.trace_id))
+                    Some(hex_encode(&self.trace_id))
                 };
                 if let Some(decoded) = hex_decode(&value) {
-                    self.record_mut().trace_id = decoded;
+                    self.trace_id = vec_to_id_16(decoded);
                 } else {
                     // Malformed hex: store as attribute so data isn't lost
                     self.record_attrs
@@ -1482,13 +1520,13 @@ impl OtelLog {
                 old
             }
             f::LOG_SPAN_ID => {
-                let old = if self.record.span_id.is_empty() {
+                let old = if self.span_id == EMPTY_8 {
                     None
                 } else {
-                    Some(hex_encode(&self.record.span_id))
+                    Some(hex_encode(&self.span_id))
                 };
                 if let Some(decoded) = hex_decode(&value) {
-                    self.record_mut().span_id = decoded;
+                    self.span_id = vec_to_id_8(decoded);
                 } else {
                     self.record_attrs
                         .insert(f::LOG_SPAN_ID.to_string(), vrl_value_to_any_value(&value));
@@ -1743,19 +1781,19 @@ impl OtelLog {
                 old
             }
             f::LOG_TRACE_ID => {
-                if self.record.trace_id.is_empty() {
+                if self.trace_id == EMPTY_16 {
                     return None;
                 }
-                let old = Some(hex_encode(&self.record.trace_id));
-                self.record_mut().trace_id.clear();
+                let old = Some(hex_encode(&self.trace_id));
+                self.trace_id = EMPTY_16;
                 old
             }
             f::LOG_SPAN_ID => {
-                if self.record.span_id.is_empty() {
+                if self.span_id == EMPTY_8 {
                     return None;
                 }
-                let old = Some(hex_encode(&self.record.span_id));
-                self.record_mut().span_id.clear();
+                let old = Some(hex_encode(&self.span_id));
+                self.span_id = EMPTY_8;
                 old
             }
             f::TIME_UNIX_NANO => {
@@ -1867,11 +1905,11 @@ impl OtelLog {
                 Value::Integer(self.record.observed_time_unix_nano as i64),
             );
         }
-        if !self.record.trace_id.is_empty() {
-            map.insert(f::LOG_TRACE_ID.into(), hex_encode(&self.record.trace_id));
+        if self.trace_id != EMPTY_16 {
+            map.insert(f::LOG_TRACE_ID.into(), hex_encode(&self.trace_id));
         }
-        if !self.record.span_id.is_empty() {
-            map.insert(f::LOG_SPAN_ID.into(), hex_encode(&self.record.span_id));
+        if self.span_id != EMPTY_8 {
+            map.insert(f::LOG_SPAN_ID.into(), hex_encode(&self.span_id));
         }
         if self.record.flags != 0 {
             map.insert(
@@ -1908,6 +1946,8 @@ impl OtelLog {
     pub fn from_value_map(value: Value, metadata: EventMetadata) -> Self {
         let mut out = Self {
             record: LogRecord::default(),
+            trace_id: EMPTY_16,
+            span_id: EMPTY_8,
             record_attrs: OtelAttributes::new(),
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -1962,6 +2002,8 @@ impl OtelLog {
                     body: Some(vrl_value_to_any_value(&other)),
                     ..Default::default()
                 };
+                self.trace_id = EMPTY_16;
+                self.span_id = EMPTY_8;
                 self.record_attrs = OtelAttributes::new();
                 self.resource = None;
                 self.resource_attrs = Arc::new(OtelAttributes::new());
@@ -2091,14 +2133,16 @@ impl OtelLog {
             self.record_attrs.insert(k, v);
         }
 
+        self.trace_id = vec_to_id_16(trace_id);
+        self.span_id = vec_to_id_8(span_id);
         self.record = LogRecord {
             body,
             time_unix_nano,
             observed_time_unix_nano,
             severity_text,
             severity_number,
-            trace_id,
-            span_id,
+            trace_id: Vec::new(),
+            span_id: Vec::new(),
             flags,
             dropped_attributes_count,
             attributes: Vec::new(),
@@ -2338,10 +2382,10 @@ impl OtelLog {
         if self.record.observed_time_unix_nano != 0 {
             keys.push(KeyString::from(f::OBSERVED_TIME_UNIX_NANO));
         }
-        if !self.record.trace_id.is_empty() {
+        if self.trace_id != EMPTY_16 {
             keys.push(KeyString::from(f::LOG_TRACE_ID));
         }
-        if !self.record.span_id.is_empty() {
+        if self.span_id != EMPTY_8 {
             keys.push(KeyString::from(f::LOG_SPAN_ID));
         }
         if self.record.flags != 0 {
@@ -2393,6 +2437,8 @@ impl OtelLog {
     pub fn new_with_metadata(metadata: EventMetadata) -> Self {
         Self {
             record: LogRecord::default(),
+            trace_id: EMPTY_16,
+            span_id: EMPTY_8,
             record_attrs: OtelAttributes::new(),
             resource: None,
             resource_attrs: Arc::new(OtelAttributes::new()),
@@ -4032,8 +4078,8 @@ impl EventDataEq for OtelLog {
             && self.record.severity_number == other.record.severity_number
             && self.record.time_unix_nano == other.record.time_unix_nano
             && self.record.flags == other.record.flags
-            && self.record.trace_id == other.record.trace_id
-            && self.record.span_id == other.record.span_id
+            && self.trace_id == other.trace_id
+            && self.span_id == other.span_id
             && self.record_attrs == other.record_attrs
             && self.record.dropped_attributes_count == other.record.dropped_attributes_count
             && self.resource == other.resource
@@ -4142,11 +4188,11 @@ impl Serialize for OtelLog {
                 &self.record.observed_time_unix_nano.to_string(),
             )?;
         }
-        if !self.record.trace_id.is_empty() {
-            map.serialize_entry(f::TRACE_ID_CC, &hex_encode_bytes(&self.record.trace_id))?;
+        if self.trace_id != EMPTY_16 {
+            map.serialize_entry(f::TRACE_ID_CC, &hex_encode_bytes(&self.trace_id))?;
         }
-        if !self.record.span_id.is_empty() {
-            map.serialize_entry(f::SPAN_ID_CC, &hex_encode_bytes(&self.record.span_id))?;
+        if self.span_id != EMPTY_8 {
+            map.serialize_entry(f::SPAN_ID_CC, &hex_encode_bytes(&self.span_id))?;
         }
         if self.record.flags != 0 {
             map.serialize_entry(f::LOG_FLAGS, &self.record.flags)?;
@@ -4512,8 +4558,14 @@ mod tests {
             map.get("time_unix_nano").unwrap().as_integer().unwrap(),
             1_700_000_000_000_000_000
         );
-        assert_eq!(map.get("trace_id").unwrap().as_str().unwrap(), "abcd");
-        assert_eq!(map.get("span_id").unwrap().as_str().unwrap(), "1234");
+        assert_eq!(
+            map.get("trace_id").unwrap().as_str().unwrap(),
+            "abcd0000000000000000000000000000"
+        );
+        assert_eq!(
+            map.get("span_id").unwrap().as_str().unwrap(),
+            "1234000000000000"
+        );
         assert_eq!(map.get("env").unwrap().as_str().unwrap(), "prod");
         assert!(map.get("resource").unwrap().is_object());
         assert!(map.get("scope").unwrap().is_object());
