@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use opentelemetry_proto::tonic::common::v1::{KeyValue, any_value::Value as OtelValueKind};
 use sol_common::byte_size_of::ByteSizeOf;
 use vrl::value::{KeyString, ObjectMap};
@@ -11,30 +9,40 @@ use super::otel_event::{
     string_value, vrl_value_to_any_value,
 };
 
-/// BTreeMap-backed attribute container for O(log n) lookup.
-/// Converts to/from `Vec<KeyValue>` at proto serialization boundaries.
+/// Sorted-Vec-backed attribute container. Binary search for O(log n) lookup,
+/// contiguous memory for cache locality. Saves ~40 bytes/entry vs BTreeMap nodes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OtelAttributes {
-    pub(crate) inner: BTreeMap<String, AnyValue>,
+    pub(crate) inner: Vec<(String, AnyValue)>,
 }
 
 impl OtelAttributes {
     pub fn new() -> Self {
-        Self {
-            inner: BTreeMap::new(),
-        }
+        Self { inner: Vec::new() }
     }
 
     pub fn get(&self, key: &str) -> Option<&AnyValue> {
-        self.inner.get(key)
+        self.inner
+            .binary_search_by(|(k, _)| k.as_str().cmp(key))
+            .ok()
+            .map(|i| &self.inner[i].1)
     }
 
     pub fn insert(&mut self, key: String, value: AnyValue) -> Option<AnyValue> {
-        self.inner.insert(key, value)
+        match self.inner.binary_search_by(|(k, _)| k.as_str().cmp(&key)) {
+            Ok(i) => Some(std::mem::replace(&mut self.inner[i].1, value)),
+            Err(i) => {
+                self.inner.insert(i, (key, value));
+                None
+            }
+        }
     }
 
     pub fn remove(&mut self, key: &str) -> Option<AnyValue> {
-        self.inner.remove(key)
+        match self.inner.binary_search_by(|(k, _)| k.as_str().cmp(key)) {
+            Ok(i) => Some(self.inner.remove(i).1),
+            Err(_) => None,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -46,25 +54,25 @@ impl OtelAttributes {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &AnyValue)> {
-        self.inner.iter()
+        self.inner.iter().map(|(k, v)| (k, v))
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.inner.keys()
+        self.inner.iter().map(|(k, _)| k)
     }
 
     /// Convert from proto `Vec<KeyValue>` (at source ingestion boundary).
     /// Duplicate keys are merged into an `ArrayValue`.
     pub fn from_key_values(kvs: Vec<KeyValue>) -> Self {
-        let mut inner = BTreeMap::new();
+        let mut inner: Vec<(String, AnyValue)> = Vec::with_capacity(kvs.len());
         for kv in kvs {
             let val = kv.value.unwrap_or(AnyValue { value: None });
-            match inner.entry(kv.key) {
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(val);
+            match inner.binary_search_by(|(k, _)| k.as_str().cmp(&kv.key)) {
+                Err(i) => {
+                    inner.insert(i, (kv.key, val));
                 }
-                std::collections::btree_map::Entry::Occupied(mut e) => {
-                    let existing = e.get_mut();
+                Ok(i) => {
+                    let existing = &mut inner[i].1;
                     if let Some(OtelValueKind::ArrayValue(arr)) = &mut existing.value {
                         arr.values.push(val);
                     } else {
@@ -103,10 +111,11 @@ impl OtelAttributes {
 
     /// Convert from VRL `ObjectMap` (at deserialization boundary).
     pub fn from_object_map(map: &ObjectMap) -> Self {
-        let inner = map
+        let mut inner: Vec<(String, AnyValue)> = map
             .iter()
             .map(|(k, v)| (k.to_string(), vrl_value_to_any_value(v)))
             .collect();
+        inner.sort_by(|(a, _), (b, _)| a.cmp(b));
         Self { inner }
     }
 
@@ -163,9 +172,10 @@ impl Ord for OtelAttributes {
 
 impl ByteSizeOf for OtelAttributes {
     fn allocated_bytes(&self) -> usize {
-        self.inner.iter().fold(0, |acc, (k, v)| {
-            acc + k.len() + any_value_allocated_bytes(v)
-        })
+        self.inner.capacity() * std::mem::size_of::<(String, AnyValue)>()
+            + self.inner.iter().fold(0, |acc, (k, v)| {
+                acc + k.len() + any_value_allocated_bytes(v)
+            })
     }
 }
 
@@ -182,7 +192,8 @@ impl serde::Serialize for OtelAttributes {
 
 impl<'de> serde::Deserialize<'de> for OtelAttributes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let map: BTreeMap<String, serde_json::Value> = BTreeMap::deserialize(deserializer)?;
+        let map: std::collections::BTreeMap<String, serde_json::Value> =
+            std::collections::BTreeMap::deserialize(deserializer)?;
         let inner = map
             .into_iter()
             .map(|(k, v)| (k, json_to_any_value(v)))
@@ -193,7 +204,7 @@ impl<'de> serde::Deserialize<'de> for OtelAttributes {
 
 impl OtelAttributes {
     pub fn get_string(&self, key: &str) -> Option<&str> {
-        match self.inner.get(key) {
+        match self.get(key) {
             Some(AnyValue {
                 value: Some(OtelValueKind::StringValue(s)),
             }) => Some(s.as_str()),
@@ -202,7 +213,9 @@ impl OtelAttributes {
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.inner.contains_key(key)
+        self.inner
+            .binary_search_by(|(k, _)| k.as_str().cmp(key))
+            .is_ok()
     }
 
     #[expect(
@@ -210,7 +223,7 @@ impl OtelAttributes {
         reason = "public API; callers pass owned values"
     )]
     pub fn insert_string(&mut self, key: String, value: String) -> Option<AnyValue> {
-        self.inner.insert(key, string_value(&value))
+        self.insert(key, string_value(&value))
     }
 
     #[expect(
@@ -218,7 +231,7 @@ impl OtelAttributes {
         reason = "public API; callers pass owned values"
     )]
     pub fn replace_string(&mut self, key: String, value: String) -> Option<String> {
-        let old = self.inner.insert(key, string_value(&value));
+        let old = self.insert(key, string_value(&value));
         old.and_then(|av| match av.value {
             Some(OtelValueKind::StringValue(s)) => Some(s),
             _ => None,
@@ -290,12 +303,12 @@ impl OtelAttributes {
 
     pub fn extend_strings(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
         for (k, v) in pairs {
-            self.inner.insert(k, string_value(&v));
+            self.insert(k, string_value(&v));
         }
     }
 
-    pub fn retain<F: FnMut(&String, &mut AnyValue) -> bool>(&mut self, f: F) {
-        self.inner.retain(f);
+    pub fn retain<F: FnMut(&String, &mut AnyValue) -> bool>(&mut self, mut f: F) {
+        self.inner.retain_mut(|(k, v)| f(k, v));
     }
 
     pub fn as_option(self) -> Option<Self> {
@@ -309,17 +322,17 @@ impl OtelAttributes {
 
 impl std::iter::FromIterator<(String, String)> for OtelAttributes {
     fn from_iter<I: IntoIterator<Item = (String, String)>>(iter: I) -> Self {
-        Self {
-            inner: iter
-                .into_iter()
-                .map(|(k, v)| (k, string_value(&v)))
-                .collect(),
-        }
+        let mut inner: Vec<(String, AnyValue)> = iter
+            .into_iter()
+            .map(|(k, v)| (k, string_value(&v)))
+            .collect();
+        inner.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Self { inner }
     }
 }
 
-impl From<BTreeMap<String, String>> for OtelAttributes {
-    fn from(map: BTreeMap<String, String>) -> Self {
+impl From<std::collections::BTreeMap<String, String>> for OtelAttributes {
+    fn from(map: std::collections::BTreeMap<String, String>) -> Self {
         map.into_iter().collect()
     }
 }
