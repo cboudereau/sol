@@ -52,37 +52,53 @@ Sol diverges from Vector on protocol and architecture choices. The table below s
 
 ## Performance
 
-Benchmarked against **otelcontribcol 0.122.0** (Go) and **Vector 0.55.0** (Rust) on identical hardware (12 CPUs, 15 GiB RAM, 2 CPU / 2 GB per container). OTLP gRPC noop pipeline (source to null sink), 60s per scenario.
+Benchmarked against **otelcontribcol 0.122.0** (Go) and **Vector 0.55.0** (Rust) on identical hardware (12 CPUs, 15 GiB RAM, 2 CPU / 2 GB per container), 60s per scenario.
 
-### Throughput
+### Noop pipeline (OTLP source to null sink)
 
 | Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector |
 |---|---|---|---|---|---|
-| Traces gRPC 10k | 10,058/s | 10,185/s | 9,976/s | 99% | 101% |
-| Traces gRPC 50k | 86,895/s | 97,918/s | 28,885/s | 89% | **3x** |
-| Logs gRPC 10k | 4,507/s | 4,080/s | 97/s | **110%** | **46x** |
-| Logs gRPC 50k | 5,531/s | 5,053/s | 192/s | **110%** | **29x** |
-| Metrics gRPC 10k | 4,366/s | 4,035/s | 97/s | **108%** | **45x** |
-| Metrics gRPC 50k | 5,514/s | 5,107/s | 189/s | **108%** | **29x** |
-| Tail sampling 50k | 87,322/s | 68,113/s | -- | **128%** | -- |
-| LB + tail sampling 50k | 48,919/s | 50,119/s | -- | 98% | -- |
+| Traces gRPC 10k | 10,009/s | 10,123/s | 9,957/s | 99% | 101% |
+| Traces gRPC 50k | 88,590/s | 99,320/s | 29,050/s | 89% | **3.0x** |
+| Logs gRPC 10k | 4,667/s | 4,071/s | 97/s | **115%** | **48x** |
+| Logs gRPC 50k | 5,503/s | 4,976/s | 192/s | **111%** | **29x** |
+| Metrics gRPC 10k | 4,636/s | 4,046/s | 96/s | **115%** | **48x** |
+| Metrics gRPC 50k | 5,578/s | 5,013/s | 187/s | **111%** | **30x** |
+
+### Tail sampling
+
+| Scenario | Sol | otelcol | Sol / otelcol |
+|---|---|---|---|
+| Tail sampling 10k | 11,226/s | 11,089/s | **101%** |
+| Tail sampling 50k | 91,161/s | 69,906/s | **130%** |
+| LB + tail sampling 10k | 10,811/s | 10,976/s | 98% |
+| LB + tail sampling 50k | 51,661/s | 46,012/s | **112%** |
 
 ### CPU and memory
 
 | Scenario | Sol CPU | otelcol CPU | Sol Mem | otelcol Mem |
 |---|---|---|---|---|
-| Traces gRPC 50k | 53.7% | 68.2% | 13 MiB | 57 MiB |
-| Logs gRPC 10k | 194% | 220% | 11 MiB | 48 MiB |
-| Tail sampling 10k | 7.7% | 41.9% | 160 MiB | 196 MiB |
-| Tail sampling 50k | 88.6% | 117% | 332 MiB | 212 MiB |
-| LB + tail sampling 50k | 135% | 233% | 343 MiB | 310 MiB |
+| Traces gRPC 50k | 50% | 75% | 12 MiB | 56 MiB |
+| Logs gRPC 10k | 193% | 217% | 11 MiB | 48 MiB |
+| Tail sampling 10k | 7% | 42% | **161 MiB** | 201 MiB |
+| Tail sampling 50k | 86% | 137% | 233 MiB | 215 MiB |
+| LB + tail sampling 10k | 16% | 58% | **159 MiB** | 166 MiB |
+| LB + tail sampling 50k | 139% | 264% | **227 MiB** | 299 MiB |
+
+### Sustained memory (5-minute runs)
+
+| Scenario | Sol (start → end) | otelcol (start → end) |
+|---|---|---|
+| Noop logs 10k | 10 → 10 MiB | 46 → 0 MiB |
+| Tail sampling 10k | 27 → 158 MiB | 54 → 198 MiB |
 
 **Key takeaways:**
-- Sol matches or beats otelcol on **17 of 18** scenarios
-- Sol uses **12--44% less CPU** than otelcol across all scenarios
-- Sol uses **3--6x less memory** than otelcol in noop pipelines
-- Sol is **15--46x faster** than Vector on gRPC logs and metrics (Vector lacks native OTLP gRPC for these signals)
-- The one scenario where Sol trails (traces gRPC 50k, 89%) is a [tonic/h2 HTTP/2 throughput ceiling](docs/designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis), not application overhead
+- Sol uses **less memory than otelcol** for tail sampling at 10k spans/s (161 vs 201 MiB — **0.80x**)
+- Sol uses **2--5x less CPU** than otelcol on tail sampling workloads
+- Sol uses **3--5x less memory** than otelcol in noop pipelines
+- Sol is **29--48x faster** than Vector on gRPC logs and metrics (Vector lacks native OTLP gRPC for these signals)
+- At 50k spans/s, Sol trails otelcol slightly on tail-sampling memory (233 vs 215 MiB) but leads on throughput (130%) and CPU (63% less)
+- The noop traces gRPC 50k gap (89%) is a [tonic/h2 HTTP/2 throughput ceiling](docs/designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis), not application overhead
 
 <details>
 <summary>Reproduce</summary>
