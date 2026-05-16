@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Shared EventMetadata across batch
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../designs/20260516_tail-sampling-slim-buffer.md#fr1), [FR2](../designs/20260516_tail-sampling-slim-buffer.md#fr2), [NFR1](../designs/20260516_tail-sampling-slim-buffer.md#nfr1)
 
 ## Problem
 

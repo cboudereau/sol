@@ -2,9 +2,9 @@
 
 ## Context
 
-Amends: [designs/20260514_arc-zero-copy-optimization.md](../../designs/20260514_arc-zero-copy-optimization.md)
+Amends: [designs/20260514_arc-zero-copy-optimization.md](20260514_arc-zero-copy-optimization.md)
 
-The [Arc zero-copy optimization](../../designs/20260514_arc-zero-copy-optimization.md) reduced tail sampling memory from 1.62x to 1.23x of otelcol (247 MiB vs 200 MiB at 10k spans/s). Root cause analysis of the remaining 47 MiB gap traced it to **per-span struct overhead** — not field content (telemetrygen spans have empty events/links).
+The [Arc zero-copy optimization](20260514_arc-zero-copy-optimization.md) reduced tail sampling memory from 1.62x to 1.23x of otelcol (247 MiB vs 200 MiB at 10k spans/s). Root cause analysis of the remaining 47 MiB gap traced it to **per-span struct overhead** — not field content (telemetrygen spans have empty events/links).
 
 ### Per-span memory breakdown
 
@@ -57,9 +57,7 @@ Using `[u8; 16]`/`[u8; 8]` in `OtelSpan` (extracted from proto Span via `mem::ta
 - `lib/opentelemetry-proto/src/metrics.rs` — same pattern for metrics
 - `lib/sol-core/src/event/metadata.rs:201-224` — `Inner::default()` and `EventMetadata::default()`
 - `lib/sol-core/src/event/otel_event.rs:2423-2431` — `OtelSpan` struct definition
-- `src/transforms/tail_sampling/transform.rs:96-108` — `extract_trace_id()` copies Vec to [u8;16]
-- `src/transforms/servicegraph/transform.rs:434-447` — `to_trace_id()`/`to_span_id()` copy Vec to arrays
-- `src/sinks/opentelemetry/load_balancing.rs:366-385` — `extract_routing_key()` clones trace_id Vec
+- `lib/sol-core/src/event/otel_attributes.rs` — sorted Vec attribute container
 
 ## Functional Requirements
 
@@ -71,25 +69,25 @@ Using `[u8; 16]`/`[u8; 8]` in `OtelSpan` (extracted from proto Span via `mem::ta
 
 Downstream transforms may call `metadata.get_mut()` (which uses `Arc::make_mut`) to set source_id, source_type, upstream_id, or finalizers. Copy-on-write semantics via `Arc::make_mut` must continue to work — only the mutated event gets a private copy.
 
-### <a id="fr3"></a>FR3 — Fixed-size trace_id in OtelSpan
+### <a id="fr3"></a>~~FR3 — Fixed-size trace_id in OtelSpan~~ REVERTED
 
-Add `trace_id: [u8; 16]` field to `OtelSpan`. Extract from `span.trace_id` via `mem::take` on construction. Restore to `span.trace_id` in `span_to_proto()` and `into_parts()`.
+Implemented and benchmarked. Measured savings: 0.5–7 MiB (negligible vs code complexity). Reverted — Arc sharing + sorted Vec alone meet the ≤1.0x target.
 
-### <a id="fr4"></a>FR4 — Fixed-size span_id and parent_span_id in OtelSpan
+### <a id="fr4"></a>~~FR4 — Fixed-size span_id and parent_span_id in OtelSpan~~ REVERTED
 
-Same pattern for `span_id: [u8; 8]` and `parent_span_id: [u8; 8]`.
+See FR3.
 
-### <a id="fr5"></a>FR5 — Fixed-size trace_id/span_id in OtelLog
+### <a id="fr5"></a>~~FR5 — Fixed-size trace_id/span_id in OtelLog~~ REVERTED
 
-Add `trace_id: [u8; 16]` and `span_id: [u8; 8]` to `OtelLog`. Extract from `record.trace_id`/`record.span_id` on construction. Restore at serialization.
+See FR3.
 
-### <a id="fr6"></a>FR6 — Update all accessor methods
+### <a id="fr6"></a>~~FR6 — Update all accessor methods~~ REVERTED
 
-`OtelSpan::trace_id()`, `span_id()`, `parent_span_id()` must return `&[u8; N]` (or `&[u8]`) from the new fixed-size fields. `OtelLog::trace_id()`, `span_id()` similarly.
+See FR3.
 
-### <a id="fr7"></a>FR7 — Update VRL roundtrip
+### <a id="fr7"></a>~~FR7 — Update VRL roundtrip~~ REVERTED
 
-`as_map()` must read from the new fixed-size fields. `apply_value_map()` / `from_value_map()` must write to the new fields (and the proto field for serialization).
+See FR3.
 
 ## Non-Functional Requirements
 
@@ -109,9 +107,9 @@ CI checks: `cargo fmt --all --check`, `cargo clippy -p sol-core`, `cargo test -p
 ## Non-goals
 
 - **Removing EventMetadata entirely from buffered spans**: EventMetadata carries finalizers needed for acknowledgment. Sharing via Arc is sufficient.
-- **Custom prost codegen for fixed-size bytes**: modifying the prost build to generate `[u8; N]` instead of `Vec<u8>`. Too invasive; extract-and-restore at the OtelSpan level is sufficient.
+- **Fixed-size ID arrays**: Implemented and reverted. Measured 0.5–7 MiB savings — not worth the code complexity when Arc sharing + sorted Vec already meet the target.
 - **Stripping events/links/trace_state**: telemetrygen produces empty fields, so no benchmark gain. Deferred to a future workspace if production profiling shows benefit.
-- **Arena allocation**: allocating all spans from one trace in a contiguous block. Higher complexity, uncertain benefit beyond fixed IDs.
+- **Arena allocation**: allocating all spans from one trace in a contiguous block. Higher complexity, uncertain benefit.
 
 ## Rabbit holes
 
@@ -142,53 +140,39 @@ pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Eve
 
 Same pattern applied to `resource_logs_into_events()` and `resource_metrics_into_events()`.
 
-### Fixed-size IDs ([FR3](#fr3), [FR4](#fr4), [FR5](#fr5), [FR6](#fr6), [FR7](#fr7))
+### Sorted Vec attributes
 
-Extract ID bytes from proto on construction, store as fixed arrays in OtelSpan:
+`OtelAttributes` uses `Vec<(String, AnyValue)>` with binary search instead of `BTreeMap`. Saves ~40 bytes/entry via contiguous memory and no tree node overhead. All constructors (`from_key_values`, `from_object_map`, `FromIterator`) maintain the sort invariant.
 
-```rust
-pub struct OtelSpan {
-    pub(crate) span: Span,
-    pub(crate) trace_id: [u8; 16],       // extracted from span.trace_id
-    pub(crate) span_id: [u8; 8],         // extracted from span.span_id
-    pub(crate) parent_span_id: [u8; 8],  // extracted from span.parent_span_id
-    pub(crate) span_attrs: OtelAttributes,
-    // ... rest unchanged
-}
-```
+### ~~Fixed-size IDs~~ REVERTED
 
-Construction helper:
-```rust
-fn take_trace_id(v: &mut Vec<u8>) -> [u8; 16] {
-    let mut id = [0u8; 16];
-    let len = v.len().min(16);
-    id[..len].copy_from_slice(&v[..len]);
-    v.clear(); // release heap allocation
-    id
-}
-```
-
-Note: `v.clear()` sets len=0 but retains capacity. To free heap: `*v = Vec::new()` or `std::mem::take(v)`. Use `std::mem::take` to guarantee deallocation.
-
-Serialization (`span_to_proto`):
-```rust
-pub fn span_to_proto(&self) -> Span {
-    let mut span = self.span.clone();
-    span.trace_id = self.trace_id.to_vec();
-    span.span_id = self.span_id.to_vec();
-    span.parent_span_id = self.parent_span_id.to_vec();
-    span.attributes = self.span_attrs.to_key_values();
-    span
-}
-```
+Fixed-size `[u8;16]`/`[u8;8]` arrays for trace_id/span_id were implemented, benchmarked, and reverted. Measured savings: 0.5–7 MiB — negligible compared to the ~86 MiB saved by Arc sharing + sorted Vec. The code complexity (extract-and-restore in every constructor, accessor, and serialization path) was not justified.
 
 ### Decisions
 
-- [Shared EventMetadata strategy](./adrs/shared-metadata.md)
-- [Fixed-size IDs extract-and-restore](./adrs/fixed-size-ids.md)
+- [ADR-0033: Shared EventMetadata strategy](../adrs/0033-shared-metadata.md)
+- [ADR-0034: Fixed-size IDs extract-and-restore](../adrs/0034-fixed-size-ids.md) — REVERTED after benchmarking
+
+## Results
+
+Benchmarked on 12 CPUs, 15 GiB RAM, WSL2 (Linux 6.6.87.2), 60s per scenario.
+
+### Before vs After
+
+| Metric | Before (arc-zero-copy) | After (slim-buffer) | Delta |
+|--------|----------------------|-------------------|-------|
+| Tail sampling 10k memory | 248 MiB (1.23x otelcol) | 162 MiB (0.82x otelcol) | **-86 MiB (-35%)** |
+| Tail sampling 10k CPU | 7.9% | 7.6% | -4% |
+| LB + tail sampling 50k memory | 343 MiB | 233 MiB | **-110 MiB (-32%)** |
+
+### Acceptance Criteria
+
+- [x] Docker image builds successfully
+- [x] tail-sampling-grpc-10k memory <= 200 MiB (162 MiB actual, 0.82x otelcol)
+- [x] No throughput regression on noop scenarios
+- [x] Results documented
 
 ## Cross-cutting Concerns
 
-- **OtelLog parity**: OtelLog has `record.trace_id` and `record.span_id` for trace context. Apply the same fixed-size extraction. OtelMetric has no ID fields.
 - **Benchmark validation**: run `demo/benchmark` tail-sampling-grpc-10k and sustained scenarios to measure actual memory reduction.
-- **Correctness**: round-trip tests must verify span_to_proto output is identical to input for both ID fields and metadata.
+- **Correctness**: round-trip tests must verify metadata sharing and attribute sort invariant.

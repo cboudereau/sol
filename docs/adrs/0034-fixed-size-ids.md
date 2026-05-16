@@ -1,9 +1,9 @@
 ---
-status: draft
+status: reverted
 ---
-# Fixed-size IDs: extract-and-restore
+# Fixed-size IDs: extract-and-restore (REVERTED)
 
-Addresses: [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [FR5](../DESIGN.md#fr5), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR3](../designs/20260516_tail-sampling-slim-buffer.md#fr3), [FR4](../designs/20260516_tail-sampling-slim-buffer.md#fr4), [FR5](../designs/20260516_tail-sampling-slim-buffer.md#fr5), [NFR1](../designs/20260516_tail-sampling-slim-buffer.md#nfr1)
 
 ## Problem
 
@@ -27,3 +27,7 @@ Use `std::mem::take` to clear the proto Vec\<u8\> fields (deallocates heap). The
 
 - **Easier**: tail sampling `extract_trace_id()` and service graph `to_trace_id()`/`to_span_id()` can read `[u8; 16]`/`[u8; 8]` directly instead of copying from Vec\<u8\>. Load balancing can hash `&[u8; 16]` without cloning.
 - **Harder**: every OtelSpan constructor must extract IDs. Every serialization path must restore them. But this is already the case for attributes — the pattern is established.
+
+## Reverted
+
+Implemented and benchmarked. Measured savings: **0.5–7 MiB** — negligible compared to the ~86 MiB saved by Arc sharing + sorted Vec. The code complexity (touching every constructor, accessor, serialization path for OtelSpan and OtelLog) was not justified. Arc sharing + sorted Vec alone meet the ≤1.0x otelcol target (162 MiB = 0.82x).

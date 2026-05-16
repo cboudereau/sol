@@ -456,6 +456,216 @@ fn any_value_allocated_bytes(av: &AnyValue) -> usize {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry_proto::tonic::common::v1::KeyValue;
+
+    fn sv(s: &str) -> AnyValue {
+        AnyValue {
+            value: Some(OtelValueKind::StringValue(s.to_string())),
+        }
+    }
+
+    fn kv(key: &str, val: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(sv(val)),
+        }
+    }
+
+    #[test]
+    fn insert_and_get_roundtrip() {
+        let mut attrs = OtelAttributes::new();
+        assert!(attrs.insert("key".into(), sv("val")).is_none());
+        assert_eq!(attrs.get("key"), Some(&sv("val")));
+        assert_eq!(attrs.len(), 1);
+    }
+
+    #[test]
+    fn insert_duplicate_returns_old_value() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("k".into(), sv("v1"));
+        let old = attrs.insert("k".into(), sv("v2"));
+        assert_eq!(old, Some(sv("v1")));
+        assert_eq!(attrs.get("k"), Some(&sv("v2")));
+        assert_eq!(attrs.len(), 1);
+    }
+
+    #[test]
+    fn insert_maintains_sorted_order() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("c".into(), sv("3"));
+        attrs.insert("a".into(), sv("1"));
+        attrs.insert("b".into(), sv("2"));
+        let keys: Vec<&String> = attrs.keys().collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn remove_existing_key() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("k".into(), sv("v"));
+        let removed = attrs.remove("k");
+        assert_eq!(removed, Some(sv("v")));
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn remove_missing_key() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("a".into(), sv("1"));
+        assert!(attrs.remove("z").is_none());
+        assert_eq!(attrs.len(), 1);
+    }
+
+    #[test]
+    fn contains_key_true_and_false() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("present".into(), sv("yes"));
+        assert!(attrs.contains_key("present"));
+        assert!(!attrs.contains_key("absent"));
+    }
+
+    #[test]
+    fn from_key_values_sorts_and_deduplicates() {
+        let kvs = vec![kv("z", "last"), kv("a", "first"), kv("m", "middle")];
+        let attrs = OtelAttributes::from_key_values(kvs);
+        let keys: Vec<&String> = attrs.keys().collect();
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn from_key_values_merges_duplicate_keys_into_array() {
+        let kvs = vec![kv("k", "v1"), kv("k", "v2")];
+        let attrs = OtelAttributes::from_key_values(kvs);
+        assert_eq!(attrs.len(), 1);
+        match attrs.get("k") {
+            Some(AnyValue {
+                value: Some(OtelValueKind::ArrayValue(arr)),
+            }) => {
+                assert_eq!(arr.values.len(), 2);
+                assert_eq!(arr.values[0], sv("v1"));
+                assert_eq!(arr.values[1], sv("v2"));
+            }
+            other => panic!("expected ArrayValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_key_values_merges_triple_duplicate() {
+        let kvs = vec![kv("k", "a"), kv("k", "b"), kv("k", "c")];
+        let attrs = OtelAttributes::from_key_values(kvs);
+        match attrs.get("k") {
+            Some(AnyValue {
+                value: Some(OtelValueKind::ArrayValue(arr)),
+            }) => assert_eq!(arr.values.len(), 3),
+            other => panic!("expected ArrayValue with 3 elements, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_key_values_empty_input() {
+        let attrs = OtelAttributes::from_key_values(vec![]);
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn from_key_values_single_element() {
+        let attrs = OtelAttributes::from_key_values(vec![kv("only", "one")]);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs.get("only"), Some(&sv("one")));
+    }
+
+    #[test]
+    fn to_key_values_roundtrip() {
+        let kvs = vec![kv("b", "2"), kv("a", "1")];
+        let attrs = OtelAttributes::from_key_values(kvs);
+        let out = attrs.to_key_values();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].key, "a");
+        assert_eq!(out[1].key, "b");
+    }
+
+    #[test]
+    fn from_iter_produces_sorted_output() {
+        let attrs: OtelAttributes = vec![
+            ("z".to_string(), "3".to_string()),
+            ("a".to_string(), "1".to_string()),
+            ("m".to_string(), "2".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let keys: Vec<&String> = attrs.keys().collect();
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn get_string_returns_string_value() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("s".into(), sv("hello"));
+        assert_eq!(attrs.get_string("s"), Some("hello"));
+        assert_eq!(attrs.get_string("missing"), None);
+    }
+
+    #[test]
+    fn retain_preserves_sort_order() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("a".into(), sv("keep"));
+        attrs.insert("b".into(), sv("drop"));
+        attrs.insert("c".into(), sv("keep"));
+        attrs.retain(|_, v| matches!(&v.value, Some(OtelValueKind::StringValue(s)) if s == "keep"));
+        assert_eq!(attrs.len(), 2);
+        let keys: Vec<&String> = attrs.keys().collect();
+        assert_eq!(keys, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn extend_strings_maintains_order() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("b".into(), sv("existing"));
+        attrs.extend_strings(vec![
+            ("a".to_string(), "first".to_string()),
+            ("c".to_string(), "last".to_string()),
+        ]);
+        let keys: Vec<&String> = attrs.keys().collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("b".into(), sv("2"));
+        attrs.insert("a".into(), sv("1"));
+        let json = serde_json::to_string(&attrs).unwrap();
+        let deserialized: OtelAttributes = serde_json::from_str(&json).unwrap();
+        assert_eq!(attrs, deserialized);
+        let keys: Vec<&String> = deserialized.keys().collect();
+        assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn byte_size_of_accounts_for_capacity() {
+        let mut attrs = OtelAttributes::new();
+        let empty_size = attrs.allocated_bytes();
+        attrs.insert("key".into(), sv("val"));
+        assert!(attrs.allocated_bytes() > empty_size);
+    }
+
+    #[test]
+    fn as_option_empty_returns_none() {
+        let attrs = OtelAttributes::new();
+        assert!(attrs.as_option().is_none());
+    }
+
+    #[test]
+    fn as_option_non_empty_returns_some() {
+        let mut attrs = OtelAttributes::new();
+        attrs.insert("k".into(), sv("v"));
+        assert!(attrs.as_option().is_some());
+    }
+}
+
 pub(super) struct SerializableAnyValue<'a>(pub(super) &'a AnyValue);
 
 impl serde::Serialize for SerializableAnyValue<'_> {
