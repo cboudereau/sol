@@ -34,7 +34,7 @@ Decide per-trace after all spans arrive: keep errors, slow requests, sample ever
 
 ### Efficient
 
-Sol does the same work as the OpenTelemetry Collector with a fraction of the resources. In production-relevant workloads (load-balanced tail sampling), Sol uses **45% less CPU** and **22% less memory** while matching or exceeding throughput.
+Written in Rust. **4–5x less memory** and **up to 45% less CPU** than the OpenTelemetry Collector at equal or higher throughput. **26–45x faster** than Vector on gRPC logs and metrics.
 
 ### Drop-in replacement
 
@@ -62,14 +62,14 @@ The real-world deployment pattern — load balancer routing by traceID to collec
 
 ### Noop pipeline (OTLP source to null sink)
 
-| Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector |
-|---|---|---|---|---|---|
-| Traces gRPC 10k | 10,089/s | 10,088/s | 10,015/s | 100% | 101% |
-| Traces gRPC 50k | 81,766/s | 89,865/s | 27,025/s | 91% | **3.0x** |
-| Logs gRPC 10k | 4,382/s | 4,077/s | 99/s | **107%** | **44x** |
-| Logs gRPC 50k | 5,054/s | 4,875/s | 192/s | **104%** | **26x** |
-| Metrics gRPC 10k | 4,404/s | 4,064/s | 97/s | **108%** | **45x** |
-| Metrics gRPC 50k | 5,215/s | 4,997/s | 192/s | **104%** | **27x** |
+| Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector | CPU | Memory |
+|---|---|---|---|---|---|---|---|
+| Traces gRPC 10k | 10,089/s | 10,088/s | 10,015/s | 100% | 101% | **36% less** (4% vs 7%) | **5x less** (12 vs 61 MiB) |
+| Traces gRPC 50k | 81,766/s | 89,865/s | 27,025/s | 91% | **3.0x** | **30% less** (47% vs 67%) | **4.5x less** (13 vs 57 MiB) |
+| Logs gRPC 10k | 4,382/s | 4,077/s | 99/s | **107%** | **44x** | **17% less** (181% vs 218%) | **4.4x less** (11 vs 48 MiB) |
+| Logs gRPC 50k | 5,054/s | 4,875/s | 192/s | **104%** | **26x** | **17% less** (179% vs 215%) | **4.4x less** (12 vs 52 MiB) |
+| Metrics gRPC 10k | 4,404/s | 4,064/s | 97/s | **108%** | **45x** | **15% less** (183% vs 215%) | **4.4x less** (11 vs 48 MiB) |
+| Metrics gRPC 50k | 5,215/s | 4,997/s | 192/s | **104%** | **27x** | **15% less** (182% vs 214%) | **4.2x less** (13 vs 52 MiB) |
 
 ### Sustained memory (5-minute runs)
 
