@@ -1,2 +1,2 @@
 ## Active workspaces
-- [tonic-stack-upgrade](docs/workspace/tonic-stack-upgrade/DESIGN.md) — EXPERIMENTAL, validate with demo/benchmark
+- [tonic-stack-upgrade](docs/workspace/tonic-stack-upgrade/TASKS.md) — Phase 4c (pre-flight gate), EXPERIMENTAL
