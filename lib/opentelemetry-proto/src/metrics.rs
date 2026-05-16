@@ -5,6 +5,7 @@ use sol_core::event::{Event, EventMetadata, OtelMetric};
 use upstream_opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
 
 pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item = Event> {
+    let metadata = EventMetadata::default();
     let (resource, resource_attrs) = match rm.resource {
         Some(mut r) => {
             let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
@@ -28,6 +29,7 @@ pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item =
 
         let resource = resource.clone();
         let resource_attrs = resource_attrs.clone();
+        let metadata = metadata.clone();
 
         scope_metrics.metrics.into_iter().map(move |metric| {
             Event::Metric(OtelMetric::from_parts_shared(
@@ -36,7 +38,7 @@ pub fn resource_metrics_into_events(rm: ResourceMetrics) -> impl Iterator<Item =
                 resource_attrs.clone(),
                 scope.clone(),
                 scope_attrs.clone(),
-                EventMetadata::default(),
+                metadata.clone(),
             ))
         })
     })

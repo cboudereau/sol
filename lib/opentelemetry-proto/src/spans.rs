@@ -5,6 +5,7 @@ use sol_core::event::{Event, EventMetadata, OtelSpan};
 use upstream_opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans};
 
 pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Event> {
+    let metadata = EventMetadata::default();
     let (resource, resource_attrs) = match rs.resource {
         Some(mut r) => {
             let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
@@ -28,6 +29,7 @@ pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Eve
 
         let resource = resource.clone();
         let resource_attrs = resource_attrs.clone();
+        let metadata = metadata.clone();
 
         scope_spans.spans.into_iter().map(move |mut span| {
             let span_attrs = OtelAttributes::from_key_values(std::mem::take(&mut span.attributes));
@@ -38,7 +40,7 @@ pub fn resource_spans_into_events(rs: ResourceSpans) -> impl Iterator<Item = Eve
                 resource_attrs.clone(),
                 scope.clone(),
                 scope_attrs.clone(),
-                EventMetadata::default(),
+                metadata.clone(),
             ))
         })
     })
@@ -192,5 +194,15 @@ mod tests {
         assert!(span.scope().is_none());
         assert!(span.resource().is_none());
         assert_eq!(span.name(), "lonely");
+    }
+
+    #[test]
+    fn shared_metadata_across_batch() {
+        let rs = make_resource_spans();
+        let events: Vec<_> = resource_spans_into_events(rs).collect();
+        assert_eq!(events.len(), 2);
+        let id_a = events[0].metadata().source_event_id();
+        let id_b = events[1].metadata().source_event_id();
+        assert_eq!(id_a, id_b, "spans in same batch must share EventMetadata");
     }
 }

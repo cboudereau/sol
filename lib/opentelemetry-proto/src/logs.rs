@@ -18,6 +18,7 @@ pub const DROPPED_ATTRIBUTES_COUNT_KEY: &str = "dropped_attributes_count";
 pub const FLAGS_KEY: &str = "flags";
 
 pub fn resource_logs_into_events(rl: ResourceLogs) -> impl Iterator<Item = Event> {
+    let metadata = EventMetadata::default();
     let (resource, resource_attrs) = match rl.resource {
         Some(mut r) => {
             let attrs = Arc::new(OtelAttributes::from_key_values(std::mem::take(
@@ -41,6 +42,7 @@ pub fn resource_logs_into_events(rl: ResourceLogs) -> impl Iterator<Item = Event
 
         let resource = resource.clone();
         let resource_attrs = resource_attrs.clone();
+        let metadata = metadata.clone();
 
         scope_log.log_records.into_iter().map(move |log_record| {
             Event::Log(OtelLog::from_parts_shared(
@@ -49,7 +51,7 @@ pub fn resource_logs_into_events(rl: ResourceLogs) -> impl Iterator<Item = Event
                 resource_attrs.clone(),
                 scope.clone(),
                 scope_attrs.clone(),
-                EventMetadata::default(),
+                metadata.clone(),
             ))
         })
     })
