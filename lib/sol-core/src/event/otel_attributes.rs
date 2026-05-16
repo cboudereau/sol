@@ -456,6 +456,38 @@ fn any_value_allocated_bytes(av: &AnyValue) -> usize {
     }
 }
 
+pub(super) struct SerializableAnyValue<'a>(pub(super) &'a AnyValue);
+
+impl serde::Serialize for SerializableAnyValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0.value {
+            None => serializer.serialize_none(),
+            Some(OtelValueKind::StringValue(s)) => serializer.serialize_str(s),
+            Some(OtelValueKind::BoolValue(b)) => serializer.serialize_bool(*b),
+            Some(OtelValueKind::IntValue(i)) => serializer.serialize_i64(*i),
+            Some(OtelValueKind::DoubleValue(f)) => serializer.serialize_f64(*f),
+            Some(OtelValueKind::BytesValue(b)) => serializer.serialize_bytes(b),
+            Some(OtelValueKind::ArrayValue(arr)) => {
+                use serde::ser::SerializeSeq;
+                let mut seq = serializer.serialize_seq(Some(arr.values.len()))?;
+                for v in &arr.values {
+                    seq.serialize_element(&SerializableAnyValue(v))?;
+                }
+                seq.end()
+            }
+            Some(OtelValueKind::KvlistValue(kvl)) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(kvl.values.len()))?;
+                for kv in &kvl.values {
+                    let val = kv.value.as_ref().map(SerializableAnyValue);
+                    map.serialize_entry(&kv.key, &val)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,37 +695,5 @@ mod tests {
         let mut attrs = OtelAttributes::new();
         attrs.insert("k".into(), sv("v"));
         assert!(attrs.as_option().is_some());
-    }
-}
-
-pub(super) struct SerializableAnyValue<'a>(pub(super) &'a AnyValue);
-
-impl serde::Serialize for SerializableAnyValue<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match &self.0.value {
-            None => serializer.serialize_none(),
-            Some(OtelValueKind::StringValue(s)) => serializer.serialize_str(s),
-            Some(OtelValueKind::BoolValue(b)) => serializer.serialize_bool(*b),
-            Some(OtelValueKind::IntValue(i)) => serializer.serialize_i64(*i),
-            Some(OtelValueKind::DoubleValue(f)) => serializer.serialize_f64(*f),
-            Some(OtelValueKind::BytesValue(b)) => serializer.serialize_bytes(b),
-            Some(OtelValueKind::ArrayValue(arr)) => {
-                use serde::ser::SerializeSeq;
-                let mut seq = serializer.serialize_seq(Some(arr.values.len()))?;
-                for v in &arr.values {
-                    seq.serialize_element(&SerializableAnyValue(v))?;
-                }
-                seq.end()
-            }
-            Some(OtelValueKind::KvlistValue(kvl)) => {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(kvl.values.len()))?;
-                for kv in &kvl.values {
-                    let val = kv.value.as_ref().map(SerializableAnyValue);
-                    map.serialize_entry(&kv.key, &val)?;
-                }
-                map.end()
-            }
-        }
     }
 }
