@@ -58,47 +58,47 @@ Benchmarked against **otelcontribcol 0.122.0** (Go) and **Vector 0.55.0** (Rust)
 
 | Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector |
 |---|---|---|---|---|---|
-| Traces gRPC 10k | 10,009/s | 10,123/s | 9,957/s | 99% | 101% |
-| Traces gRPC 50k | 88,590/s | 99,320/s | 29,050/s | 89% | **3.0x** |
-| Logs gRPC 10k | 4,667/s | 4,071/s | 97/s | **115%** | **48x** |
-| Logs gRPC 50k | 5,503/s | 4,976/s | 192/s | **111%** | **29x** |
-| Metrics gRPC 10k | 4,636/s | 4,046/s | 96/s | **115%** | **48x** |
-| Metrics gRPC 50k | 5,578/s | 5,013/s | 187/s | **111%** | **30x** |
+| Traces gRPC 10k | 10,089/s | 10,088/s | 10,015/s | 100% | 101% |
+| Traces gRPC 50k | 81,766/s | 89,865/s | 27,025/s | 91% | **3.0x** |
+| Logs gRPC 10k | 4,382/s | 4,077/s | 99/s | **107%** | **44x** |
+| Logs gRPC 50k | 5,054/s | 4,875/s | 192/s | **104%** | **26x** |
+| Metrics gRPC 10k | 4,404/s | 4,064/s | 97/s | **108%** | **45x** |
+| Metrics gRPC 50k | 5,215/s | 4,997/s | 192/s | **104%** | **27x** |
 
 ### Tail sampling
 
 | Scenario | Sol | otelcol | Sol / otelcol |
 |---|---|---|---|
-| Tail sampling 10k | 11,226/s | 11,089/s | **101%** |
-| Tail sampling 50k | 91,161/s | 69,906/s | **130%** |
-| LB + tail sampling 10k | 10,811/s | 10,976/s | 98% |
-| LB + tail sampling 50k | 51,661/s | 46,012/s | **112%** |
+| Tail sampling 10k | 11,416/s | 11,513/s | 99% |
+| Tail sampling 50k | 90,662/s | 67,465/s | **134%** |
+| LB + tail sampling 10k | 10,978/s | 11,057/s | 99% |
+| LB + tail sampling 50k | 51,818/s | 49,783/s | **104%** |
 
 ### CPU and memory
 
 | Scenario | Sol CPU | otelcol CPU | Sol Mem | otelcol Mem |
 |---|---|---|---|---|
-| Traces gRPC 50k | 50% | 75% | 12 MiB | 56 MiB |
-| Logs gRPC 10k | 193% | 217% | 11 MiB | 48 MiB |
-| Tail sampling 10k | 7% | 42% | **161 MiB** | 201 MiB |
-| Tail sampling 50k | 86% | 137% | 233 MiB | 215 MiB |
-| LB + tail sampling 10k | 16% | 58% | **159 MiB** | 166 MiB |
-| LB + tail sampling 50k | 139% | 264% | **227 MiB** | 299 MiB |
+| Traces gRPC 50k | 47% | 67% | 12 MiB | 57 MiB |
+| Logs gRPC 10k | 181% | 218% | 11 MiB | 48 MiB |
+| Tail sampling 10k | 8% | 38% | **162 MiB** | 198 MiB |
+| Tail sampling 50k | 84% | 111% | 234 MiB | 213 MiB |
+| LB + tail sampling 10k | 16% | 65% | **143 MiB** | 170 MiB |
+| LB + tail sampling 50k | 130% | 238% | **233 MiB** | 297 MiB |
 
 ### Sustained memory (5-minute runs)
 
 | Scenario | Sol (start → end) | otelcol (start → end) |
 |---|---|---|
-| Noop logs 10k | 10 → 10 MiB | 46 → 0 MiB |
-| Tail sampling 10k | 27 → 158 MiB | 54 → 198 MiB |
+| Noop logs 10k | 11 → 10 MiB | 47 → 48 MiB |
+| Tail sampling 10k | 26 → 159 MiB | 50 → 203 MiB |
 
 **Key takeaways:**
-- Sol uses **less memory than otelcol** for tail sampling at 10k spans/s (161 vs 201 MiB — **0.80x**)
+- Sol uses **less memory than otelcol** for tail sampling at 10k spans/s (162 vs 198 MiB — **0.82x**)
 - Sol uses **2--5x less CPU** than otelcol on tail sampling workloads
 - Sol uses **3--5x less memory** than otelcol in noop pipelines
-- Sol is **29--48x faster** than Vector on gRPC logs and metrics (Vector lacks native OTLP gRPC for these signals)
-- At 50k spans/s, Sol trails otelcol slightly on tail-sampling memory (233 vs 215 MiB) but leads on throughput (130%) and CPU (63% less)
-- The noop traces gRPC 50k gap (89%) is a [tonic/h2 HTTP/2 throughput ceiling](docs/designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis), not application overhead
+- Sol is **26--45x faster** than Vector on gRPC logs and metrics (Vector lacks native OTLP gRPC for these signals)
+- At 50k spans/s, Sol trails otelcol slightly on tail-sampling memory (234 vs 213 MiB) but leads on throughput (134%) and CPU (24% less)
+- The noop traces gRPC 50k gap (91%) is a [tonic/h2 HTTP/2 throughput ceiling](docs/designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis), not application overhead
 
 <details>
 <summary>Reproduce</summary>

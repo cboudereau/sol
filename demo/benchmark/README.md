@@ -110,8 +110,8 @@ By default, `run.sh` pulls `superbeeeeeee/sol:latest` from Docker Hub. Override 
 SOL_IMAGE=superbeeeeeee/sol:pr-42 bash demo/benchmark/run.sh
 
 # Use a locally built image
-docker build -f demo/benchmark/Dockerfile.sol -t sol:local .
-SOL_IMAGE=sol:local bash demo/benchmark/run.sh
+docker build -f demo/benchmark/Dockerfile.sol -t sol:516bce4fb .
+SOL_IMAGE=sol:516bce4fb bash demo/benchmark/run.sh
 ```
 
 ## Scenarios
