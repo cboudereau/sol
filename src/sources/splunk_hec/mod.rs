@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    convert::Infallible,
     io::Read,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -12,7 +11,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use flate2::read::MultiGzDecoder;
 use futures::FutureExt;
 use http::StatusCode;
-use hyper::{Server, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{
     Deserializer, Value as JsonValue,
@@ -29,9 +28,7 @@ use sol_lib::{
     schema::meaning,
     sensitive_string::SensitiveString,
     source_sender::SendError,
-    tls::MaybeTlsIncomingStream,
 };
-use tokio::net::TcpStream;
 use tower::ServiceBuilder;
 use tracing::Span;
 use vrl::value::{Kind, kind::Collection};
@@ -171,32 +168,45 @@ impl SourceConfig for SplunkConfig {
             )
             .or_else(finish_err);
 
-        let listener = tls.bind(&self.address).await?;
+        let mut listener = tls.bind(&self.address).await?;
 
         let keepalive_settings = self.keepalive.clone();
         Ok(Box::pin(async move {
             let span = Span::current();
-            let make_svc = make_service_fn(move |conn: &MaybeTlsIncomingStream<TcpStream>| {
-                let svc = ServiceBuilder::new()
-                    .layer(build_http_trace_layer(span.clone()))
-                    .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
-                        MaxConnectionAgeLayer::new(
-                            Duration::from_secs(secs),
-                            keepalive_settings.max_connection_age_jitter_factor,
-                            conn.peer_addr(),
-                        )
-                    }))
-                    .service(warp::service(services.clone()));
-                futures_util::future::ok::<_, Infallible>(svc)
-            });
-
-            Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-                .serve(make_svc)
-                .with_graceful_shutdown(shutdown.map(|_| ()))
-                .await
-                .map_err(|err| {
-                    error!("An error occurred: {:?}.", err);
-                })?;
+            let shutdown = shutdown.map(|_| ());
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let conn = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting connection: {:?}.", err);
+                                continue;
+                            }
+                        };
+                        let svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
+                                MaxConnectionAgeLayer::new(
+                                    Duration::from_secs(secs),
+                                    keepalive_settings.max_connection_age_jitter_factor,
+                                    conn.peer_addr(),
+                                )
+                            }))
+                            .service(warp::service(services.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(conn);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
 
             Ok(())
         }))
@@ -499,11 +509,12 @@ impl SplunkSource {
         // https://docs.splunk.com/Documentation/Splunk/8.2.5/RESTREF/RESTinput#services.2Fcollector.2Fhealth
         warp::get()
             .and(path!("health" / "1.0").or(path!("health")))
-            .map(move |_| {
-                http::Response::builder()
-                    .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(hyper::Body::from(r#"{"text":"HEC is healthy","code":17}"#))
-                    .expect("static response")
+            .map(move |_| -> Response {
+                Reply::into_response(warp::reply::with_header(
+                    r#"{"text":"HEC is healthy","code":17}"#,
+                    http::header::CONTENT_TYPE.as_str(),
+                    "application/json",
+                ))
             })
             .boxed()
     }

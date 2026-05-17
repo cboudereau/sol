@@ -6,7 +6,7 @@ use http::{
     Request, Uri,
     header::{HeaderName, HeaderValue},
 };
-use hyper::Body;
+use http_body_util::Full;
 use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
@@ -75,7 +75,7 @@ pub struct GcsRequestSettings {
 
 #[derive(Debug)]
 pub struct GcsResponse {
-    pub inner: http::Response<Body>,
+    pub inner: http::Response<hyper::body::Incoming>,
     pub metadata: RequestMetadata,
 }
 
@@ -134,7 +134,7 @@ impl Service<GcsRequest> for GcsService {
             headers.insert(p, v);
         }
 
-        let mut http_request = builder.body(Body::from(request.body)).unwrap();
+        let mut http_request = builder.body(Full::new(request.body)).unwrap();
         self.auth.apply(&mut http_request);
 
         let mut client = self.client.clone();

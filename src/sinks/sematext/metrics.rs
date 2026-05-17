@@ -3,7 +3,8 @@ use std::{collections::HashMap, future::ready, task::Poll};
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, SinkExt, future::BoxFuture, stream};
 use http::{StatusCode, Uri};
-use hyper::{Body, Request};
+use http_body_util::Full;
+use hyper::Request;
 use indoc::indoc;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf, configurable::configurable_component,
@@ -103,7 +104,7 @@ async fn healthcheck(endpoint: String, client: HttpClient) -> Result<()> {
     let uri = format!("{endpoint}/health");
 
     let request = Request::get(uri)
-        .body(Body::empty())
+        .body(Full::new(Bytes::new()))
         .map_err(|e| e.to_string())?;
 
     let response = client.send(request).await?;

@@ -8,8 +8,8 @@ use http::{
     Method, Response, StatusCode, Uri,
     header::{CONTENT_LENGTH, CONTENT_TYPE, EXPECT},
 };
-use http_body::{Body as _, Collected};
-use hyper::{Body, Request};
+use http_body_util::{BodyExt as _, Collected, Full};
+use hyper::Request;
 use serde_json::Value;
 use snafu::Snafu;
 use std::{
@@ -118,7 +118,7 @@ impl DorisSinkClient {
         table: &str,
         payload: &Bytes,
         redirect_url: Option<&str>,
-    ) -> Result<Request<Body>, crate::Error> {
+    ) -> Result<Request<Full<Bytes>>, crate::Error> {
         let uri = if let Some(redirect_url) = redirect_url {
             debug!(%redirect_url, "Using redirect URL.");
             redirect_url.parse::<Uri>().map_err(|source| {
@@ -180,7 +180,7 @@ impl DorisSinkClient {
             builder = builder.header(&header[..], &value[..]);
         }
 
-        let body = Body::from(payload.clone());
+        let body = Full::new(payload.clone());
         let mut request = builder.body(body).map_err(|source| {
             debug!(
                 message = "Failed to build HTTP request.",
@@ -350,7 +350,7 @@ impl DorisSinkClient {
         let mut request = Request::builder()
             .method(Method::GET)
             .uri(uri)
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .map_err(|source| HealthCheckError::HealthCheckBuildRequest { source })?;
 
         if let Some(auth) = &self.auth {

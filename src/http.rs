@@ -7,29 +7,28 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use futures::future::BoxFuture;
 use headers::{Authorization, HeaderMapExt};
 use http::{
     HeaderMap, Request, Response, Uri, Version, header::HeaderValue, request::Builder,
     uri::InvalidUri,
 };
-use hyper::{
-    body::{Body, HttpBody},
-    client,
-    client::{Client, HttpConnector},
+use http_body::Body as HttpBody;
+use http_body_util::Full;
+use hyper_openssl::client::legacy::HttpsConnector;
+use hyper_proxy2::ProxyConnector;
+use hyper_util::{
+    client::legacy::{self, Client, connect::HttpConnector},
+    rt::TokioExecutor,
 };
-use hyper_openssl::HttpsConnector;
-use hyper_proxy::ProxyConnector;
 use rand::Rng;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
 use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
 use tokio::time::Instant;
+use pin_project::pin_project;
 use tower::{Layer, Service};
-use tower_http::{
-    classify::{ServerErrorsAsFailures, SharedClassifier},
-    trace::TraceLayer,
-};
 use tracing::{Instrument, Span};
 
 #[cfg(feature = "aws-core")]
@@ -56,7 +55,7 @@ pub enum HttpError {
     #[snafu(display("Failed to build Proxy connector: {}", source))]
     MakeProxyConnector { source: InvalidUri },
     #[snafu(display("Failed to make HTTP(S) request: {}", source))]
-    CallRequest { source: hyper::Error },
+    CallRequest { source: hyper_util::client::legacy::Error },
     #[snafu(display("Failed to build HTTP request: {}", source))]
     BuildRequest { source: http::Error },
 }
@@ -72,10 +71,10 @@ impl HttpError {
     }
 }
 
-pub type HttpClientFuture = <HttpClient as Service<http::Request<Body>>>::Future;
+pub type HttpClientFuture = <HttpClient as Service<http::Request<Full<Bytes>>>>::Future;
 type HttpProxyConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
-pub struct HttpClient<B = Body> {
+pub struct HttpClient<B = Full<Bytes>> {
     client: Client<HttpProxyConnector, B>,
     user_agent: HeaderValue,
     proxy_connector: HttpProxyConnector,
@@ -83,7 +82,7 @@ pub struct HttpClient<B = Body> {
 
 impl<B> HttpClient<B>
 where
-    B: fmt::Debug + HttpBody + Send + 'static,
+    B: fmt::Debug + HttpBody + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<crate::Error>,
 {
@@ -91,13 +90,17 @@ where
         tls_settings: impl Into<MaybeTlsSettings>,
         proxy_config: &ProxyConfig,
     ) -> Result<HttpClient<B>, HttpError> {
-        HttpClient::new_with_custom_client(tls_settings, proxy_config, &mut Client::builder())
+        HttpClient::new_with_custom_client(
+            tls_settings,
+            proxy_config,
+            &mut Client::builder(TokioExecutor::new()),
+        )
     }
 
     pub fn new_with_custom_client(
         tls_settings: impl Into<MaybeTlsSettings>,
         proxy_config: &ProxyConfig,
-        client_builder: &mut client::Builder,
+        client_builder: &mut legacy::Builder,
     ) -> Result<HttpClient<B>, HttpError> {
         let proxy_connector = build_proxy_connector(tls_settings.into(), proxy_config)?;
         let client = client_builder.build(proxy_connector.clone());
@@ -117,7 +120,7 @@ where
     pub fn send(
         &self,
         mut request: Request<B>,
-    ) -> BoxFuture<'static, Result<http::Response<Body>, HttpError>> {
+    ) -> BoxFuture<'static, Result<http::Response<hyper::body::Incoming>, HttpError>> {
         let span = tracing::info_span!("http");
         let _enter = span.enter();
 
@@ -229,11 +232,11 @@ fn default_request_headers<B>(request: &mut Request<B>, user_agent: &HeaderValue
 
 impl<B> Service<Request<B>> for HttpClient<B>
 where
-    B: fmt::Debug + HttpBody + Send + 'static,
+    B: fmt::Debug + HttpBody + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<crate::Error> + Send,
 {
-    type Response = http::Response<Body>;
+    type Response = http::Response<hyper::body::Incoming>;
     type Error = HttpError;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -386,39 +389,102 @@ pub fn get_http_scheme_from_uri(uri: &Uri) -> &'static str {
     })
 }
 
-/// Builds a [TraceLayer] configured for a HTTP server.
-///
-/// This layer emits HTTP specific telemetry for requests received, responses sent, and handler duration.
-pub fn build_http_trace_layer<T, U>(
-    span: Span,
-) -> TraceLayer<
-    SharedClassifier<ServerErrorsAsFailures>,
-    impl Fn(&Request<T>) -> Span + Clone,
-    impl Fn(&Request<T>, &Span) + Clone,
-    impl Fn(&Response<U>, Duration, &Span) + Clone,
-    (),
-    (),
-    (),
-> {
-    TraceLayer::new_for_http()
-        .make_span_with(move |request: &Request<T>| {
-            // This is an error span so that the labels are always present for metrics.
-            error_span!(
-               parent: &span,
-               "http-request",
-               method = %request.method(),
-               path = %request.uri().path(),
-            )
-        })
-        .on_request(Box::new(|_request: &Request<T>, _span: &Span| {
+#[derive(Clone)]
+pub struct HttpTraceLayer(Span);
+
+impl<S> Layer<S> for HttpTraceLayer {
+    type Service = HttpTraceService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        HttpTraceService {
+            inner,
+            parent_span: self.0.clone(),
+        }
+    }
+}
+
+pub struct HttpTraceService<S> {
+    inner: S,
+    parent_span: Span,
+}
+
+impl<S: Clone> Clone for HttpTraceService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            parent_span: self.parent_span.clone(),
+        }
+    }
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HttpTraceService<S>
+where
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+{
+    type Response = Response<ResBody>;
+    type Error = S::Error;
+    type Future = HttpTraceFuture<S::Future>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
+        let method = request.method().as_str().to_owned();
+        let path = request.uri().path().to_owned();
+        let span = error_span!(
+            parent: &self.parent_span,
+            "http-request",
+            method = method,
+            path = path,
+        );
+        {
+            let _guard = span.enter();
             emit!(HttpServerRequestReceived);
-        }))
-        .on_response(|response: &Response<U>, latency: Duration, _span: &Span| {
-            emit!(HttpServerResponseSent { response, latency });
-        })
-        .on_failure(())
-        .on_body_chunk(())
-        .on_eos(())
+        }
+        let future = self.inner.call(request);
+        HttpTraceFuture {
+            inner: future,
+            span,
+            start: std::time::Instant::now(),
+        }
+    }
+}
+
+#[pin_project]
+pub struct HttpTraceFuture<F> {
+    #[pin]
+    inner: F,
+    span: Span,
+    start: std::time::Instant,
+}
+
+impl<F, ResBody, E> std::future::Future for HttpTraceFuture<F>
+where
+    F: std::future::Future<Output = Result<Response<ResBody>, E>>,
+{
+    type Output = Result<Response<ResBody>, E>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let _guard = this.span.enter();
+        match this.inner.poll(cx) {
+            Poll::Ready(Ok(response)) => {
+                let latency = this.start.elapsed();
+                emit!(HttpServerResponseSent {
+                    response: &response,
+                    latency
+                });
+                Poll::Ready(Ok(response))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pub fn build_http_trace_layer(span: Span) -> HttpTraceLayer {
+    HttpTraceLayer(span)
 }
 
 /// Configuration of HTTP server keepalive parameters.
@@ -502,11 +568,7 @@ impl MaxConnectionAgeLayer {
     }
 }
 
-impl<S> Layer<S> for MaxConnectionAgeLayer
-where
-    S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-{
+impl<S> Layer<S> for MaxConnectionAgeLayer {
     type Service = MaxConnectionAgeService<S>;
 
     fn layer(&self, service: S) -> Self::Service {
@@ -536,14 +598,13 @@ pub struct MaxConnectionAgeService<S> {
     peer_addr: SocketAddr,
 }
 
-impl<S, E> Service<Request<Body>> for MaxConnectionAgeService<S>
+impl<S, ReqBody, ResBody, E> Service<Request<ReqBody>> for MaxConnectionAgeService<S>
 where
-    S: Service<Request<Body>, Response = Response<Body>, Error = E> + Clone + Send + 'static,
-    S::Future: Send + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error = E>,
 {
     type Response = S::Response;
     type Error = E;
-    type Future = BoxFuture<'static, Result<Self::Response, E>>;
+    type Future = MaxConnectionAgeFuture<S::Future, ResBody>;
 
     fn poll_ready(
         &mut self,
@@ -552,39 +613,64 @@ where
         self.service.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let start_reference = self.start_reference;
-        let max_connection_age = self.max_connection_age;
-        let peer_addr = self.peer_addr;
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let version = req.version();
         let future = self.service.call(req);
-        Box::pin(async move {
-            let mut response = future.await?;
-            match version {
-                Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-                    if start_reference.elapsed() >= max_connection_age {
-                        debug!(
-                            message = "Closing connection due to max connection age.",
-                            ?max_connection_age,
-                            connection_age = ?start_reference.elapsed(),
-                            ?peer_addr,
-                        );
-                        // Tell the client to close this connection.
-                        // Hyper will automatically close the connection after the response is sent.
-                        response.headers_mut().insert(
-                            hyper::header::CONNECTION,
-                            hyper::header::HeaderValue::from_static("close"),
-                        );
+        MaxConnectionAgeFuture {
+            inner: future,
+            start_reference: self.start_reference,
+            max_connection_age: self.max_connection_age,
+            peer_addr: self.peer_addr,
+            version,
+            _body: std::marker::PhantomData,
+        }
+    }
+}
+
+#[pin_project]
+pub struct MaxConnectionAgeFuture<F, B> {
+    #[pin]
+    inner: F,
+    start_reference: Instant,
+    max_connection_age: Duration,
+    peer_addr: SocketAddr,
+    version: Version,
+    _body: std::marker::PhantomData<fn() -> B>,
+}
+
+impl<F, B, E> std::future::Future for MaxConnectionAgeFuture<F, B>
+where
+    F: std::future::Future<Output = Result<Response<B>, E>>,
+{
+    type Output = Result<Response<B>, E>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        match this.inner.poll(cx) {
+            Poll::Ready(Ok(mut response)) => {
+                match *this.version {
+                    Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
+                        if this.start_reference.elapsed() >= *this.max_connection_age {
+                            debug!(
+                                message = "Closing connection due to max connection age.",
+                                max_connection_age = ?this.max_connection_age,
+                                connection_age = ?this.start_reference.elapsed(),
+                                peer_addr = ?this.peer_addr,
+                            );
+                            response.headers_mut().insert(
+                                http::header::CONNECTION,
+                                HeaderValue::from_static("close"),
+                            );
+                        }
                     }
+                    Version::HTTP_2 | Version::HTTP_3 => (),
+                    _ => (),
                 }
-                // TODO need to send GOAWAY frame
-                Version::HTTP_2 => (),
-                // TODO need to send GOAWAY frame
-                Version::HTTP_3 => (),
-                _ => (),
+                Poll::Ready(Ok(response))
             }
-            Ok(response)
-        })
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -701,8 +787,9 @@ pub type QueryParameters = HashMap<String, QueryParameterValue>;
 mod tests {
     use std::convert::Infallible;
 
-    use hyper::{Server, server::conn::AddrStream, service::make_service_fn};
+    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
     use proptest::prelude::*;
+    use tokio::net::TcpListener;
     use tower::ServiceBuilder;
 
     use super::*;
@@ -784,8 +871,8 @@ mod tests {
         let start_reference = Instant::now();
         let max_connection_age = Duration::from_secs(1);
         let mut service = MaxConnectionAgeService {
-            service: tower::service_fn(|_req: Request<Body>| async {
-                Ok::<Response<Body>, hyper::Error>(Response::new(Body::empty()))
+            service: tower::service_fn(|_req: Request<Full<Bytes>>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
             }),
             start_reference,
             max_connection_age,
@@ -793,21 +880,21 @@ mod tests {
         };
 
         let req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = service.call(req).await.unwrap();
         assert_eq!(response.headers().get("Connection"), None);
 
         tokio::time::advance(Duration::from_millis(500)).await;
         let req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = service.call(req).await.unwrap();
         assert_eq!(response.headers().get("Connection"), None);
 
         tokio::time::advance(Duration::from_millis(500)).await;
         let req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = service.call(req).await.unwrap();
         assert_eq!(
@@ -823,8 +910,8 @@ mod tests {
         let start_reference = Instant::now();
         let max_connection_age = Duration::from_secs(0);
         let mut service = MaxConnectionAgeService {
-            service: tower::service_fn(|_req: Request<Body>| async {
-                Ok::<Response<Body>, hyper::Error>(Response::new(Body::empty()))
+            service: tower::service_fn(|_req: Request<Full<Bytes>>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
             }),
             start_reference,
             max_connection_age,
@@ -832,7 +919,7 @@ mod tests {
         };
 
         let mut req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         *req.version_mut() = Version::HTTP_2;
         let response = service.call(req).await.unwrap();
@@ -846,8 +933,8 @@ mod tests {
         let start_reference = Instant::now();
         let max_connection_age = Duration::from_secs(0);
         let mut service = MaxConnectionAgeService {
-            service: tower::service_fn(|_req: Request<Body>| async {
-                Ok::<Response<Body>, hyper::Error>(Response::new(Body::empty()))
+            service: tower::service_fn(|_req: Request<Full<Bytes>>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
             }),
             start_reference,
             max_connection_age,
@@ -855,7 +942,7 @@ mod tests {
         };
 
         let mut req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         *req.version_mut() = Version::HTTP_3;
         let response = service.call(req).await.unwrap();
@@ -869,8 +956,8 @@ mod tests {
         let start_reference = Instant::now();
         let max_connection_age = Duration::from_millis(0);
         let mut service = MaxConnectionAgeService {
-            service: tower::service_fn(|_req: Request<Body>| async {
-                Ok::<Response<Body>, hyper::Error>(Response::new(Body::empty()))
+            service: tower::service_fn(|_req: Request<Full<Bytes>>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
             }),
             start_reference,
             max_connection_age,
@@ -878,7 +965,7 @@ mod tests {
         };
 
         let req = Request::get("http://example.com")
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = service.call(req).await.unwrap();
         assert_eq!(
@@ -892,24 +979,32 @@ mod tests {
     // the time bounds provided.
     #[tokio::test]
     async fn test_max_connection_age_service_with_hyper_server() {
-        // Create a hyper server with the max connection age layer.
         let max_connection_age = Duration::from_secs(1);
         let (_guard, addr) = next_addr();
-        let make_svc = make_service_fn(move |conn: &AddrStream| {
-            let svc = ServiceBuilder::new()
-                .layer(MaxConnectionAgeLayer::new(
-                    max_connection_age,
-                    0.,
-                    conn.remote_addr(),
-                ))
-                .service(tower::service_fn(|_req: Request<Body>| async {
-                    Ok::<Response<Body>, hyper::Error>(Response::new(Body::empty()))
-                }));
-            futures_util::future::ok::<_, Infallible>(svc)
-        });
+        let listener = TcpListener::bind(addr).await.unwrap();
 
         tokio::spawn(async move {
-            Server::bind(&addr).serve(make_svc).await.unwrap();
+            loop {
+                let (stream, peer_addr) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let svc = ServiceBuilder::new()
+                        .layer(MaxConnectionAgeLayer::new(
+                            max_connection_age,
+                            0.,
+                            peer_addr,
+                        ))
+                        .service(tower::service_fn(
+                            |_req: Request<hyper::body::Incoming>| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+                            },
+                        ));
+                    let io = TokioIo::new(stream);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .await
+                        .ok();
+                });
+            }
         });
 
         // Wait for the server to start.
@@ -921,13 +1016,13 @@ mod tests {
         // Responses generated before the client's max connection age has elapsed do not
         // include a `Connection: close` header in the response.
         let req = Request::get(format!("http://{addr}/"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = client.send(req).await.unwrap();
         assert_eq!(response.headers().get("Connection"), None);
 
         let req = Request::get(format!("http://{addr}/"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = client.send(req).await.unwrap();
         assert_eq!(response.headers().get("Connection"), None);
@@ -936,7 +1031,7 @@ mod tests {
         // include the `Connection: close` header.
         tokio::time::sleep(Duration::from_secs(1)).await;
         let req = Request::get(format!("http://{addr}/"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = client.send(req).await.unwrap();
         assert_eq!(
@@ -948,7 +1043,7 @@ mod tests {
         // Importantly, this also confirms that each connection has its own independent
         // connection age timer.
         let req = Request::get(format!("http://{addr}/"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap();
         let response = client.send(req).await.unwrap();
         assert_eq!(response.headers().get("Connection"), None);

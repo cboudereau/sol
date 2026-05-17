@@ -10,7 +10,7 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http::{Request, StatusCode, Uri, uri::PathAndQuery};
-use hyper::Body;
+use http_body_util::{BodyExt as _, Full};
 use serde::Deserialize;
 use serde_with::serde_as;
 use snafu::ResultExt as _;
@@ -351,7 +351,7 @@ impl Ec2MetadataTransform {
 }
 
 struct MetadataClient {
-    client: HttpClient<Body>,
+    client: HttpClient,
     host: Uri,
     token: Option<(Bytes, Instant)>,
     keys: Keys,
@@ -379,7 +379,7 @@ struct IdentityDocument {
 impl MetadataClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: HttpClient<Body>,
+        client: HttpClient,
         host: Uri,
         keys: Keys,
         state: Arc<ArcSwap<Vec<(MetadataKey, Bytes)>>>,
@@ -432,7 +432,7 @@ impl MetadataClient {
 
         let req = Request::put(uri)
             .header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
-            .body(Body::empty())?;
+            .body(Full::new(Bytes::new()))?;
 
         let res = tokio::time::timeout(self.refresh_timeout, self.client.send(req))
             .await?
@@ -445,7 +445,7 @@ impl MetadataClient {
                 .into()),
             })?;
 
-        let token = http_body::Body::collect(res.into_body()).await?.to_bytes();
+        let token = res.into_body().collect().await?.to_bytes();
 
         let next_refresh = Instant::now() + Duration::from_secs(21600);
         self.token = Some((token.clone(), next_refresh));
@@ -620,7 +620,7 @@ impl MetadataClient {
 
         let req = Request::get(uri)
             .header(TOKEN_HEADER.as_ref(), token.as_ref())
-            .body(Body::empty())?;
+            .body(Full::new(Bytes::new()))?;
 
         match tokio::time::timeout(self.refresh_timeout, self.client.send(req))
             .await?
@@ -634,7 +634,7 @@ impl MetadataClient {
                 .into()),
             })? {
             Some(res) => {
-                let body = http_body::Body::collect(res.into_body()).await?.to_bytes();
+                let body = res.into_body().collect().await?.to_bytes();
                 Ok(Some(body))
             }
             None => Ok(None),

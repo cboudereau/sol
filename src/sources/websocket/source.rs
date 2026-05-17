@@ -64,7 +64,7 @@ pub enum WebSocketSourceError {
     ConnectionClosedPrematurely,
 
     #[snafu(display("Connection closed by server with code '{}' and reason: '{}'", frame.code, frame.reason))]
-    RemoteClosed { frame: CloseFrame<'static> },
+    RemoteClosed { frame: CloseFrame },
 
     #[snafu(display("Connection closed by server without a close frame"))]
     RemoteClosedEmpty,
@@ -308,7 +308,7 @@ impl WebSocketSource {
     ) -> Result<(), WebSocketSourceError> {
         let initial_message = self.config.initial_message.as_ref().unwrap();
         ws_sink
-            .send(Message::Text(initial_message.clone()))
+            .send(Message::Text(initial_message.clone().into()))
             .await
             .map_err(|error| {
                 emit!(WebSocketSendError { error: &error });
@@ -345,7 +345,7 @@ impl WebSocketSource {
 
     fn handle_close_frame(
         &self,
-        frame: Option<CloseFrame<'_>>,
+        frame: Option<CloseFrame>,
     ) -> Result<(), WebSocketSourceError> {
         let (error_message, specific_error) = match frame {
             Some(frame) => {
@@ -353,9 +353,7 @@ impl WebSocketSource {
                     "Connection closed by server with code '{}' and reason: '{}'",
                     frame.code, frame.reason
                 );
-                let err = WebSocketSourceError::RemoteClosed {
-                    frame: frame.into_owned(),
-                };
+                let err = WebSocketSourceError::RemoteClosed { frame };
                 (msg, err)
             }
             None => (
@@ -390,9 +388,9 @@ struct PingManager {
 impl PingManager {
     fn new(config: &WebSocketConfig) -> Self {
         let ping_message = if let Some(ping_msg) = &config.ping_message {
-            Message::Text(ping_msg.clone())
+            Message::Text(ping_msg.clone().into())
         } else {
-            Message::Ping(vec![])
+            Message::Ping(bytes::Bytes::new())
         };
 
         Self {

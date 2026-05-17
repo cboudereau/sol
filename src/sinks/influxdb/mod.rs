@@ -213,7 +213,7 @@ fn healthcheck(
 
     let uri = settings.healthcheck_uri(endpoint)?;
 
-    let request = hyper::Request::get(uri).body(hyper::Body::empty()).unwrap();
+    let request = hyper::Request::get(uri).body(http_body_util::Full::new(bytes::Bytes::new())).unwrap();
 
     Ok(async move {
         client

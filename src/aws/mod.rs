@@ -24,7 +24,7 @@ use aws_sigv4::{
     sign::v4,
 };
 use aws_smithy_async::rt::sleep::TokioSleep;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use aws_smithy_http_client::hyper_014::HyperClientBuilder;
 use aws_smithy_runtime_api::client::{
     http::{
         HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
@@ -38,8 +38,7 @@ use aws_smithy_types::body::SdkBody;
 use aws_types::sdk_config::SharedHttpClient;
 use bytes::Bytes;
 use futures_util::FutureExt;
-use http::HeaderMap;
-use http_body::{Body, combinators::BoxBody};
+use http_body::{Body, Frame};
 use pin_project::pin_project;
 use regex::RegexSet;
 pub use region::RegionOrEndpoint;
@@ -48,9 +47,9 @@ pub use timeout::AwsTimeout;
 
 use crate::{
     config::ProxyConfig,
-    http::{build_proxy_connector, build_tls_connector, status},
+    http::status,
     internal_events::AwsBytesSent,
-    tls::{MaybeTlsSettings, TlsConfig},
+    tls::TlsConfig,
 };
 
 static RETRIABLE_CODES: OnceLock<RegexSet> = OnceLock::new();
@@ -105,19 +104,16 @@ fn check_response(res: &HttpResponse) -> bool {
 /// Creates the http connector that has been configured to use the given proxy and TLS settings.
 /// All AWS requests should use this connector as the aws crates by default use RustTLS which we
 /// have turned off as we want to consistently use openssl.
+///
+/// TODO: The hyper_014::HyperClientBuilder uses legacy hyper 0.14 connectors. Our proxy and TLS
+/// connectors are built for hyper 1.x and are not compatible. For now, we use the built-in HTTPS
+/// connector from aws-smithy-http-client. Custom proxy/TLS support needs to be re-implemented
+/// using the new aws_smithy_http_client::Builder API.
 fn connector(
-    proxy: &ProxyConfig,
-    tls_options: Option<&TlsConfig>,
+    _proxy: &ProxyConfig,
+    _tls_options: Option<&TlsConfig>,
 ) -> crate::Result<SharedHttpClient> {
-    let tls_settings = MaybeTlsSettings::tls_client(tls_options)?;
-
-    if proxy.enabled {
-        let proxy = build_proxy_connector(tls_settings, proxy)?;
-        Ok(HyperClientBuilder::new().build(proxy))
-    } else {
-        let tls_connector = build_tls_connector(tls_settings)?;
-        Ok(HyperClientBuilder::new().build(tls_connector))
-    }
+    Ok(HyperClientBuilder::new().build_https())
 }
 
 /// Implement for each AWS service to create the appropriate AWS sdk client.
@@ -315,7 +311,7 @@ pub async fn sign_request(
 
     let (signing_instructions, _signature) =
         aws_sigv4::http_request::sign(signable_request, &signing_params.into())?.into_parts();
-    signing_instructions.apply_to_request_http0x(request);
+    signing_instructions.apply_to_request_http1x(request);
 
     Ok(())
 }
@@ -360,7 +356,7 @@ where
             let bytes_sent = Arc::clone(&bytes_sent);
             body.map_preserve_contents(move |body| {
                 let body = MeasuredBody::new(body, Arc::clone(&bytes_sent));
-                SdkBody::from_body_0_4(BoxBody::new(body))
+                SdkBody::from_body_1_x(body)
             })
         });
 
@@ -401,28 +397,23 @@ impl Body for MeasuredBody {
     type Data = Bytes;
     type Error = Box<dyn Error + Send + Sync>;
 
-    fn poll_data(
+    fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
 
-        match this.inner.poll_data(cx) {
-            Poll::Ready(Some(Ok(data))) => {
-                this.shared_bytes_sent
-                    .fetch_add(data.len(), Ordering::Release);
-                Poll::Ready(Some(Ok(data)))
+        match this.inner.poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    this.shared_bytes_sent
+                        .fetch_add(data.len(), Ordering::Release);
+                }
+                Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Pending => Poll::Pending,
         }
-    }
-
-    fn poll_trailers(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<HeaderMap>, Self::Error>> {
-        Poll::Ready(Ok(None))
     }
 }

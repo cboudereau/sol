@@ -394,7 +394,7 @@ impl StreamSink<Event> for WebSocketListenerSink {
                     let message = if encode_as_binary {
                         Message::binary(bytes)
                     } else {
-                        Message::text(String::from_utf8_lossy(&bytes))
+                        Message::Text(String::from_utf8_lossy(&bytes).into_owned().into())
                     };
                     let message_len = message.len();
 

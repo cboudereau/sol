@@ -11,7 +11,7 @@ pub(crate) async fn healthcheck(
 ) -> crate::Result<()> {
     let request = Request::post(credentials.get_uri())
         .header("Api-Key", credentials.license_key.clone())
-        .body(hyper::Body::empty())
+        .body(http_body_util::Full::new(bytes::Bytes::new()))
         .unwrap();
 
     let response = client.send(request).await?;

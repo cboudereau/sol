@@ -10,7 +10,7 @@ use http::{
     Request, StatusCode, Uri,
     header::{self, HeaderName, HeaderValue},
 };
-use hyper::Body;
+use http_body_util::Full;
 use indoc::indoc;
 use serde::Serialize;
 use serde_json::json;
@@ -281,7 +281,7 @@ pub fn build_healthcheck(
     let uri = base_url.parse::<Uri>()?;
 
     let healthcheck = async move {
-        let mut request = http::Request::get(&uri).body(Body::empty())?;
+        let mut request = http::Request::get(&uri).body(Full::new(bytes::Bytes::new()))?;
         auth.apply(&mut request);
 
         let response = client.send(request).await?;
@@ -646,7 +646,7 @@ impl Service<ChronicleRequest> for ChronicleService {
             headers.insert(name, value);
         }
 
-        let mut http_request = builder.body(Body::from(request.body)).unwrap();
+        let mut http_request = builder.body(Full::new(request.body)).unwrap();
         self.creds.apply(&mut http_request);
 
         let mut client = self.client.clone();

@@ -6,8 +6,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use aws_config::meta::region::ProvideRegion;
 #[cfg(feature = "aws-core")]
 use aws_types::region::Region;
+use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, StatusCode, header::AUTHORIZATION};
-use hyper::Body;
+use http_body_util::Full;
 use sol_lib::codecs::{
     CharacterDelimitedEncoder,
     encoding::{Framer, Serializer},
@@ -185,7 +186,7 @@ impl GenerateConfig for HttpSinkConfig {
 async fn healthcheck(uri: UriSerde, auth: Option<Auth>, client: HttpClient) -> crate::Result<()> {
     let auth = auth.choose_one(&uri.auth)?;
     let uri = uri.with_default_parts();
-    let mut request = Request::head(&uri.uri).body(Body::empty()).unwrap();
+    let mut request = Request::head(&uri.uri).body(Full::new(Bytes::new())).unwrap();
 
     if let Some(auth) = auth {
         auth.apply(&mut request);

@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use tonic::{body::BoxBody, server::NamedService, service::Routes, transport::server::Server};
+use tonic::{body::Body as TonicBody, server::NamedService, service::Routes, transport::server::Server};
 use tower::{Layer, Service};
 use tracing::Span;
 
@@ -17,6 +17,76 @@ use crate::{
     shutdown::{ShutdownSignal, ShutdownSignalToken},
     tls::MaybeTlsSettings,
 };
+
+/// Macro to create a tonic 0.13-compatible adapter for a tonic 0.12 gRPC service.
+///
+/// This exists because opentelemetry-proto 0.27 depends on tonic 0.12 while
+/// the rest of the crate uses tonic 0.13. The two versions have incompatible
+/// body and trait types, so we bridge them by wrapping each tonic 0.12 service
+/// in a newtype that implements tonic 0.13's `NamedService` and `Service` traits.
+///
+/// Usage:
+/// ```ignore
+/// tonic_0_12_adapter!(LogsAdapter, "opentelemetry.proto.collector.logs.v1.LogsService");
+/// let adapted = LogsAdapter(log_service);
+/// builder.add_service(adapted);
+/// ```
+#[cfg(any(feature = "sources-opentelemetry", feature = "component-validation-runner"))]
+macro_rules! tonic_0_12_adapter {
+    ($name:ident, $service_name:literal) => {
+        #[derive(Clone)]
+        pub(crate) struct $name<S>(pub S);
+
+        impl<S> tonic::server::NamedService for $name<S> {
+            const NAME: &'static str = $service_name;
+        }
+
+        impl<S> tower::Service<http::Request<tonic::body::Body>> for $name<S>
+        where
+            S: tower::Service<
+                    http::Request<tonic_0_12::body::BoxBody>,
+                    Response = http::Response<tonic_0_12::body::BoxBody>,
+                    Error = std::convert::Infallible,
+                > + Clone
+                + Send
+                + 'static,
+            S::Future: Send + 'static,
+        {
+            type Response = http::Response<tonic::body::Body>;
+            type Error = std::convert::Infallible;
+            type Future = std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+            >;
+
+            fn poll_ready(
+                &mut self,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                self.0.poll_ready(cx)
+            }
+
+            fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
+                use http_body_util::BodyExt;
+                // Convert request body: tonic 0.13 Body -> tonic 0.12 BoxBody
+                let req = req.map(|body| {
+                    body.map_err(|e| -> tonic_0_12::Status {
+                        tonic_0_12::Status::internal(e.to_string())
+                    })
+                    .boxed_unsync()
+                });
+                let fut = self.0.call(req);
+                Box::pin(async move {
+                    let resp = fut.await?;
+                    // Convert response body: tonic 0.12 BoxBody -> tonic 0.13 Body
+                    Ok(resp.map(tonic::body::Body::new))
+                })
+            }
+        }
+    };
+}
+
+#[cfg(any(feature = "sources-opentelemetry", feature = "component-validation-runner"))]
+pub(crate) use tonic_0_12_adapter;
 
 fn grpc_server_builder() -> Server {
     Server::builder()
@@ -35,10 +105,11 @@ pub async fn run_grpc_server<S>(
     shutdown: ShutdownSignal,
 ) -> crate::Result<()>
 where
-    S: Service<http_1::Request<BoxBody>, Response = http_1::Response<BoxBody>, Error = Infallible>
+    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>, Error = Infallible>
         + NamedService
         + Clone
         + Send
+        + Sync
         + 'static,
     S::Future: Send + 'static,
 {
@@ -112,9 +183,9 @@ struct GrpcTraceService<S> {
     span: Span,
 }
 
-impl<S> Service<http_1::Request<BoxBody>> for GrpcTraceService<S>
+impl<S> Service<http::Request<TonicBody>> for GrpcTraceService<S>
 where
-    S: Service<http_1::Request<BoxBody>, Response = http_1::Response<BoxBody>>
+    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
         + Clone
         + Send
         + 'static,
@@ -129,7 +200,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: http_1::Request<BoxBody>) -> Self::Future {
+    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
         let path = req.uri().path();
         let mut parts = path.split('/');
         let service = parts.nth(1).unwrap_or("_unknown");

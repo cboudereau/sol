@@ -19,8 +19,7 @@ pub(crate) mod ddtrace_proto {
 }
 
 use std::{
-    collections::BTreeMap, convert::Infallible, fmt::Debug, io::Read, net::SocketAddr, sync::Arc,
-    time::Duration,
+    collections::BTreeMap, fmt::Debug, io::Read, net::SocketAddr, sync::Arc, time::Duration,
 };
 
 use bytes::{Buf, Bytes};
@@ -28,7 +27,7 @@ use chrono::{DateTime, Utc, serde::ts_milliseconds};
 use flate2::read::{MultiGzDecoder, ZlibDecoder};
 use futures::FutureExt;
 use http::StatusCode;
-use hyper::{Server, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -41,9 +40,7 @@ use sol_lib::{
     lookup::owned_value_path,
     schema::meaning,
     source_sender::SendError,
-    tls::MaybeTlsIncomingStream,
 };
-use tokio::net::TcpStream;
 use tower::ServiceBuilder;
 use tracing::Span;
 use vrl::value::{Kind, kind::Collection};
@@ -212,7 +209,7 @@ impl SourceConfig for DatadogAgentConfig {
             self.parse_ddtags,
             self.split_metric_namespace,
         );
-        let listener = tls.bind(&self.address).await?;
+        let mut listener = tls.bind(&self.address).await?;
         let handler = RequestHandler {
             acknowledgements: cx.do_acknowledgements(self.acknowledgements),
             multiple_outputs: self.multiple_outputs,
@@ -236,27 +233,40 @@ impl SourceConfig for DatadogAgentConfig {
             });
 
             let span = Span::current();
-            let make_svc = make_service_fn(move |conn: &MaybeTlsIncomingStream<TcpStream>| {
-                let svc = ServiceBuilder::new()
-                    .layer(build_http_trace_layer(span.clone()))
-                    .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
-                        MaxConnectionAgeLayer::new(
-                            Duration::from_secs(secs),
-                            keepalive_settings.max_connection_age_jitter_factor,
-                            conn.peer_addr(),
-                        )
-                    }))
-                    .service(warp::service(routes.clone()));
-                futures_util::future::ok::<_, Infallible>(svc)
-            });
-
-            Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-                .serve(make_svc)
-                .with_graceful_shutdown(shutdown.map(|_| ()))
-                .await
-                .map_err(|err| {
-                    error!("An error occurred: {:?}.", err);
-                })?;
+            let shutdown = shutdown.map(|_| ());
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let conn = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting connection: {:?}.", err);
+                                continue;
+                            }
+                        };
+                        let svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
+                                MaxConnectionAgeLayer::new(
+                                    Duration::from_secs(secs),
+                                    keepalive_settings.max_connection_age_jitter_factor,
+                                    conn.peer_addr(),
+                                )
+                            }))
+                            .service(warp::service(routes.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(conn);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
 
             Ok(())
         }))

@@ -13,8 +13,8 @@ use axum::{
 };
 use bytes::{BufMut as _, BytesMut};
 use http::{Method, Request, StatusCode, Uri};
-use http_body::{Body as _, Collected};
-use hyper::{Body, Client, Server};
+use http_body_util::{BodyExt as _, Collected, Full};
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     codecs::{
@@ -218,7 +218,7 @@ fn spawn_input_http_client(
         started.mark_as_done();
         info!("HTTP client external input resource started.");
 
-        let client = Client::builder().build_http::<Body>();
+        let client = Client::builder(TokioExecutor::new()).build_http::<Full<bytes::Bytes>>();
         let request_uri = config.uri;
         let request_method = config.method.unwrap_or(Method::POST);
         let headers = config.headers.unwrap_or_default();
@@ -262,7 +262,7 @@ fn spawn_input_http_client(
             }
 
             let request = request_builder
-                .body(buffer.freeze().into())
+                .body(Full::new(buffer.freeze()))
                 .expect("should not fail to build request");
 
             match client.request(request).await {
@@ -434,7 +434,7 @@ fn spawn_http_server<H, F, R>(
     handler: H,
 ) -> (Arc<Notify>, oneshot::Sender<()>)
 where
-    H: Fn(Request<Body>, Arc<Mutex<RunnerMetrics>>) -> F + Clone + Send + 'static,
+    H: Fn(Request<axum::body::Body>, Arc<Mutex<RunnerMetrics>>) -> F + Clone + Send + 'static,
     F: Future<Output = R> + Send,
     R: IntoResponse,
 {
@@ -464,8 +464,9 @@ where
     tokio::spawn(async move {
         // Create our HTTP server by binding as early as possible to return an error if we can't
         // actually bind.
-        let server_builder =
-            Server::try_bind(&listen_addr).expect("Failed to bind to listen address.");
+        let listener = tokio::net::TcpListener::bind(&listen_addr)
+            .await
+            .expect("Failed to bind to listen address.");
 
         // Create our router, which is a bit boilerplate-y because we take the HTTP method
         // parametrically. We generate a handler that calls the given `handler` and then triggers
@@ -477,7 +478,7 @@ where
         let method_filter = MethodFilter::try_from(request_method)
             .expect("should not fail to convert method to method filter");
         let method_router = MethodRouter::new()
-            .fallback(|req: Request<Body>| async move {
+            .fallback(|req: Request<axum::body::Body>| async move {
                 error!(
                     path = req.uri().path(),
                     method = req.method().as_str(),
@@ -486,7 +487,7 @@ where
 
                 StatusCode::METHOD_NOT_ALLOWED
             })
-            .on(method_filter, move |request: Request<Body>| {
+            .on(method_filter, move |request: Request<axum::body::Body>| {
                 let request_handler = handler(request, output_runner_metrics);
                 let notifier = Arc::clone(&server_notifier);
 
@@ -498,7 +499,7 @@ where
             });
 
         let router = Router::new().route(&request_path, method_router).fallback(
-            |req: Request<Body>| async move {
+            |req: Request<axum::body::Body>| async move {
                 error!(?req, "Component sent request the server could not route.");
                 StatusCode::NOT_FOUND
             },
@@ -507,8 +508,7 @@ where
         // Now actually run/drive the HTTP server and process requests until we're told to shutdown.
         http_server_started.mark_as_done();
 
-        let server = server_builder
-            .serve(router.into_make_service())
+        let server = axum::serve(listener, router.into_make_service())
             .with_graceful_shutdown(async {
                 http_server_shutdown_rx.await.ok();
             });

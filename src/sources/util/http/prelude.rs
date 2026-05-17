@@ -1,14 +1,13 @@
-use std::{collections::HashMap, convert::Infallible, fmt, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, fmt, net::SocketAddr, time::Duration};
 
 use bytes::Bytes;
 use futures::{FutureExt, TryFutureExt};
-use hyper::{Server, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use sol_lib::{
     EstimatedJsonEncodedSizeOf,
     config::SourceAcknowledgementsConfig,
     event::{BatchNotifier, BatchStatus, BatchStatusReceiver, Event},
 };
-use tokio::net::TcpStream;
 use tower::ServiceBuilder;
 use tracing::Span;
 use warp::{
@@ -31,7 +30,7 @@ use crate::{
         HttpBadRequest, HttpBytesReceived, HttpEventsReceived, HttpInternalError, StreamClosedError,
     },
     sources::util::http::HttpMethod,
-    tls::{MaybeTlsIncomingStream, MaybeTlsSettings, TlsEnableableConfig},
+    tls::{MaybeTlsSettings, TlsEnableableConfig},
 };
 
 pub trait HttpSource: Clone + Send + Sync + 'static {
@@ -173,7 +172,7 @@ pub trait HttpSource: Clone + Send + Sync + 'static {
                     },
                 );
 
-            let ping = warp::get().and(warp::path("ping")).map(|| "pong");
+            let ping = warp::get().and(warp::path("ping")).map(|| String::from("pong"));
             let routes = svc.or(ping).recover(|r: Rejection| async move {
                 if let Some(e_msg) = r.find::<ErrorMessage>() {
                     let json = warp::reply::json(e_msg);
@@ -187,40 +186,52 @@ pub trait HttpSource: Clone + Send + Sync + 'static {
                 }
             });
 
-            let span = Span::current();
-            let make_svc = make_service_fn(move |conn: &MaybeTlsIncomingStream<TcpStream>| {
-                let remote_addr = conn.peer_addr();
-                let svc = ServiceBuilder::new()
-                    .layer(build_http_trace_layer(span.clone()))
-                    .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
-                        MaxConnectionAgeLayer::new(
-                            Duration::from_secs(secs),
-                            keepalive_settings.max_connection_age_jitter_factor,
-                            remote_addr,
-                        )
-                    }))
-                    .map_request(move |mut request: hyper::Request<_>| {
-                        request.extensions_mut().insert(PeerAddr::new(remote_addr));
-
-                        request
-                    })
-                    .service(warp::service(routes.clone()));
-                futures_util::future::ok::<_, Infallible>(svc)
-            });
-
             info!(message = "Building HTTP server.", address = %address);
 
-            let listener = tls.bind(&address).await.map_err(|err| {
+            let mut listener = tls.bind(&address).await.map_err(|err| {
                 error!("An error occurred: {:?}.", err);
             })?;
 
-            Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-                .serve(make_svc)
-                .with_graceful_shutdown(cx.shutdown.map(|_| ()))
-                .await
-                .map_err(|err| {
-                    error!("An error occurred: {:?}.", err);
-                })?;
+            let span = Span::current();
+            let shutdown = cx.shutdown.map(|_| ());
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let conn = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting connection: {:?}.", err);
+                                continue;
+                            }
+                        };
+                        let remote_addr = conn.peer_addr();
+                        let svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
+                                MaxConnectionAgeLayer::new(
+                                    Duration::from_secs(secs),
+                                    keepalive_settings.max_connection_age_jitter_factor,
+                                    remote_addr,
+                                )
+                            }))
+                            .map_request(move |mut request: hyper::Request<_>| {
+                                request.extensions_mut().insert(PeerAddr::new(remote_addr));
+                                request
+                            })
+                            .service(warp::service(routes.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(conn);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
 
             Ok(())
         }))

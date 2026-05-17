@@ -1,9 +1,9 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use hyper::{
-    Body, Request, Response, Server, StatusCode,
-    service::{make_service_fn, service_fn},
-};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::{Response, StatusCode, service::service_fn};
+use hyper_util::rt::TokioIo;
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
@@ -24,14 +24,14 @@ pub async fn respond(
     waiter: Lock,
     tx: mpsc::Sender<()>,
     status: StatusCode,
-) -> Result<Response<Body>, Error> {
+) -> Result<Response<Full<Bytes>>, Error> {
     tx.send(())
         .await
         .expect("Error sending 'before' status from test server");
     _ = waiter.lock().await;
     Ok(Response::builder()
         .status(status)
-        .body(Body::empty())
+        .body(Full::new(Bytes::new()))
         .unwrap())
 }
 
@@ -41,18 +41,33 @@ pub async fn http_server(
     status: StatusCode,
 ) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel(1);
-    let service = make_service_fn(move |_| {
-        let waiter = Arc::clone(&waiter);
-        let tx = tx.clone();
-        async move {
-            Ok::<_, Error>(service_fn(move |_req: Request<Body>| {
-                respond(Arc::clone(&waiter), tx.clone(), status)
-            }))
+
+    let listener = tokio::net::TcpListener::bind(&address)
+        .await
+        .expect("Failed to bind test server");
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            let waiter = Arc::clone(&waiter);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let service = service_fn(
+                    move |_req: hyper::Request<hyper::body::Incoming>| {
+                        respond(Arc::clone(&waiter), tx.clone(), status)
+                    },
+                );
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .ok();
+            });
         }
     });
-
-    let server = Server::bind(&address).serve(service);
-    tokio::spawn(server);
 
     test_util::wait_for_tcp(address).await;
 
@@ -142,7 +157,7 @@ uri = "http://{address2}/"
         .await
         .expect("Timed out waiting to receive result from HTTP source")
         .expect("Error receiving result from tokio task");
-    assert_eq!(result.status(), response);
+    assert_eq!(result.status().as_u16(), response.as_u16());
 }
 
 #[tokio::test]

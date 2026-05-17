@@ -166,7 +166,7 @@ impl SubscriptionClient {
 pub async fn connect_subscription_client(
     url: Url,
 ) -> Result<SubscriptionClient, tokio_tungstenite::tungstenite::Error> {
-    let (ws, _) = connect_async(url).await?;
+    let (ws, _) = connect_async(url.as_str()).await?;
     let (mut ws_tx, mut ws_rx) = futures::StreamExt::split(ws);
 
     let (send_tx, mut send_rx) = mpsc::unbounded_channel::<Payload>();
@@ -174,14 +174,14 @@ pub async fn connect_subscription_client(
 
     // Initialize the connection
     _ = ws_tx
-        .send(Message::Text(r#"{"type":"connection_init"}"#.to_string()))
+        .send(Message::Text(r#"{"type":"connection_init"}"#.into()))
         .await;
 
     // Forwarded received messages back upstream to the GraphQL server
     tokio::spawn(async move {
         while let Some(p) = send_rx.recv().await {
             _ = ws_tx
-                .send(Message::Text(serde_json::to_string(&p).unwrap()))
+                .send(Message::Text(serde_json::to_string(&p).unwrap().into()))
                 .await;
         }
     });

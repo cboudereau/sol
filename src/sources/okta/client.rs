@@ -5,7 +5,8 @@ use chrono::Utc;
 use futures::StreamExt as _;
 use futures_util::{FutureExt, Stream, stream};
 use http::Uri;
-use hyper::{Body, Request};
+use http::Request;
+use http_body_util::Full;
 use percent_encoding::utf8_percent_encode;
 use serde_with::serde_as;
 use sol_lib::{
@@ -184,7 +185,7 @@ type OktaRunResult =
     Result<(http::response::Parts, Bytes, Option<Uri>), Box<dyn std::error::Error + Send + Sync>>;
 
 type OktaTimeoutResult =
-    Result<Result<http::Response<Body>, HttpError>, tokio::time::error::Elapsed>;
+    Result<Result<http::Response<hyper::body::Incoming>, HttpError>, tokio::time::error::Elapsed>;
 
 async fn run_once(url: String, result: OktaTimeoutResult, timeout: Duration) -> OktaRunResult {
     let mut next: Option<Uri> = None;
@@ -203,7 +204,7 @@ async fn run_once(url: String, result: OktaTimeoutResult, timeout: Duration) -> 
                 next = Some(next_url);
             };
 
-            let body = http_body::Body::collect(body).await?.to_bytes();
+            let body = http_body_util::BodyExt::collect(body).await?.to_bytes();
 
             emit!(EndpointBytesReceived {
                 byte_size: body.len(),
@@ -318,7 +319,7 @@ async fn run(
                             let mut url_lock = url_mutex.lock().await;
                             let url = url_lock.to_string();
 
-                            let mut request = match Request::get(&url).body(Body::empty()) {
+                            let mut request = match Request::get(&url).body(Full::new(Bytes::new())) {
                                 Ok(request) => request,
                                 Err(e) => {
                                     emit!(HttpClientHttpError {

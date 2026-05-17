@@ -6,10 +6,10 @@ use std::{
 
 use bytes::Bytes;
 use chrono::Utc;
-use futures::{StreamExt, TryFutureExt, future::join_all};
+use futures::{StreamExt, future::join_all};
 use http::{Request, StatusCode};
-use http_body::Collected;
-use hyper::{Body, Uri};
+use http_body_util::{BodyExt as _, Collected, Full};
+use http::Uri;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
 use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
@@ -252,7 +252,7 @@ impl NginxMetrics {
     }
 
     async fn get_nginx_response(&self) -> crate::Result<Bytes> {
-        let mut request = Request::get(&self.endpoint).body(Body::empty())?;
+        let mut request = Request::get(&self.endpoint).body(Full::new(Bytes::new()))?;
         if let Some(auth) = &self.auth {
             auth.apply(&mut request);
         }
@@ -260,10 +260,7 @@ impl NginxMetrics {
         let response = self.http_client.send(request).await?;
         let (parts, body) = response.into_parts();
         match parts.status {
-            StatusCode::OK => http_body::Body::collect(body)
-                .err_into()
-                .await
-                .map(Collected::to_bytes),
+            StatusCode::OK => body.collect().await.map(Collected::to_bytes).map_err(Into::into),
             status => Err(Box::new(NginxError::InvalidResponseStatus { status })),
         }
     }

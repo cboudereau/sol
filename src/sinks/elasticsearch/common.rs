@@ -1,7 +1,7 @@
 use bytes::{Buf, Bytes};
 use http::{Response, StatusCode, Uri};
-use http_body::Body as _;
-use hyper::Body;
+use http_body_util::BodyExt as _;
+use http_body_util::Full;
 use serde::Deserialize;
 use snafu::ResultExt;
 use sol_lib::config::proxy::ProxyConfig;
@@ -425,7 +425,7 @@ async fn get(
     request: &RequestConfig,
     client: HttpClient,
     path: &str,
-) -> crate::Result<Response<Body>> {
+) -> crate::Result<Response<hyper::body::Incoming>> {
     let mut builder = Request::get(format!("{base_url}{path}"));
 
     for (header, value) in &request.headers {
@@ -450,7 +450,7 @@ async fn get(
     }
 
     client
-        .send(request.map(hyper::Body::from))
+        .send(request.map(Full::new))
         .await
         .map_err(Into::into)
 }

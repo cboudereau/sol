@@ -1,5 +1,4 @@
-use http_body::{Body as _, Collected};
-use hyper::Body;
+use http_body_util::{BodyExt as _, Collected};
 use serde::{Deserialize, Serialize};
 use sol_lib::{configurable::configurable_component, event::EventStatus};
 use std::{
@@ -238,7 +237,7 @@ impl HecAckClient {
 
         let response = self
             .client
-            .send(request.map(Body::from))
+            .send(request.map(http_body_util::Full::new))
             .await
             .map_err(|_| HecAckApiError::ServerSendQuery)?;
 

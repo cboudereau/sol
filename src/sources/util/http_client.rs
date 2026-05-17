@@ -16,7 +16,8 @@ use std::{collections::HashMap, future::ready, time::Duration};
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, TryFutureExt, stream};
 use http::{Uri, response::Parts};
-use hyper::{Body, Request};
+use http::Request;
+use http_body_util::Full;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, config::proxy::ProxyConfig, event::Event, json_size::JsonSize,
     shutdown::ShutdownSignal,
@@ -206,9 +207,9 @@ pub(crate) async fn call<
                     {
                         builder = builder.header(http::header::CONTENT_TYPE, "application/json");
                     }
-                    Body::from(body_str)
+                    Full::new(Bytes::from(body_str))
                 }
-                None => Body::empty(),
+                None => Full::new(Bytes::new()),
             };
 
             // building the request should be infallible
@@ -232,7 +233,7 @@ pub(crate) async fn call<
                 })
                 .and_then(|response| async move {
                     let (header, body) = response.into_parts();
-                    let body = http_body::Body::collect(body).await?.to_bytes();
+                    let body = http_body_util::BodyExt::collect(body).await?.to_bytes();
                     emit!(EndpointBytesReceived {
                         byte_size: body.len(),
                         protocol: "http",
