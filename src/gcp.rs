@@ -11,9 +11,9 @@ use goauth::{
     auth::{JwtClaims, Token, TokenErr},
     credentials::Credentials,
 };
+use http::header::AUTHORIZATION;
 use http::{Uri, uri::PathAndQuery};
 use http_body_util::{BodyExt as _, Collected};
-use http::header::AUTHORIZATION;
 use smpl_jwt::Jwt;
 use snafu::{ResultExt, Snafu};
 use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, env, time::Duration};
 
-use futures::StreamExt;
 use bytes::Bytes;
+use futures::StreamExt;
 use http::Request;
 use http_body_util::{BodyExt as _, Collected, Full};
 use serde_with::serde_as;
@@ -284,10 +284,8 @@ mod test {
     use http::Response;
     use http_body_util::Full;
     use hyper::service::service_fn;
-    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use hyper_util::rt::TokioIo;
     use tokio::{net::TcpListener, time::Duration};
-    use tower::ServiceBuilder;
-
     use super::*;
     use crate::{
         event::MetricView,
@@ -302,7 +300,8 @@ mod test {
     async fn test_aws_ecs_metrics_source() {
         let (_guard, in_addr) = next_addr();
 
-        let body = Bytes::from(r#"
+        let body = Bytes::from(
+            r#"
                     {
                         "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-3822082590": {
                             "read": "2020-09-23T20:32:26.292561674Z",
@@ -593,7 +592,8 @@ mod test {
                             }
                         }
                     }
-                    "#);
+                    "#,
+        );
 
         let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
@@ -601,15 +601,13 @@ mod test {
                 let (stream, _) = listener.accept().await.unwrap();
                 let body = body.clone();
                 tokio::spawn(async move {
-                    let svc = ServiceBuilder::new().service(service_fn(move |_| {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
                         let body = body.clone();
-                        async move {
-                            Ok::<_, Infallible>(Response::new(Full::new(body)))
-                        }
-                    }));
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
                     let io = TokioIo::new(stream);
                     hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .serve_connection(io, svc)
                         .await
                         .ok();
                 });

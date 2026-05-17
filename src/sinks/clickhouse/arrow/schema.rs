@@ -67,9 +67,7 @@ pub async fn fetch_table_schema(
 
     match response.status() {
         StatusCode::OK => {
-            let body_bytes = response.into_body().collect()
-                .await?
-                .to_bytes();
+            let body_bytes = response.into_body().collect().await?.to_bytes();
             let body_str = String::from_utf8(body_bytes.into())
                 .map_err(|e| format!("Failed to parse response as UTF-8: {e}"))?;
 

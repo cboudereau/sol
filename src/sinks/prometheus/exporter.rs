@@ -13,7 +13,6 @@ use futures::{FutureExt, StreamExt, future, stream::BoxStream};
 use http::{Method, Request, Response, StatusCode, header::HeaderValue};
 use http_body::Body as HttpBody;
 use http_body_util::Full;
-use tower::service_fn;
 use indexmap::{IndexMap, map::Entry};
 use serde_with::serde_as;
 use snafu::Snafu;
@@ -27,6 +26,7 @@ use sol_lib::{
 };
 use stream_cancel::{Trigger, Tripwire};
 use tower::ServiceBuilder;
+use tower::service_fn;
 use tower_http::compression::CompressionLayer;
 use tracing::{Instrument, Span};
 
@@ -499,27 +499,33 @@ impl PrometheusExporter {
                 let handler = handler.clone();
                 let span = span.clone();
 
-                tokio::spawn(async move {
-                    let inner = service_fn(move |req| {
-                        let response = handler.handle(req, &metrics);
-                        future::ok::<_, Infallible>(response)
-                    });
+                tokio::spawn(
+                    async move {
+                        let inner = service_fn(move |req| {
+                            let response = handler.handle(req, &metrics);
+                            future::ok::<_, Infallible>(response)
+                        });
 
-                    let service = ServiceBuilder::new()
-                        .layer(build_http_trace_layer(span.clone()))
-                        .layer(CompressionLayer::new())
-                        .service(inner);
+                        let service = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .layer(CompressionLayer::new())
+                            .service(inner);
 
-                    let io = hyper_util::rt::TokioIo::new(stream);
-                    if let Err(error) = hyper_util::server::conn::auto::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
-                    .await
-                    {
-                        error!(message = "Connection error.", %error);
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        if let Err(error) = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(
+                            io,
+                            hyper_util::service::TowerToHyperService::new(service),
+                        )
+                        .await
+                        {
+                            error!(message = "Connection error.", %error);
+                        }
                     }
-                }.instrument(Span::current()));
+                    .instrument(Span::current()),
+                );
             }
         });
 

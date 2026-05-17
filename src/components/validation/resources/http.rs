@@ -508,8 +508,8 @@ where
         // Now actually run/drive the HTTP server and process requests until we're told to shutdown.
         http_server_started.mark_as_done();
 
-        let server = axum::serve(listener, router.into_make_service())
-            .with_graceful_shutdown(async {
+        let server =
+            axum::serve(listener, router.into_make_service()).with_graceful_shutdown(async {
                 http_server_shutdown_rx.await.ok();
             });
 

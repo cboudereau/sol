@@ -36,10 +36,8 @@ use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
     },
     resource::v1::{Resource, Resource as OtelResource},
 };
-use tonic::Request;
-
-fn create_test_logs_request() -> Request<ExportLogsServiceRequest> {
-    Request::new(ExportLogsServiceRequest {
+fn create_test_logs_request() -> tonic_0_12::Request<ExportLogsServiceRequest> {
+    tonic_0_12::Request::new(ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
             resource: Some(OtelResource {
                 attributes: vec![KeyValue {
@@ -196,7 +194,7 @@ async fn receive_sum_metric() {
             .await
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -295,7 +293,7 @@ async fn receive_sum_non_monotonic_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -387,7 +385,7 @@ async fn receive_gauge_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -474,7 +472,7 @@ async fn receive_histogram_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -578,7 +576,7 @@ async fn receive_histogram_delta_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -682,7 +680,7 @@ async fn receive_expontential_histogram_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -801,7 +799,7 @@ async fn receive_summary_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic_0_12::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {

@@ -167,7 +167,9 @@ async fn healthcheck(uri: Uri, api_key: SensitiveString, client: HttpClient) -> 
     let res = client.send(req).await?;
 
     let status = res.status();
-    let body = http_body_util::BodyExt::collect(res.into_body()).await?.to_bytes();
+    let body = http_body_util::BodyExt::collect(res.into_body())
+        .await?
+        .to_bytes();
 
     if status == StatusCode::BAD_REQUEST {
         Ok(())

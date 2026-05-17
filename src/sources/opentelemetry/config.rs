@@ -43,9 +43,18 @@ use vrl::value::{Kind, kind::Collection};
 
 use crate::sources::util::grpc::tonic_0_12_adapter;
 
-tonic_0_12_adapter!(LogsServiceAdapter, "opentelemetry.proto.collector.logs.v1.LogsService");
-tonic_0_12_adapter!(MetricsServiceAdapter, "opentelemetry.proto.collector.metrics.v1.MetricsService");
-tonic_0_12_adapter!(TraceServiceAdapter, "opentelemetry.proto.collector.trace.v1.TraceService");
+tonic_0_12_adapter!(
+    LogsServiceAdapter,
+    "opentelemetry.proto.collector.logs.v1.LogsService"
+);
+tonic_0_12_adapter!(
+    MetricsServiceAdapter,
+    "opentelemetry.proto.collector.metrics.v1.MetricsService"
+);
+tonic_0_12_adapter!(
+    TraceServiceAdapter,
+    "opentelemetry.proto.collector.trace.v1.TraceService"
+);
 
 pub use super::grpc::{LOGS, METRICS, TRACES};
 

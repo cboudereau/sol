@@ -56,11 +56,9 @@ pub async fn http_server(
             let tx = tx.clone();
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
-                let service = service_fn(
-                    move |_req: hyper::Request<hyper::body::Incoming>| {
-                        respond(Arc::clone(&waiter), tx.clone(), status)
-                    },
-                );
+                let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                    respond(Arc::clone(&waiter), tx.clone(), status)
+                });
                 hyper::server::conn::http1::Builder::new()
                     .serve_connection(io, service)
                     .await

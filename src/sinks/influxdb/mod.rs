@@ -213,7 +213,9 @@ fn healthcheck(
 
     let uri = settings.healthcheck_uri(endpoint)?;
 
-    let request = hyper::Request::get(uri).body(http_body_util::Full::new(bytes::Bytes::new())).unwrap();
+    let request = hyper::Request::get(uri)
+        .body(http_body_util::Full::new(bytes::Bytes::new()))
+        .unwrap();
 
     Ok(async move {
         client
@@ -487,7 +489,7 @@ pub mod test_util {
         let status = query_v1(endpoint, &format!("create database {database}"))
             .await
             .status();
-        assert_eq!(status, http::StatusCode::OK, "UnexpectedStatus: {status}");
+        assert_eq!(status.as_u16(), http::StatusCode::OK.as_u16(), "UnexpectedStatus: {status}");
         // Some times InfluxDB will return OK before it can actually
         // accept writes to the database, leading to test failures. Test
         // this with empty writes and loop if it reports the database
@@ -495,7 +497,7 @@ pub mod test_util {
         crate::test_util::wait_for(|| {
             let write_url = format!("{}/write?db={}", endpoint, &database);
             async move {
-                match client()
+                let status = client()
                     .post(&write_url)
                     .header("Content-Type", "text/plain")
                     .header("Authorization", &format!("Token {TOKEN}"))
@@ -503,11 +505,13 @@ pub mod test_util {
                     .send()
                     .await
                     .unwrap()
-                    .status()
-                {
-                    http::StatusCode::NO_CONTENT => true,
-                    http::StatusCode::NOT_FOUND => false,
-                    status => panic!("Unexpected status: {status}"),
+                    .status();
+                if status.as_u16() == http::StatusCode::NO_CONTENT.as_u16() {
+                    true
+                } else if status.as_u16() == http::StatusCode::NOT_FOUND.as_u16() {
+                    false
+                } else {
+                    panic!("Unexpected status: {status}")
                 }
             }
         })
@@ -519,7 +523,7 @@ pub mod test_util {
         let status = query_v1(endpoint, &format!("drop database {database}"))
             .await
             .status();
-        assert_eq!(status, http::StatusCode::OK, "UnexpectedStatus: {status}");
+        assert_eq!(status.as_u16(), http::StatusCode::OK.as_u16(), "UnexpectedStatus: {status}");
     }
 
     pub(crate) async fn onboarding_v2(endpoint: &str) {
@@ -543,10 +547,10 @@ pub mod test_util {
             .await
             .unwrap();
 
-        let status = res.status();
+        let status = res.status().as_u16();
 
         assert!(
-            status == StatusCode::CREATED || status == StatusCode::UNPROCESSABLE_ENTITY,
+            status == StatusCode::CREATED.as_u16() || status == StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
             "UnexpectedStatus: {status}"
         );
     }

@@ -44,9 +44,18 @@ use crate::{
     sources::util::grpc::{run_grpc_server_with_routes, tonic_0_12_adapter},
 };
 
-tonic_0_12_adapter!(LogsServiceAdapter, "opentelemetry.proto.collector.logs.v1.LogsService");
-tonic_0_12_adapter!(MetricsServiceAdapter, "opentelemetry.proto.collector.metrics.v1.MetricsService");
-tonic_0_12_adapter!(TraceServiceAdapter, "opentelemetry.proto.collector.trace.v1.TraceService");
+tonic_0_12_adapter!(
+    LogsServiceAdapter,
+    "opentelemetry.proto.collector.logs.v1.LogsService"
+);
+tonic_0_12_adapter!(
+    MetricsServiceAdapter,
+    "opentelemetry.proto.collector.metrics.v1.MetricsService"
+);
+tonic_0_12_adapter!(
+    TraceServiceAdapter,
+    "opentelemetry.proto.collector.trace.v1.TraceService"
+);
 
 #[derive(Clone)]
 pub struct EventForwardService {
@@ -235,15 +244,21 @@ pub fn spawn_otlp_grpc_server(
         let tls_settings = MaybeTlsSettings::from_config(None, true)
             .expect("should not fail to get empty TLS settings");
 
-        let log_service = LogsServiceAdapter(LogsServiceServer::new(service.clone())
-            .accept_compressed(CompressionEncoding::Gzip)
-            .max_decoding_message_size(usize::MAX));
-        let metrics_service = MetricsServiceAdapter(MetricsServiceServer::new(service.clone())
-            .accept_compressed(CompressionEncoding::Gzip)
-            .max_decoding_message_size(usize::MAX));
-        let trace_service = TraceServiceAdapter(TraceServiceServer::new(service)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .max_decoding_message_size(usize::MAX));
+        let log_service = LogsServiceAdapter(
+            LogsServiceServer::new(service.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .max_decoding_message_size(usize::MAX),
+        );
+        let metrics_service = MetricsServiceAdapter(
+            MetricsServiceServer::new(service.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .max_decoding_message_size(usize::MAX),
+        );
+        let trace_service = TraceServiceAdapter(
+            TraceServiceServer::new(service)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .max_decoding_message_size(usize::MAX),
+        );
 
         let mut builder = tonic::service::RoutesBuilder::default();
         builder

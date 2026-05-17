@@ -8,7 +8,9 @@ use std::{
 };
 
 use futures::FutureExt;
-use tonic::{body::Body as TonicBody, server::NamedService, service::Routes, transport::server::Server};
+use tonic::{
+    body::Body as TonicBody, server::NamedService, service::Routes, transport::server::Server,
+};
 use tower::{Layer, Service};
 use tracing::Span;
 
@@ -31,7 +33,10 @@ use crate::{
 /// let adapted = LogsAdapter(log_service);
 /// builder.add_service(adapted);
 /// ```
-#[cfg(any(feature = "sources-opentelemetry", feature = "component-validation-runner"))]
+#[cfg(any(
+    feature = "sources-opentelemetry",
+    feature = "component-validation-runner"
+))]
 macro_rules! tonic_0_12_adapter {
     ($name:ident, $service_name:literal) => {
         #[derive(Clone)]
@@ -85,7 +90,10 @@ macro_rules! tonic_0_12_adapter {
     };
 }
 
-#[cfg(any(feature = "sources-opentelemetry", feature = "component-validation-runner"))]
+#[cfg(any(
+    feature = "sources-opentelemetry",
+    feature = "component-validation-runner"
+))]
 pub(crate) use tonic_0_12_adapter;
 
 fn grpc_server_builder() -> Server {

@@ -45,12 +45,7 @@ pub use region::RegionOrEndpoint;
 use snafu::Snafu;
 pub use timeout::AwsTimeout;
 
-use crate::{
-    config::ProxyConfig,
-    http::status,
-    internal_events::AwsBytesSent,
-    tls::TlsConfig,
-};
+use crate::{config::ProxyConfig, http::status, internal_events::AwsBytesSent, tls::TlsConfig};
 
 static RETRIABLE_CODES: OnceLock<RegexSet> = OnceLock::new();
 

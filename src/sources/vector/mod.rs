@@ -51,9 +51,18 @@ use crate::sources::util::grpc::tonic_0_12_adapter;
 use proto::vector::vector_server::VectorServer;
 use service::NativeVectorService;
 
-tonic_0_12_adapter!(LogsServiceAdapter, "opentelemetry.proto.collector.logs.v1.LogsService");
-tonic_0_12_adapter!(MetricsServiceAdapter, "opentelemetry.proto.collector.metrics.v1.MetricsService");
-tonic_0_12_adapter!(TraceServiceAdapter, "opentelemetry.proto.collector.trace.v1.TraceService");
+tonic_0_12_adapter!(
+    LogsServiceAdapter,
+    "opentelemetry.proto.collector.logs.v1.LogsService"
+);
+tonic_0_12_adapter!(
+    MetricsServiceAdapter,
+    "opentelemetry.proto.collector.metrics.v1.MetricsService"
+);
+tonic_0_12_adapter!(
+    TraceServiceAdapter,
+    "opentelemetry.proto.collector.trace.v1.TraceService"
+);
 
 /// Marker type for version two of the configuration for the `vector` source.
 #[configurable_component]

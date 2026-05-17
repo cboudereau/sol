@@ -172,7 +172,9 @@ pub trait HttpSource: Clone + Send + Sync + 'static {
                     },
                 );
 
-            let ping = warp::get().and(warp::path("ping")).map(|| String::from("pong"));
+            let ping = warp::get()
+                .and(warp::path("ping"))
+                .map(|| String::from("pong"));
             let routes = svc.or(ping).recover(|r: Rejection| async move {
                 if let Some(e_msg) = r.find::<ErrorMessage>() {
                     let json = warp::reply::json(e_msg);

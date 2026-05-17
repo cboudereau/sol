@@ -91,7 +91,10 @@ impl WebSocketSink {
         // using NonZeroU64 that is not something we need to account for.
         let mut ping_interval = PingInterval::new(self.ping_interval.map(u64::from));
 
-        if let Err(error) = ws_sink.send(Message::Ping(bytes::Bytes::from_static(PING))).await {
+        if let Err(error) = ws_sink
+            .send(Message::Ping(bytes::Bytes::from_static(PING)))
+            .await
+        {
             emit!(WebSocketConnectionError { error });
             return Err(());
         }
@@ -441,7 +444,7 @@ mod tests {
                                 .filter_map(|msg| {
                                     future::ready(match msg {
                                         Ok(msg) if msg.is_text() => {
-                                            Some(Ok(msg.into_text().unwrap()))
+                                            Some(Ok(msg.into_text().unwrap().to_string()))
                                         }
                                         Err(TungsteniteError::Protocol(
                                             ProtocolError::ResetWithoutClosingHandshake,

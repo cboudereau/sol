@@ -7,9 +7,9 @@ use std::{
 use bytes::Bytes;
 use chrono::Utc;
 use futures::{StreamExt, future::join_all};
+use http::Uri;
 use http::{Request, StatusCode};
 use http_body_util::{BodyExt as _, Collected, Full};
-use http::Uri;
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
 use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
@@ -260,7 +260,11 @@ impl NginxMetrics {
         let response = self.http_client.send(request).await?;
         let (parts, body) = response.into_parts();
         match parts.status {
-            StatusCode::OK => body.collect().await.map(Collected::to_bytes).map_err(Into::into),
+            StatusCode::OK => body
+                .collect()
+                .await
+                .map(Collected::to_bytes)
+                .map_err(Into::into),
             status => Err(Box::new(NginxError::InvalidResponseStatus { status })),
         }
     }

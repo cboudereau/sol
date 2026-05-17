@@ -9,7 +9,7 @@ use std::{
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
 use futures::{Stream, StreamExt};
-use http::HeaderMap;
+use reqwest::header::HeaderMap;
 use indoc::indoc;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 use prost::Message;

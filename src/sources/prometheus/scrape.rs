@@ -325,10 +325,12 @@ mod test {
     use http::Response;
     use http_body_util::Full;
     use hyper::service::service_fn;
-    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use hyper_util::rt::TokioIo;
     use similar_asserts::assert_eq;
-    use tokio::{net::TcpListener, time::{Duration, sleep}};
-    use tower::ServiceBuilder;
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
+    };
     use warp::Filter;
 
     use super::*;
@@ -638,7 +640,8 @@ mod test {
         let (_in_guard, in_addr) = next_addr();
         let (_out_guard, out_addr) = next_addr();
 
-        let body = Bytes::from(r#"
+        let body = Bytes::from(
+            r#"
                     # HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
                     # TYPE promhttp_metric_handler_requests_total counter
                     promhttp_metric_handler_requests_total{code="200"} 100 1612411516789
@@ -665,7 +668,8 @@ mod test {
                     rpc_duration_seconds{code="200",quantile="0.99"} 76656 1612411516789
                     rpc_duration_seconds_sum{code="200"} 1.7560473e+07 1612411516789
                     rpc_duration_seconds_count{code="200"} 2693 1612411516789
-                    "#);
+                    "#,
+        );
 
         let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
@@ -673,15 +677,13 @@ mod test {
                 let (stream, _) = listener.accept().await.unwrap();
                 let body = body.clone();
                 tokio::spawn(async move {
-                    let svc = ServiceBuilder::new().service(service_fn(move |_| {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
                         let body = body.clone();
-                        async move {
-                            Ok::<_, Infallible>(Response::new(Full::new(body)))
-                        }
-                    }));
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
                     let io = TokioIo::new(stream);
                     hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .serve_connection(io, svc)
                         .await
                         .ok();
                 });

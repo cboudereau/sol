@@ -1006,15 +1006,18 @@ mod test {
                     let svc = service_fn(move |req: http::Request<Incoming>| {
                         let mut tx = tx.clone();
                         async move {
-                            let mut body = req.into_body().collect()
+                            let mut body = req
+                                .into_body()
+                                .collect()
                                 .await
                                 .map_err(|error| format!("error: {error}"))?
                                 .aggregate();
-                            let string = String::from_utf8(body.copy_to_bytes(body.remaining()).to_vec())
-                                .map_err(|_| "Wasn't UTF-8".to_string())?;
+                            let string =
+                                String::from_utf8(body.copy_to_bytes(body.remaining()).to_vec())
+                                    .map_err(|_| "Wasn't UTF-8".to_string())?;
                             tx.try_send(string).map_err(|_| "Send error".to_string())?;
 
-                            Ok::<_, crate::Error>(http::Response::new(Full::new(Bytes::from(""))))
+                            Ok::<_, String>(http::Response::new(Full::new(Bytes::from(""))))
                         }
                     });
                     let _ = hyper::server::conn::http1::Builder::new()

@@ -15,8 +15,8 @@ use std::{collections::HashMap, future::ready, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, TryFutureExt, stream};
-use http::{Uri, response::Parts};
 use http::Request;
+use http::{Uri, response::Parts};
 use http_body_util::Full;
 use sol_lib::{
     EstimatedJsonEncodedSizeOf, config::proxy::ProxyConfig, event::Event, json_size::JsonSize,

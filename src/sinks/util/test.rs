@@ -43,9 +43,7 @@ pub fn build_test_server(
     Trigger,
     impl std::future::Future<Output = Result<(), ()>>,
 ) {
-    build_test_server_generic(addr, || {
-        Response::new(Full::new(Bytes::new()))
-    })
+    build_test_server_generic(addr, || Response::new(Full::new(Bytes::new())))
 }
 
 pub fn build_test_server_status(

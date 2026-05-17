@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use futures::{FutureExt, StreamExt};
 use bytes::Bytes;
+use futures::{FutureExt, StreamExt};
 use http::{Request, Uri};
 use http_body_util::{BodyExt as _, Collected, Full};
 use serde_with::serde_as;
@@ -128,11 +128,7 @@ fn eventstoredb(
                     }
 
                     Ok(resp) => {
-                        let bytes = match resp
-                            .into_body()
-                            .collect()
-                            .await
-                            .map(Collected::to_bytes)
+                        let bytes = match resp.into_body().collect().await.map(Collected::to_bytes)
                         {
                             Ok(b) => b,
                             Err(error) => {

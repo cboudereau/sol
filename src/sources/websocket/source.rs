@@ -343,10 +343,7 @@ impl WebSocketSource {
         }
     }
 
-    fn handle_close_frame(
-        &self,
-        frame: Option<CloseFrame>,
-    ) -> Result<(), WebSocketSourceError> {
+    fn handle_close_frame(&self, frame: Option<CloseFrame>) -> Result<(), WebSocketSourceError> {
         let (error_message, specific_error) = match frame {
             Some(frame) => {
                 let msg = format!(
@@ -423,7 +420,7 @@ impl PingManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, num::NonZeroU64};
+    use std::num::NonZeroU64;
 
     use futures::{StreamExt, sink::SinkExt};
     use sol_lib::codecs::decoding::DeserializerConfig;
@@ -468,9 +465,9 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.expect("Failed to accept");
 
-            let binary_payload = br#"{"msg": "binary data"}"#.to_vec();
+            let binary_payload = br#"{"msg": "binary data"}"#;
             websocket
-                .send(Message::Binary(binary_payload))
+                .send(Message::Binary(bytes::Bytes::from_static(binary_payload)))
                 .await
                 .unwrap();
         });
@@ -491,7 +488,7 @@ mod tests {
 
             // Immediately send a message to the connected client (which will be our source)
             websocket
-                .send(Message::Text("message from server".to_string()))
+                .send(Message::text("message from server"))
                 .await
                 .unwrap();
         });
@@ -512,11 +509,11 @@ mod tests {
 
             // Wait for the initial message from the client
             if let Some(Ok(Message::Text(msg))) = websocket.next().await
-                && msg == initial_message
+                && msg.as_str() == initial_message
             {
                 // Received correct initial message, send response
                 websocket
-                    .send(Message::Text(response_message))
+                    .send(Message::text(response_message))
                     .await
                     .unwrap();
             }
@@ -535,7 +532,7 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.expect("Failed to accept");
             websocket
-                .send(Message::Text("first message".to_string()))
+                .send(Message::text("first message"))
                 .await
                 .unwrap();
             // Close the connection to force a reconnect from the client
@@ -545,7 +542,7 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = accept_async(stream).await.expect("Failed to accept");
             websocket
-                .send(Message::Text("second message".to_string()))
+                .send(Message::text("second message"))
                 .await
                 .unwrap();
         });
@@ -637,7 +634,7 @@ mod tests {
             if websocket.next().await.is_some() {
                 let close_frame = CloseFrame {
                     code: CloseCode::Error,
-                    reason: Cow::from("Simulated Internal Server Error"),
+                    reason: "Simulated Internal Server Error".into(),
                 };
                 let _ = websocket.close(Some(close_frame)).await;
             }

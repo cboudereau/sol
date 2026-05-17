@@ -135,11 +135,11 @@ Format: `cargo fmt --all --check` — verified green
 - `test_cargo_metadata_resolves` — `cargo metadata --format-version 1` exits 0
 **Verify**: `cargo metadata --format-version 1 > /dev/null`
 **Acceptance criteria**:
-- [ ] All dependency versions updated per migration map
-- [ ] `http` 0.2 and `http-body` 0.4 removed (not just aliased)
-- [ ] `http-1` and `http-body-1` aliases removed from Cargo.toml
-- [ ] `hyper-proxy` replaced with `hyper-proxy2`
-- [ ] `cargo metadata` resolves successfully
+- [x] All dependency versions updated per migration map
+- [x] `http` 0.2 and `http-body` 0.4 removed (not just aliased)
+- [x] `http-1` and `http-body-1` aliases removed from Cargo.toml
+- [x] `hyper-proxy` replaced with `hyper-proxy2`
+- [x] `cargo metadata` resolves successfully
 **Depends on**: (none)
 **Time-box**: ~30 min
 

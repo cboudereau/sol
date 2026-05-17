@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, future::ready, time::Duration};
 
+use bytes::Bytes;
 use chrono::Utc;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
-use http::uri::Scheme;
-use bytes::Bytes;
 use http::Request;
+use http::uri::Scheme;
 use http_body_util::Full;
 use serde_with::serde_as;
 use snafu::ResultExt;
@@ -297,11 +297,12 @@ mod test {
     use http::Response;
     use http_body_util::Full;
     use hyper::service::service_fn;
-    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use hyper_util::rt::TokioIo;
     use similar_asserts::assert_eq;
-    use tokio::{net::TcpListener, time::{Duration, sleep}};
-    use tower::ServiceBuilder;
-
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
+    };
     use super::*;
     use crate::{
         config::SourceConfig,
@@ -323,7 +324,8 @@ mod test {
     async fn test_apache_up() {
         let (_guard, in_addr) = next_addr();
 
-        let body = Bytes::from(r"
+        let body = Bytes::from(
+            r"
 localhost
 ServerVersion: Apache/2.4.46 (Unix)
 ServerMPM: event
@@ -361,7 +363,8 @@ ConnsAsyncWriting: 0
 ConnsAsyncKeepAlive: 0
 ConnsAsyncClosing: 0
 Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W__________________.....................................................................................................................................................................................................................................................................................................................................
-                    ");
+                    ",
+        );
 
         let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
@@ -369,15 +372,13 @@ Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W___________
                 let (stream, _) = listener.accept().await.unwrap();
                 let body = body.clone();
                 tokio::spawn(async move {
-                    let svc = ServiceBuilder::new().service(service_fn(move |_| {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
                         let body = body.clone();
-                        async move {
-                            Ok::<_, Infallible>(Response::new(Full::new(body)))
-                        }
-                    }));
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
                     let io = TokioIo::new(stream);
                     hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .serve_connection(io, svc)
                         .await
                         .ok();
                 });
@@ -431,17 +432,17 @@ Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W___________
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 tokio::spawn(async move {
-                    let svc = ServiceBuilder::new().service(service_fn(|_| async {
+                    let svc = service_fn(|_: http::Request<hyper::body::Incoming>| async {
                         Ok::<_, Infallible>(
                             Response::builder()
                                 .status(404)
                                 .body(Full::new(Bytes::from("not found")))
                                 .unwrap(),
                         )
-                    }));
+                    });
                     let io = TokioIo::new(stream);
                     hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .serve_connection(io, svc)
                         .await
                         .ok();
                 });
