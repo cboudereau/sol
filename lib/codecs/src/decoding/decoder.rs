@@ -91,14 +91,8 @@ impl tokio_util::codec::Decoder for Decoder {
     }
 
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        loop {
-            let frame = self.framer.decode_eof(buf);
-            match self.handle_framing_result(frame) {
-                Ok(result) => return Ok(result),
-                Err(Error::ParsingError(_)) => continue,
-                Err(e) => return Err(e),
-            }
-        }
+        let frame = self.framer.decode_eof(buf);
+        self.handle_framing_result(frame)
     }
 }
 
