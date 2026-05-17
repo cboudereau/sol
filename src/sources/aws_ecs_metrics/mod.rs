@@ -280,12 +280,6 @@ async fn aws_ecs_metrics(
 mod test {
     use std::convert::Infallible;
 
-    use bytes::Bytes;
-    use http::Response;
-    use http_body_util::Full;
-    use hyper::service::service_fn;
-    use hyper_util::rt::TokioIo;
-    use tokio::{net::TcpListener, time::Duration};
     use super::*;
     use crate::{
         event::MetricView,
@@ -295,6 +289,12 @@ mod test {
             wait_for_tcp,
         },
     };
+    use bytes::Bytes;
+    use http::Response;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use tokio::{net::TcpListener, time::Duration};
 
     #[tokio::test]
     async fn test_aws_ecs_metrics_source() {

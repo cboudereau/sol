@@ -489,7 +489,11 @@ pub mod test_util {
         let status = query_v1(endpoint, &format!("create database {database}"))
             .await
             .status();
-        assert_eq!(status.as_u16(), http::StatusCode::OK.as_u16(), "UnexpectedStatus: {status}");
+        assert_eq!(
+            status.as_u16(),
+            http::StatusCode::OK.as_u16(),
+            "UnexpectedStatus: {status}"
+        );
         // Some times InfluxDB will return OK before it can actually
         // accept writes to the database, leading to test failures. Test
         // this with empty writes and loop if it reports the database
@@ -523,7 +527,11 @@ pub mod test_util {
         let status = query_v1(endpoint, &format!("drop database {database}"))
             .await
             .status();
-        assert_eq!(status.as_u16(), http::StatusCode::OK.as_u16(), "UnexpectedStatus: {status}");
+        assert_eq!(
+            status.as_u16(),
+            http::StatusCode::OK.as_u16(),
+            "UnexpectedStatus: {status}"
+        );
     }
 
     pub(crate) async fn onboarding_v2(endpoint: &str) {
@@ -550,7 +558,8 @@ pub mod test_util {
         let status = res.status().as_u16();
 
         assert!(
-            status == StatusCode::CREATED.as_u16() || status == StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
+            status == StatusCode::CREATED.as_u16()
+                || status == StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
             "UnexpectedStatus: {status}"
         );
     }

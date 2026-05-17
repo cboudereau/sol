@@ -80,13 +80,25 @@ impl tokio_util::codec::Decoder for Decoder {
     type Error = Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let frame = self.framer.decode(buf);
-        self.handle_framing_result(frame)
+        loop {
+            let frame = self.framer.decode(buf);
+            match self.handle_framing_result(frame) {
+                Ok(result) => return Ok(result),
+                Err(Error::ParsingError(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let frame = self.framer.decode_eof(buf);
-        self.handle_framing_result(frame)
+        loop {
+            let frame = self.framer.decode_eof(buf);
+            match self.handle_framing_result(frame) {
+                Ok(result) => return Ok(result),
+                Err(Error::ParsingError(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -99,7 +111,7 @@ mod tests {
 
     use super::Decoder;
     use crate::{
-        JsonDeserializer, NewlineDelimitedDecoder, StreamDecodingError,
+        JsonDeserializer, NewlineDelimitedDecoder,
         decoding::{Deserializer, Framer},
     };
 
@@ -125,9 +137,8 @@ mod tests {
             Value::from(1)
         );
 
-        let next = stream.next().await.unwrap();
-        let error = next.unwrap_err();
-        assert!(error.can_continue());
+        // "invalid\n" is skipped — parsing error is logged internally
+        // and the decoder continues to the next frame
 
         let next = stream.next().await.unwrap();
         let log = next.unwrap().0.pop().unwrap().into_log();

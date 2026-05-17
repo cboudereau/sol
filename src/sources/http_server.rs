@@ -1529,7 +1529,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
-            Authorization::basic("wrong", "test").0.encode().to_str().unwrap().parse().unwrap(),
+            Authorization::basic("wrong", "test")
+                .0
+                .encode()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
         );
         assert_eq!(401, send_with_headers(addr, "", headers).await);
     }
@@ -1560,7 +1566,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
-            Authorization::basic("test", "test").0.encode().to_str().unwrap().parse().unwrap(),
+            Authorization::basic("test", "test")
+                .0
+                .encode()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
         );
         assert_eq!(200, send_with_headers(addr, "", headers).await);
     }

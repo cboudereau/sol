@@ -293,16 +293,6 @@ fn apache_metrics(
 mod test {
     use std::convert::Infallible;
 
-    use bytes::Bytes;
-    use http::Response;
-    use http_body_util::Full;
-    use hyper::service::service_fn;
-    use hyper_util::rt::TokioIo;
-    use similar_asserts::assert_eq;
-    use tokio::{
-        net::TcpListener,
-        time::{Duration, sleep},
-    };
     use super::*;
     use crate::{
         config::SourceConfig,
@@ -313,6 +303,16 @@ mod test {
             components::{HTTP_PULL_SOURCE_TAGS, run_and_assert_source_compliance},
             wait_for_tcp,
         },
+    };
+    use bytes::Bytes;
+    use http::Response;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use similar_asserts::assert_eq;
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
     };
 
     #[test]

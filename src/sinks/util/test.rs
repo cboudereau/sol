@@ -78,8 +78,7 @@ where
     let (tx, rx) = mpsc::channel(100);
     let (trigger, tripwire) = Tripwire::new();
 
-    let std_listener =
-        std::net::TcpListener::bind(addr).expect("Failed to bind test server");
+    let std_listener = std::net::TcpListener::bind(addr).expect("Failed to bind test server");
     std_listener
         .set_nonblocking(true)
         .expect("Failed to set non-blocking");

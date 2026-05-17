@@ -9,11 +9,11 @@ use std::{
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
 use futures::{Stream, StreamExt};
-use reqwest::header::HeaderMap;
 use indoc::indoc;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 use prost::Message;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
+use reqwest::header::HeaderMap;
 use similar_asserts::assert_eq;
 use sol_lib::{
     codecs::{
