@@ -2,7 +2,7 @@
 use aws_credential_types::provider::SharedCredentialsProvider;
 #[cfg(feature = "aws-core")]
 use aws_types::region::Region;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures::{Sink, future::BoxFuture};
 use headers::HeaderName;
 use http::{HeaderValue, Request, Response, StatusCode, header};
@@ -520,11 +520,8 @@ where
             }
 
             let (parts, body) = response.into_parts();
-            let mut body = body.collect().await?.aggregate();
-            Ok(http::Response::from_parts(
-                parts,
-                body.copy_to_bytes(body.remaining()),
-            ))
+            let body = body.collect().await?.to_bytes();
+            Ok(http::Response::from_parts(parts, body))
         })
     }
 }
@@ -853,8 +850,10 @@ pub trait HttpServiceRequestBuilder<T: Send> {
 /// Generic 'Service' implementation for HTTP stream sinks.
 #[derive(Clone)]
 pub struct HttpService<B, T: Send> {
-    batch_service:
-        HttpBatchService<BoxFuture<'static, Result<Request<Bytes>, crate::Error>>, HttpRequest<T>>,
+    batch_service: HttpBatchService<
+        std::future::Ready<Result<Request<Bytes>, crate::Error>>,
+        HttpRequest<T>,
+    >,
     _phantom: PhantomData<B>,
 }
 
@@ -867,11 +866,7 @@ where
 
         let batch_service = HttpBatchService::new(http_client, move |req: HttpRequest<T>| {
             let request_builder = Arc::clone(&http_request_builder);
-
-            let fut: BoxFuture<'static, Result<http::Request<Bytes>, crate::Error>> =
-                Box::pin(async move { request_builder.build(req) });
-
-            fut
+            std::future::ready(request_builder.build(req))
         });
         Self {
             batch_service,
@@ -891,11 +886,7 @@ where
             http_client,
             move |req: HttpRequest<T>| {
                 let request_builder = Arc::clone(&http_request_builder);
-
-                let fut: BoxFuture<'static, Result<http::Request<Bytes>, crate::Error>> =
-                    Box::pin(async move { request_builder.build(req) });
-
-                fut
+                std::future::ready(request_builder.build(req))
             },
             sig_v4_config,
         );
@@ -912,30 +903,52 @@ where
 {
     type Response = HttpResponse;
     type Error = crate::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future = HttpServiceFuture<
+        <HttpBatchService<
+            std::future::Ready<Result<Request<Bytes>, crate::Error>>,
+            HttpRequest<T>,
+        > as Service<HttpRequest<T>>>::Future,
+    >;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, mut request: HttpRequest<T>) -> Self::Future {
-        let mut http_service = self.batch_service.clone();
-
-        // NOTE: By taking the metadata here, when passing the request to `call()` below,
-        //       that function does not have access to the metadata anymore.
         let metadata = std::mem::take(request.metadata_mut());
         let raw_byte_size = metadata.request_encoded_size();
         let events_byte_size = metadata.into_events_estimated_json_encoded_byte_size();
 
-        Box::pin(async move {
-            let http_response = http_service.call(request).await?;
+        HttpServiceFuture {
+            inner: self.batch_service.call(request),
+            events_byte_size,
+            raw_byte_size,
+        }
+    }
+}
 
-            Ok(HttpResponse {
-                http_response,
-                events_byte_size,
-                raw_byte_size,
-            })
-        })
+#[pin_project]
+pub struct HttpServiceFuture<F> {
+    #[pin]
+    inner: F,
+    events_byte_size: GroupedCountByteSize,
+    raw_byte_size: usize,
+}
+
+impl<F> Future for HttpServiceFuture<F>
+where
+    F: Future<Output = Result<http::Response<Bytes>, crate::Error>>,
+{
+    type Output = Result<HttpResponse, crate::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let http_response = ready!(this.inner.poll(cx))?;
+        Poll::Ready(Ok(HttpResponse {
+            http_response,
+            events_byte_size: std::mem::take(this.events_byte_size),
+            raw_byte_size: *this.raw_byte_size,
+        }))
     }
 }
 
@@ -1006,14 +1019,13 @@ mod test {
                     let svc = service_fn(move |req: http::Request<Incoming>| {
                         let mut tx = tx.clone();
                         async move {
-                            let mut body = req
+                            let body = req
                                 .into_body()
                                 .collect()
                                 .await
                                 .map_err(|error| format!("error: {error}"))?
-                                .aggregate();
-                            let string =
-                                String::from_utf8(body.copy_to_bytes(body.remaining()).to_vec())
+                                .to_bytes();
+                            let string = String::from_utf8(body.to_vec())
                                     .map_err(|_| "Wasn't UTF-8".to_string())?;
                             tx.try_send(string).map_err(|_| "Send error".to_string())?;
 

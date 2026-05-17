@@ -1,4 +1,4 @@
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use http::{Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 use http_body_util::Full;
@@ -402,8 +402,7 @@ async fn get_version(
     .map_err(|error| format!("Failed to get Elasticsearch API version: {error}"))?;
 
     let (_, body) = response.into_parts();
-    let mut body = body.collect().await?.aggregate();
-    let body = body.copy_to_bytes(body.remaining());
+    let body = body.collect().await?.to_bytes();
     let ResponsePayload { version } = serde_json::from_slice(&body)?;
     if let Some(version) = version
         && let Some(number) = version.number
