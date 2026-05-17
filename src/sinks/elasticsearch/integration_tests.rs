@@ -110,7 +110,7 @@ async fn create_template_index(common: &ElasticsearchCommon, name: &str) -> crat
         }))
         .send()
         .await?;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status().as_u16(), 200);
     Ok(())
 }
 
@@ -806,7 +806,7 @@ async fn create_data_stream(common: &ElasticsearchCommon, name: &str) -> crate::
         .header("Content-Type", "application/json")
         .send()
         .await?;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status().as_u16(), 200);
     Ok(())
 }
 

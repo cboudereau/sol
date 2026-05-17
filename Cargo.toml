@@ -177,7 +177,7 @@ paste = { version = "1.0.15" }
 pin-project = { version = "1.1.10", default-features = false }
 proptest = { version = "1.8" }
 proptest-derive = { version = "0.6.0" }
-opentelemetry-proto = { version = "0.27", default-features = false, features = ["full", "with-serde"] }
+opentelemetry-proto = { version = "0.30", default-features = false, features = ["full", "with-serde"] }
 prost = { version = "0.13", default-features = false, features = ["std"] }
 prost-build = { version = "0.13", default-features = false }
 prost-reflect = { version = "0.14", features = ["serde"], default-features = false }
@@ -200,7 +200,6 @@ tokio-test = "0.4.5"
 tokio-tungstenite = { version = "0.26", default-features = false }
 toml = { version = "0.9.8", default-features = false, features = ["serde", "display", "parse"] }
 tonic = { version = "0.13", default-features = false, features = ["transport", "codegen", "tls-ring", "tls-native-roots", "gzip", "router", "prost"] }
-tonic_0_12 = { package = "tonic", version = "0.12", default-features = false, features = ["codegen", "transport", "router", "gzip", "prost"] }
 tonic-build = { version = "0.13", default-features = false, features = ["transport", "prost"] }
 tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3.22", default-features = false, features = ["fmt"]  }
@@ -438,7 +437,6 @@ tokio-tungstenite = { workspace = true, features = ["connect"], optional = true 
 toml.workspace = true
 hickory-proto = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
-tonic_0_12 = { workspace = true, optional = true }
 thread_local = { version = "1.1.9", default-features = false, optional = true }
 typetag = { version = "0.2.20", default-features = false }
 url.workspace = true
@@ -502,8 +500,6 @@ wiremock = "0.6.4"
 zstd = { version = "0.13.0", default-features = false }
 
 [patch.crates-io]
-# The upgrade for `tokio-util` >= 0.6.9 is blocked on https://github.com/vectordotdev/vector/issues/11257.
-tokio-util = { git = "https://github.com/vectordotdev/tokio", branch = "tokio-util-0.7.13-framed-read-continue-on-error" }
 nix = { git = "https://github.com/vectordotdev/nix.git", branch = "memfd/gnu/musl" }
 # The `heim` crates depend on `ntapi` 0.3.7 on Windows, but that version has an
 # unaligned access bug fixed in the following revision.
@@ -701,7 +697,6 @@ sources-opentelemetry = [
   "dep:prost",
   "dep:prost-types",
   "dep:tonic",
-  "dep:tonic_0_12",
   "protobuf-build",
   "sources-http_server",
   "sources-utils-http",
@@ -895,7 +890,7 @@ sinks-mqtt = ["dep:rumqttc"]
 sinks-nats = ["dep:async-nats", "dep:nkeys"]
 sinks-new_relic_logs = ["sinks-http"]
 sinks-new_relic = []
-sinks-opentelemetry = ["sinks-http", "codecs-opentelemetry", "sol-lib/opentelemetry", "dep:tonic_0_12"]
+sinks-opentelemetry = ["sinks-http", "codecs-opentelemetry", "sol-lib/opentelemetry", "dep:tonic"]
 sinks-papertrail = ["dep:syslog"]
 sinks-prometheus = ["dep:base64", "dep:prost", "sol-lib/prometheus"]
 sinks-postgres = ["dep:sqlx"]

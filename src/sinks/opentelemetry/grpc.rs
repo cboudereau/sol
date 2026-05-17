@@ -15,8 +15,8 @@ use sol_lib::{
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::{BatcherSettings, DriverResponse, batcher::data::BatchReduce},
 };
-use tonic_0_12::transport::Endpoint;
-use tonic_0_12::{IntoRequest, transport::Channel};
+use tonic::transport::Endpoint;
+use tonic::{IntoRequest, transport::Channel};
 use tower::{Service, ServiceBuilder};
 
 use snafu::Snafu;
@@ -38,7 +38,7 @@ use crate::{
 #[derive(Debug, Snafu)]
 pub enum OtlpGrpcError {
     #[snafu(display("gRPC request failed: {source}"))]
-    GrpcRequest { source: tonic_0_12::Status },
+    GrpcRequest { source: tonic::Status },
 }
 
 use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::collector::{
@@ -274,9 +274,9 @@ impl OtlpGrpcService {
         let mut metrics = MetricsServiceClient::new(channel.clone());
         let mut traces = TraceServiceClient::new(channel);
         if compression {
-            logs = logs.send_compressed(tonic_0_12::codec::CompressionEncoding::Gzip);
-            metrics = metrics.send_compressed(tonic_0_12::codec::CompressionEncoding::Gzip);
-            traces = traces.send_compressed(tonic_0_12::codec::CompressionEncoding::Gzip);
+            logs = logs.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+            metrics = metrics.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+            traces = traces.send_compressed(tonic::codec::CompressionEncoding::Gzip);
         }
         let protocol = endpoint.split("://").next().unwrap_or("http").to_string();
         Self {
@@ -348,7 +348,7 @@ impl RetryLogic for OtlpRetryLogic {
     type Response = OtlpResponse;
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
-        use tonic_0_12::Code;
+        use tonic::Code;
         match error {
             OtlpGrpcError::GrpcRequest { source } => matches!(
                 source.code(),
@@ -729,6 +729,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
 
         // Simulate what promote_resource_attrs does
@@ -797,7 +798,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_unavailable() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::unavailable("service unavailable"),
+            source: tonic::Status::unavailable("service unavailable"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -806,7 +807,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_deadline_exceeded() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::deadline_exceeded("timeout"),
+            source: tonic::Status::deadline_exceeded("timeout"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -815,7 +816,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_resource_exhausted() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::resource_exhausted("quota exceeded"),
+            source: tonic::Status::resource_exhausted("quota exceeded"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -824,7 +825,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_internal() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::internal("internal error"),
+            source: tonic::Status::internal("internal error"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -833,7 +834,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_unknown() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::unknown("unknown"),
+            source: tonic::Status::unknown("unknown"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -842,7 +843,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_aborted() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::aborted("aborted"),
+            source: tonic::Status::aborted("aborted"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -851,7 +852,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_cancelled() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::cancelled("cancelled"),
+            source: tonic::Status::cancelled("cancelled"),
         };
         assert!(logic.is_retriable_error(&err));
     }
@@ -860,7 +861,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_invalid_argument() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::invalid_argument("bad request"),
+            source: tonic::Status::invalid_argument("bad request"),
         };
         assert!(!logic.is_retriable_error(&err));
     }
@@ -869,7 +870,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_unimplemented() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::unimplemented("not supported"),
+            source: tonic::Status::unimplemented("not supported"),
         };
         assert!(!logic.is_retriable_error(&err));
     }
@@ -878,7 +879,7 @@ mod tests {
     fn test_otlp_grpc_retry_logic_permission_denied() {
         let logic = OtlpRetryLogic;
         let err = OtlpGrpcError::GrpcRequest {
-            source: tonic_0_12::Status::permission_denied("denied"),
+            source: tonic::Status::permission_denied("denied"),
         };
         assert!(!logic.is_retriable_error(&err));
     }

@@ -37,24 +37,8 @@ use sol_lib::{
     schema::Definition,
     tls::{MaybeTlsSettings, TlsEnableableConfig},
 };
-use tonic::service::RoutesBuilder;
-use tonic_0_12::codec::CompressionEncoding;
+use tonic::{codec::CompressionEncoding, service::RoutesBuilder};
 use vrl::value::{Kind, kind::Collection};
-
-use crate::sources::util::grpc::tonic_0_12_adapter;
-
-tonic_0_12_adapter!(
-    LogsServiceAdapter,
-    "opentelemetry.proto.collector.logs.v1.LogsService"
-);
-tonic_0_12_adapter!(
-    MetricsServiceAdapter,
-    "opentelemetry.proto.collector.metrics.v1.MetricsService"
-);
-tonic_0_12_adapter!(
-    TraceServiceAdapter,
-    "opentelemetry.proto.collector.trace.v1.TraceService"
-);
 
 pub use super::grpc::{LOGS, METRICS, TRACES};
 
@@ -183,9 +167,9 @@ impl SourceConfig for OpentelemetryConfig {
 
         let mut builder = RoutesBuilder::default();
         builder
-            .add_service(LogsServiceAdapter(log_service))
-            .add_service(MetricsServiceAdapter(metrics_service))
-            .add_service(TraceServiceAdapter(trace_service));
+            .add_service(log_service)
+            .add_service(metrics_service)
+            .add_service(trace_service);
 
         let grpc_source = run_grpc_server_with_routes(
             self.grpc.address,

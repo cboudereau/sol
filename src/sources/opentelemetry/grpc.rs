@@ -25,7 +25,7 @@ use sol_lib::{
         },
     },
 };
-use tonic_0_12::{Request, Response, Status};
+use tonic::{Request, Response, Status};
 
 use crate::{
     SharedSourceSender,
@@ -44,7 +44,7 @@ pub(crate) struct Service {
     pub bytes_received: Registered<BytesReceived>,
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl TraceService for Service {
     async fn export(
         &self,
@@ -64,7 +64,7 @@ impl TraceService for Service {
     }
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl LogsService for Service {
     async fn export(
         &self,
@@ -84,7 +84,7 @@ impl LogsService for Service {
     }
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl MetricsService for Service {
     async fn export(
         &self,

@@ -265,6 +265,7 @@ fn build_trace_resource(hostname: &str, env: &str, service: Option<&str>) -> Res
     Resource {
         attributes: attrs,
         dropped_attributes_count: 0,
+        ..Default::default()
     }
 }
 

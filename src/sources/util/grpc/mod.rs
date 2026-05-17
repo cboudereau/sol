@@ -1,100 +1,24 @@
 use std::{
     convert::Infallible,
-    future::Future,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures::FutureExt;
+use pin_project::pin_project;
 use tonic::{
     body::Body as TonicBody, server::NamedService, service::Routes, transport::server::Server,
 };
 use tower::{Layer, Service};
-use tracing::Span;
+use tracing::{Instrument, Span};
 
 use crate::{
     internal_events::{GrpcServerRequestReceived, GrpcServerResponseSent},
     shutdown::{ShutdownSignal, ShutdownSignalToken},
     tls::MaybeTlsSettings,
 };
-
-/// Macro to create a tonic 0.13-compatible adapter for a tonic 0.12 gRPC service.
-///
-/// This exists because opentelemetry-proto 0.27 depends on tonic 0.12 while
-/// the rest of the crate uses tonic 0.13. The two versions have incompatible
-/// body and trait types, so we bridge them by wrapping each tonic 0.12 service
-/// in a newtype that implements tonic 0.13's `NamedService` and `Service` traits.
-///
-/// Usage:
-/// ```ignore
-/// tonic_0_12_adapter!(LogsAdapter, "opentelemetry.proto.collector.logs.v1.LogsService");
-/// let adapted = LogsAdapter(log_service);
-/// builder.add_service(adapted);
-/// ```
-#[cfg(any(
-    feature = "sources-opentelemetry",
-    feature = "component-validation-runner"
-))]
-macro_rules! tonic_0_12_adapter {
-    ($name:ident, $service_name:literal) => {
-        #[derive(Clone)]
-        pub(crate) struct $name<S>(pub S);
-
-        impl<S> tonic::server::NamedService for $name<S> {
-            const NAME: &'static str = $service_name;
-        }
-
-        impl<S> tower::Service<http::Request<tonic::body::Body>> for $name<S>
-        where
-            S: tower::Service<
-                    http::Request<tonic_0_12::body::BoxBody>,
-                    Response = http::Response<tonic_0_12::body::BoxBody>,
-                    Error = std::convert::Infallible,
-                > + Clone
-                + Send
-                + 'static,
-            S::Future: Send + 'static,
-        {
-            type Response = http::Response<tonic::body::Body>;
-            type Error = std::convert::Infallible;
-            type Future = std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
-            >;
-
-            fn poll_ready(
-                &mut self,
-                cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<Result<(), Self::Error>> {
-                self.0.poll_ready(cx)
-            }
-
-            fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
-                use http_body_util::BodyExt;
-                // Convert request body: tonic 0.13 Body -> tonic 0.12 BoxBody
-                let req = req.map(|body| {
-                    body.map_err(|e| -> tonic_0_12::Status {
-                        tonic_0_12::Status::internal(e.to_string())
-                    })
-                    .boxed_unsync()
-                });
-                let fut = self.0.call(req);
-                Box::pin(async move {
-                    let resp = fut.await?;
-                    // Convert response body: tonic 0.12 BoxBody -> tonic 0.13 Body
-                    Ok(resp.map(tonic::body::Body::new))
-                })
-            }
-        }
-    };
-}
-
-#[cfg(any(
-    feature = "sources-opentelemetry",
-    feature = "component-validation-runner"
-))]
-pub(crate) use tonic_0_12_adapter;
 
 fn grpc_server_builder() -> Server {
     Server::builder()
@@ -202,7 +126,8 @@ where
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future =
+        tracing::instrument::Instrumented<GrpcTraceResponseFuture<S::Future>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -223,18 +148,40 @@ where
 
         emit!(GrpcServerRequestReceived);
 
-        let start = std::time::Instant::now();
         let fut = self.inner.call(req);
 
-        let future = async move {
-            let result = fut.await;
-            let latency = start.elapsed();
-            if let Ok(ref response) = result {
-                emit!(GrpcServerResponseSent { response, latency });
-            }
-            result
-        };
+        GrpcTraceResponseFuture {
+            inner: fut,
+            start: Instant::now(),
+        }
+        .instrument(request_span)
+    }
+}
 
-        Box::pin(tracing::Instrument::instrument(future, request_span))
+#[pin_project]
+struct GrpcTraceResponseFuture<F> {
+    #[pin]
+    inner: F,
+    start: Instant,
+}
+
+impl<F, E> std::future::Future for GrpcTraceResponseFuture<F>
+where
+    F: std::future::Future<Output = Result<http::Response<TonicBody>, E>>,
+{
+    type Output = Result<http::Response<TonicBody>, E>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        match this.inner.poll(cx) {
+            Poll::Ready(result) => {
+                let latency = this.start.elapsed();
+                if let Ok(ref response) = result {
+                    emit!(GrpcServerResponseSent { response, latency });
+                }
+                Poll::Ready(result)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

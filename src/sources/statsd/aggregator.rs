@@ -860,6 +860,7 @@ mod tests {
         Resource {
             attributes: vec![],
             dropped_attributes_count: 0,
+            ..Default::default()
         }
     }
 

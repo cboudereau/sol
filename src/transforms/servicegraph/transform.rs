@@ -604,6 +604,7 @@ mod tests {
                 value: Some(string_value(service)),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         };
         let span = Span {
             trace_id: trace_id.to_vec(),

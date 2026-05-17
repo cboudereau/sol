@@ -64,6 +64,7 @@ fn value_to_otel_resource(val: &Value) -> Option<OtelResource> {
     Some(OtelResource {
         attributes,
         dropped_attributes_count,
+        ..Default::default()
     })
 }
 
@@ -312,6 +313,7 @@ fn value_to_otel_log_event(value: Value, metadata: EventMetadata) -> OtelLog {
         flags,
         dropped_attributes_count,
         attributes,
+        ..Default::default()
     };
 
     OtelLog::from_parts(record, resource, scope, metadata)

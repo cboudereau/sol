@@ -425,6 +425,7 @@ fn restore_resource(map: &mut ObjectMap) -> (Option<Resource>, OtelAttributes) {
             let resource = Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: dropped_count,
+                ..Default::default()
             };
             (Some(resource), attrs)
         }
@@ -611,6 +612,7 @@ pub fn resource_to_proto(resource: Option<&Resource>, attrs: &OtelAttributes) ->
     let mut r = resource.cloned().unwrap_or(Resource {
         attributes: Vec::new(),
         dropped_attributes_count: 0,
+        ..Default::default()
     });
     r.attributes = attrs.to_key_values();
     Some(r)
@@ -1136,6 +1138,7 @@ impl OtelLog {
             self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
+                ..Default::default()
             }));
         }
     }
@@ -2102,6 +2105,7 @@ impl OtelLog {
             flags,
             dropped_attributes_count,
             attributes: Vec::new(),
+            ..Default::default()
         };
     }
 
@@ -2665,6 +2669,7 @@ impl OtelSpan {
             self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
+                ..Default::default()
             }));
         }
         Arc::make_mut(&mut self.resource_attrs).insert(key, value);
@@ -3350,6 +3355,7 @@ impl OtelSpan {
                     self.resource = Some(Arc::new(Resource {
                         attributes: Vec::new(),
                         dropped_attributes_count: 0,
+                        ..Default::default()
                     }));
                 }
                 if remaining.len() == 1 {

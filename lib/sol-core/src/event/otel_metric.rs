@@ -716,6 +716,7 @@ impl OtelMetric {
             self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
+                ..Default::default()
             }));
         }
         Arc::make_mut(&mut self.resource_attrs).insert(key, value);
@@ -836,6 +837,7 @@ impl OtelMetric {
                 self.resource = Some(Arc::new(Resource {
                     attributes: Vec::new(),
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }));
             }
             Arc::make_mut(&mut self.resource_attrs)

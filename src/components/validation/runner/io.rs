@@ -25,7 +25,7 @@ use sol_lib::{
     tls::MaybeTlsSettings,
 };
 use tokio::{pin, select, sync::mpsc};
-use tonic_0_12::{
+use tonic::{
     Request, Response, Status,
     codec::CompressionEncoding,
     transport::{Channel, Endpoint},
@@ -41,21 +41,8 @@ use crate::{
         otel_log_event_to_resource_logs, otel_metric_event_to_resource_metrics,
         otel_span_event_to_resource_spans,
     },
-    sources::util::grpc::{run_grpc_server_with_routes, tonic_0_12_adapter},
+    sources::util::grpc::run_grpc_server_with_routes,
 };
-
-tonic_0_12_adapter!(
-    LogsServiceAdapter,
-    "opentelemetry.proto.collector.logs.v1.LogsService"
-);
-tonic_0_12_adapter!(
-    MetricsServiceAdapter,
-    "opentelemetry.proto.collector.metrics.v1.MetricsService"
-);
-tonic_0_12_adapter!(
-    TraceServiceAdapter,
-    "opentelemetry.proto.collector.trace.v1.TraceService"
-);
 
 #[derive(Clone)]
 pub struct EventForwardService {
@@ -68,7 +55,7 @@ impl From<mpsc::Sender<Vec<Event>>> for EventForwardService {
     }
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl LogsService for EventForwardService {
     async fn export(
         &self,
@@ -90,7 +77,7 @@ impl LogsService for EventForwardService {
     }
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl MetricsService for EventForwardService {
     async fn export(
         &self,
@@ -112,7 +99,7 @@ impl MetricsService for EventForwardService {
     }
 }
 
-#[tonic_0_12::async_trait]
+#[tonic::async_trait]
 impl TraceService for EventForwardService {
     async fn export(
         &self,
@@ -244,21 +231,15 @@ pub fn spawn_otlp_grpc_server(
         let tls_settings = MaybeTlsSettings::from_config(None, true)
             .expect("should not fail to get empty TLS settings");
 
-        let log_service = LogsServiceAdapter(
-            LogsServiceServer::new(service.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .max_decoding_message_size(usize::MAX),
-        );
-        let metrics_service = MetricsServiceAdapter(
-            MetricsServiceServer::new(service.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .max_decoding_message_size(usize::MAX),
-        );
-        let trace_service = TraceServiceAdapter(
-            TraceServiceServer::new(service)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .max_decoding_message_size(usize::MAX),
-        );
+        let log_service = LogsServiceServer::new(service.clone())
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
+        let metrics_service = MetricsServiceServer::new(service.clone())
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
+        let trace_service = TraceServiceServer::new(service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(usize::MAX);
 
         let mut builder = tonic::service::RoutesBuilder::default();
         builder
