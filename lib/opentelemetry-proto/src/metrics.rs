@@ -80,6 +80,7 @@ mod tests {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             scope_metrics: vec![ScopeMetrics {
                 scope: Some(InstrumentationScope {
@@ -87,6 +88,7 @@ mod tests {
                     version: "2.0.0".to_string(),
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 metrics: vec![
                     Metric {

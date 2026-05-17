@@ -1999,6 +1999,7 @@ mod test {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         event.set_scope(OtelScope {
             name: "my-lib".to_string(),
@@ -2121,6 +2122,7 @@ mod test {
                 },
             ],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
 
         let info = make_empty_info();

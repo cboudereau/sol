@@ -3682,6 +3682,7 @@ dependencies = [
  "dnsmsg-parser",
  "hickory-proto",
  "paste",
+ "pastey",
  "prost 0.13.5",
  "prost-build 0.13.5",
  "snafu 0.8.9",
@@ -8020,6 +8021,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a797f0e07bdf071d15742978fc3128ec6c22891c31a3a931513263904c982a"
 
 [[package]]
 name = "pbkdf2"
