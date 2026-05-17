@@ -11232,7 +11232,6 @@ dependencies = [
  "rand 0.9.4",
  "rand_distr",
  "regex",
- "ryu",
  "schannel",
  "security-framework 3.7.0",
  "serde",
@@ -11261,6 +11260,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vrl",
+ "zmij",
 ]
 
 [[package]]
