@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Migration Strategy
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [FR5](../DESIGN.md#fr5), [FR6](../DESIGN.md#fr6), [FR7](../DESIGN.md#fr7), [FR8](../DESIGN.md#fr8), [FR9](../DESIGN.md#fr9), [FR10](../DESIGN.md#fr10)
+Addresses: [FR1](../../docs/designs/20260518_tonic-stack-upgrade.md#fr1), [FR2](../../docs/designs/20260518_tonic-stack-upgrade.md#fr2), [FR3](../../docs/designs/20260518_tonic-stack-upgrade.md#fr3), [FR4](../../docs/designs/20260518_tonic-stack-upgrade.md#fr4), [FR5](../../docs/designs/20260518_tonic-stack-upgrade.md#fr5), [FR6](../../docs/designs/20260518_tonic-stack-upgrade.md#fr6), [FR7](../../docs/designs/20260518_tonic-stack-upgrade.md#fr7), [FR8](../../docs/designs/20260518_tonic-stack-upgrade.md#fr8), [FR9](../../docs/designs/20260518_tonic-stack-upgrade.md#fr9), [FR10](../../docs/designs/20260518_tonic-stack-upgrade.md#fr10)
 
 ## Problem
 

@@ -157,7 +157,7 @@ The upgrade should replace existing crates with their successors (hyper-openssl 
 
 ### Decisions
 
-- [Migration strategy](./adrs/migration-strategy.md)
+- [Migration strategy](../adrs/0035-migration-strategy.md)
 
 ## Cross-cutting Concerns
 
