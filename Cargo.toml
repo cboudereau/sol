@@ -340,7 +340,8 @@ smpl_jwt = { version = "0.8.0", default-features = false, optional = true }
 lapin = { version = "2.5.3", default-features = false, features = ["native-tls"], optional = true }
 deadpool = { version = "0.12.2", default-features = false, features = ["managed", "rt_tokio_1"], optional = true }
 
-# API
+# API — RC required: async-graphql-warp 7.x depends on warp 0.3 / hyper 0.14;
+# 8.x is the only version compatible with warp 0.4. No stable 8.0 release exists yet.
 async-graphql = { version = "8.0.0-rc.5", default-features = false, optional = true, features = ["chrono", "graphiql"] }
 async-graphql-warp = { version = "8.0.0-rc.5", default-features = false, optional = true }
 

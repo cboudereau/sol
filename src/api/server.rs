@@ -9,12 +9,19 @@ use async_graphql::{
     http::{GraphiQLSource, WebSocketProtocols},
 };
 use async_graphql_warp::{GraphQLResponse, GraphQLWebSocket, graphql_protocol};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use sol_lib::tap::topology;
 use tokio::{runtime::Handle, sync::oneshot};
+use tower::ServiceBuilder;
+use tracing::Span;
 use warp::{Filter, Reply, filters::BoxedFilter, http::Response, ws::Ws};
 
 use super::{handler, schema};
-use crate::config::{self, api};
+use crate::{
+    config::{self, api},
+    http::build_http_trace_layer,
+    internal_events::{SocketBindError, SocketMode},
+};
 
 pub struct Server {
     _shutdown: oneshot::Sender<()>,
@@ -38,19 +45,53 @@ impl Server {
 
         let addr = config.api.address.expect("No socket address");
 
+        let std_listener = std::net::TcpListener::bind(addr).inspect_err(|error| {
+            emit!(SocketBindError {
+                mode: SocketMode::Tcp,
+                error,
+            });
+        })?;
+        std_listener.set_nonblocking(true)?;
+
         // Update component schema with the config before starting the server.
         schema::components::update_config(config);
 
-        // Spawn the server in the background using warp's built-in server.
+        let span = Span::current();
+
+        // Spawn the server in the background using a manual accept loop
+        // (same pattern as HTTP sources) so we can apply the trace layer.
         handle.spawn(async move {
-            warp::serve(routes)
-                .bind(addr)
-                .await
-                .graceful(async {
-                    rx.await.ok();
-                })
-                .run()
-                .await;
+            let listener = tokio::net::TcpListener::from_std(std_listener)
+                .expect("failed to create tokio TcpListener");
+            let shutdown = async {
+                rx.await.ok();
+            };
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let (stream, _) = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting API connection: {err:?}.");
+                                continue;
+                            }
+                        };
+                        let svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .service(warp::service(routes.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(stream);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
         });
 
         Ok(Self { _shutdown, addr })

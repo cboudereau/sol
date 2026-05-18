@@ -105,9 +105,23 @@ fn check_response(res: &HttpResponse) -> bool {
 /// connector from aws-smithy-http-client. Custom proxy/TLS support needs to be re-implemented
 /// using the new aws_smithy_http_client::Builder API.
 fn connector(
-    _proxy: &ProxyConfig,
-    _tls_options: Option<&TlsConfig>,
+    proxy: &ProxyConfig,
+    tls_options: Option<&TlsConfig>,
 ) -> crate::Result<SharedHttpClient> {
+    if proxy.http.is_some() || proxy.https.is_some() {
+        warn!(
+            message = "Custom proxy configuration is not yet supported with the upgraded AWS SDK. \
+                        Proxy settings will be ignored for AWS requests. \
+                        See: https://github.com/vectordotdev/vector/issues/XXXXX"
+        );
+    }
+    if tls_options.is_some() {
+        warn!(
+            message = "Custom TLS configuration is not yet supported with the upgraded AWS SDK. \
+                        TLS settings will be ignored for AWS requests (default HTTPS will be used). \
+                        See: https://github.com/vectordotdev/vector/issues/XXXXX"
+        );
+    }
     Ok(HyperClientBuilder::new().build_https())
 }
 

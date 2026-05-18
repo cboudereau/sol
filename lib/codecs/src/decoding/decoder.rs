@@ -91,8 +91,14 @@ impl tokio_util::codec::Decoder for Decoder {
     }
 
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let frame = self.framer.decode_eof(buf);
-        self.handle_framing_result(frame)
+        loop {
+            let frame = self.framer.decode_eof(buf);
+            match self.handle_framing_result(frame) {
+                Ok(result) => return Ok(result),
+                Err(Error::ParsingError(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -108,6 +114,49 @@ mod tests {
         JsonDeserializer, NewlineDelimitedDecoder,
         decoding::{Deserializer, Framer},
     };
+
+    #[tokio::test]
+    async fn framed_read_skips_all_invalid_frames() {
+        let iter = stream::iter(
+            ["invalid1\n", "invalid2\n", "{ \"ok\": true }\n"]
+                .into_iter()
+                .map(Bytes::from),
+        );
+        let stream = iter.map(Ok::<_, std::io::Error>);
+        let reader = StreamReader::new(stream);
+        let decoder = Decoder::new(
+            Framer::NewlineDelimited(NewlineDelimitedDecoder::new()),
+            Deserializer::Json(JsonDeserializer::default()),
+        );
+        let mut stream = FramedRead::new(reader, decoder);
+
+        let next = stream.next().await.unwrap();
+        let log = next.unwrap().0.pop().unwrap().into_log();
+        assert_eq!(
+            log.parse_path_and_get_value("ok").ok().flatten().unwrap(),
+            Value::from(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn framed_read_eof_skips_invalid() {
+        // Single chunk with no trailing newline — exercises decode_eof path
+        let iter = stream::iter(["invalid\n{ \"eof\": 1 }"].into_iter().map(Bytes::from));
+        let stream = iter.map(Ok::<_, std::io::Error>);
+        let reader = StreamReader::new(stream);
+        let decoder = Decoder::new(
+            Framer::NewlineDelimited(NewlineDelimitedDecoder::new()),
+            Deserializer::Json(JsonDeserializer::default()),
+        );
+        let mut stream = FramedRead::new(reader, decoder);
+
+        let next = stream.next().await.unwrap();
+        let log = next.unwrap().0.pop().unwrap().into_log();
+        assert_eq!(
+            log.parse_path_and_get_value("eof").ok().flatten().unwrap(),
+            Value::from(1)
+        );
+    }
 
     #[tokio::test]
     async fn framed_read_recover_from_error() {

@@ -9,6 +9,8 @@ DEFAULT_DURATION=60
 WARMUP=10
 DRAIN=5
 STATS_INTERVAL=5
+SOL_IMAGE="${SOL_IMAGE:-superbeeeeeee/sol:latest}"
+export SOL_IMAGE
 
 # ── CLI parsing ──────────────────────────────────────────────────
 SCENARIO_FILTER=""
@@ -45,8 +47,8 @@ mkdir -p "$RAW_DIR"
   docker version --format '{{.Server.Version}}' 2>/dev/null | xargs -I{} echo "Docker: {}"
   echo ""
   echo "=== Images ==="
-  echo "Sol image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}"
-  echo "Sol: $(docker run --rm "${SOL_IMAGE:-superbeeeeeee/sol:latest}" --version 2>&1 || echo 'N/A')"
+  echo "Sol image: ${SOL_IMAGE}"
+  echo "Sol: $(docker run --rm "${SOL_IMAGE}" --version 2>&1 || echo 'N/A')"
   echo "Vector: $(docker run --rm timberio/vector:latest-alpine --version 2>&1 || echo 'N/A')"
   echo "otelcol: otel/opentelemetry-collector-contrib:0.122.0"
 } > "$RAW_DIR/system-info.txt" 2>&1
