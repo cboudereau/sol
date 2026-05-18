@@ -24,7 +24,7 @@ use aws_sigv4::{
     sign::v4,
 };
 use aws_smithy_async::rt::sleep::TokioSleep;
-use aws_smithy_http_client::hyper_014::HyperClientBuilder;
+use aws_smithy_http_client::tls;
 use aws_smithy_runtime_api::client::{
     http::{
         HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
@@ -96,33 +96,51 @@ fn check_response(res: &HttpResponse) -> bool {
         || (status.is_client_error() && re.is_match(response_body.as_ref()))
 }
 
-/// Creates the http connector that has been configured to use the given proxy and TLS settings.
-/// All AWS requests should use this connector as the aws crates by default use RustTLS which we
-/// have turned off as we want to consistently use openssl.
-///
-/// TODO: The hyper_014::HyperClientBuilder uses legacy hyper 0.14 connectors. Our proxy and TLS
-/// connectors are built for hyper 1.x and are not compatible. For now, we use the built-in HTTPS
-/// connector from aws-smithy-http-client. Custom proxy/TLS support needs to be re-implemented
-/// using the new aws_smithy_http_client::Builder API.
 fn connector(
     proxy: &ProxyConfig,
-    tls_options: Option<&TlsConfig>,
+    _tls_options: Option<&TlsConfig>,
 ) -> crate::Result<SharedHttpClient> {
-    if proxy.http.is_some() || proxy.https.is_some() {
-        warn!(
-            message = "Custom proxy configuration is not yet supported with the upgraded AWS SDK. \
-                        Proxy settings will be ignored for AWS requests. \
-                        See: https://github.com/vectordotdev/vector/issues/XXXXX"
-        );
-    }
-    if tls_options.is_some() {
-        warn!(
-            message = "Custom TLS configuration is not yet supported with the upgraded AWS SDK. \
-                        TLS settings will be ignored for AWS requests (default HTTPS will be used). \
-                        See: https://github.com/vectordotdev/vector/issues/XXXXX"
-        );
-    }
-    Ok(HyperClientBuilder::new().build_https())
+    let smithy_proxy = if !proxy.enabled {
+        aws_smithy_http_client::proxy::ProxyConfig::disabled()
+    } else if let Some(url) = &proxy.https {
+        aws_smithy_http_client::proxy::ProxyConfig::https(url.as_str())
+            .map_err(|e| format!("invalid HTTPS proxy URL: {e}"))?
+    } else if let Some(url) = &proxy.http {
+        aws_smithy_http_client::proxy::ProxyConfig::http(url.as_str())
+            .map_err(|e| format!("invalid HTTP proxy URL: {e}"))?
+    } else {
+        aws_smithy_http_client::proxy::ProxyConfig::from_env()
+    };
+
+    let no_proxy_str = proxy.no_proxy.to_string();
+    let smithy_proxy = if no_proxy_str.is_empty() || !proxy.enabled {
+        smithy_proxy
+    } else {
+        smithy_proxy.no_proxy(&no_proxy_str)
+    };
+
+    Ok(
+        aws_smithy_http_client::Builder::new().build_with_connector_fn(
+            move |settings, components| {
+                let mut builder = aws_smithy_http_client::Connector::builder()
+                    .tls_provider(tls::Provider::Rustls(
+                        tls::rustls_provider::CryptoMode::Ring,
+                    ))
+                    .proxy_config(smithy_proxy.clone());
+
+                if let Some(settings) = settings {
+                    builder = builder.connector_settings(settings.clone());
+                }
+                if let Some(components) = components
+                    && let Some(sleep) = components.sleep_impl()
+                {
+                    builder = builder.sleep_impl(sleep);
+                }
+
+                builder.build()
+            },
+        ),
+    )
 }
 
 /// Implement for each AWS service to create the appropriate AWS sdk client.
