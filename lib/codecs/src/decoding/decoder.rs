@@ -133,8 +133,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn framed_read_eof_skips_invalid() {
-        // Single chunk with no trailing newline — exercises decode_eof path
+    async fn framed_read_eof_returns_trailing_valid_frame() {
+        // "invalid\n" is consumed by decode(); decode_eof handles the trailing valid frame
         let iter = stream::iter(["invalid\n{ \"eof\": 1 }"].into_iter().map(Bytes::from));
         let stream = iter.map(Ok::<_, std::io::Error>);
         let reader = StreamReader::new(stream);

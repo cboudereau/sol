@@ -96,18 +96,39 @@ fn check_response(res: &HttpResponse) -> bool {
         || (status.is_client_error() && re.is_match(response_body.as_ref()))
 }
 
+fn add_proxy_auth(
+    proxy: aws_smithy_http_client::proxy::ProxyConfig,
+    url: &str,
+) -> aws_smithy_http_client::proxy::ProxyConfig {
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(password) = parsed.password()
+    {
+        let user = percent_encoding::percent_decode_str(parsed.username()).decode_utf8_lossy();
+        let pass = percent_encoding::percent_decode_str(password).decode_utf8_lossy();
+        proxy.with_basic_auth(user.as_ref(), pass.as_ref())
+    } else {
+        proxy
+    }
+}
+
 fn connector(
     proxy: &ProxyConfig,
     _tls_options: Option<&TlsConfig>,
 ) -> crate::Result<SharedHttpClient> {
+    // AWS endpoints are HTTPS, so prefer the https proxy; fall back to http
+    // for local testing (e.g. localstack). Both configured simultaneously is
+    // uncommon — the old hyper_proxy2 code added both, but only the HTTPS
+    // proxy was ever matched for real AWS traffic.
     let smithy_proxy = if !proxy.enabled {
         aws_smithy_http_client::proxy::ProxyConfig::disabled()
     } else if let Some(url) = &proxy.https {
-        aws_smithy_http_client::proxy::ProxyConfig::https(url.as_str())
-            .map_err(|e| format!("invalid HTTPS proxy URL: {e}"))?
+        let p = aws_smithy_http_client::proxy::ProxyConfig::https(url.as_str())
+            .map_err(|e| format!("invalid HTTPS proxy URL: {e}"))?;
+        add_proxy_auth(p, url)
     } else if let Some(url) = &proxy.http {
-        aws_smithy_http_client::proxy::ProxyConfig::http(url.as_str())
-            .map_err(|e| format!("invalid HTTP proxy URL: {e}"))?
+        let p = aws_smithy_http_client::proxy::ProxyConfig::http(url.as_str())
+            .map_err(|e| format!("invalid HTTP proxy URL: {e}"))?;
+        add_proxy_auth(p, url)
     } else {
         aws_smithy_http_client::proxy::ProxyConfig::from_env()
     };
@@ -119,6 +140,9 @@ fn connector(
         smithy_proxy.no_proxy(&no_proxy_str)
     };
 
+    // build_with_connector_fn is #[doc(hidden)] in aws-smithy-http-client 1.1 —
+    // it is the only way to set proxy_config on the underlying ConnectorBuilder
+    // since Builder does not expose it. Revisit on SDK upgrades.
     Ok(
         aws_smithy_http_client::Builder::new().build_with_connector_fn(
             move |settings, components| {
