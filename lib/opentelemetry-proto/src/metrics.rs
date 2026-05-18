@@ -88,7 +88,6 @@ mod tests {
                     version: "2.0.0".to_string(),
                     attributes: vec![],
                     dropped_attributes_count: 0,
-                    ..Default::default()
                 }),
                 metrics: vec![
                     Metric {

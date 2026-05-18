@@ -850,10 +850,8 @@ pub trait HttpServiceRequestBuilder<T: Send> {
 /// Generic 'Service' implementation for HTTP stream sinks.
 #[derive(Clone)]
 pub struct HttpService<B, T: Send> {
-    batch_service: HttpBatchService<
-        std::future::Ready<Result<Request<Bytes>, crate::Error>>,
-        HttpRequest<T>,
-    >,
+    batch_service:
+        HttpBatchService<std::future::Ready<Result<Request<Bytes>, crate::Error>>, HttpRequest<T>>,
     _phantom: PhantomData<B>,
 }
 
@@ -903,12 +901,13 @@ where
 {
     type Response = HttpResponse;
     type Error = crate::Error;
-    type Future = HttpServiceFuture<
-        <HttpBatchService<
-            std::future::Ready<Result<Request<Bytes>, crate::Error>>,
-            HttpRequest<T>,
-        > as Service<HttpRequest<T>>>::Future,
-    >;
+    type Future =
+        HttpServiceFuture<
+            <HttpBatchService<
+                std::future::Ready<Result<Request<Bytes>, crate::Error>>,
+                HttpRequest<T>,
+            > as Service<HttpRequest<T>>>::Future,
+        >;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -1026,7 +1025,7 @@ mod test {
                                 .map_err(|error| format!("error: {error}"))?
                                 .to_bytes();
                             let string = String::from_utf8(body.to_vec())
-                                    .map_err(|_| "Wasn't UTF-8".to_string())?;
+                                .map_err(|_| "Wasn't UTF-8".to_string())?;
                             tx.try_send(string).map_err(|_| "Send error".to_string())?;
 
                             Ok::<_, String>(http::Response::new(Full::new(Bytes::from(""))))

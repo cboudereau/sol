@@ -1,4 +1,4 @@
-FROM ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.137.0 AS telemetrygen
+FROM ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.152.0 AS telemetrygen
 
 # Use alpine as base to get shell utilities
 FROM alpine:3.20

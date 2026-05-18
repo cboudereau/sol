@@ -98,7 +98,6 @@ mod tests {
                     version: "3.0.0".to_string(),
                     attributes: vec![],
                     dropped_attributes_count: 0,
-                    ..Default::default()
                 }),
                 log_records: vec![
                     LogRecord {

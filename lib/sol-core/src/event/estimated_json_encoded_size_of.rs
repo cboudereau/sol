@@ -574,7 +574,6 @@ mod tests {
         got == want.len().into()
     }
 
-
     #[quickcheck]
     fn estimate_str(v: String) -> TestResult {
         if is_inaccurately_counted_bytes(v.as_bytes()) {

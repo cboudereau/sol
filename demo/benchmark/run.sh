@@ -45,6 +45,7 @@ mkdir -p "$RAW_DIR"
   docker version --format '{{.Server.Version}}' 2>/dev/null | xargs -I{} echo "Docker: {}"
   echo ""
   echo "=== Images ==="
+  echo "Sol image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}"
   echo "Sol: $(docker run --rm "${SOL_IMAGE:-superbeeeeeee/sol:latest}" --version 2>&1 || echo 'N/A')"
   echo "Vector: $(docker run --rm timberio/vector:latest-alpine --version 2>&1 || echo 'N/A')"
   echo "otelcol: otel/opentelemetry-collector-contrib:0.122.0"
@@ -442,10 +443,14 @@ declare -a NOOP_SCENARIOS=(
   "noop-logs-grpc-10k|logs|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-logs-grpc-10k-gzip|logs|grpc|10000|4|$DEFAULT_DURATION||gzip"
   "noop-logs-grpc-50k|logs|grpc|50000|8|$DEFAULT_DURATION||"
+  "noop-logs-grpc-10k-batch|logs|grpc|10000|4|$DEFAULT_DURATION|--batch --batch-size=500|"
+  "noop-logs-grpc-50k-batch|logs|grpc|50000|8|$DEFAULT_DURATION|--batch --batch-size=500|"
   "noop-logs-http-10k|logs|http|10000|4|$DEFAULT_DURATION||"
   "noop-metrics-grpc-10k|metrics|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-metrics-grpc-10k-gzip|metrics|grpc|10000|4|$DEFAULT_DURATION||gzip"
   "noop-metrics-grpc-50k|metrics|grpc|50000|8|$DEFAULT_DURATION||"
+  "noop-metrics-grpc-10k-batch|metrics|grpc|10000|4|$DEFAULT_DURATION|--batch --batch-size=500|"
+  "noop-metrics-grpc-50k-batch|metrics|grpc|50000|8|$DEFAULT_DURATION|--batch --batch-size=500|"
   "noop-metrics-http-10k|metrics|http|10000|4|$DEFAULT_DURATION||"
 )
 
@@ -530,7 +535,7 @@ HEADER
   # Noop table (3 systems)
   echo '## Noop Pipeline (OTLP → null sink)' >> "$report"
   echo '' >> "$report"
-  echo '> Traces are batched (many spans per gRPC call). Logs send 1 log per gRPC call (no batch option) — this exposes per-request overhead.' >> "$report"
+  echo '> Traces are batched (many spans per gRPC call). Unbatched log/metric scenarios send 1 item per gRPC call (per-request overhead). Batched scenarios (`*-batch`) use `--batch-size=500` (realistic production batching).' >> "$report"
   echo '' >> "$report"
   echo '| Scenario | Sol rate | Vector rate | otelcol rate | Sol CPU | Vector CPU | otelcol CPU | Sol Mem | Vector Mem | otelcol Mem |' >> "$report"
   echo '|----------|---------|------------|-------------|---------|-----------|------------|---------|-----------|------------|' >> "$report"
@@ -610,8 +615,8 @@ HEADER
 
 ### Batching
 - `telemetrygen traces` batches by default: many spans per gRPC request — realistic production scenario
-- `telemetrygen logs` has no batch option — always 1 log per gRPC request (telemetrygen limitation)
-- Log scenarios expose per-request overhead differences between systems
+- Unbatched log/metric scenarios send 1 item per gRPC request — exposes per-request overhead
+- Batched log/metric scenarios (`*-batch`) use `--batch --batch-size=500` — realistic production batching
 
 ### Fairness measures
 - Identical resource limits (2 CPU / 2 GB per system) via Docker Compose

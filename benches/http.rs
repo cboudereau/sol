@@ -1,13 +1,14 @@
 use std::net::SocketAddr;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group};
-use futures::TryFutureExt;
-use hyper::{
-    Body, Response, Server,
-    service::{make_service_fn, service_fn},
-};
+use http_body_util::Empty;
+use hyper::Response;
+use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
 use sol::{
-    Error, config,
+    config,
     sinks::{
         self,
         util::{BatchConfig, Compression},
@@ -95,16 +96,22 @@ fn benchmark_http(c: &mut Criterion) {
 fn serve(addr: SocketAddr) -> Runtime {
     let rt = runtime();
     rt.spawn(async move {
-        let make_service = make_service_fn(|_| async {
-            Ok::<_, Error>(service_fn(|_req| async {
-                Ok::<_, Error>(Response::new(Body::empty()))
-            }))
-        });
-
-        Server::bind(&addr)
-            .serve(make_service)
-            .map_err(|e| panic!("{}", e))
-            .await
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            tokio::spawn(async move {
+                http1::Builder::new()
+                    .serve_connection(
+                        io,
+                        service_fn(|_req| async {
+                            Ok::<_, std::convert::Infallible>(Response::new(Empty::<Bytes>::new()))
+                        }),
+                    )
+                    .await
+                    .ok();
+            });
+        }
     });
     rt
 }

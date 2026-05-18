@@ -268,7 +268,6 @@ mod tests {
                         unit: String::new(),
                         metadata: vec![],
                         data: None,
-                        ..Default::default()
                     }],
                     schema_url: String::new(),
                 }],
@@ -306,7 +305,6 @@ mod tests {
                         dropped_links_count: 0,
                         status: None,
                         flags: 0,
-                        ..Default::default()
                     }],
                     schema_url: String::new(),
                 }],
