@@ -5,6 +5,8 @@
 Sol collects, transforms, and routes logs, metrics, and traces to any destination.
 Deploy as an agent, aggregator, or both.
 
+**Watch the demo**: 
+
 [![Watch the demo](https://i.ytimg.com/vi/DF6R7cKPg4M/hqdefault.jpg?sqp=-oaymwFBCNACELwBSFryq4qpAzMIARUAAIhCGAHYAQHiAQoIGBACGAY4AUAB8AEB-AH-CYAC0AWKAgwIABABGGUgYyhLMA8=&rs=AOn4CLD-4HAUlwugaIUsra4uGHm1ec3vAg)](https://www.youtube.com/watch?v=DF6R7cKPg4M)
 
 ## Quick start
