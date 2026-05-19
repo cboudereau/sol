@@ -329,6 +329,7 @@ mod tests {
                 value: Some(string_value(service)),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         };
         let attributes = extra_attrs;
         let span = Span {

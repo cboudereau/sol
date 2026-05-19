@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, future::ready, time::Duration};
 
+use bytes::Bytes;
 use chrono::Utc;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
+use http::Request;
 use http::uri::Scheme;
-use hyper::{Body, Request};
+use http_body_util::Full;
 use serde_with::serde_as;
 use snafu::ResultExt;
 use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
@@ -175,7 +177,7 @@ fn apache_metrics(
                 let sanitized_url = url.to_sanitized_string();
 
                 let request = Request::get(&url)
-                    .body(Body::empty())
+                    .body(Full::new(Bytes::new()))
                     .expect("error creating request");
 
                 let tags = otel_tags! {
@@ -189,7 +191,7 @@ fn apache_metrics(
                     .map_err(crate::Error::from)
                     .and_then(|response| async {
                         let (header, body) = response.into_parts();
-                        let body = http_body::Body::collect(body).await?.to_bytes();
+                        let body = http_body_util::BodyExt::collect(body).await?.to_bytes();
                         Ok((header, body))
                     })
                     .into_stream()
@@ -289,16 +291,10 @@ fn apache_metrics(
 
 #[cfg(test)]
 mod test {
-    use hyper::{
-        Body, Response, Server,
-        service::{make_service_fn, service_fn},
-    };
-    use similar_asserts::assert_eq;
-    use tokio::time::{Duration, sleep};
+    use std::convert::Infallible;
 
     use super::*;
     use crate::{
-        Error,
         config::SourceConfig,
         event::MetricView,
         test_util::{
@@ -307,6 +303,16 @@ mod test {
             components::{HTTP_PULL_SOURCE_TAGS, run_and_assert_source_compliance},
             wait_for_tcp,
         },
+    };
+    use bytes::Bytes;
+    use http::Response;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use similar_asserts::assert_eq;
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
     };
 
     #[test]
@@ -318,10 +324,8 @@ mod test {
     async fn test_apache_up() {
         let (_guard, in_addr) = next_addr();
 
-        let make_svc = make_service_fn(|_| async {
-            Ok::<_, Error>(service_fn(|_| async {
-                Ok::<_, Error>(Response::new(Body::from(
-                    r"
+        let body = Bytes::from(
+            r"
 localhost
 ServerVersion: Apache/2.4.46 (Unix)
 ServerMPM: event
@@ -360,13 +364,24 @@ ConnsAsyncKeepAlive: 0
 ConnsAsyncClosing: 0
 Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W__________________.....................................................................................................................................................................................................................................................................................................................................
                     ",
-                )))
-            }))
-        });
+        );
 
+        let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
-            if let Err(error) = Server::bind(&in_addr).serve(make_svc).await {
-                error!(message = "Server error.", %error);
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
+                        let body = body.clone();
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
+                    let io = TokioIo::new(stream);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                        .ok();
+                });
             }
         });
         wait_for_tcp(in_addr).await;
@@ -412,20 +427,25 @@ Scoreboard: ____S_____I______R____I_______KK___D__C__G_L____________W___________
     async fn test_apache_error() {
         let (_guard, in_addr) = next_addr();
 
-        let make_svc = make_service_fn(|_| async {
-            Ok::<_, Error>(service_fn(|_| async {
-                Ok::<_, Error>(
-                    Response::builder()
-                        .status(404)
-                        .body(Body::from("not found"))
-                        .unwrap(),
-                )
-            }))
-        });
-
+        let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
-            if let Err(error) = Server::bind(&in_addr).serve(make_svc).await {
-                error!(message = "Server error.", %error);
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let svc = service_fn(|_: http::Request<hyper::body::Incoming>| async {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(404)
+                                .body(Full::new(Bytes::from("not found")))
+                                .unwrap(),
+                        )
+                    });
+                    let io = TokioIo::new(stream);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                        .ok();
+                });
             }
         });
         wait_for_tcp(in_addr).await;

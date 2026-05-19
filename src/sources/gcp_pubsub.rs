@@ -1080,7 +1080,7 @@ mod integration_tests {
                 .unwrap();
             let response = self.client.send(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            let body = http_body::Body::collect(response.into_body())
+            let body = http_body_util::BodyExt::collect(response.into_body())
                 .await
                 .unwrap()
                 .to_bytes();

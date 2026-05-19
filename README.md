@@ -24,6 +24,10 @@ sol --config /etc/sol/sol.yaml
 
 ## Why Sol?
 
+### Efficient
+
+Sol does the same work as the OpenTelemetry Collector with a fraction of the resources with **up to 4x less memory**. For load-balanced tail sampling, Sol uses **5x less CPU** while matching throughput, and delivers **nearly 2x the throughput** at high load.
+
 ### OTLP-native
 
 Sol speaks OpenTelemetry natively. Data enters and exits as standard OTLP — no lossy conversion, no vendor-specific attributes injected into your telemetry. This means clean, spec-compliant output and fewer surprises downstream.
@@ -31,10 +35,6 @@ Sol speaks OpenTelemetry natively. Data enters and exits as standard OTLP — no
 ### Tail sampling done right
 
 Decide per-trace after all spans arrive: keep errors, slow requests, sample everything else. Sol's `tail_sampling` transform supports AND/OR policy composition, regex matching, and first-match-wins evaluation — in a single transform. Paired with trace-aware load balancing (consistent-hash on `trace_id`), Sol handles the full multi-collector deployment pattern out of the box.
-
-### Efficient
-
-Written in Rust. **4–5x less memory** and **up to 45% less CPU** than the OpenTelemetry Collector at equal or higher throughput. **26–45x faster** than Vector on gRPC logs and metrics.
 
 ### Drop-in replacement
 
@@ -50,33 +50,35 @@ The real-world deployment pattern — load balancer routing by traceID to collec
 
 | Scenario | Sol | otelcol | Throughput | CPU | Memory |
 |---|---|---|---|---|---|
-| LB + tail sampling 10k | 10,978/s | 11,057/s | 99% | **4x less** (16% vs 65%) | **16% less** (143 vs 170 MiB) |
-| LB + tail sampling 50k | 51,818/s | 49,783/s | **104%** | **45% less** (130% vs 238%) | **22% less** (233 vs 297 MiB) |
+| LB + tail sampling 10k | 11,969/s | 12,791/s | 94% | **5.5x less** (25% vs 137%) | **12% less** (162 vs 184 MiB) |
+| LB + tail sampling 50k | 46,726/s | 24,175/s | **193%** | **41% less** (133% vs 227%) | ~same (231 vs 219 MiB) |
 
 ### Tail sampling (single collector)
 
 | Scenario | Sol | otelcol | Throughput | CPU |
 |---|---|---|---|---|
-| Tail sampling 10k | 11,416/s | 11,513/s | 99% | **4.7x less** (8% vs 38%) |
-| Tail sampling 50k | 90,662/s | 67,465/s | **134%** | **24% less** (84% vs 111%) |
+| Tail sampling 10k | 12,402/s | 12,946/s | 96% | **3.0x less** (17% vs 51%) |
+| Tail sampling 50k | 56,821/s | 48,819/s | **116%** | **26% less** (99% vs 134%) |
 
 ### Noop pipeline (OTLP source to null sink)
 
-| Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector | CPU | Memory |
-|---|---|---|---|---|---|---|---|
-| Traces gRPC 10k | 10,089/s | 10,088/s | 10,015/s | 100% | 101% | **36% less** (4% vs 7%) | **5x less** (12 vs 61 MiB) |
-| Traces gRPC 50k | 81,766/s | 89,865/s | 27,025/s | 91% | **3.0x** | **30% less** (47% vs 67%) | **4.5x less** (13 vs 57 MiB) |
-| Logs gRPC 10k | 4,382/s | 4,077/s | 99/s | **107%** | **44x** | **17% less** (181% vs 218%) | **4.4x less** (11 vs 48 MiB) |
-| Logs gRPC 50k | 5,054/s | 4,875/s | 192/s | **104%** | **26x** | **17% less** (179% vs 215%) | **4.4x less** (12 vs 52 MiB) |
-| Metrics gRPC 10k | 4,404/s | 4,064/s | 97/s | **108%** | **45x** | **15% less** (183% vs 215%) | **4.4x less** (11 vs 48 MiB) |
-| Metrics gRPC 50k | 5,215/s | 4,997/s | 192/s | **104%** | **27x** | **15% less** (182% vs 214%) | **4.2x less** (13 vs 52 MiB) |
+> Traces are batched by telemetrygen (many spans per gRPC call). Log/metric scenarios use `--batch-size=500` for production-realistic batching. All systems use identical resource limits (2 CPU / 2 GB).
+
+| Scenario | Sol | otelcol | Vector | Sol / otelcol | Sol / Vector |
+|---|---|---|---|---|---|
+| Traces gRPC 10k | 11,540/s | 12,224/s | 11,168/s | 94% | 103% |
+| Traces gRPC 50k | 51,139/s | 57,107/s | 7,739/s | 90% | **6.6x** |
+| Logs batched 50k | 138,643/s | 143,398/s | 114,418/s | 97% | **121%** |
+| Metrics batched 50k | 114,325/s | 118,199/s | 104,396/s | 97% | **110%** |
+
+Sol uses ~11 MiB in noop scenarios vs ~47 MiB for otelcol — **4x less memory**.
 
 ### Sustained memory (5-minute runs)
 
 | Scenario | Sol (start / end) | otelcol (start / end) |
 |---|---|---|
-| Noop logs 10k | 11 / 10 MiB | 47 / 48 MiB |
-| Tail sampling 10k | 26 / 159 MiB | 50 / 203 MiB |
+| Noop logs 10k | 11 / 11 MiB | 35 / 35 MiB |
+| Tail sampling 10k | 19 / 163 MiB | 49 / 185 MiB |
 
 <details>
 <summary>Reproduce</summary>

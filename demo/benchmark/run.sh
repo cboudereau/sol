@@ -9,6 +9,9 @@ DEFAULT_DURATION=60
 WARMUP=10
 DRAIN=5
 STATS_INTERVAL=5
+SOL_IMAGE="${SOL_IMAGE:-superbeeeeeee/sol:latest}"
+SOL_MAIN_IMAGE="${SOL_MAIN_IMAGE:-superbeeeeeee/sol:v0.2.0}"
+export SOL_IMAGE SOL_MAIN_IMAGE
 
 # ── CLI parsing ──────────────────────────────────────────────────
 SCENARIO_FILTER=""
@@ -45,7 +48,10 @@ mkdir -p "$RAW_DIR"
   docker version --format '{{.Server.Version}}' 2>/dev/null | xargs -I{} echo "Docker: {}"
   echo ""
   echo "=== Images ==="
-  echo "Sol: $(docker run --rm "${SOL_IMAGE:-superbeeeeeee/sol:latest}" --version 2>&1 || echo 'N/A')"
+  echo "Sol image: ${SOL_IMAGE}"
+  echo "Sol (main): ${SOL_MAIN_IMAGE}"
+  echo "Sol: $(docker run --rm "${SOL_IMAGE}" --version 2>&1 || echo 'N/A')"
+  echo "Sol (main): $(docker run --rm "${SOL_MAIN_IMAGE}" --version 2>&1 || echo 'N/A')"
   echo "Vector: $(docker run --rm timberio/vector:latest-alpine --version 2>&1 || echo 'N/A')"
   echo "otelcol: otel/opentelemetry-collector-contrib:0.122.0"
 } > "$RAW_DIR/system-info.txt" 2>&1
@@ -176,6 +182,46 @@ json_field() {
   python3 -c "import json; d=json.load(open('$1')); print(d${2})" 2>/dev/null || echo "N/A"
 }
 
+ratio_table() {
+  local raw_dir="$1"; shift
+  local json_files=("$@")
+  python3 -c "
+import json, re, sys
+
+def mem_to_mb(s):
+    m = re.match(r'([\d.]+)\s*(MiB|GiB|KiB|B)', str(s))
+    if not m: return 0.0
+    v, u = float(m.group(1)), m.group(2)
+    if u == 'GiB': return v * 1024
+    if u == 'KiB': return v / 1024
+    if u == 'B': return v / (1024 * 1024)
+    return v
+
+def ratio(a, b):
+    if b == 0: return 'N/A'
+    return f'{a / b:.2f}x'
+
+files = sys.argv[1:]
+rows = []
+for f in files:
+    try:
+        d = json.load(open(f))
+    except Exception:
+        continue
+    sol = d.get('sol', {})
+    otel = d.get('otelcontribcol', {})
+    sr, otr = sol.get('throughput_rate', 0), otel.get('throughput_rate', 0)
+    sc, otc = float(sol.get('peak_cpu_pct', '0')), float(otel.get('peak_cpu_pct', '0'))
+    sm, otm = mem_to_mb(sol.get('peak_mem', '0')), mem_to_mb(otel.get('peak_mem', '0'))
+    rows.append(f\"| {d['scenario']} | {ratio(sr, otr)} | {ratio(sc, otc)} | {ratio(sm, otm)} |\")
+
+print('| Scenario | Rate (Sol/otel) | CPU (Sol/otel) | Mem (Sol/otel) |')
+print('|----------|----------------|---------------|---------------|')
+for r in rows:
+    print(r)
+" "${json_files[@]}"
+}
+
 # ── Noop scenario runner (3 systems: Sol + Vector + otelcol) ─────
 
 run_noop_scenario() {
@@ -195,10 +241,11 @@ run_noop_scenario() {
 
   echo "  Starting services..."
   SOL_CONFIG=noop.yaml OTELCOL_CONFIG=noop.yml VECTOR_CONFIG=noop.yaml \
-    compose_vec up -d sol vector otelcontribcol prometheus
+    compose_vec up -d sol sol-main vector otelcontribcol prometheus
 
   echo "  Waiting for services..."
   wait_for_port localhost 4327 30
+  wait_for_port localhost 4367 30
   wait_for_port localhost 4357 30
   wait_for_port localhost 4317 30
   echo "  Services ready."
@@ -206,22 +253,24 @@ run_noop_scenario() {
   echo "  Warming up (${WARMUP}s)..."
   sleep "$WARMUP"
 
-  local sol_ctr vec_ctr otelcol_ctr
+  local sol_ctr sol_main_ctr vec_ctr otelcol_ctr
   sol_ctr="$(docker compose --profile vector ps --format '{{.Name}}' sol)"
+  sol_main_ctr="$(docker compose --profile vector ps --format '{{.Name}}' sol-main)"
   vec_ctr="$(docker compose --profile vector ps --format '{{.Name}}' vector)"
   otelcol_ctr="$(docker compose --profile vector ps --format '{{.Name}}' otelcontribcol)"
 
-  start_docker_stats "$RAW_DIR/docker-stats-${scenario}.csv" "$sol_ctr" "$vec_ctr" "$otelcol_ctr"
+  start_docker_stats "$RAW_DIR/docker-stats-${scenario}.csv" "$sol_ctr" "$sol_main_ctr" "$vec_ctr" "$otelcol_ctr"
 
-  local sol_ep vec_ep otelcol_ep
+  local sol_ep sol_main_ep vec_ep otelcol_ep
   if [[ "$protocol" == "http" ]]; then
-    sol_ep="sol:4318"; vec_ep="vector:4318"; otelcol_ep="otelcontribcol:4318"
+    sol_ep="sol:4318"; sol_main_ep="sol-main:4318"; vec_ep="vector:4318"; otelcol_ep="otelcontribcol:4318"
   else
-    sol_ep="sol:4317"; vec_ep="vector:4317"; otelcol_ep="otelcontribcol:4317"
+    sol_ep="sol:4317"; sol_main_ep="sol-main:4317"; vec_ep="vector:4317"; otelcol_ep="otelcontribcol:4317"
   fi
 
   echo "  Starting telemetrygen..."
   run_tgen "tgen-sol" "$sol_ep" "$signal" "$protocol" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
+  run_tgen "tgen-sol-main" "$sol_main_ep" "$signal" "$protocol" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
   run_tgen "tgen-vec" "$vec_ep" "$signal" "$protocol" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
   run_tgen "tgen-otelcol" "$otelcol_ep" "$signal" "$protocol" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
   wait_tgen "$duration"
@@ -237,22 +286,26 @@ run_noop_scenario() {
     metrics) otelcol_metric_name="otelcol_receiver_accepted_metric_points" ;;
   esac
 
-  local sol_total vec_total otelcol_total
+  local sol_total sol_main_total vec_total otelcol_total
   sol_total="$(scrape_events_total "http://localhost:9598/metrics" "sol_sol" "otlp" "$signal")"
+  sol_main_total="$(scrape_events_total "http://localhost:9601/metrics" "sol_sol" "otlp" "$signal")"
   vec_total="$(scrape_events_total "http://localhost:9600/metrics" "vector" "otlp" "$signal")"
   otelcol_total="$(scrape_otelcol_total "http://localhost:8888/metrics" "$otelcol_metric_name")"
 
-  local sol_rate vec_rate otelcol_rate
+  local sol_rate sol_main_rate vec_rate otelcol_rate
   sol_rate="$(to_rate "$sol_total" "$duration")"
+  sol_main_rate="$(to_rate "$sol_main_total" "$duration")"
   vec_rate="$(to_rate "$vec_total" "$duration")"
   otelcol_rate="$(to_rate "$otelcol_total" "$duration")"
 
   local csv="$RAW_DIR/docker-stats-${scenario}.csv"
-  local sol_cpu vec_cpu otelcol_cpu sol_mem vec_mem otelcol_mem
+  local sol_cpu sol_main_cpu vec_cpu otelcol_cpu sol_mem sol_main_mem vec_mem otelcol_mem
   sol_cpu="$(peak_cpu "$csv" "-sol-[0-9]")"
+  sol_main_cpu="$(peak_cpu "$csv" "-sol-main-[0-9]")"
   vec_cpu="$(peak_cpu "$csv" "-vector-[0-9]")"
   otelcol_cpu="$(peak_cpu "$csv" "-otelcontribcol-")"
   sol_mem="$(peak_mem "$csv" "-sol-[0-9]")"
+  sol_main_mem="$(peak_mem "$csv" "-sol-main-[0-9]")"
   vec_mem="$(peak_mem "$csv" "-vector-[0-9]")"
   otelcol_mem="$(peak_mem "$csv" "-otelcontribcol-")"
 
@@ -260,14 +313,16 @@ run_noop_scenario() {
 {
   "scenario": "$scenario",
   "sol": { "total_events": $sol_total, "throughput_rate": $sol_rate, "peak_cpu_pct": "$sol_cpu", "peak_mem": "$sol_mem" },
+  "sol_main": { "total_events": $sol_main_total, "throughput_rate": $sol_main_rate, "peak_cpu_pct": "$sol_main_cpu", "peak_mem": "$sol_main_mem" },
   "vector": { "total_events": $vec_total, "throughput_rate": $vec_rate, "peak_cpu_pct": "$vec_cpu", "peak_mem": "$vec_mem" },
   "otelcontribcol": { "total_events": $otelcol_total, "throughput_rate": $otelcol_rate, "peak_cpu_pct": "$otelcol_cpu", "peak_mem": "$otelcol_mem" }
 }
 ENDJSON
 
-  echo "  Sol:    rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
-  echo "  Vector: rate=${vec_rate}/s total=${vec_total} cpu=${vec_cpu}% mem=${vec_mem}"
-  echo "  otelcol: rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
+  echo "  Sol:      rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
+  echo "  Sol main: rate=${sol_main_rate}/s total=${sol_main_total} cpu=${sol_main_cpu}% mem=${sol_main_mem}"
+  echo "  Vector:   rate=${vec_rate}/s total=${vec_total} cpu=${vec_cpu}% mem=${vec_mem}"
+  echo "  otelcol:  rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
 
   stop_docker_stats
   compose_vec down --timeout 5 2>/dev/null || true
@@ -291,23 +346,26 @@ run_tail_sampling_scenario() {
 
   echo "  Starting services..."
   SOL_CONFIG=tail-sampling.yaml OTELCOL_CONFIG=tail-sampling.yml \
-    compose up -d sol otelcontribcol prometheus
+    compose up -d sol sol-main otelcontribcol prometheus
 
   echo "  Waiting for services..."
   wait_for_port localhost 4327 30
+  wait_for_port localhost 4367 30
   wait_for_port localhost 4317 30
   echo "  Services ready."
 
   echo "  Warming up (${WARMUP}s)..."
   sleep "$WARMUP"
 
-  local sol_ctr otelcol_ctr
+  local sol_ctr sol_main_ctr otelcol_ctr
   sol_ctr="$(docker compose ps --format '{{.Name}}' sol)"
+  sol_main_ctr="$(docker compose ps --format '{{.Name}}' sol-main)"
   otelcol_ctr="$(docker compose ps --format '{{.Name}}' otelcontribcol)"
-  start_docker_stats "$RAW_DIR/docker-stats-${scenario}.csv" "$sol_ctr" "$otelcol_ctr"
+  start_docker_stats "$RAW_DIR/docker-stats-${scenario}.csv" "$sol_ctr" "$sol_main_ctr" "$otelcol_ctr"
 
   echo "  Starting telemetrygen..."
   run_tgen "tgen-sol" "sol:4317" "traces" "grpc" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
+  run_tgen "tgen-sol-main" "sol-main:4317" "traces" "grpc" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
   run_tgen "tgen-otelcol" "otelcontribcol:4317" "traces" "grpc" "$rate" "$workers" "$duration" "$extra_tgen" "$compression"
   wait_tgen "$duration"
 
@@ -315,31 +373,37 @@ run_tail_sampling_scenario() {
   sleep "$DRAIN"
 
   echo "  Collecting metrics..."
-  local sol_total otelcol_total
+  local sol_total sol_main_total otelcol_total
   sol_total="$(scrape_events_total "http://localhost:9598/metrics" "sol_sol" "otlp" "traces")"
+  sol_main_total="$(scrape_events_total "http://localhost:9601/metrics" "sol_sol" "otlp" "traces")"
   otelcol_total="$(scrape_otelcol_total "http://localhost:8888/metrics" "otelcol_receiver_accepted_spans")"
 
-  local sol_rate otelcol_rate
+  local sol_rate sol_main_rate otelcol_rate
   sol_rate="$(to_rate "$sol_total" "$duration")"
+  sol_main_rate="$(to_rate "$sol_main_total" "$duration")"
   otelcol_rate="$(to_rate "$otelcol_total" "$duration")"
 
   local csv="$RAW_DIR/docker-stats-${scenario}.csv"
-  local sol_cpu otelcol_cpu sol_mem otelcol_mem
+  local sol_cpu sol_main_cpu otelcol_cpu sol_mem sol_main_mem otelcol_mem
   sol_cpu="$(peak_cpu "$csv" "-sol-[0-9]")"
+  sol_main_cpu="$(peak_cpu "$csv" "-sol-main-[0-9]")"
   otelcol_cpu="$(peak_cpu "$csv" "-otelcontribcol-")"
   sol_mem="$(peak_mem "$csv" "-sol-[0-9]")"
+  sol_main_mem="$(peak_mem "$csv" "-sol-main-[0-9]")"
   otelcol_mem="$(peak_mem "$csv" "-otelcontribcol-")"
 
   cat > "$RAW_DIR/${scenario}.json" <<ENDJSON
 {
   "scenario": "$scenario",
   "sol": { "total_events": $sol_total, "throughput_rate": $sol_rate, "peak_cpu_pct": "$sol_cpu", "peak_mem": "$sol_mem" },
+  "sol_main": { "total_events": $sol_main_total, "throughput_rate": $sol_main_rate, "peak_cpu_pct": "$sol_main_cpu", "peak_mem": "$sol_main_mem" },
   "otelcontribcol": { "total_events": $otelcol_total, "throughput_rate": $otelcol_rate, "peak_cpu_pct": "$otelcol_cpu", "peak_mem": "$otelcol_mem" }
 }
 ENDJSON
 
-  echo "  Sol:    rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
-  echo "  otelcol: rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
+  echo "  Sol:      rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
+  echo "  Sol main: rate=${sol_main_rate}/s total=${sol_main_total} cpu=${sol_main_cpu}% mem=${sol_main_mem}"
+  echo "  otelcol:  rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
 
   stop_docker_stats
   compose down --timeout 5 2>/dev/null || true
@@ -363,10 +427,11 @@ run_lb_scenario() {
   compose_lb down --remove-orphans --timeout 5 2>/dev/null || true
 
   echo "  Starting LB services..."
-  compose_lb up -d sol-lb sol-collector otelcol-lb otelcol-collector prometheus
+  compose_lb up -d sol-lb sol-collector sol-main-lb sol-main-collector otelcol-lb otelcol-collector prometheus
 
   echo "  Waiting for LB services..."
   wait_for_port localhost 4337 30
+  wait_for_port localhost 4377 30
   wait_for_port localhost 4347 30
   echo "  LB services ready."
 
@@ -382,6 +447,7 @@ run_lb_scenario() {
 
   echo "  Starting telemetrygen..."
   run_tgen "tgen-sol-lb" "sol-lb:4317" "traces" "grpc" "$rate" "$workers" "$duration" "" "$compression"
+  run_tgen "tgen-sol-main-lb" "sol-main-lb:4317" "traces" "grpc" "$rate" "$workers" "$duration" "" "$compression"
   run_tgen "tgen-otelcol-lb" "otelcol-lb:4317" "traces" "grpc" "$rate" "$workers" "$duration" "" "$compression"
   wait_tgen "$duration"
 
@@ -389,19 +455,26 @@ run_lb_scenario() {
   sleep "$DRAIN"
 
   echo "  Collecting LB metrics..."
-  local sol_total otelcol_total
+  local sol_total sol_main_total otelcol_total
   sol_total="$(scrape_events_total "http://localhost:9599/metrics" "sol_sol" "otlp" "traces")"
+  sol_main_total="$(scrape_events_total "http://localhost:9602/metrics" "sol_sol" "otlp" "traces")"
   otelcol_total="$(scrape_otelcol_total "http://localhost:8889/metrics" "otelcol_receiver_accepted_spans")"
 
-  local sol_rate otelcol_rate
+  local sol_rate sol_main_rate otelcol_rate
   sol_rate="$(to_rate "$sol_total" "$duration")"
+  sol_main_rate="$(to_rate "$sol_main_total" "$duration")"
   otelcol_rate="$(to_rate "$otelcol_total" "$duration")"
 
   local csv="$RAW_DIR/docker-stats-${scenario}.csv"
-  local sol_cpu otelcol_cpu sol_mem otelcol_mem
+  local sol_cpu sol_main_cpu otelcol_cpu sol_mem sol_main_mem otelcol_mem
 
   sol_cpu="$(awk -F, '
-    /-(sol-lb|sol-collector)-/ { gsub(/%/,"",$3); cpu[$1]+=$3+0 }
+    /-(sol-lb|sol-collector)-/ && !/sol-main/ { gsub(/%/,"",$3); cpu[$1]+=$3+0 }
+    END { max=0; for(ts in cpu) if(cpu[ts]>max) max=cpu[ts]; printf "%.1f",max }
+  ' "$csv" 2>/dev/null || echo "0")"
+
+  sol_main_cpu="$(awk -F, '
+    /-(sol-main-lb|sol-main-collector)-/ { gsub(/%/,"",$3); cpu[$1]+=$3+0 }
     END { max=0; for(ts in cpu) if(cpu[ts]>max) max=cpu[ts]; printf "%.1f",max }
   ' "$csv" 2>/dev/null || echo "0")"
 
@@ -410,19 +483,22 @@ run_lb_scenario() {
     END { max=0; for(ts in cpu) if(cpu[ts]>max) max=cpu[ts]; printf "%.1f",max }
   ' "$csv" 2>/dev/null || echo "0")"
 
-  sol_mem="$(peak_mem "$csv" "-(sol-lb|sol-collector)-")"
+  sol_mem="$(peak_mem "$csv" "-(sol-lb|sol-collector)-[0-9]")"
+  sol_main_mem="$(peak_mem "$csv" "-(sol-main-lb|sol-main-collector)-")"
   otelcol_mem="$(peak_mem "$csv" "-(otelcol-lb|otelcol-collector)-")"
 
   cat > "$RAW_DIR/${scenario}.json" <<ENDJSON
 {
   "scenario": "$scenario", "topology": "lb + 2x collector",
   "sol": { "total_events": $sol_total, "throughput_rate": $sol_rate, "peak_cpu_pct": "$sol_cpu", "peak_mem": "$sol_mem" },
+  "sol_main": { "total_events": $sol_main_total, "throughput_rate": $sol_main_rate, "peak_cpu_pct": "$sol_main_cpu", "peak_mem": "$sol_main_mem" },
   "otelcontribcol": { "total_events": $otelcol_total, "throughput_rate": $otelcol_rate, "peak_cpu_pct": "$otelcol_cpu", "peak_mem": "$otelcol_mem" }
 }
 ENDJSON
 
-  echo "  Sol:    rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
-  echo "  otelcol: rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
+  echo "  Sol:      rate=${sol_rate}/s total=${sol_total} cpu=${sol_cpu}% mem=${sol_mem}"
+  echo "  Sol main: rate=${sol_main_rate}/s total=${sol_main_total} cpu=${sol_main_cpu}% mem=${sol_main_mem}"
+  echo "  otelcol:  rate=${otelcol_rate}/s total=${otelcol_total} cpu=${otelcol_cpu}% mem=${otelcol_mem}"
 
   stop_docker_stats
   compose_lb down --timeout 5 2>/dev/null || true
@@ -442,10 +518,14 @@ declare -a NOOP_SCENARIOS=(
   "noop-logs-grpc-10k|logs|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-logs-grpc-10k-gzip|logs|grpc|10000|4|$DEFAULT_DURATION||gzip"
   "noop-logs-grpc-50k|logs|grpc|50000|8|$DEFAULT_DURATION||"
+  "noop-logs-grpc-10k-batch|logs|grpc|10000|4|$DEFAULT_DURATION|--batch --batch-size=500|"
+  "noop-logs-grpc-50k-batch|logs|grpc|50000|8|$DEFAULT_DURATION|--batch --batch-size=500|"
   "noop-logs-http-10k|logs|http|10000|4|$DEFAULT_DURATION||"
   "noop-metrics-grpc-10k|metrics|grpc|10000|4|$DEFAULT_DURATION||"
   "noop-metrics-grpc-10k-gzip|metrics|grpc|10000|4|$DEFAULT_DURATION||gzip"
   "noop-metrics-grpc-50k|metrics|grpc|50000|8|$DEFAULT_DURATION||"
+  "noop-metrics-grpc-10k-batch|metrics|grpc|10000|4|$DEFAULT_DURATION|--batch --batch-size=500|"
+  "noop-metrics-grpc-50k-batch|metrics|grpc|50000|8|$DEFAULT_DURATION|--batch --batch-size=500|"
   "noop-metrics-http-10k|metrics|http|10000|4|$DEFAULT_DURATION||"
 )
 
@@ -530,16 +610,16 @@ HEADER
   # Noop table (3 systems)
   echo '## Noop Pipeline (OTLP → null sink)' >> "$report"
   echo '' >> "$report"
-  echo '> Traces are batched (many spans per gRPC call). Logs send 1 log per gRPC call (no batch option) — this exposes per-request overhead.' >> "$report"
+  echo '> Traces are batched (many spans per gRPC call). Unbatched log/metric scenarios send 1 item per gRPC call (per-request overhead). Batched scenarios (`*-batch`) use `--batch-size=500` (realistic production batching).' >> "$report"
   echo '' >> "$report"
-  echo '| Scenario | Sol rate | Vector rate | otelcol rate | Sol CPU | Vector CPU | otelcol CPU | Sol Mem | Vector Mem | otelcol Mem |' >> "$report"
-  echo '|----------|---------|------------|-------------|---------|-----------|------------|---------|-----------|------------|' >> "$report"
+  echo '| Scenario | Sol rate | Sol (main) rate | Vector rate | otelcol rate | Sol CPU | Sol (main) CPU | Vector CPU | otelcol CPU | Sol Mem | Sol (main) Mem | Vector Mem | otelcol Mem |' >> "$report"
+  echo '|----------|---------|----------------|------------|-------------|---------|---------------|-----------|------------|---------|---------------|-----------|------------|' >> "$report"
 
   for entry in "${NOOP_SCENARIOS[@]}"; do
     IFS='|' read -r id signal protocol rate workers duration extra <<< "$entry"
     local f="$RAW_DIR/${id}.json"
     [[ -f "$f" ]] || continue
-    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['vector']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['vector']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['vector']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
+    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['sol_main']['throughput_rate']")/s | $(json_field "$f" "['vector']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['sol_main']['peak_cpu_pct']")% | $(json_field "$f" "['vector']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['sol_main']['peak_mem']") | $(json_field "$f" "['vector']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
   done
   echo '' >> "$report"
 
@@ -548,14 +628,14 @@ HEADER
   echo '' >> "$report"
   echo '> Both systems use two sequential tail_sampling stages (Sol: two transforms, otelcol: two processors).' >> "$report"
   echo '' >> "$report"
-  echo '| Scenario | Sol rate | otelcol rate | Sol CPU | otelcol CPU | Sol Mem | otelcol Mem |' >> "$report"
-  echo '|----------|---------|-------------|---------|------------|---------|------------|' >> "$report"
+  echo '| Scenario | Sol rate | Sol (main) rate | otelcol rate | Sol CPU | Sol (main) CPU | otelcol CPU | Sol Mem | Sol (main) Mem | otelcol Mem |' >> "$report"
+  echo '|----------|---------|----------------|-------------|---------|---------------|------------|---------|---------------|------------|' >> "$report"
 
   for entry in "${TS_SCENARIOS[@]}"; do
     IFS='|' read -r id rate workers duration extra <<< "$entry"
     local f="$RAW_DIR/${id}.json"
     [[ -f "$f" ]] || continue
-    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
+    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['sol_main']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['sol_main']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['sol_main']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
   done
   echo '' >> "$report"
 
@@ -564,14 +644,14 @@ HEADER
   echo '' >> "$report"
   echo '> 1 LB + 2 collectors per system (1 CPU / 1 GB each). Aggregated metrics.' >> "$report"
   echo '' >> "$report"
-  echo '| Scenario | Sol rate | otelcol rate | Sol CPU | otelcol CPU | Sol Mem | otelcol Mem |' >> "$report"
-  echo '|----------|---------|-------------|---------|------------|---------|------------|' >> "$report"
+  echo '| Scenario | Sol rate | Sol (main) rate | otelcol rate | Sol CPU | Sol (main) CPU | otelcol CPU | Sol Mem | Sol (main) Mem | otelcol Mem |' >> "$report"
+  echo '|----------|---------|----------------|-------------|---------|---------------|------------|---------|---------------|------------|' >> "$report"
 
   for entry in "${LB_SCENARIOS[@]}"; do
     IFS='|' read -r id rate workers duration <<< "$entry"
     local f="$RAW_DIR/${id}.json"
     [[ -f "$f" ]] || continue
-    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
+    echo "| $id | $(json_field "$f" "['sol']['throughput_rate']")/s | $(json_field "$f" "['sol_main']['throughput_rate']")/s | $(json_field "$f" "['otelcontribcol']['throughput_rate']")/s | $(json_field "$f" "['sol']['peak_cpu_pct']")% | $(json_field "$f" "['sol_main']['peak_cpu_pct']")% | $(json_field "$f" "['otelcontribcol']['peak_cpu_pct']")% | $(json_field "$f" "['sol']['peak_mem']") | $(json_field "$f" "['sol_main']['peak_mem']") | $(json_field "$f" "['otelcontribcol']['peak_mem']") |" >> "$report"
   done
   echo '' >> "$report"
 
@@ -588,42 +668,83 @@ HEADER
       echo '| System | Mem (start) | Mem (end) |' >> "$report"
       echo '|--------|-----------|---------|' >> "$report"
       echo "| Sol | $(awk -F, '/-sol-[0-9]/{print $4;exit}' "$csv") | $(awk -F, '/-sol-[0-9]/{l=$4}END{print l}' "$csv") |" >> "$report"
+      echo "| Sol (main) | $(awk -F, '/-sol-main-[0-9]/{print $4;exit}' "$csv") | $(awk -F, '/-sol-main-[0-9]/{l=$4}END{print l}' "$csv") |" >> "$report"
       echo "| Vector | $(awk -F, '/-vector-[0-9]/{print $4;exit}' "$csv") | $(awk -F, '/-vector-[0-9]/{l=$4}END{print l}' "$csv") |" >> "$report"
       echo "| otelcol | $(awk -F, '/-otelcontribcol-/{print $4;exit}' "$csv") | $(awk -F, '/-otelcontribcol-/{l=$4}END{print l}' "$csv") |" >> "$report"
     else
       echo '| System | Mem (start) | Mem (end) |' >> "$report"
       echo '|--------|-----------|---------|' >> "$report"
       echo "| Sol | $(awk -F, '/-sol-[0-9]/{print $4;exit}' "$csv") | $(awk -F, '/-sol-[0-9]/{l=$4}END{print l}' "$csv") |" >> "$report"
+      echo "| Sol (main) | $(awk -F, '/-sol-main-[0-9]/{print $4;exit}' "$csv") | $(awk -F, '/-sol-main-[0-9]/{l=$4}END{print l}' "$csv") |" >> "$report"
       echo "| otelcol | $(awk -F, '/-otelcontribcol-/{print $4;exit}' "$csv") | $(awk -F, '/-otelcontribcol-/{l=$4}END{print l}' "$csv") |" >> "$report"
     fi
     echo '' >> "$report"
   done
+
+  # Ratio tables
+  echo '## Sol / otelcol Ratios' >> "$report"
+  echo '' >> "$report"
+  echo '> Rate: >1x = Sol faster. CPU & Mem: <1x = Sol more efficient.' >> "$report"
+  echo '' >> "$report"
+
+  echo '### Noop' >> "$report"
+  echo '' >> "$report"
+  local noop_jsons=()
+  for entry in "${NOOP_SCENARIOS[@]}"; do
+    IFS='|' read -r id rest <<< "$entry"
+    [[ -f "$RAW_DIR/${id}.json" ]] && noop_jsons+=("$RAW_DIR/${id}.json")
+  done
+  ratio_table "$RAW_DIR" "${noop_jsons[@]}" >> "$report"
+  echo '' >> "$report"
+
+  echo '### Tail Sampling' >> "$report"
+  echo '' >> "$report"
+  local ts_jsons=()
+  for entry in "${TS_SCENARIOS[@]}"; do
+    IFS='|' read -r id rest <<< "$entry"
+    [[ -f "$RAW_DIR/${id}.json" ]] && ts_jsons+=("$RAW_DIR/${id}.json")
+  done
+  ratio_table "$RAW_DIR" "${ts_jsons[@]}" >> "$report"
+  echo '' >> "$report"
+
+  echo '### Load-Balanced Tail Sampling' >> "$report"
+  echo '' >> "$report"
+  local lb_jsons=()
+  for entry in "${LB_SCENARIOS[@]}"; do
+    IFS='|' read -r id rest <<< "$entry"
+    [[ -f "$RAW_DIR/${id}.json" ]] && lb_jsons+=("$RAW_DIR/${id}.json")
+  done
+  ratio_table "$RAW_DIR" "${lb_jsons[@]}" >> "$report"
+  echo '' >> "$report"
 
   # Methodology
   cat >> "$report" <<'METHODOLOGY'
 ## Methodology
 
 ### Systems under test
-- **Sol**: Vector fork with OTLP-native core, tail_sampling, trace-aware load balancing
+- **Sol**: Vector fork with OTLP-native core, tail_sampling, trace-aware load balancing (`SOL_IMAGE`)
+- **Sol (main)**: Sol at `superbeeeeeee/sol:v0.2.0` (last release) — baseline for branch-vs-main regression detection under identical system load
 - **Vector**: Upstream Vector (same codebase minus Sol additions) — baseline for regression detection
 - **otelcol**: OpenTelemetry Collector Contrib — the reference Go implementation
 
 ### Batching
 - `telemetrygen traces` batches by default: many spans per gRPC request — realistic production scenario
-- `telemetrygen logs` has no batch option — always 1 log per gRPC request (telemetrygen limitation)
-- Log scenarios expose per-request overhead differences between systems
+- Unbatched log/metric scenarios send 1 item per gRPC request — exposes per-request overhead
+- Batched log/metric scenarios (`*-batch`) use `--batch --batch-size=500` — realistic production batching
 
 ### Fairness measures
 - Identical resource limits (2 CPU / 2 GB per system) via Docker Compose
 - Null sinks: Sol/Vector `blackhole`, otelcol `nop`
 - Separate telemetrygen per system, identical config — each system gets the load it can handle
 - CPU/memory from `docker stats` (identical measurement)
+- Sol and Sol (main) run simultaneously so system-level variance cancels out in branch-vs-main comparisons
 
 ### How to reproduce
 ```bash
 cd demo/benchmark
 bash run.sh                                              # all scenarios
 bash run.sh --scenario noop-traces-grpc-10k --duration 15  # single scenario
+SOL_IMAGE=my-branch:latest SOL_MAIN_IMAGE=superbeeeeeee/sol:latest bash run.sh  # branch vs main
 ```
 METHODOLOGY
 

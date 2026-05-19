@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{FutureExt, future::BoxFuture};
-use hyper::client::connect::dns::Name;
+use hyper_util::client::legacy::connect::dns::Name;
 use snafu::ResultExt;
 use tokio::task::spawn_blocking;
 use tower::Service;

@@ -1,10 +1,11 @@
 use std::{convert::Infallible, future::Future};
 
+use bytes::Bytes;
 use http::{Request, Response, Uri, uri::Scheme};
-use hyper::{
-    Body, Server,
-    service::{make_service_fn, service_fn},
-};
+use http_body_util::Full;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
 
 use super::{addr::next_addr, wait_for_tcp};
 
@@ -14,8 +15,8 @@ use super::{addr::next_addr, wait_for_tcp};
 /// is up and ready for requests. The returned `Uri` is configured for the appropriate address.
 pub async fn spawn_blackhole_http_server<H, F>(handler: H) -> Uri
 where
-    H: Fn(Request<Body>) -> F + Clone + Send + 'static,
-    F: Future<Output = std::result::Result<Response<Body>, Infallible>> + Send + 'static,
+    H: Fn(Request<hyper::body::Incoming>) -> F + Clone + Send + 'static,
+    F: Future<Output = std::result::Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
 {
     let (_guard, address) = next_addr();
 
@@ -26,18 +27,29 @@ where
         .build()
         .expect("URI should always be valid when starting from `SocketAddr`");
 
-    let make_service = make_service_fn(move |_| {
-        let handler = handler.clone();
-        let service = service_fn(handler);
-
-        async move { Ok::<_, Infallible>(service) }
-    });
-
-    let server = Server::bind(&address).serve(make_service);
+    let listener = TcpListener::bind(&address)
+        .await
+        .expect("Failed to bind TCP listener for blackhole HTTP server");
 
     tokio::spawn(async move {
-        if let Err(error) = server.await {
-            error!(message = "Blackhole HTTP server error.", ?error);
+        loop {
+            let (stream, _peer_addr) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(error) => {
+                    error!(message = "Blackhole HTTP server accept error.", ?error);
+                    continue;
+                }
+            };
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                if let Err(error) = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service_fn(handler))
+                    .await
+                {
+                    error!(message = "Blackhole HTTP server connection error.", ?error);
+                }
+            });
         }
     });
 
@@ -47,6 +59,8 @@ where
 }
 
 /// Responds to every request with a 200 OK response.
-pub async fn always_200_response(_: Request<Body>) -> Result<Response<Body>, Infallible> {
-    Ok(Response::new(Body::empty()))
+pub async fn always_200_response(
+    _: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    Ok(Response::new(Full::new(Bytes::new())))
 }

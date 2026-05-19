@@ -9,7 +9,8 @@ use bytes::{Buf, Bytes};
 use flate2::read::{MultiGzDecoder, ZlibDecoder};
 use futures::stream;
 use headers::{Authorization, HeaderMapExt};
-use hyper::{Body, Method, Response, StatusCode};
+use http_body_util::Full;
+use hyper::{Method, Response, StatusCode};
 use serde::de;
 use sol_lib::{
     codecs::{
@@ -416,10 +417,10 @@ async fn retries_on_temporary_error() {
                 // Send a temporary error for the first two responses
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::empty())
+                    .body(Full::new(Bytes::new()))
                     .unwrap_or_else(|_| unreachable!())
             } else {
-                Response::new(Body::empty())
+                Response::new(Full::new(Bytes::new()))
             }
         });
 

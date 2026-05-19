@@ -91,7 +91,10 @@ impl WebSocketSink {
         // using NonZeroU64 that is not something we need to account for.
         let mut ping_interval = PingInterval::new(self.ping_interval.map(u64::from));
 
-        if let Err(error) = ws_sink.send(Message::Ping(PING.to_vec())).await {
+        if let Err(error) = ws_sink
+            .send(Message::Ping(bytes::Bytes::from_static(PING)))
+            .await
+        {
             emit!(WebSocketConnectionError { error });
             return Err(());
         }
@@ -105,7 +108,7 @@ impl WebSocketSink {
             let result = tokio::select! {
                 _ = ping_interval.tick() => {
                     match self.check_received_pong_time(last_pong) {
-                        Ok(()) => ws_sink.send(Message::Ping(PING.to_vec())).await.map(|_| ()),
+                        Ok(()) => ws_sink.send(Message::Ping(bytes::Bytes::from_static(PING))).await.map(|_| ()),
                         Err(e) => Err(e)
                     }
                 },
@@ -144,7 +147,7 @@ impl WebSocketSink {
                                 Message::binary(bytes)
                             }
                             else {
-                                Message::text(String::from_utf8_lossy(&bytes))
+                                Message::Text(String::from_utf8_lossy(&bytes).into_owned().into())
                             };
                             let message_len = message.len();
 
@@ -441,7 +444,7 @@ mod tests {
                                 .filter_map(|msg| {
                                     future::ready(match msg {
                                         Ok(msg) if msg.is_text() => {
-                                            Some(Ok(msg.into_text().unwrap()))
+                                            Some(Ok(msg.into_text().unwrap().to_string()))
                                         }
                                         Err(TungsteniteError::Protocol(
                                             ProtocolError::ResetWithoutClosingHandshake,

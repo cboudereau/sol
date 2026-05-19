@@ -185,7 +185,9 @@ async fn correct_request() {
         let tx = tx.clone();
         async move {
             tx.send(request).await.unwrap();
-            Ok(Response::new(hyper::Body::empty()))
+            Ok(Response::new(
+                http_body_util::Full::new(bytes::Bytes::new()),
+            ))
         }
     })
     .await;
@@ -206,7 +208,10 @@ async fn correct_request() {
     let (parts, body) = request.into_parts();
     assert_eq!(&parts.method.to_string(), "POST");
 
-    let body = http_body::Body::collect(body).await.unwrap().to_bytes();
+    let body = http_body_util::BodyExt::collect(body)
+        .await
+        .unwrap()
+        .to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body[..]).unwrap();
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 2);

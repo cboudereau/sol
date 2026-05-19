@@ -1,6 +1,6 @@
 use headers::Authorization;
 use http::uri::InvalidUri;
-use hyper_proxy::{Custom, Intercept, Proxy, ProxyConnector};
+use hyper_proxy2::{Custom, Intercept, Proxy, ProxyConnector};
 use no_proxy::NoProxy;
 use sol_config::configurable_component;
 use url::Url;

@@ -8,7 +8,7 @@ use http::{
     HeaderName, HeaderValue, Request, StatusCode, Uri,
     header::{self, HeaderMap},
 };
-use hyper::Body;
+use http_body_util::Full;
 use openssl::{base64, hash, pkey, sign};
 use regex::Regex;
 use sol_lib::lookup::lookup_v2::OwnedValuePath;
@@ -174,10 +174,10 @@ impl AzureMonitorLogsService {
         ))
     }
 
-    fn build_request(&self, body: Bytes) -> crate::Result<Request<Body>> {
+    fn build_request(&self, body: Bytes) -> crate::Result<Request<Full<Bytes>>> {
         let len = body.len();
 
-        let mut request = Request::post(&self.endpoint).body(Body::from(body))?;
+        let mut request = Request::post(&self.endpoint).body(Full::new(body))?;
 
         let rfc1123date = chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S GMT")

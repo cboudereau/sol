@@ -226,6 +226,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 scope_logs: vec![ScopeLogs {
                     scope: None,
@@ -240,6 +241,7 @@ mod tests {
                         trace_id: vec![],
                         span_id: vec![],
                         observed_time_unix_nano: 0,
+                        ..Default::default()
                     }],
                     schema_url: String::new(),
                 }],
@@ -256,6 +258,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 scope_metrics: vec![ScopeMetrics {
                     scope: None,
@@ -281,6 +284,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 scope_spans: vec![ScopeSpans {
                     scope: None,

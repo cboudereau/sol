@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use futures::FutureExt;
 use http::{StatusCode, Uri};
-use hyper::Body;
+use http_body_util::Full;
 use snafu::Snafu;
 use sol_lib::configurable::configurable_component;
 
@@ -115,7 +115,7 @@ pub fn build_healthcheck(
 ) -> crate::Result<Healthcheck> {
     let healthcheck = async move {
         let uri = base_url.parse::<Uri>()?;
-        let mut request = http::Request::head(uri).body(Body::empty())?;
+        let mut request = http::Request::head(uri).body(Full::new(bytes::Bytes::new()))?;
 
         auth.apply(&mut request);
 
@@ -129,7 +129,7 @@ pub fn build_healthcheck(
 }
 
 pub fn healthcheck_response(
-    response: http::Response<hyper::Body>,
+    response: http::Response<hyper::body::Incoming>,
     not_found_error: crate::Error,
 ) -> crate::Result<()> {
     match response.status() {

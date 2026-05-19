@@ -2,6 +2,7 @@
 allow = [
   "0BSD",
   "Apache-2.0",
+  "BlueOak-1.0.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",
@@ -43,7 +44,6 @@ ignore = [
   # There is not fix available yet.
   # https://github.com/vectordotdev/vector/issues/19262
   "RUSTSEC-2023-0071",
-  { id = "RUSTSEC-2021-0139", reason = " ansi_term is unmaintained" },
   { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained" },
   { id = "RUSTSEC-2024-0384", reason = "instant is unmaintained" },
   { id = "RUSTSEC-2020-0168", reason = "mach is unmaintained" },
@@ -58,7 +58,6 @@ ignore = [
   { id = "RUSTSEC-2026-0098", reason = "rustls-webpki URI name constraints — awaiting upstream fix" },
   { id = "RUSTSEC-2026-0099", reason = "rustls-webpki wildcard name constraints — awaiting upstream fix" },
   { id = "RUSTSEC-2026-0104", reason = "rustls-webpki CRL parsing panic — awaiting upstream fix" },
-  { id = "RUSTSEC-2026-0105", reason = "core2 is unmaintained" },
   { id = "RUSTSEC-2026-0118", reason = "hickory-proto NSEC3 unbounded loop — awaiting upstream fix" },
   { id = "RUSTSEC-2026-0119", reason = "hickory-proto O(n²) name compression — awaiting upstream fix" },
   { id = "RUSTSEC-2026-0058", reason = "tokio-io is unmaintained — transitive via futures-util" },

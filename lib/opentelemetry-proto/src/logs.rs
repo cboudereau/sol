@@ -90,6 +90,7 @@ mod tests {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             scope_logs: vec![ScopeLogs {
                 scope: Some(InstrumentationScope {
@@ -117,6 +118,7 @@ mod tests {
                         span_id: vec![0xCD; 8],
                         flags: 1,
                         dropped_attributes_count: 0,
+                        ..Default::default()
                     },
                     LogRecord {
                         body: Some(AnyValue {

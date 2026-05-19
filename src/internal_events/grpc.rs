@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use http_1::response::Response;
+use http::response::Response;
 use metrics::{counter, histogram};
 use sol_lib::NamedInternalEvent;
 use sol_lib::internal_event::InternalEvent;

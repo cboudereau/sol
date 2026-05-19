@@ -28,7 +28,6 @@ use tokio::{pin, select, sync::mpsc};
 use tonic::{
     Request, Response, Status,
     codec::CompressionEncoding,
-    service::RoutesBuilder,
     transport::{Channel, Endpoint},
 };
 
@@ -136,7 +135,7 @@ pub struct OutputEdge {
 
 impl InputEdge {
     pub fn from_address(address: GrpcAddress) -> Self {
-        let uri: http_1::Uri = address.as_uri().to_string().parse().expect("valid URI");
+        let uri: http::Uri = address.as_uri().to_string().parse().expect("valid URI");
         let channel = Endpoint::from(uri).connect_lazy();
         Self {
             logs_client: LogsServiceClient::new(channel.clone()),
@@ -242,7 +241,7 @@ pub fn spawn_otlp_grpc_server(
             .accept_compressed(CompressionEncoding::Gzip)
             .max_decoding_message_size(usize::MAX);
 
-        let mut builder = RoutesBuilder::default();
+        let mut builder = tonic::service::RoutesBuilder::default();
         builder
             .add_service(log_service)
             .add_service(metrics_service)

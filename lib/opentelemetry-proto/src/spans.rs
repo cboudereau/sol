@@ -79,6 +79,7 @@ mod tests {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             scope_spans: vec![ScopeSpans {
                 scope: Some(InstrumentationScope {

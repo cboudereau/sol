@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, env, time::Duration};
 
+use bytes::Bytes;
 use futures::StreamExt;
-use http_body::Collected;
-use hyper::{Body, Request};
+use http::Request;
+use http_body_util::{BodyExt as _, Collected, Full};
 use serde_with::serde_as;
 use sol_lib::event::otel_metric::{InstrumentationScope, Resource};
 use sol_lib::{
@@ -205,13 +206,15 @@ async fn aws_ecs_metrics(
     let bytes_received = register!(BytesReceived::from(Protocol::HTTP));
     while interval.next().await.is_some() {
         let request = Request::get(&url)
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .expect("error creating request");
         let uri = request.uri().clone();
 
         match http_client.send(request).await {
             Ok(response) if response.status() == hyper::StatusCode::OK => {
-                match http_body::Body::collect(response.into_body())
+                match response
+                    .into_body()
+                    .collect()
                     .await
                     .map(Collected::to_bytes)
                 {
@@ -275,15 +278,10 @@ async fn aws_ecs_metrics(
 
 #[cfg(test)]
 mod test {
-    use hyper::{
-        Body, Response, Server,
-        service::{make_service_fn, service_fn},
-    };
-    use tokio::time::Duration;
+    use std::convert::Infallible;
 
     use super::*;
     use crate::{
-        Error,
         event::MetricView,
         test_util::{
             addr::next_addr,
@@ -291,15 +289,19 @@ mod test {
             wait_for_tcp,
         },
     };
+    use bytes::Bytes;
+    use http::Response;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use tokio::{net::TcpListener, time::Duration};
 
     #[tokio::test]
     async fn test_aws_ecs_metrics_source() {
         let (_guard, in_addr) = next_addr();
 
-        let make_svc = make_service_fn(|_| async {
-            Ok::<_, Error>(service_fn(|_| async {
-                Ok::<_, Error>(Response::new(Body::from(
-                    r#"
+        let body = Bytes::from(
+            r#"
                     {
                         "0cf54b87-f0f0-4044-b9d6-20dc54d5c414-3822082590": {
                             "read": "2020-09-23T20:32:26.292561674Z",
@@ -591,13 +593,24 @@ mod test {
                         }
                     }
                     "#,
-                )))
-            }))
-        });
+        );
 
+        let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
-            if let Err(error) = Server::bind(&in_addr).serve(make_svc).await {
-                error!(message = "Server error.", %error);
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
+                        let body = body.clone();
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
+                    let io = TokioIo::new(stream);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                        .ok();
+                });
             }
         });
         wait_for_tcp(in_addr).await;

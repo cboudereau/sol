@@ -319,18 +319,23 @@ impl HttpClientContext for PrometheusScrapeContext {
 
 #[cfg(all(test, feature = "sinks-prometheus"))]
 mod test {
-    use http_body::Body as _;
-    use hyper::{
-        Body, Client, Response, Server,
-        service::{make_service_fn, service_fn},
-    };
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+    use http::Response;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
     use similar_asserts::assert_eq;
-    use tokio::time::{Duration, sleep};
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
+    };
     use warp::Filter;
 
     use super::*;
     use crate::{
-        Error, config,
+        config,
         http::{ParameterValue, QueryParameterValue},
         sinks::prometheus::exporter::PrometheusExporterConfig,
         test_util::{
@@ -635,10 +640,8 @@ mod test {
         let (_in_guard, in_addr) = next_addr();
         let (_out_guard, out_addr) = next_addr();
 
-        let make_svc = make_service_fn(|_| async {
-            Ok::<_, Error>(service_fn(|_| async {
-                Ok::<_, Error>(Response::new(Body::from(
-                    r#"
+        let body = Bytes::from(
+            r#"
                     # HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
                     # TYPE promhttp_metric_handler_requests_total counter
                     promhttp_metric_handler_requests_total{code="200"} 100 1612411516789
@@ -666,13 +669,24 @@ mod test {
                     rpc_duration_seconds_sum{code="200"} 1.7560473e+07 1612411516789
                     rpc_duration_seconds_count{code="200"} 2693 1612411516789
                     "#,
-                )))
-            }))
-        });
+        );
 
+        let listener = TcpListener::bind(&in_addr).await.unwrap();
         tokio::spawn(async move {
-            if let Err(error) = Server::bind(&in_addr).serve(make_svc).await {
-                error!(message = "Server error.", %error);
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |_: http::Request<hyper::body::Incoming>| {
+                        let body = body.clone();
+                        async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
+                    });
+                    let io = TokioIo::new(stream);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                        .ok();
+                });
             }
         });
         wait_for_tcp(in_addr).await;
@@ -713,13 +727,12 @@ mod test {
         let (topology, _) = start_topology(config.build().unwrap(), false).await;
         sleep(Duration::from_secs(1)).await;
 
-        let response = Client::new()
-            .get(format!("http://{out_addr}/metrics").parse().unwrap())
+        let response = reqwest::get(format!("http://{out_addr}/metrics"))
             .await
             .unwrap();
 
         assert!(response.status().is_success());
-        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = response.bytes().await.unwrap();
         let lines = std::str::from_utf8(&body)
             .unwrap()
             .lines()

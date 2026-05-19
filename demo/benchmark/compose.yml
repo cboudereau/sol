@@ -4,7 +4,7 @@ services:
   # ── Single-instance services (noop + tail-sampling scenarios) ──
 
   sol:
-    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    image: ${SOL_IMAGE}
     command: ["--config", "/etc/sol/${SOL_CONFIG:-noop.yaml}"]
     volumes:
       - ./sol/:/etc/sol/:ro
@@ -14,6 +14,23 @@ services:
       - "4327:4317"
       - "4328:4318"
       - "9598:9598"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  sol-main:
+    image: ${SOL_MAIN_IMAGE}
+    command: ["--config", "/etc/sol/${SOL_CONFIG:-noop.yaml}"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    ports:
+      - "4367:4317"
+      - "4368:4318"
+      - "9601:9598"
     deploy:
       resources:
         limits:
@@ -59,7 +76,7 @@ services:
   # ── Load-balanced services (lb-tail-sampling scenarios) ────────
 
   sol-lb:
-    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    image: ${SOL_IMAGE}
     command: ["--config", "/etc/sol/lb.yaml"]
     volumes:
       - ./sol/:/etc/sol/:ro
@@ -80,7 +97,44 @@ services:
           memory: 1G
 
   sol-collector:
-    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    image: ${SOL_IMAGE}
+    command: ["--config", "/etc/sol/lb-collector.yaml"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    profiles:
+      - lb
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  sol-main-lb:
+    image: ${SOL_MAIN_IMAGE}
+    command: ["--config", "/etc/sol/lb-main.yaml"]
+    volumes:
+      - ./sol/:/etc/sol/:ro
+    networks:
+      - bench
+    ports:
+      - "4377:4317"
+      - "4378:4318"
+      - "9602:9598"
+    depends_on:
+      - sol-main-collector
+    profiles:
+      - lb
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  sol-main-collector:
+    image: ${SOL_MAIN_IMAGE}
     command: ["--config", "/etc/sol/lb-collector.yaml"]
     volumes:
       - ./sol/:/etc/sol/:ro

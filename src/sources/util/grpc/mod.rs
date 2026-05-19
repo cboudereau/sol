@@ -1,16 +1,18 @@
 use std::{
     convert::Infallible,
-    future::Future,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures::FutureExt;
-use tonic::{body::BoxBody, server::NamedService, service::Routes, transport::server::Server};
+use pin_project::pin_project;
+use tonic::{
+    body::Body as TonicBody, server::NamedService, service::Routes, transport::server::Server,
+};
 use tower::{Layer, Service};
-use tracing::Span;
+use tracing::{Instrument, Span};
 
 use crate::{
     internal_events::{GrpcServerRequestReceived, GrpcServerResponseSent},
@@ -35,10 +37,11 @@ pub async fn run_grpc_server<S>(
     shutdown: ShutdownSignal,
 ) -> crate::Result<()>
 where
-    S: Service<http_1::Request<BoxBody>, Response = http_1::Response<BoxBody>, Error = Infallible>
+    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>, Error = Infallible>
         + NamedService
         + Clone
         + Send
+        + Sync
         + 'static,
     S::Future: Send + 'static,
 {
@@ -112,9 +115,9 @@ struct GrpcTraceService<S> {
     span: Span,
 }
 
-impl<S> Service<http_1::Request<BoxBody>> for GrpcTraceService<S>
+impl<S> Service<http::Request<TonicBody>> for GrpcTraceService<S>
 where
-    S: Service<http_1::Request<BoxBody>, Response = http_1::Response<BoxBody>>
+    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
         + Clone
         + Send
         + 'static,
@@ -123,13 +126,13 @@ where
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = tracing::instrument::Instrumented<GrpcTraceResponseFuture<S::Future>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: http_1::Request<BoxBody>) -> Self::Future {
+    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
         let path = req.uri().path();
         let mut parts = path.split('/');
         let service = parts.nth(1).unwrap_or("_unknown");
@@ -144,18 +147,40 @@ where
 
         emit!(GrpcServerRequestReceived);
 
-        let start = std::time::Instant::now();
         let fut = self.inner.call(req);
 
-        let future = async move {
-            let result = fut.await;
-            let latency = start.elapsed();
-            if let Ok(ref response) = result {
-                emit!(GrpcServerResponseSent { response, latency });
-            }
-            result
-        };
+        GrpcTraceResponseFuture {
+            inner: fut,
+            start: Instant::now(),
+        }
+        .instrument(request_span)
+    }
+}
 
-        Box::pin(tracing::Instrument::instrument(future, request_span))
+#[pin_project]
+struct GrpcTraceResponseFuture<F> {
+    #[pin]
+    inner: F,
+    start: Instant,
+}
+
+impl<F, E> std::future::Future for GrpcTraceResponseFuture<F>
+where
+    F: std::future::Future<Output = Result<http::Response<TonicBody>, E>>,
+{
+    type Output = Result<http::Response<TonicBody>, E>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        match this.inner.poll(cx) {
+            Poll::Ready(result) => {
+                let latency = this.start.elapsed();
+                if let Ok(ref response) = result {
+                    emit!(GrpcServerResponseSent { response, latency });
+                }
+                Poll::Ready(result)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

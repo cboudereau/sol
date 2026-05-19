@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 pub(crate) struct OtlpTimestamp(u64);
 
 impl OtlpTimestamp {
-    #[cfg(feature = "vrl")]
+    #[cfg(any(feature = "vrl", test))]
     pub(crate) fn from_nanos(nanos: u64) -> Self {
         Self(nanos)
     }
@@ -17,7 +17,7 @@ impl OtlpTimestamp {
         self.0
     }
 
-    #[cfg(feature = "vrl")]
+    #[cfg(any(feature = "vrl", test))]
     #[expect(
         clippy::cast_possible_wrap,
         reason = "nanos fit in i64 until year 2262"

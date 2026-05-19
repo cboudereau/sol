@@ -8,13 +8,11 @@ use std::{
 
 use async_trait::async_trait;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
+use bytes::Bytes;
 use futures::{FutureExt, StreamExt, future, stream::BoxStream};
-use hyper::{
-    Body, Method, Request, Response, Server, StatusCode,
-    body::HttpBody,
-    header::HeaderValue,
-    service::{make_service_fn, service_fn},
-};
+use http::{Method, Request, Response, StatusCode, header::HeaderValue};
+use http_body::Body as HttpBody;
+use http_body_util::Full;
 use indexmap::{IndexMap, map::Entry};
 use serde_with::serde_as;
 use snafu::Snafu;
@@ -28,6 +26,7 @@ use sol_lib::{
 };
 use stream_cancel::{Trigger, Tripwire};
 use tower::ServiceBuilder;
+use tower::service_fn;
 use tower_http::compression::CompressionLayer;
 use tracing::{Instrument, Span};
 
@@ -339,7 +338,7 @@ impl Hash for MetricRef {
 fn authorized<T: HttpBody>(req: &Request<T>, auth: &Option<Auth>) -> bool {
     if let Some(auth) = auth {
         let headers = req.headers();
-        if let Some(auth_header) = headers.get(hyper::header::AUTHORIZATION) {
+        if let Some(auth_header) = headers.get(http::header::AUTHORIZATION) {
             let encoded_credentials = match auth {
                 Auth::Basic { user, password } => Some(HeaderValue::from_str(
                     format!(
@@ -384,8 +383,8 @@ impl Handler {
         &self,
         req: Request<T>,
         metrics: &RwLock<IndexMap<MetricRef, (OtelMetric, MetricMetadata)>>,
-    ) -> Response<Body> {
-        let mut response = Response::new(Body::empty());
+    ) -> Response<Full<Bytes>> {
+        let mut response = Response::new(Full::new(Bytes::new()));
 
         match (authorized(&req, &self.auth), req.method(), req.uri().path()) {
             (false, _, _) => {
@@ -421,7 +420,7 @@ impl Handler {
                 let body = collector.finish();
                 let body_size = body.size_of();
 
-                *response.body_mut() = body.into();
+                *response.body_mut() = Full::new(Bytes::from(body));
 
                 response.headers_mut().insert(
                     "Content-Type",
@@ -467,25 +466,6 @@ impl PrometheusExporter {
         let span = Span::current();
         let metrics = Arc::clone(&self.metrics);
 
-        let new_service = make_service_fn(move |_| {
-            let span = Span::current();
-            let metrics = Arc::clone(&metrics);
-            let handler = handler.clone();
-
-            let inner = service_fn(move |req| {
-                let response = handler.handle(req, &metrics);
-
-                future::ok::<_, Infallible>(response)
-            });
-
-            let service = ServiceBuilder::new()
-                .layer(build_http_trace_layer(span.clone()))
-                .layer(CompressionLayer::new())
-                .service(inner);
-
-            async move { Ok::<_, Infallible>(service) }
-        });
-
         let (trigger, tripwire) = Tripwire::new();
 
         let tls = self.config.tls.clone();
@@ -497,14 +477,56 @@ impl PrometheusExporter {
         tokio::spawn(async move {
             info!(message = "Building HTTP server.", address = %address);
 
-            Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-                .serve(new_service)
-                .with_graceful_shutdown(tripwire.then(crate::shutdown::tripwire_handler))
-                .instrument(span)
-                .await
-                .map_err(|error| error!("Server error: {}.", error))?;
+            let mut tripwire = Box::pin(tripwire.then(crate::shutdown::tripwire_handler));
+            let mut accept_stream = listener.accept_stream();
 
-            Ok::<(), ()>(())
+            loop {
+                let stream = tokio::select! {
+                    result = accept_stream.next() => {
+                        match result {
+                            Some(Ok(stream)) => stream,
+                            Some(Err(error)) => {
+                                error!(message = "Accept error.", %error);
+                                continue;
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = &mut tripwire => break,
+                };
+
+                let metrics = Arc::clone(&metrics);
+                let handler = handler.clone();
+                let span = span.clone();
+
+                tokio::spawn(
+                    async move {
+                        let inner = service_fn(move |req| {
+                            let response = handler.handle(req, &metrics);
+                            future::ok::<_, Infallible>(response)
+                        });
+
+                        let service = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .layer(CompressionLayer::new())
+                            .service(inner);
+
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        if let Err(error) = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(
+                            io,
+                            hyper_util::service::TowerToHyperService::new(service),
+                        )
+                        .await
+                        {
+                            error!(message = "Connection error.", %error);
+                        }
+                    }
+                    .instrument(Span::current()),
+                );
+            }
         });
 
         self.server_shutdown_trigger = Some(trigger);
@@ -904,7 +926,7 @@ mod tests {
         mut events: Vec<Event>,
         suppress_timestamp: bool,
         encoding: Option<String>,
-    ) -> hyper::body::Bytes {
+    ) -> Bytes {
         trace_init();
 
         let client_settings = MaybeTlsSettings::from_config(tls_config.as_ref(), false).unwrap();
@@ -940,7 +962,7 @@ mod tests {
         assert_eq!(receiver.try_recv(), Ok(BatchStatus::Delivered));
 
         let mut request = Request::get(format!("{proto}://{address}/metrics"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .expect("Error creating request.");
 
         if let Some(ref encoding) = encoding {
@@ -968,7 +990,7 @@ mod tests {
         }
 
         let body = result.into_body();
-        let bytes = http_body::Body::collect(body)
+        let bytes = http_body_util::BodyExt::collect(body)
             .await
             .expect("Reading body failed")
             .to_bytes();
@@ -1029,7 +1051,7 @@ mod tests {
         assert_eq!(receiver.try_recv(), Ok(BatchStatus::Delivered));
 
         let mut request = Request::get(format!("{proto}://{address}/metrics"))
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .expect("Error creating request.");
 
         if let Some(client_auth_config) = client_auth_config {
@@ -1048,7 +1070,7 @@ mod tests {
         }
 
         let body = result.into_body();
-        let bytes = http_body::Body::collect(body)
+        let bytes = http_body_util::BodyExt::collect(body)
             .await
             .expect("Reading body failed")
             .to_bytes();
@@ -1295,7 +1317,7 @@ mod integration_tests {
     async fn fetch_exporter_body() -> String {
         let url = format!("http://{}/metrics", sink_exporter_address());
         let request = Request::get(url)
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .expect("Error creating request.");
         let proxy = ProxyConfig::default();
         let result = HttpClient::new(None, &proxy)
@@ -1303,7 +1325,7 @@ mod integration_tests {
             .send(request)
             .await
             .expect("Could not send request");
-        let result = http_body::Body::collect(result.into_body())
+        let result = http_body_util::BodyExt::collect(result.into_body())
             .await
             .expect("Error fetching body")
             .to_bytes();
@@ -1317,7 +1339,7 @@ mod integration_tests {
             query
         );
         let request = Request::post(url)
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .expect("Error creating request.");
         let proxy = ProxyConfig::default();
         let result = HttpClient::new(None, &proxy)
@@ -1325,7 +1347,7 @@ mod integration_tests {
             .send(request)
             .await
             .expect("Could not fetch query");
-        let result = http_body::Body::collect(result.into_body())
+        let result = http_body_util::BodyExt::collect(result.into_body())
             .await
             .expect("Error fetching body")
             .to_bytes();

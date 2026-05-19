@@ -6,10 +6,10 @@ use std::{
 
 use async_graphql::{
     Data, Request, Schema,
-    http::{GraphQLPlaygroundConfig, WebSocketProtocols, playground_source},
+    http::{GraphiQLSource, WebSocketProtocols},
 };
 use async_graphql_warp::{GraphQLResponse, GraphQLWebSocket, graphql_protocol};
-use hyper::{Server as HyperServer, server::conn::AddrIncoming, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use sol_lib::tap::topology;
 use tokio::{runtime::Handle, sync::oneshot};
 use tower::ServiceBuilder;
@@ -39,43 +39,60 @@ impl Server {
     ) -> crate::Result<Self> {
         let routes = make_routes(config.api, watch_rx, running);
 
-        let (_shutdown, rx) = oneshot::channel();
+        let (_shutdown, rx) = oneshot::channel::<()>();
         // warp uses `tokio::spawn` and so needs us to enter the runtime context.
         let _guard = handle.enter();
 
         let addr = config.api.address.expect("No socket address");
-        let incoming = AddrIncoming::bind(&addr).inspect_err(|error| {
+
+        let std_listener = std::net::TcpListener::bind(addr).inspect_err(|error| {
             emit!(SocketBindError {
                 mode: SocketMode::Tcp,
                 error,
             });
         })?;
-
-        let span = Span::current();
-        let make_svc = make_service_fn(move |_conn| {
-            let svc = ServiceBuilder::new()
-                .layer(build_http_trace_layer(span.clone()))
-                .service(warp::service(routes.clone()));
-            futures_util::future::ok::<_, Infallible>(svc)
-        });
-
-        let server = async move {
-            HyperServer::builder(incoming)
-                .serve(make_svc)
-                .with_graceful_shutdown(async {
-                    rx.await.ok();
-                })
-                .await
-                .map_err(|err| {
-                    error!("An error occurred: {:?}.", err);
-                })
-        };
+        std_listener.set_nonblocking(true)?;
 
         // Update component schema with the config before starting the server.
         schema::components::update_config(config);
 
-        // Spawn the server in the background.
-        handle.spawn(server);
+        let span = Span::current();
+
+        // Spawn the server in the background using a manual accept loop
+        // (same pattern as HTTP sources) so we can apply the trace layer.
+        handle.spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(std_listener)
+                .expect("failed to create tokio TcpListener");
+            let shutdown = async {
+                rx.await.ok();
+            };
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let (stream, _) = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting API connection: {err:?}.");
+                                continue;
+                            }
+                        };
+                        let svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .service(warp::service(routes.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(stream);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
+        });
 
         Ok(Self { _shutdown, addr })
     }
@@ -153,15 +170,18 @@ fn make_routes(
         not_found_graphql.boxed()
     };
 
-    // Provide a playground for executing GraphQL queries/mutations/subscriptions.
+    // Provide a GraphiQL IDE for executing GraphQL queries/mutations/subscriptions.
     let graphql_playground = if api.playground && api.graphql {
         warp::path("playground")
             .map(move || {
                 Response::builder()
                     .header("content-type", "text/html")
-                    .body(playground_source(
-                        GraphQLPlaygroundConfig::new("/graphql").subscription_endpoint("/graphql"),
-                    ))
+                    .body(
+                        GraphiQLSource::build()
+                            .endpoint("/graphql")
+                            .subscription_endpoint("/graphql")
+                            .finish(),
+                    )
             })
             .boxed()
     } else {

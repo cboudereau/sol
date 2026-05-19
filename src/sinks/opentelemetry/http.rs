@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use http::{Method, Request, header};
-use hyper::Body;
+use http_body_util::Full;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
     config::telemetry,
@@ -248,7 +248,7 @@ impl Service<OtlpHttpRequest> for OtlpHttpService {
                 .method(Method::POST)
                 .uri(&uri)
                 .header(header::CONTENT_TYPE, content_type)
-                .body(Body::from(req.body))
+                .body(Full::new(req.body))
                 .map_err(|e| OtlpHttpError::HttpRequest {
                     message: e.to_string(),
                 })?;

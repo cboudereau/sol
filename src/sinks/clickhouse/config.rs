@@ -3,7 +3,7 @@
 use std::fmt;
 
 use http::{Request, StatusCode, Uri};
-use hyper::Body;
+use http_body_util::Full;
 use sol_lib::codecs::encoding::format::SchemaProvider;
 use sol_lib::codecs::encoding::{ArrowStreamSerializerConfig, BatchSerializerConfig};
 
@@ -386,7 +386,9 @@ fn get_healthcheck_uri(endpoint: &Uri) -> String {
 
 async fn healthcheck(client: HttpClient, endpoint: Uri, auth: Option<Auth>) -> crate::Result<()> {
     let uri = get_healthcheck_uri(&endpoint);
-    let mut request = Request::get(uri).body(Body::empty()).unwrap();
+    let mut request = Request::get(uri)
+        .body(Full::new(bytes::Bytes::new()))
+        .unwrap();
 
     if let Some(auth) = auth {
         auth.apply(&mut request);

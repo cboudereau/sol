@@ -69,8 +69,8 @@ impl Service<RemoteWriteRequest> for RemoteWriteService {
 
             let response = client.send(http_request).await?;
             let (parts, body) = response.into_parts();
-            let body = http_body::Body::collect(body).await?.to_bytes();
-            let http_response = hyper::Response::from_parts(parts, body);
+            let body = http_body_util::BodyExt::collect(body).await?.to_bytes();
+            let http_response = http::Response::from_parts(parts, body);
 
             if http_response.status().is_success() {
                 // We can't rely on the framework to emit this because we need to specify the additional `endpoint` tag.
@@ -106,7 +106,7 @@ pub(super) async fn build_request(
     body: Bytes,
     tenant_id: Option<&String>,
     auth: Option<Auth>,
-) -> crate::Result<http::Request<hyper::Body>> {
+) -> crate::Result<http::Request<http_body_util::Full<Bytes>>> {
     let mut builder = http::Request::builder()
         .method(method)
         .uri(endpoint)
@@ -134,5 +134,5 @@ pub(super) async fn build_request(
         }
     }
 
-    Ok(request.map(hyper::Body::from))
+    Ok(request.map(http_body_util::Full::new))
 }

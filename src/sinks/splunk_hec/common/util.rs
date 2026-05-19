@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::Arc};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use http::{Request, StatusCode, Uri};
-use hyper::Body;
+use http_body_util::Full;
 use snafu::{ResultExt, Snafu};
 use sol_lib::{
     config::proxy::ProxyConfig,
@@ -98,7 +98,7 @@ pub async fn build_healthcheck(
 
     let request = Request::get(uri)
         .header("Authorization", format!("Splunk {token}"))
-        .body(Body::empty())
+        .body(Full::new(Bytes::new()))
         .unwrap();
 
     let response = client.send(request).await?;

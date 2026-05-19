@@ -1,8 +1,7 @@
 use async_stream::stream;
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 use futures::Stream;
-use http_body::{Body as _, Collected};
-use hyper::Body;
+use http_body_util::{BodyExt as _, Collected, Full};
 use indexmap::IndexMap;
 use sol_lib::configurable::configurable_component;
 use tokio::time;
@@ -85,7 +84,7 @@ async fn http_request(
 ) -> Result<bytes::Bytes, &'static str> {
     let tls_settings = TlsSettings::from_options(tls_options).map_err(|_| "Invalid TLS options")?;
     let http_client =
-        HttpClient::<Body>::new(tls_settings, proxy).map_err(|_| "Invalid TLS settings")?;
+        HttpClient::<Full<Bytes>>::new(tls_settings, proxy).map_err(|_| "Invalid TLS settings")?;
 
     // Build HTTP request.
     let mut builder = http::request::Builder::new().uri(url.to_string());
@@ -97,7 +96,7 @@ async fn http_request(
     }
 
     let request = builder
-        .body(Body::empty())
+        .body(Full::new(Bytes::new()))
         .map_err(|_| "Couldn't create HTTP request")?;
 
     info!(
@@ -123,10 +122,9 @@ async fn http_request(
         .map(Collected::to_bytes)
         .map_err(|err| {
             let message = "Error interpreting response.";
-            let cause = err.into_cause();
             error!(
                     message = ?message,
-                    error = ?cause);
+                    error = ?err);
 
             message
         })

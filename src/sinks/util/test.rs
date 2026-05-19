@@ -5,21 +5,17 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use flate2::read::{MultiGzDecoder, ZlibDecoder};
-use futures::{FutureExt, SinkExt, TryFutureExt, channel::mpsc, stream};
+use futures::{FutureExt, SinkExt, channel::mpsc, stream};
 use futures_util::StreamExt;
 use http::request::Parts;
-use hyper::{
-    Body, Request, Response, Server, StatusCode,
-    body::HttpBody,
-    service::{make_service_fn, service_fn},
-};
+use http_body::Body as HttpBody;
+use http_body_util::Full;
+use hyper::{Request, Response, StatusCode, service::service_fn};
+use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use stream_cancel::{Trigger, Tripwire};
 
-use crate::{
-    Error,
-    config::{SinkConfig, SinkContext},
-};
+use crate::config::{SinkConfig, SinkContext};
 
 pub fn load_sink<T>(config: &str) -> crate::Result<(T, SinkContext)>
 where
@@ -47,7 +43,7 @@ pub fn build_test_server(
     Trigger,
     impl std::future::Future<Output = Result<(), ()>>,
 ) {
-    build_test_server_generic(addr, || Response::new(Body::empty()))
+    build_test_server_generic(addr, || Response::new(Full::new(Bytes::new())))
 }
 
 pub fn build_test_server_status(
@@ -61,7 +57,7 @@ pub fn build_test_server_status(
     build_test_server_generic(addr, move || {
         Response::builder()
             .status(status)
-            .body(Body::empty())
+            .body(Full::new(Bytes::new()))
             .unwrap_or_else(|_| unreachable!())
     })
 }
@@ -80,35 +76,54 @@ where
     <B as HttpBody>::Error: snafu::Error + Send + Sync,
 {
     let (tx, rx) = mpsc::channel(100);
-    let service = make_service_fn(move |_| {
-        let responder = responder.clone();
-        let tx = tx.clone();
-        async move {
-            let responder = responder.clone();
-            Ok::<_, Error>(service_fn(move |req: Request<Body>| {
-                let responder = responder.clone();
-                let mut tx = tx.clone();
-                async move {
-                    let (parts, body) = req.into_parts();
-                    let response = responder();
-                    if response.status().is_success() {
-                        tokio::spawn(async move {
-                            let bytes = http_body::Body::collect(body).await.unwrap().to_bytes();
-                            tx.send((parts, bytes)).await.unwrap();
-                        });
-                    }
-
-                    Ok::<_, Error>(response)
-                }
-            }))
-        }
-    });
-
     let (trigger, tripwire) = Tripwire::new();
-    let server = Server::bind(&addr)
-        .serve(service)
-        .with_graceful_shutdown(tripwire.then(crate::shutdown::tripwire_handler))
-        .map_err(|error| panic!("Server error: {error}"));
+
+    let std_listener = std::net::TcpListener::bind(addr).expect("Failed to bind test server");
+    std_listener
+        .set_nonblocking(true)
+        .expect("Failed to set non-blocking");
+
+    let server = async move {
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .expect("Failed to create tokio TcpListener");
+        let mut tripwire = tripwire.fuse();
+        loop {
+            let result = tokio::select! {
+                result = listener.accept() => result,
+                _ = &mut tripwire => break,
+            };
+            let (stream, _) = result.expect("Failed to accept connection");
+            let responder = responder.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let responder = responder.clone();
+                    let mut tx = tx.clone();
+                    async move {
+                        let (parts, body) = req.into_parts();
+                        let response = responder();
+                        if response.status().is_success() {
+                            tokio::spawn(async move {
+                                let bytes = http_body_util::BodyExt::collect(body)
+                                    .await
+                                    .unwrap()
+                                    .to_bytes();
+                                tx.send((parts, bytes)).await.unwrap();
+                            });
+                        }
+
+                        Ok::<_, std::convert::Infallible>(response)
+                    }
+                });
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await
+                    .ok();
+            });
+        }
+        Ok(())
+    };
 
     (rx, trigger, server)
 }

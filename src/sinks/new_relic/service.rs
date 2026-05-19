@@ -9,7 +9,7 @@ use http::{
     Request,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use hyper::Body;
+use http_body_util::Full;
 use tracing::Instrument;
 
 use super::{NewRelicCredentials, NewRelicSinkError};
@@ -96,7 +96,7 @@ impl Service<NewRelicApiRequest> for NewRelicApiService {
         let metadata = request.get_metadata().clone();
         let http_request = http_request
             .header(CONTENT_LENGTH, payload_len)
-            .body(Body::from(request.payload))
+            .body(Full::new(request.payload))
             .expect("building HTTP request failed unexpectedly");
 
         Box::pin(async move {

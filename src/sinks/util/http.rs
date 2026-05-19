@@ -2,11 +2,11 @@
 use aws_credential_types::provider::SharedCredentialsProvider;
 #[cfg(feature = "aws-core")]
 use aws_types::region::Region;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures::{Sink, future::BoxFuture};
 use headers::HeaderName;
 use http::{HeaderValue, Request, Response, StatusCode, header};
-use http_body::Body as _;
+use http_body_util::BodyExt as _;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OrderedHeaderName(HeaderName);
@@ -50,7 +50,7 @@ use std::{
     time::Duration,
 };
 
-use hyper::Body;
+use http_body_util::Full;
 use pin_project::pin_project;
 use snafu::{ResultExt, Snafu};
 use sol_lib::{
@@ -122,7 +122,7 @@ where
     sink: Arc<T>,
     #[pin]
     inner: TowerBatchedSink<
-        HttpBatchService<BoxFuture<'static, crate::Result<hyper::Request<Bytes>>>, B::Output>,
+        HttpBatchService<BoxFuture<'static, crate::Result<http::Request<Bytes>>>, B::Output>,
         B,
         RL,
     >,
@@ -268,7 +268,7 @@ where
     sink: Arc<T>,
     #[pin]
     inner: TowerPartitionSink<
-        HttpBatchService<BoxFuture<'static, crate::Result<hyper::Request<Bytes>>>, B::Output>,
+        HttpBatchService<BoxFuture<'static, crate::Result<http::Request<Bytes>>>, B::Output>,
         B,
         RL,
         K,
@@ -424,7 +424,7 @@ pub struct SigV4Config {
 ///       HttpBatchService directly should be updated to use `HttpService`. At which time we can
 ///       remove this struct and inline the functionality into the `HttpService` directly.
 pub struct HttpBatchService<F, B = Bytes> {
-    inner: HttpClient<Body>,
+    inner: HttpClient<Full<Bytes>>,
     request_builder: Arc<dyn Fn(B) -> F + Send + Sync>,
     #[cfg(feature = "aws-core")]
     sig_v4_config: Option<SigV4Config>,
@@ -459,7 +459,7 @@ impl<F, B> HttpBatchService<F, B> {
 
 impl<F, B> Service<B> for HttpBatchService<F, B>
 where
-    F: Future<Output = crate::Result<hyper::Request<Bytes>>> + Send + 'static,
+    F: Future<Output = crate::Result<http::Request<Bytes>>> + Send + 'static,
     B: ByteSizeOf + Send + 'static,
 {
     type Response = http::Response<Bytes>;
@@ -499,7 +499,7 @@ where
                 }
             };
             let byte_size = request.body().len();
-            let request = request.map(Body::from);
+            let request = request.map(Full::new);
             let (protocol, endpoint) = uri::protocol_endpoint(request.uri().clone());
 
             let mut decompression_service = ServiceBuilder::new()
@@ -520,11 +520,8 @@ where
             }
 
             let (parts, body) = response.into_parts();
-            let mut body = body.collect().await?.aggregate();
-            Ok(hyper::Response::from_parts(
-                parts,
-                body.copy_to_bytes(body.remaining()),
-            ))
+            let body = body.collect().await?.to_bytes();
+            Ok(http::Response::from_parts(parts, body))
         })
     }
 }
@@ -565,7 +562,7 @@ impl<Req> Default for HttpRetryLogic<Req> {
 impl<Req: Clone + Send + Sync + 'static> RetryLogic for HttpRetryLogic<Req> {
     type Error = HttpError;
     type Request = Req;
-    type Response = hyper::Response<Bytes>;
+    type Response = http::Response<Bytes>;
 
     fn is_retriable_error(&self, _error: &Self::Error) -> bool {
         true
@@ -854,7 +851,7 @@ pub trait HttpServiceRequestBuilder<T: Send> {
 #[derive(Clone)]
 pub struct HttpService<B, T: Send> {
     batch_service:
-        HttpBatchService<BoxFuture<'static, Result<Request<Bytes>, crate::Error>>, HttpRequest<T>>,
+        HttpBatchService<std::future::Ready<Result<Request<Bytes>, crate::Error>>, HttpRequest<T>>,
     _phantom: PhantomData<B>,
 }
 
@@ -862,16 +859,12 @@ impl<B, T: Send + 'static> HttpService<B, T>
 where
     B: HttpServiceRequestBuilder<T> + std::marker::Sync + std::marker::Send + 'static,
 {
-    pub fn new(http_client: HttpClient<Body>, http_request_builder: B) -> Self {
+    pub fn new(http_client: HttpClient<Full<Bytes>>, http_request_builder: B) -> Self {
         let http_request_builder = Arc::new(http_request_builder);
 
         let batch_service = HttpBatchService::new(http_client, move |req: HttpRequest<T>| {
             let request_builder = Arc::clone(&http_request_builder);
-
-            let fut: BoxFuture<'static, Result<http::Request<Bytes>, crate::Error>> =
-                Box::pin(async move { request_builder.build(req) });
-
-            fut
+            std::future::ready(request_builder.build(req))
         });
         Self {
             batch_service,
@@ -881,7 +874,7 @@ where
 
     #[cfg(feature = "aws-core")]
     pub fn new_with_sig_v4(
-        http_client: HttpClient<Body>,
+        http_client: HttpClient<Full<Bytes>>,
         http_request_builder: B,
         sig_v4_config: SigV4Config,
     ) -> Self {
@@ -891,11 +884,7 @@ where
             http_client,
             move |req: HttpRequest<T>| {
                 let request_builder = Arc::clone(&http_request_builder);
-
-                let fut: BoxFuture<'static, Result<http::Request<Bytes>, crate::Error>> =
-                    Box::pin(async move { request_builder.build(req) });
-
-                fut
+                std::future::ready(request_builder.build(req))
             },
             sig_v4_config,
         );
@@ -912,30 +901,53 @@ where
 {
     type Response = HttpResponse;
     type Error = crate::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future =
+        HttpServiceFuture<
+            <HttpBatchService<
+                std::future::Ready<Result<Request<Bytes>, crate::Error>>,
+                HttpRequest<T>,
+            > as Service<HttpRequest<T>>>::Future,
+        >;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, mut request: HttpRequest<T>) -> Self::Future {
-        let mut http_service = self.batch_service.clone();
-
-        // NOTE: By taking the metadata here, when passing the request to `call()` below,
-        //       that function does not have access to the metadata anymore.
         let metadata = std::mem::take(request.metadata_mut());
         let raw_byte_size = metadata.request_encoded_size();
         let events_byte_size = metadata.into_events_estimated_json_encoded_byte_size();
 
-        Box::pin(async move {
-            let http_response = http_service.call(request).await?;
+        HttpServiceFuture {
+            inner: self.batch_service.call(request),
+            events_byte_size,
+            raw_byte_size,
+        }
+    }
+}
 
-            Ok(HttpResponse {
-                http_response,
-                events_byte_size,
-                raw_byte_size,
-            })
-        })
+#[pin_project]
+pub struct HttpServiceFuture<F> {
+    #[pin]
+    inner: F,
+    events_byte_size: GroupedCountByteSize,
+    raw_byte_size: usize,
+}
+
+impl<F> Future for HttpServiceFuture<F>
+where
+    F: Future<Output = Result<http::Response<Bytes>, crate::Error>>,
+{
+    type Output = Result<HttpResponse, crate::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let http_response = ready!(this.inner.poll(cx))?;
+        Poll::Ready(Ok(HttpResponse {
+            http_response,
+            events_byte_size: std::mem::take(this.events_byte_size),
+            raw_byte_size: *this.raw_byte_size,
+        }))
     }
 }
 
@@ -944,10 +956,11 @@ mod test {
     #![allow(clippy::print_stderr)] //tests
 
     use futures::{StreamExt, future::ready};
-    use hyper::{
-        Response, Server, Uri,
-        service::{make_service_fn, service_fn},
-    };
+    use http_body_util::BodyExt;
+    use hyper::Uri;
+    use hyper::body::Incoming;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
 
     use super::*;
     use crate::{config::ProxyConfig, test_util::addr::next_addr};
@@ -995,31 +1008,33 @@ mod test {
 
         let (tx, rx) = futures::channel::mpsc::channel(10);
 
-        let new_service = make_service_fn(move |_| {
-            let tx = tx.clone();
-
-            let svc = service_fn(move |req: http::Request<Body>| {
-                let mut tx = tx.clone();
-
-                async move {
-                    let mut body = http_body::Body::collect(req.into_body())
-                        .await
-                        .map_err(|error| format!("error: {error}"))?
-                        .aggregate();
-                    let string = String::from_utf8(body.copy_to_bytes(body.remaining()).to_vec())
-                        .map_err(|_| "Wasn't UTF-8".to_string())?;
-                    tx.try_send(string).map_err(|_| "Send error".to_string())?;
-
-                    Ok::<_, crate::Error>(Response::new(Body::from("")))
-                }
-            });
-
-            async move { Ok::<_, std::convert::Infallible>(svc) }
-        });
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
         tokio::spawn(async move {
-            if let Err(error) = Server::bind(&addr).serve(new_service).await {
-                eprintln!("Server error: {error}");
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: http::Request<Incoming>| {
+                        let mut tx = tx.clone();
+                        async move {
+                            let body = req
+                                .into_body()
+                                .collect()
+                                .await
+                                .map_err(|error| format!("error: {error}"))?
+                                .to_bytes();
+                            let string = String::from_utf8(body.to_vec())
+                                .map_err(|_| "Wasn't UTF-8".to_string())?;
+                            tx.try_send(string).map_err(|_| "Send error".to_string())?;
+
+                            Ok::<_, String>(http::Response::new(Full::new(Bytes::from(""))))
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
             }
         });
 

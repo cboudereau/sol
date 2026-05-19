@@ -21,22 +21,31 @@ The project is in a **hybrid dependency state**:
 | tower-http | 0.4.4 | 0.6+ |
 | axum | 0.6.20 (pinned) | 0.7+ |
 | hyper-openssl | 0.9.x | 0.10+ |
-| hyper-proxy | 0.9.x | replacement needed |
-| aws-smithy-runtime | `connector-hyper-0-14-x` | `connector-hyper-1-x` |
+| hyper-proxy | 0.9.1 | hyper-proxy2 0.1.0 |
+| warp | 0.3.7 | 0.4.3 |
+| async-graphql | 7.0.17 | 8.0+ (8.0.0-rc.5 available) |
+| async-graphql-warp | 7.0.17 | 8.0+ (8.0.0-rc.5 available) |
+| aws-smithy-runtime | 1.8.3 (`connector-hyper-0-14-x`) | 1.11+ via `aws-smithy-http-client` `default-client` |
 
-**Key finding**: tonic 0.12 already uses hyper 1 / http 1 / http-body 1 internally. The tonic 0.12 → 0.13 change is small (tower 0.4 → 0.5, `NamedService` import path). The **real migration** is Sol's direct dependencies on hyper 0.14, http 0.2, http-body 0.4, tower-http 0.4, and hyper-openssl 0.9.
+**Key finding**: tonic 0.12 already uses hyper 1 / http 1 / http-body 1 internally. The tonic 0.12 → 0.13 change is small (tower 0.4 → 0.5, `NamedService` import path). The **real migration** is Sol's direct dependencies on hyper 0.14, http 0.2, http-body 0.4, tower-http 0.4, warp 0.3, and hyper-openssl 0.9.
 
-### Scope assessment
+### Scope assessment (updated with codebase inventory)
 
 | Area | Files affected | Complexity |
 |---|---|---|
-| tonic gRPC sources/sinks | ~10 | Low — already uses `http_1::` types |
-| HTTP sinks (hyper::Body) | ~20 | Medium — Body type replacement |
-| HTTP client (`src/http.rs`) | 1 | High — core infrastructure |
-| tower-http layers | ~12 | Medium — API changes |
-| axum (API server) | ~1 | Low |
-| TLS (hyper-openssl) | ~5 | High — connector rewrite |
-| AWS sinks (smithy) | ~5 | Medium — feature flag change |
+| tonic gRPC sources/sinks | ~3 | Low — `NamedService` already correct, only `http_1::` alias removal |
+| HTTP sinks (`hyper::Body`, `http::Request`) | ~31 | Medium — Body type + http 0.2 → 1.x replacement |
+| HTTP client (`src/http.rs`) | 1 | High — core infrastructure, hyper Client + proxy + TLS |
+| warp HTTP sources | ~29 | Medium — warp 0.4 API changes, `hyper::Server` removal |
+| API server (GraphQL) | ~2 | Medium — async-graphql 8.0 + warp 0.4 |
+| tower-http layers | ~3 | Low — API changes |
+| axum (validation) | ~1 | Low |
+| TLS (hyper-openssl) | ~1 | Medium — 0.9 → 0.10 API change |
+| Proxy (hyper-proxy → hyper-proxy2) | ~2 | Medium — crate replacement |
+| AWS sinks (smithy) | ~2 | Medium — connector feature + import changes |
+| http 0.2 types across codebase | ~34 | Low-Medium — mechanical `http::` → `http::` (version swap) |
+| http-body 0.4 usage | ~12 | Medium — trait changes |
+| DNS connector | ~1 | Low — `hyper::client::connect::dns::Name` path change |
 
 ## Functional Requirements
 
@@ -71,6 +80,22 @@ Replace hyper-openssl 0.9 (hyper 0.14) with hyper-openssl 0.10+ (hyper 1.x), or 
 
 axum 0.6 depends on hyper 0.14. Upgrade to 0.7+ for hyper 1.x support.
 
+### <a id="fr7"></a>FR7 — Upgrade warp 0.3 → 0.4
+
+warp 0.3.7 depends on hyper 0.14. warp 0.4.3 uses hyper 1.x / http 1.x / http-body 1.x. All HTTP sources built on the warp framework (~29 files) must be migrated. The `hyper::Server` usage in `src/sources/util/http/prelude.rs` is replaced by warp 0.4's built-in server or `hyper-util::server`.
+
+### <a id="fr8"></a>FR8 — Upgrade async-graphql for warp 0.4
+
+async-graphql-warp 7.0.17 depends on warp 0.3. To use warp 0.4, upgrade to async-graphql-warp 8.0+ (currently 8.0.0-rc.5). This cascades to upgrading async-graphql 7.0.17 → 8.0+.
+
+### <a id="fr9"></a>FR9 — Update AWS SDK connector to hyper 1.x
+
+Replace `aws-smithy-runtime` `connector-hyper-0-14-x` feature with `aws-smithy-http-client` `default-client` feature, which uses hyper 1.x + hyper-util. Update `HyperClientBuilder` imports in `src/aws/mod.rs`.
+
+### <a id="fr10"></a>FR10 — Replace hyper-proxy with hyper-proxy2
+
+`hyper-proxy` 0.9.1 has no hyper 1.x support. Replace with `hyper-proxy2` 0.1.0, which provides the same `ProxyConnector` API for hyper 1.x. Update `src/http.rs` and `lib/sol-core/src/config/proxy.rs`.
+
 ## Non-Functional Requirements
 
 ### <a id="nfr1"></a>~~NFR1 — Close 50k traces gap~~ → moved to Non-goals
@@ -97,13 +122,16 @@ The upgrade should replace existing crates with their successors (hyper-openssl 
 
 - **Rewriting the HTTP client abstraction**: the `HttpClient` wrapper in `src/http.rs` can be updated to use hyper 1.x APIs while keeping the same external interface. No architectural redesign.
 - **async-tungstenite / websocket upgrades**: if websocket dependencies pin hyper 0.14, they can temporarily coexist via the existing dual-version pattern until their own upgrade is released.
+- **Replacing warp with axum**: warp 0.4.3 supports hyper 1.x. The HTTP source framework stays on warp unless warp 0.4 migration proves unworkable (see Rabbit holes).
 - **Closing the noop-traces-grpc-50k gap**: research confirmed the gap is fundamental to h2/tonic vs Go gRPC, not a version issue. See [arc-zero-copy gap analysis](../../designs/20260514_arc-zero-copy-optimization.md#noop-traces-grpc-50k-gap-analysis).
 - **Performance tuning beyond the upgrade**: the upgrade is not expected to improve H2 throughput. Connection pooling or upstream h2 changes are separate work.
 
 ## Rabbit holes
 
-- **hyper-proxy replacement**: `hyper-proxy` 0.9 may not have a hyper 1.x version. Cap: check if `hyper-proxy2` or `http-proxy` exists; if not, evaluate whether proxy support can be dropped or shimmed. Don't write a custom proxy connector.
-- **AWS SDK compatibility**: `aws-smithy-runtime` may not yet support `connector-hyper-1-x`. Cap: check the latest version; if not available, keep the 0.14 connector for AWS sinks only (isolated behind a feature flag). Don't block the entire migration on AWS.
+- ~~**hyper-proxy replacement**~~: **Resolved** — `hyper-proxy2` 0.1.0 exists with `openssl-tls` feature. Drop-in replacement for `hyper-proxy` 0.9.
+- ~~**AWS SDK compatibility**~~: **Resolved** — `aws-smithy-http-client` 1.1+ provides `default-client` feature using hyper 1.x + hyper-util. The `hyper-014` feature is the legacy path. Migration: replace `aws-smithy-runtime`'s `connector-hyper-0-14-x` with `aws-smithy-http-client`'s `default-client` + TLS feature.
+- **async-graphql 8.0 RC**: `async-graphql-warp` 8.0.0-rc.5 is needed for warp 0.4. No stable release yet. Cap: if RC is too unstable, keep the API server on warp 0.3 (requires allowing warp 0.3 as transitive dep) or replace the GraphQL API integration with async-graphql-axum. Don't rewrite the entire API server.
+- **warp 0.4 API changes**: warp 0.4 is a major rewrite using hyper 1.x. The Filter API may have breaking changes beyond simple import updates. Cap: if warp 0.4 requires extensive API rewrites in the HTTP source framework (~29 files), evaluate whether replacing warp with axum is less effort. Don't spend more than 4H on warp 0.4 migration before reassessing.
 - **Compile-time explosion**: having both hyper 0.14 and 1.x during migration doubles compile units. Cap: migrate in one pass, don't leave both versions in Cargo.toml longer than needed.
 
 ## Design
@@ -114,18 +142,22 @@ The upgrade should replace existing crates with their successors (hyper-openssl 
 
 ### Migration order
 
-1. **Cargo.toml**: bump tonic, remove http/http-body dual aliases, add hyper-util + http-body-util
-2. **tonic gRPC code** (~10 files): fix `NamedService` import, update interceptors
-3. **HTTP client** (`src/http.rs`): migrate `hyper::Client` → `hyper_util::client::legacy::Client`, `hyper::Body` → new body types
-4. **HTTP sinks** (~20 files): update `Request<Body>` / `Response<Body>` signatures
-5. **tower-http layers** (~12 files): upgrade to 0.6 API
-6. **TLS** (~5 files): hyper-openssl 0.10
-7. **axum** (~1 file): 0.7 API changes
-8. **AWS** (~5 files): smithy connector feature flag
+1. **Cargo.toml**: bump all dependencies, replace hyper-proxy → hyper-proxy2, remove http/http-body dual aliases, add hyper-util + http-body-util
+2. **HTTP client core** (`src/http.rs`): migrate `hyper::Client` → `hyper_util::client::legacy::Client`, `hyper::Body` → `http_body_util` types, `hyper-openssl` 0.10, `hyper-proxy2`
+3. **Proxy config** (`lib/sol-core/src/config/proxy.rs`): update hyper-proxy → hyper-proxy2 imports
+4. **tonic gRPC code** (~3 files): remove `http_1::` alias usage, update to `http::` directly
+5. **warp HTTP sources** (~29 files): warp 0.4 API changes, remove direct `hyper::Server` usage
+6. **API server** (~2 files): async-graphql 8.0 + warp 0.4
+7. **HTTP sinks** (~31 files): update `hyper::Body` → new body types, `http 0.2` → `http 1.x`
+8. **http-body trait usage** (~12 files): `http_body 0.4` → `http_body 1.0` + `http-body-util`
+9. **tower-http layers** (~3 files): upgrade to 0.6 API
+10. **axum** (~1 file): 0.7 API changes
+11. **AWS** (~2 files): `aws-smithy-http-client` `default-client` connector
+12. **Cleanup**: remove `http-1`, `http-body-1` aliases, verify no hyper 0.14 transitive deps remain
 
 ### Decisions
 
-- [Migration strategy](./adrs/migration-strategy.md)
+- [Migration strategy](../adrs/0035-migration-strategy.md)
 
 ## Cross-cutting Concerns
 

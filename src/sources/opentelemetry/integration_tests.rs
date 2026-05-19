@@ -204,6 +204,7 @@ async fn receive_metric() {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             schema_url: "".to_string(),
             scope_metrics: vec![ScopeMetrics {

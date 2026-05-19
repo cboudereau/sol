@@ -1,15 +1,13 @@
-use std::{convert::Infallible, fmt, net::SocketAddr, time::Duration};
+use std::{fmt, net::SocketAddr, time::Duration};
 
 use futures::FutureExt;
-use hyper::{Server, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use sol_lib::{
     codecs::decoding::{DeserializerConfig, FramingConfig},
     configurable::configurable_component,
     lookup::owned_value_path,
     sensitive_string::SensitiveString,
-    tls::MaybeTlsIncomingStream,
 };
-use tokio::net::TcpStream;
 use tower::ServiceBuilder;
 use tracing::Span;
 use vrl::value::Kind;
@@ -170,33 +168,46 @@ impl SourceConfig for AwsKinesisFirehoseConfig {
         );
 
         let tls = MaybeTlsSettings::from_config(self.tls.as_ref(), true)?;
-        let listener = tls.bind(&self.address).await?;
+        let mut listener = tls.bind(&self.address).await?;
 
         let keepalive_settings = self.keepalive.clone();
         let shutdown = cx.shutdown;
         Ok(Box::pin(async move {
             let span = Span::current();
-            let make_svc = make_service_fn(move |conn: &MaybeTlsIncomingStream<TcpStream>| {
-                let svc = ServiceBuilder::new()
-                    .layer(build_http_trace_layer(span.clone()))
-                    .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
-                        MaxConnectionAgeLayer::new(
-                            Duration::from_secs(secs),
-                            keepalive_settings.max_connection_age_jitter_factor,
-                            conn.peer_addr(),
-                        )
-                    }))
-                    .service(warp::service(svc.clone()));
-                futures_util::future::ok::<_, Infallible>(svc)
-            });
-
-            Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-                .serve(make_svc)
-                .with_graceful_shutdown(shutdown.map(|_| ()))
-                .await
-                .map_err(|err| {
-                    error!("An error occurred: {:?}.", err);
-                })?;
+            let shutdown = shutdown.map(|_| ());
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let conn = match result {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Error accepting connection: {:?}.", err);
+                                continue;
+                            }
+                        };
+                        let per_conn_svc = ServiceBuilder::new()
+                            .layer(build_http_trace_layer(span.clone()))
+                            .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
+                                MaxConnectionAgeLayer::new(
+                                    Duration::from_secs(secs),
+                                    keepalive_settings.max_connection_age_jitter_factor,
+                                    conn.peer_addr(),
+                                )
+                            }))
+                            .service(warp::service(svc.clone()));
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(conn);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, TowerToHyperService::new(per_conn_svc))
+                                .with_upgrades()
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
 
             Ok(())
         }))

@@ -425,6 +425,7 @@ fn restore_resource(map: &mut ObjectMap) -> (Option<Resource>, OtelAttributes) {
             let resource = Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: dropped_count,
+                ..Default::default()
             };
             (Some(resource), attrs)
         }
@@ -611,6 +612,7 @@ pub fn resource_to_proto(resource: Option<&Resource>, attrs: &OtelAttributes) ->
     let mut r = resource.cloned().unwrap_or(Resource {
         attributes: Vec::new(),
         dropped_attributes_count: 0,
+        ..Default::default()
     });
     r.attributes = attrs.to_key_values();
     Some(r)
@@ -1136,6 +1138,7 @@ impl OtelLog {
             self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
+                ..Default::default()
             }));
         }
     }
@@ -2102,6 +2105,7 @@ impl OtelLog {
             flags,
             dropped_attributes_count,
             attributes: Vec::new(),
+            ..Default::default()
         };
     }
 
@@ -2665,6 +2669,7 @@ impl OtelSpan {
             self.resource = Some(Arc::new(Resource {
                 attributes: Vec::new(),
                 dropped_attributes_count: 0,
+                ..Default::default()
             }));
         }
         Arc::make_mut(&mut self.resource_attrs).insert(key, value);
@@ -3350,6 +3355,7 @@ impl OtelSpan {
                     self.resource = Some(Arc::new(Resource {
                         attributes: Vec::new(),
                         dropped_attributes_count: 0,
+                        ..Default::default()
                     }));
                 }
                 if remaining.len() == 1 {
@@ -4234,6 +4240,7 @@ mod tests {
                 value: Some(host.clone()),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         assert_eq!(event.resource_attribute("host.name"), Some(&host));
     }
@@ -4373,6 +4380,7 @@ mod tests {
         let resource = Some(Resource {
             attributes: vec![],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         let scope = Some(InstrumentationScope {
             name: "my-lib".to_string(),
@@ -4416,6 +4424,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         event.set_scope(InstrumentationScope {
             name: "my-lib".into(),
@@ -4483,6 +4492,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         let event = OtelLog::from_parts(record, resource, None, EventMetadata::default());
         let json = serde_json::to_string(&event).expect("serialize");
@@ -4871,6 +4881,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         event.insert(vrl::event_path!("another"), "x");
         // source_type lives at canonical resource path
@@ -4925,6 +4936,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         // Before insert, we can read the resource attr via the resource sub-object
         let before = event
@@ -4961,6 +4973,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         event.insert(vrl::event_path!("attr"), "val");
         // host.name at canonical resource path
@@ -5291,6 +5304,7 @@ mod tests {
                 value: Some(string_value("my-svc")),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
 
         // Single-segment gets
@@ -5361,6 +5375,7 @@ mod tests {
                 value: Some(string_value("my-svc")),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         span.insert(
             event_path!("status"),
@@ -5468,6 +5483,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         let scope = Some(InstrumentationScope {
             name: "my-lib".into(),
@@ -5532,6 +5548,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
         let mut otel_span = OtelSpan::from_parts(span, resource, None, EventMetadata::default());
         otel_span

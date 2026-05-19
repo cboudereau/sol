@@ -11,9 +11,9 @@ use goauth::{
     auth::{JwtClaims, Token, TokenErr},
     credentials::Credentials,
 };
+use http::header::AUTHORIZATION;
 use http::{Uri, uri::PathAndQuery};
-use http_body::{Body as _, Collected};
-use hyper::header::AUTHORIZATION;
+use http_body_util::{BodyExt as _, Collected};
 use smpl_jwt::Jwt;
 use snafu::{ResultExt, Snafu};
 use sol_lib::{configurable::configurable_component, sensitive_string::SensitiveString};
@@ -286,7 +286,7 @@ async fn get_token_implicit() -> Result<Token, GcpError> {
     debug!("Fetching implicit GCP authentication token.");
     let req = http::Request::get(SERVICE_ACCOUNT_TOKEN_URL)
         .header("Metadata-Flavor", "Google")
-        .body(hyper::Body::empty())
+        .body(http_body_util::Full::new(bytes::Bytes::new()))
         .unwrap();
 
     let proxy = ProxyConfig::from_env();

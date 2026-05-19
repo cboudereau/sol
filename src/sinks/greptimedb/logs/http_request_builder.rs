@@ -5,7 +5,7 @@ use http::{
     Request, StatusCode,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use hyper::Body;
+use http_body_util::Full;
 use snafu::ResultExt;
 use sol_lib::codecs::encoding::Framer;
 
@@ -224,7 +224,7 @@ pub(super) async fn http_healthcheck(
     auth: Option<Auth>,
 ) -> crate::Result<()> {
     let uri = format!("{endpoint}/health");
-    let mut request = Request::get(uri).body(Body::empty())?;
+    let mut request = Request::get(uri).body(Full::new(Bytes::new()))?;
 
     if let Some(auth) = auth {
         auth.apply(&mut request);

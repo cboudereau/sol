@@ -80,6 +80,7 @@ mod tests {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             scope_metrics: vec![ScopeMetrics {
                 scope: Some(InstrumentationScope {

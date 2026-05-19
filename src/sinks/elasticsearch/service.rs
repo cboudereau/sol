@@ -6,14 +6,15 @@ use std::{
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::{Response, Uri};
-use hyper::{Body, Request, service::Service};
+use http_body_util::Full;
+use hyper::Request;
 use sol_lib::{
     ByteSizeOf,
     json_size::JsonSize,
     request_metadata::{GroupedCountByteSize, MetaDescriptive, RequestMetadata},
     stream::DriverResponse,
 };
-use tower::ServiceExt;
+use tower::{Service, ServiceExt};
 
 use super::{ElasticsearchCommon, ElasticsearchConfig};
 use crate::{
@@ -81,7 +82,7 @@ pub struct ElasticsearchService {
 
 impl ElasticsearchService {
     pub fn new(
-        http_client: HttpClient<Body>,
+        http_client: HttpClient<Full<Bytes>>,
         http_request_builder: HttpRequestBuilder,
     ) -> ElasticsearchService {
         let http_request_builder = Arc::new(http_request_builder);

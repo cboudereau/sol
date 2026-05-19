@@ -5,7 +5,7 @@ use std::str::FromStr;
 use arrow::datatypes::{Field, Schema};
 use async_trait::async_trait;
 use http::{Request, StatusCode};
-use hyper::Body;
+use http_body_util::{BodyExt as _, Full};
 use itertools::Itertools;
 use serde::Deserialize;
 use sol_lib::codecs::encoding::format::{ArrowEncodingError, SchemaProvider};
@@ -56,7 +56,7 @@ pub async fn fetch_table_schema(
         .finish();
     let uri = format!("{endpoint}?{query_string}");
     let mut request = Request::get(&uri)
-        .body(Body::empty())
+        .body(Full::new(bytes::Bytes::new()))
         .map_err(|e| format!("Failed to build request: {e}"))?;
 
     if let Some(auth) = auth {
@@ -67,9 +67,7 @@ pub async fn fetch_table_schema(
 
     match response.status() {
         StatusCode::OK => {
-            let body_bytes = http_body::Body::collect(response.into_body())
-                .await?
-                .to_bytes();
+            let body_bytes = response.into_body().collect().await?.to_bytes();
             let body_str = String::from_utf8(body_bytes.into())
                 .map_err(|e| format!("Failed to parse response as UTF-8: {e}"))?;
 

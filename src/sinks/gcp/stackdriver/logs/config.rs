@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use http::{Request, Uri};
-use hyper::Body;
+use http_body_util::Full;
 use snafu::Snafu;
 use sol_lib::lookup::lookup_v2::ConfigValuePath;
 use vrl::value::Kind;
@@ -307,7 +307,7 @@ async fn healthcheck(client: HttpClient, auth: GcpAuthenticator, uri: Uri) -> cr
 
     auth.apply(&mut request);
 
-    let request = request.map(Body::from);
+    let request = request.map(Full::new);
 
     let response = client.send(request).await?;
 

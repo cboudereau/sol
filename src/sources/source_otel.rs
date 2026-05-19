@@ -43,6 +43,7 @@ pub fn build_source_resource(
     sol_lib::event::otel_metric::Resource {
         attributes: attrs,
         dropped_attributes_count: 0,
+        ..Default::default()
     }
 }
 

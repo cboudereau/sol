@@ -138,12 +138,14 @@ async fn healthcheck(uri: Uri, api_key: SensitiveString, client: HttpClient) -> 
         .unwrap()
         .freeze();
     let req: Request<Bytes> = request.body(body)?;
-    let req = req.map(hyper::Body::from);
+    let req = req.map(http_body_util::Full::new);
 
     let res = client.send(req).await?;
 
     let status = res.status();
-    let body = http_body::Body::collect(res.into_body()).await?.to_bytes();
+    let body = http_body_util::BodyExt::collect(res.into_body())
+        .await?
+        .to_bytes();
 
     match status {
         StatusCode::OK => Ok(()),          // Healthcheck passed

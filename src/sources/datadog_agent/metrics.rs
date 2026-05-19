@@ -260,6 +260,7 @@ fn build_resource(host: Option<&str>, namespace: Option<&str>) -> Resource {
     Resource {
         attributes,
         dropped_attributes_count: 0,
+        ..Default::default()
     }
 }
 

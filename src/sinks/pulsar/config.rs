@@ -310,6 +310,7 @@ impl PulsarSinkConfig {
                             .map_or(default_retry_options.keep_alive, |secs| {
                                 Duration::from_secs(secs)
                             }),
+                        ..Default::default()
                     }
                 });
 
@@ -338,6 +339,7 @@ impl PulsarSinkConfig {
             batch_size: self.batch.max_events,
             batch_byte_size: self.batch.max_bytes,
             compression: None,
+            ..Default::default()
         };
 
         match &self.compression {

@@ -1,7 +1,7 @@
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use http::{Response, StatusCode, Uri};
-use http_body::Body as _;
-use hyper::Body;
+use http_body_util::BodyExt as _;
+use http_body_util::Full;
 use serde::Deserialize;
 use snafu::ResultExt;
 use sol_lib::config::proxy::ProxyConfig;
@@ -402,8 +402,7 @@ async fn get_version(
     .map_err(|error| format!("Failed to get Elasticsearch API version: {error}"))?;
 
     let (_, body) = response.into_parts();
-    let mut body = body.collect().await?.aggregate();
-    let body = body.copy_to_bytes(body.remaining());
+    let body = body.collect().await?.to_bytes();
     let ResponsePayload { version } = serde_json::from_slice(&body)?;
     if let Some(version) = version
         && let Some(number) = version.number
@@ -425,7 +424,7 @@ async fn get(
     request: &RequestConfig,
     client: HttpClient,
     path: &str,
-) -> crate::Result<Response<Body>> {
+) -> crate::Result<Response<hyper::body::Incoming>> {
     let mut builder = Request::get(format!("{base_url}{path}"));
 
     for (header, value) in &request.headers {
@@ -450,7 +449,7 @@ async fn get(
     }
 
     client
-        .send(request.map(hyper::Body::from))
+        .send(request.map(Full::new))
         .await
         .map_err(Into::into)
 }

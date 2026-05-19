@@ -1,9 +1,9 @@
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use bytes::Bytes;
 use futures_util::FutureExt;
 use http::StatusCode;
-use hyper::{Server, service::make_service_fn};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use prost::Message;
 use snafu::Snafu;
 use sol_lib::{
@@ -16,9 +16,7 @@ use sol_lib::{
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         trace::v1::ExportTraceServiceRequest,
     },
-    tls::MaybeTlsIncomingStream,
 };
-use tokio::net::TcpStream;
 use tower::ServiceBuilder;
 use tracing::Span;
 use warp::{
@@ -58,30 +56,46 @@ pub(crate) async fn run_http_server(
     shutdown: ShutdownSignal,
     keepalive_settings: KeepaliveConfig,
 ) -> crate::Result<()> {
-    let listener = tls_settings.bind(&address).await?;
+    let mut listener = tls_settings.bind(&address).await?;
     let routes = filters.recover(handle_rejection);
 
     info!(message = "Building HTTP server.", address = %address);
 
     let span = Span::current();
-    let make_svc = make_service_fn(move |conn: &MaybeTlsIncomingStream<TcpStream>| {
-        let svc = ServiceBuilder::new()
-            .layer(build_http_trace_layer(span.clone()))
-            .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
-                MaxConnectionAgeLayer::new(
-                    Duration::from_secs(secs),
-                    keepalive_settings.max_connection_age_jitter_factor,
-                    conn.peer_addr(),
-                )
-            }))
-            .service(warp::service(routes.clone()));
-        futures_util::future::ok::<_, Infallible>(svc)
-    });
-
-    Server::builder(hyper::server::accept::from_stream(listener.accept_stream()))
-        .serve(make_svc)
-        .with_graceful_shutdown(shutdown.map(|_| ()))
-        .await?;
+    let shutdown = shutdown.map(|_| ());
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let conn = match result {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        error!("Error accepting connection: {:?}.", err);
+                        continue;
+                    }
+                };
+                let svc = ServiceBuilder::new()
+                    .layer(build_http_trace_layer(span.clone()))
+                    .option_layer(keepalive_settings.max_connection_age_secs.map(|secs| {
+                        MaxConnectionAgeLayer::new(
+                            Duration::from_secs(secs),
+                            keepalive_settings.max_connection_age_jitter_factor,
+                            conn.peer_addr(),
+                        )
+                    }))
+                    .service(warp::service(routes.clone()));
+                tokio::spawn(async move {
+                    let io = TokioIo::new(conn);
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .with_upgrades()
+                        .await
+                        .ok();
+                });
+            }
+            _ = &mut shutdown => break,
+        }
+    }
 
     Ok(())
 }

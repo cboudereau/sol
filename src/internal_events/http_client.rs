@@ -4,7 +4,8 @@ use http::{
     Request, Response,
     header::{self, HeaderMap, HeaderValue},
 };
-use hyper::{Error, body::HttpBody};
+use http_body::Body as HttpBody;
+use hyper_util::client::legacy::Error;
 use metrics::{counter, histogram};
 use sol_lib::NamedInternalEvent;
 use sol_lib::internal_event::{InternalEvent, error_stage, error_type};

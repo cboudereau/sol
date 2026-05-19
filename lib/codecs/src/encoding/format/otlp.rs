@@ -77,6 +77,7 @@ impl OtlpSerializer {
     pub fn new() -> sol_common::Result<Self> {
         let options = Options {
             use_json_names: true,
+            ..Default::default()
         };
 
         let logs_descriptor = ProtobufSerializer::new_from_bytes(

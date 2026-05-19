@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{StreamExt, TryFutureExt, future::BoxFuture, stream::BoxStream};
-use http_1::Uri;
+use http::Uri;
 use prost::Message as _;
 use sol_lib::{
     ByteSizeOf, EstimatedJsonEncodedSizeOf,
@@ -729,6 +729,7 @@ mod tests {
                 }),
             }],
             dropped_attributes_count: 0,
+            ..Default::default()
         });
 
         // Simulate what promote_resource_attrs does

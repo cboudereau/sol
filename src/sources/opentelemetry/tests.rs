@@ -36,10 +36,8 @@ use sol_lib::opentelemetry::upstream_opentelemetry_proto::tonic::{
     },
     resource::v1::{Resource, Resource as OtelResource},
 };
-use tonic::Request;
-
-fn create_test_logs_request() -> Request<ExportLogsServiceRequest> {
-    Request::new(ExportLogsServiceRequest {
+fn create_test_logs_request() -> tonic::Request<ExportLogsServiceRequest> {
+    tonic::Request::new(ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
             resource: Some(OtelResource {
                 attributes: vec![KeyValue {
@@ -49,6 +47,7 @@ fn create_test_logs_request() -> Request<ExportLogsServiceRequest> {
                     }),
                 }],
                 dropped_attributes_count: 0,
+                ..Default::default()
             }),
             scope_logs: vec![ScopeLogs {
                 scope: Some(InstrumentationScope {
@@ -81,6 +80,7 @@ fn create_test_logs_request() -> Request<ExportLogsServiceRequest> {
                     // opentelemetry sdk will hex::decode the given trace_id and span_id
                     trace_id: str_into_hex_bytes("4ac52aadf321c2e531db005df08792f5"),
                     span_id: str_into_hex_bytes("0b9e4bda2a55530d"),
+                    ..Default::default()
                 }],
                 schema_url: "v1".into(),
             }],
@@ -196,7 +196,7 @@ async fn receive_sum_metric() {
             .await
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -206,6 +206,7 @@ async fn receive_sum_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -295,7 +296,7 @@ async fn receive_sum_non_monotonic_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -305,6 +306,7 @@ async fn receive_sum_non_monotonic_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -387,7 +389,7 @@ async fn receive_gauge_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -397,6 +399,7 @@ async fn receive_gauge_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -474,7 +477,7 @@ async fn receive_histogram_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -484,6 +487,7 @@ async fn receive_histogram_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -578,7 +582,7 @@ async fn receive_histogram_delta_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -588,6 +592,7 @@ async fn receive_histogram_delta_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -682,7 +687,7 @@ async fn receive_expontential_histogram_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -692,6 +697,7 @@ async fn receive_expontential_histogram_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -801,7 +807,7 @@ async fn receive_summary_metric() {
             .unwrap();
         let (_event_time, event_time_nanos) = current_time_and_nanos();
 
-        let req = Request::new(ExportMetricsServiceRequest {
+        let req = tonic::Request::new(ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
@@ -811,6 +817,7 @@ async fn receive_summary_metric() {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    ..Default::default()
                 }),
                 schema_url: "".to_string(),
                 scope_metrics: vec![ScopeMetrics {
@@ -959,6 +966,7 @@ async fn http_logs_emits_otel_native_events() {
                         flags: 4,
                         trace_id: str_into_hex_bytes("4ac52aadf321c2e531db005df08792f5"),
                         span_id: str_into_hex_bytes("0b9e4bda2a55530d"),
+                        ..Default::default()
                     }],
                     schema_url: "v1".into(),
                 }],

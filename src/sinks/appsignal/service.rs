@@ -6,7 +6,7 @@ use futures::{
     future::{BoxFuture, Ready},
 };
 use http::{Request, StatusCode, Uri, header::AUTHORIZATION};
-use hyper::Body;
+use http_body_util::Full;
 use sol_lib::{
     finalization::EventStatus,
     request_metadata::{GroupedCountByteSize, MetaDescriptive},
@@ -32,7 +32,7 @@ pub(super) struct AppsignalService {
 
 impl AppsignalService {
     pub fn new(
-        http_client: HttpClient<Body>,
+        http_client: HttpClient<Full<Bytes>>,
         endpoint: Uri,
         push_api_key: SensitiveString,
         compression: Compression,
