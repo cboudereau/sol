@@ -1,0 +1,30 @@
+sources:
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:4317"
+    http:
+      address: "0.0.0.0:4318"
+
+  self_metrics:
+    type: internal_metrics
+
+sinks:
+  otlp_traces:
+    type: opentelemetry
+    inputs: ["otlp.traces"]
+    protocol:
+      type: grpc
+      load_balancing:
+        routing_key: traceID
+        resolver:
+          type: dns
+          hostname: sol-main-collector
+      batch:
+        max_events: 1000
+        timeout_secs: 1
+
+  prometheus:
+    type: prometheus_exporter
+    inputs: ["self_metrics"]
+    address: "0.0.0.0:9598"

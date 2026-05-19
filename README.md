@@ -24,6 +24,10 @@ sol --config /etc/sol/sol.yaml
 
 ## Why Sol?
 
+### Efficient
+
+Sol does the same work as the OpenTelemetry Collector with a fraction of the resources with **up to 4x less memory**. For load-balanced tail sampling, Sol uses **5x less CPU** while matching throughput, and delivers **nearly 2x the throughput** at high load.
+
 ### OTLP-native
 
 Sol speaks OpenTelemetry natively. Data enters and exits as standard OTLP — no lossy conversion, no vendor-specific attributes injected into your telemetry. This means clean, spec-compliant output and fewer surprises downstream.
@@ -31,10 +35,6 @@ Sol speaks OpenTelemetry natively. Data enters and exits as standard OTLP — no
 ### Tail sampling done right
 
 Decide per-trace after all spans arrive: keep errors, slow requests, sample everything else. Sol's `tail_sampling` transform supports AND/OR policy composition, regex matching, and first-match-wins evaluation — in a single transform. Paired with trace-aware load balancing (consistent-hash on `trace_id`), Sol handles the full multi-collector deployment pattern out of the box.
-
-### Efficient
-
-Sol does the same work as the OpenTelemetry Collector with a fraction of the resources. In production-relevant workloads (load-balanced tail sampling), Sol uses **5x less CPU** while matching throughput, and delivers **nearly 2x the throughput** at high load.
 
 ### Drop-in replacement
 
