@@ -1,6 +1,6 @@
 [package]
 name = "sol"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Clément Boudereau"]
 edition = "2024"
 description = "Sol — Single Observability Layer. A high-performance observability data pipeline."
