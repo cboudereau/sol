@@ -11,7 +11,7 @@ use sol_lib::{
 use tokio_util::codec::Encoder as _;
 
 use crate::event::Event;
-#[cfg(feature = "codecs-arrow")]
+#[cfg(any(feature = "codecs-arrow", feature = "codecs-parquet"))]
 use sol_lib::codecs::internal_events::EncoderNullConstraintError;
 
 pub trait Encoder<T> {
@@ -101,7 +101,7 @@ impl Encoder<Event> for (Transformer, sol_lib::codecs::Encoder<()>) {
     }
 }
 
-#[cfg(feature = "codecs-arrow")]
+#[cfg(any(feature = "codecs-arrow", feature = "codecs-parquet"))]
 impl Encoder<Vec<Event>> for (Transformer, sol_lib::codecs::BatchEncoder) {
     fn encode_input(
         &self,
@@ -153,9 +153,9 @@ impl Encoder<Vec<Event>> for (Transformer, sol_lib::codecs::EncoderKind) {
             sol_lib::codecs::EncoderKind::Framed(encoder) => {
                 (self.0.clone(), *encoder.clone()).encode_input(events, writer)
             }
-            #[cfg(feature = "codecs-arrow")]
+            #[cfg(any(feature = "codecs-arrow", feature = "codecs-parquet"))]
             sol_lib::codecs::EncoderKind::Batch(encoder) => {
-                (self.0.clone(), encoder.clone()).encode_input(events, writer)
+                (self.0.clone(), *encoder.clone()).encode_input(events, writer)
             }
         }
     }
@@ -579,5 +579,133 @@ mod tests {
         assert_eq!(written, total_input_proto_size + 8);
         assert_eq!(CountByteSize(2, input_json_size), size.size().unwrap());
         assert_eq!(Bytes::copy_from_slice(&writer), expected_bytes);
+    }
+
+    #[cfg(feature = "codecs-parquet")]
+    mod parquet_integration {
+        use std::collections::BTreeMap;
+
+        use sol_lib::{
+            codecs::{
+                BatchEncoder, Transformer,
+                encoding::{BatchSerializerConfig, ParquetCompression, ParquetSerializerConfig},
+            },
+            event::OtelLog,
+            internal_event::CountByteSize,
+        };
+        use vrl::value::{KeyString, Value};
+
+        use super::super::Encoder;
+        use crate::event::Event;
+
+        fn parquet_encoder_kind() -> sol_lib::codecs::EncoderKind {
+            let config = ParquetSerializerConfig {
+                compression: ParquetCompression::Zstd,
+            };
+            let batch_config = BatchSerializerConfig::Parquet(config);
+            let batch_serializer = batch_config.build().unwrap();
+            sol_lib::codecs::EncoderKind::Batch(Box::new(BatchEncoder::new(batch_serializer)))
+        }
+
+        fn assert_valid_parquet(bytes: &[u8]) {
+            assert!(
+                bytes.len() > 8,
+                "parquet output too small: {} bytes",
+                bytes.len()
+            );
+            assert_eq!(&bytes[..4], b"PAR1", "missing parquet header magic");
+            assert_eq!(
+                &bytes[bytes.len() - 4..],
+                b"PAR1",
+                "missing parquet footer magic"
+            );
+        }
+
+        #[test]
+        fn test_sink_encoding_path_parquet() {
+            let encoding = (Transformer::default(), parquet_encoder_kind());
+
+            let events = vec![
+                Event::from(OtelLog::from(BTreeMap::from([(
+                    KeyString::from("body"),
+                    Value::from("test message 1"),
+                )]))),
+                Event::from(OtelLog::from(BTreeMap::from([(
+                    KeyString::from("body"),
+                    Value::from("test message 2"),
+                )]))),
+            ];
+
+            let mut writer = Vec::new();
+            let (written, byte_size) = encoding.encode_input(events, &mut writer).unwrap();
+
+            assert_eq!(written, writer.len());
+            assert_eq!(
+                CountByteSize(2, byte_size.size().unwrap().1),
+                byte_size.size().unwrap()
+            );
+            assert_valid_parquet(&writer);
+        }
+
+        #[test]
+        fn test_parquet_with_representative_otlp_data() {
+            let encoding = (Transformer::default(), parquet_encoder_kind());
+
+            let mut log_data = BTreeMap::new();
+            log_data.insert(
+                KeyString::from("body"),
+                Value::from("HTTP GET /api/v1/users 200"),
+            );
+            log_data.insert(KeyString::from("severity_number"), Value::from(9));
+            log_data.insert(KeyString::from("severity_text"), Value::from("INFO"));
+            log_data.insert(KeyString::from("trace_id"), Value::from("0123456789abcdef"));
+            log_data.insert(KeyString::from("span_id"), Value::from("01234567"));
+            log_data.insert(KeyString::from("flags"), Value::from(1));
+            log_data.insert(
+                KeyString::from("attributes"),
+                Value::from(BTreeMap::from([
+                    (KeyString::from("http.method"), Value::from("GET")),
+                    (KeyString::from("http.status_code"), Value::from(200)),
+                ])),
+            );
+            log_data.insert(
+                KeyString::from("resource"),
+                Value::from(BTreeMap::from([(
+                    KeyString::from("service.name"),
+                    Value::from("api-gateway"),
+                )])),
+            );
+
+            let events = vec![Event::from(OtelLog::from(log_data))];
+
+            let mut writer = Vec::new();
+            let (written, byte_size) = encoding.encode_input(events, &mut writer).unwrap();
+
+            assert_eq!(written, writer.len());
+            assert_eq!(
+                CountByteSize(1, byte_size.size().unwrap().1),
+                byte_size.size().unwrap()
+            );
+            assert_valid_parquet(&writer);
+        }
+
+        #[test]
+        fn test_parquet_with_sparse_otlp_data() {
+            let encoding = (Transformer::default(), parquet_encoder_kind());
+
+            let events = vec![
+                Event::from(OtelLog::from(BTreeMap::from([(
+                    KeyString::from("body"),
+                    Value::from("minimal log"),
+                )]))),
+                Event::from(OtelLog::from(BTreeMap::<KeyString, Value>::new())),
+            ];
+
+            let mut writer = Vec::new();
+            let (written, _byte_size) = encoding.encode_input(events, &mut writer).unwrap();
+
+            assert_eq!(written, writer.len());
+            assert_valid_parquet(&writer);
+        }
     }
 }
