@@ -1,9 +1,7 @@
 ---
-status: draft
+status: accepted
 ---
 # Attributes serialization strategy for Parquet
-
-Addresses: [FR2](../DESIGN.md#fr2), [NFR4](../DESIGN.md#nfr4)
 
 ## Problem
 

@@ -1,9 +1,7 @@
 ---
-status: draft
+status: accepted
 ---
 # Batch-per-file semantics
-
-Addresses: [FR1](../DESIGN.md#fr1), [FR4](../DESIGN.md#fr4), [FR5](../DESIGN.md#fr5)
 
 ## Problem
 
@@ -15,7 +13,7 @@ How does the Parquet serializer interact with Sol's batching and file rotation?
 
 | Option | Pros | Cons |
 |---|---|---|
-| A. One Parquet file per batch (batch = file) | Simple, each `encode(Vec<Event>)` call produces a complete file. Works with S3 (one PUT per batch) and file sink (one file per batch). | Small batches → many small files (the "small files problem") |
+| A. One Parquet file per batch (batch = file) | Simple, each `encode(Vec<Event>)` call produces a complete file. Works with S3 (one PUT per batch) and file sink (one file per batch). | Small batches -> many small files (the "small files problem") |
 | B. Multi-batch Parquet writer (append row groups to open file) | Fewer, larger files. Multiple row groups per file. | Complex lifecycle: need to track open writers, handle rotation, flush on shutdown. Breaks the `Encoder<Vec<Event>>` trait contract (which expects a complete output per call). |
 | C. Buffer batches in memory, write single large file on rotation | Optimal file size control | Unbounded memory growth, data loss risk on crash |
 

@@ -1,9 +1,7 @@
 ---
-status: draft
+status: accepted
 ---
 # Parquet compression codec selection
-
-Addresses: [FR3](../DESIGN.md#fr3), [NFR1](../DESIGN.md#nfr1)
 
 ## Problem
 
