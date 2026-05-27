@@ -97,7 +97,6 @@ fn write_optional_bytes_column(
 }
 
 /// Write a REQUIRED INT64 column.
-#[allow(dead_code)]
 fn write_required_i64_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[i64],
@@ -163,7 +162,6 @@ fn write_optional_i32_column(
 }
 
 /// Write an OPTIONAL DOUBLE column.
-#[allow(dead_code)]
 fn write_optional_double_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[f64],
@@ -186,7 +184,6 @@ fn write_optional_double_column(
 }
 
 /// Write an OPTIONAL BOOLEAN column.
-#[allow(dead_code)]
 fn write_optional_bool_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[bool],
@@ -209,7 +206,6 @@ fn write_optional_bool_column(
 }
 
 /// Write a REQUIRED FIXED_LEN_BYTE_ARRAY column.
-#[allow(dead_code)]
 fn write_required_fixed_bytes_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[FixedLenByteArray],
@@ -231,7 +227,6 @@ fn write_required_fixed_bytes_column(
 }
 
 /// Write a REQUIRED INT32 column.
-#[allow(dead_code)]
 fn write_required_i32_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[i32],
@@ -253,7 +248,6 @@ fn write_required_i32_column(
 }
 
 /// Write a REQUIRED DOUBLE column.
-#[allow(dead_code)]
 fn write_required_double_column(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     values: &[f64],
@@ -826,7 +820,6 @@ fn write_log_columns(
 // ---------------------------------------------------------------------------
 
 /// Build the fixed Parquet schema for OTLP Span files (24 columns).
-#[allow(dead_code)]
 pub fn build_trace_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
 
@@ -1034,7 +1027,6 @@ pub fn build_trace_schema() -> Arc<Type> {
 // ---------------------------------------------------------------------------
 
 /// Convert bytes to a REQUIRED fixed-length byte array, zero-filling if empty.
-#[allow(dead_code)]
 fn to_required_fixed_bytes(bytes: &[u8], len: usize) -> FixedLenByteArray {
     let mut buf = vec![0u8; len];
     if !bytes.is_empty() {
@@ -1045,7 +1037,6 @@ fn to_required_fixed_bytes(bytes: &[u8], len: usize) -> FixedLenByteArray {
 }
 
 /// Write all 24 trace columns into the row group.
-#[allow(dead_code)]
 fn write_trace_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     spans: &[&OtelSpan],
@@ -1415,7 +1406,6 @@ fn write_trace_columns(
 // ---------------------------------------------------------------------------
 
 /// Helper: build the 15 common metric schema columns shared by all metric subtypes.
-#[allow(dead_code)]
 fn common_metric_schema_fields() -> Vec<Arc<Type>> {
     use parquet::basic::Type as PhysicalType;
 
@@ -1549,7 +1539,6 @@ fn common_metric_schema_fields() -> Vec<Arc<Type>> {
 }
 
 /// Build the Parquet schema for OTLP Gauge metrics (17 columns).
-#[allow(dead_code)]
 pub fn build_gauge_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1574,7 +1563,6 @@ pub fn build_gauge_schema() -> Arc<Type> {
 }
 
 /// Build the Parquet schema for OTLP Sum metrics (19 columns).
-#[allow(dead_code)]
 pub fn build_sum_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1611,7 +1599,6 @@ pub fn build_sum_schema() -> Arc<Type> {
 }
 
 /// Build the Parquet schema for OTLP Histogram metrics (22 columns).
-#[allow(dead_code)]
 pub fn build_histogram_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1675,7 +1662,6 @@ pub fn build_histogram_schema() -> Arc<Type> {
 }
 
 /// Build the Parquet schema for OTLP ExponentialHistogram metrics (27 columns).
-#[allow(dead_code)]
 pub fn build_exp_histogram_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1774,7 +1760,6 @@ pub fn build_exp_histogram_schema() -> Arc<Type> {
 }
 
 /// Build the Parquet schema for OTLP Summary metrics (18 columns).
-#[allow(dead_code)]
 pub fn build_summary_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1815,7 +1800,6 @@ pub fn build_summary_schema() -> Arc<Type> {
 use sol_core::event::otel_metric::{MetricData, NumberDataPointValue};
 
 /// Convert OTLP KeyValue attributes to a JSON string, or None if empty.
-#[allow(dead_code)]
 fn kv_attrs_to_json_opt(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue]) -> Option<String> {
     if attrs.is_empty() {
         return None;
@@ -1826,14 +1810,12 @@ fn kv_attrs_to_json_opt(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValu
 }
 
 /// A flattened row for gauge/sum data points. One row per data point.
-#[allow(dead_code)]
 struct NumberDpRow<'a> {
     metric: &'a OtelMetric,
     dp: opentelemetry_proto::tonic::metrics::v1::NumberDataPoint,
 }
 
 /// Collect flattened rows for gauge metrics, using `metric_proto()` to restore dp attrs.
-#[allow(dead_code)]
 fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
     let mut rows = Vec::new();
     for metric in metrics {
@@ -1848,7 +1830,6 @@ fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
 }
 
 /// Collect flattened rows for sum metrics, using `metric_proto()` to restore dp attrs.
-#[allow(dead_code)]
 fn collect_sum_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
     let mut rows = Vec::new();
     for metric in metrics {
@@ -1863,7 +1844,6 @@ fn collect_sum_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
 }
 
 /// Write the 15 common metric columns for number data point rows.
-#[allow(dead_code)]
 fn write_common_metric_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     rows: &[NumberDpRow<'_>],
@@ -2088,7 +2068,6 @@ fn write_common_metric_columns(
 }
 
 /// Write the int_value and double_value columns for gauge/sum data points.
-#[allow(dead_code)]
 fn write_number_value_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     rows: &[NumberDpRow<'_>],
@@ -2135,7 +2114,6 @@ fn write_number_value_columns(
 }
 
 /// Write all 17 gauge columns into the row group.
-#[allow(dead_code)]
 fn write_gauge_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     metrics: &[&OtelMetric],
@@ -2147,7 +2125,6 @@ fn write_gauge_columns(
 }
 
 /// Write all 19 sum columns into the row group.
-#[allow(dead_code)]
 fn write_sum_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     metrics: &[&OtelMetric],
@@ -2196,14 +2173,12 @@ fn write_sum_columns(
 // ---------------------------------------------------------------------------
 
 /// A flattened row for histogram data points.
-#[allow(dead_code)]
 struct HistogramDpRow<'a> {
     metric: &'a OtelMetric,
     dp: opentelemetry_proto::tonic::metrics::v1::HistogramDataPoint,
 }
 
 /// Write the 15 common metric columns for histogram data point rows.
-#[allow(dead_code)]
 fn write_common_metric_columns_histogram(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     rows: &[HistogramDpRow<'_>],
@@ -2428,7 +2403,6 @@ fn write_common_metric_columns_histogram(
 }
 
 /// Write all 22 histogram columns into the row group.
-#[allow(dead_code)]
 fn write_histogram_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     metrics: &[&OtelMetric],
@@ -2562,14 +2536,12 @@ fn write_histogram_columns(
 }
 
 /// A flattened row for exponential histogram data points.
-#[allow(dead_code)]
 struct ExpHistogramDpRow<'a> {
     metric: &'a OtelMetric,
     dp: opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint,
 }
 
 /// Write the 15 common metric columns for exp histogram data point rows.
-#[allow(dead_code)]
 fn write_common_metric_columns_exp_histogram(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     rows: &[ExpHistogramDpRow<'_>],
@@ -2794,7 +2766,6 @@ fn write_common_metric_columns_exp_histogram(
 }
 
 /// Write all 27 exponential histogram columns into the row group.
-#[allow(dead_code)]
 fn write_exp_histogram_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     metrics: &[&OtelMetric],
@@ -3003,14 +2974,12 @@ fn write_exp_histogram_columns(
 }
 
 /// A flattened row for summary data points.
-#[allow(dead_code)]
 struct SummaryDpRow<'a> {
     metric: &'a OtelMetric,
     dp: opentelemetry_proto::tonic::metrics::v1::SummaryDataPoint,
 }
 
 /// Write the 15 common metric columns for summary data point rows.
-#[allow(dead_code)]
 fn write_common_metric_columns_summary(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     rows: &[SummaryDpRow<'_>],
@@ -3225,7 +3194,6 @@ fn write_common_metric_columns_summary(
 }
 
 /// Write all 18 summary columns into the row group.
-#[allow(dead_code)]
 fn write_summary_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     metrics: &[&OtelMetric],
@@ -3282,21 +3250,37 @@ fn write_summary_columns(
 // ---------------------------------------------------------------------------
 
 /// Serializes batches of events into complete Parquet files.
+///
+/// Supports all signal types: logs, traces, and metrics (gauge, sum,
+/// histogram, exponential histogram, summary). A single `encode()` call
+/// partitions events by signal type and metric subtype, producing one
+/// Parquet file per non-empty group.
 #[derive(Clone, Debug)]
 pub struct ParquetSerializer {
     log_schema: Arc<Type>,
+    trace_schema: Arc<Type>,
+    gauge_schema: Arc<Type>,
+    sum_schema: Arc<Type>,
+    histogram_schema: Arc<Type>,
+    exp_histogram_schema: Arc<Type>,
+    summary_schema: Arc<Type>,
     writer_props: WriterProperties,
 }
 
 impl ParquetSerializer {
     /// Create a new Parquet serializer with the given configuration.
     pub fn new(config: &ParquetSerializerConfig) -> Self {
-        let log_schema = build_otel_log_schema();
         let writer_props = WriterProperties::builder()
             .set_compression(config.compression.to_parquet())
             .build();
         Self {
-            log_schema,
+            log_schema: build_otel_log_schema(),
+            trace_schema: build_trace_schema(),
+            gauge_schema: build_gauge_schema(),
+            sum_schema: build_sum_schema(),
+            histogram_schema: build_histogram_schema(),
+            exp_histogram_schema: build_exp_histogram_schema(),
+            summary_schema: build_summary_schema(),
             writer_props,
         }
     }
@@ -3338,24 +3322,105 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
             return Err(ParquetEncodingError::NoEvents);
         }
 
-        let logs: Vec<&OtelLog> = events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Log(otel_log) => Some(otel_log),
-                _ => None,
-            })
-            .collect();
+        // Partition events by signal type and metric subtype.
+        let mut logs: Vec<&OtelLog> = Vec::new();
+        let mut traces: Vec<&OtelSpan> = Vec::new();
+        let mut gauge_metrics: Vec<&OtelMetric> = Vec::new();
+        let mut sum_metrics: Vec<&OtelMetric> = Vec::new();
+        let mut histogram_metrics: Vec<&OtelMetric> = Vec::new();
+        let mut exp_histogram_metrics: Vec<&OtelMetric> = Vec::new();
+        let mut summary_metrics: Vec<&OtelMetric> = Vec::new();
 
-        if logs.is_empty() {
+        for event in &events {
+            match event {
+                Event::Log(log) => logs.push(log),
+                Event::Trace(span) => traces.push(span),
+                Event::Metric(metric) => match metric.metric().data {
+                    Some(MetricData::Gauge(_)) => gauge_metrics.push(metric),
+                    Some(MetricData::Sum(_)) => sum_metrics.push(metric),
+                    Some(MetricData::Histogram(_)) => histogram_metrics.push(metric),
+                    Some(MetricData::ExponentialHistogram(_)) => {
+                        exp_histogram_metrics.push(metric);
+                    }
+                    Some(MetricData::Summary(_)) => summary_metrics.push(metric),
+                    None => {} // skip metrics with no data
+                },
+            }
+        }
+
+        let mut wrote_any = false;
+        let props = Arc::new(self.writer_props.clone());
+
+        if !logs.is_empty() {
+            let buf =
+                write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
+                    write_log_columns(rg, &logs)
+                })?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !traces.is_empty() {
+            let buf =
+                write_parquet_file(Arc::clone(&self.trace_schema), Arc::clone(&props), |rg| {
+                    write_trace_columns(rg, &traces)
+                })?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !gauge_metrics.is_empty() {
+            let buf =
+                write_parquet_file(Arc::clone(&self.gauge_schema), Arc::clone(&props), |rg| {
+                    write_gauge_columns(rg, &gauge_metrics)
+                })?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !sum_metrics.is_empty() {
+            let buf =
+                write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
+                    write_sum_columns(rg, &sum_metrics)
+                })?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !histogram_metrics.is_empty() {
+            let buf = write_parquet_file(
+                Arc::clone(&self.histogram_schema),
+                Arc::clone(&props),
+                |rg| write_histogram_columns(rg, &histogram_metrics),
+            )?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !exp_histogram_metrics.is_empty() {
+            let buf = write_parquet_file(
+                Arc::clone(&self.exp_histogram_schema),
+                Arc::clone(&props),
+                |rg| write_exp_histogram_columns(rg, &exp_histogram_metrics),
+            )?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !summary_metrics.is_empty() {
+            let buf = write_parquet_file(
+                Arc::clone(&self.summary_schema),
+                Arc::clone(&props),
+                |rg| write_summary_columns(rg, &summary_metrics),
+            )?;
+            buffer.put_slice(&buf);
+            wrote_any = true;
+        }
+
+        if !wrote_any {
             return Err(ParquetEncodingError::NoEvents);
         }
 
-        let schema = Arc::clone(&self.log_schema);
-        let props = Arc::new(self.writer_props.clone());
-
-        let buf = write_parquet_file(schema, props, |rg| write_log_columns(rg, &logs))?;
-
-        buffer.put_slice(&buf);
         Ok(())
     }
 }
@@ -5044,6 +5109,116 @@ mod tests {
         assert!(json.is_array());
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 6: Signal routing and ParquetSerializer integration tests
+    // -----------------------------------------------------------------------
+
+    /// Count the number of Parquet files concatenated in a buffer.
+    ///
+    /// Each Parquet file starts with `PAR1` magic and ends with `PAR1`.
+    /// We count non-overlapping occurrences and divide by 2.
+    fn count_parquet_files(data: &[u8]) -> usize {
+        let magic = b"PAR1";
+        let count = data.windows(4).filter(|w| *w == magic).count();
+        count / 2
+    }
+
+    fn create_trace_event() -> Event {
+        Event::Trace(create_trace_span())
+    }
+
+    fn create_gauge_event() -> Event {
+        Event::Metric(create_gauge_metric(Some(42), None))
+    }
+
+    fn create_histogram_event() -> Event {
+        Event::Metric(create_histogram_metric())
+    }
+
+    #[test]
+    fn test_encode_logs_only() {
+        let events = vec![
+            create_log_event("INFO", "log1"),
+            create_log_event("ERROR", "log2"),
+        ];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 1);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
+        assert_eq!(
+            reader.metadata().file_metadata().schema().get_fields().len(),
+            18, // log schema has 18 columns
+        );
+    }
+
+    #[test]
+    fn test_encode_traces_only() {
+        let events = vec![create_trace_event(), create_trace_event()];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 1);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
+        assert_eq!(
+            reader.metadata().file_metadata().schema().get_fields().len(),
+            24, // trace schema has 24 columns
+        );
+    }
+
+    #[test]
+    fn test_encode_gauge_only() {
+        let events = vec![create_gauge_event()];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 1);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
+        assert_eq!(
+            reader.metadata().file_metadata().schema().get_fields().len(),
+            17, // gauge schema has 17 columns
+        );
+    }
+
+    #[test]
+    fn test_encode_mixed_signals() {
+        // logs + traces -> two Parquet files in buffer
+        let events = vec![
+            create_log_event("INFO", "a log"),
+            create_trace_event(),
+        ];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 2);
+    }
+
+    #[test]
+    fn test_encode_mixed_metric_subtypes() {
+        // gauge + histogram -> two Parquet files
+        let events = vec![create_gauge_event(), create_histogram_event()];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 2);
+    }
+
+    #[test]
+    fn test_encode_empty_batch_error() {
+        let result = encode_events(vec![], ParquetCompression::Uncompressed);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ParquetEncodingError::NoEvents
+        ));
+    }
+
+    #[test]
+    fn test_encode_all_signal_types() {
+        // logs + traces + gauge + histogram -> 4 Parquet files
+        let events = vec![
+            create_log_event("INFO", "a log"),
+            create_trace_event(),
+            create_gauge_event(),
+            create_histogram_event(),
+        ];
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        assert_eq!(count_parquet_files(&data), 4);
     }
 
     // -----------------------------------------------------------------------

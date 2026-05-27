@@ -183,7 +183,7 @@ impl BatchSerializerConfig {
             #[cfg(feature = "arrow")]
             BatchSerializerConfig::ArrowStream(arrow_config) => arrow_config.input_type(),
             #[cfg(feature = "parquet")]
-            BatchSerializerConfig::Parquet(_) => DataType::Log,
+            BatchSerializerConfig::Parquet(_) => DataType::Log | DataType::Trace | DataType::Metric,
         }
     }
 
