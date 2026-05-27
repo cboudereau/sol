@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Parquet writing strategy: native column writers vs Arrow intermediary
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [FR4](../DESIGN.md#fr4), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../designs/20260527_parquet-multisignal.md#fr1), [FR2](../designs/20260527_parquet-multisignal.md#fr2), [FR3](../designs/20260527_parquet-multisignal.md#fr3), [FR4](../designs/20260527_parquet-multisignal.md#fr4), [NFR1](../designs/20260527_parquet-multisignal.md#nfr1)
 
 ## Problem
 

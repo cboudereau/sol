@@ -1,10 +1,11 @@
 # Parquet Multisignal — Design Doc
 
-Amends: [parquet/DESIGN.md](../parquet/DESIGN.md)
+> Implemented in `932f31077`, `2d2683600`, `8a0bd6e82`. Native column writers for all OTLP signal types.
+> Amends: [parquet-codec](20260527_parquet-codec.md)
 
 ## Context
 
-The [parquet codec](../parquet/DESIGN.md) currently encodes only OTLP logs. Sol's `Event` enum has three variants — `Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)` — and the Parquet codec must handle all three to be a complete OTLP-to-Parquet pipeline.
+The [parquet codec](20260527_parquet-codec.md) currently encodes only OTLP logs. Sol's `Event` enum has three variants — `Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)` — and the Parquet codec must handle all three to be a complete OTLP-to-Parquet pipeline.
 
 ### Current implementation problem
 
@@ -315,23 +316,23 @@ fn write_parquet_file(
 
 ```
 ParquetSerializer::encode(Vec<Event>, buffer)
-  ├─ partition events by signal type
-  ├─ Event::Log  → write_log_columns(schema, logs)  → SerializedFileWriter → buffer
-  ├─ Event::Trace → write_trace_columns(schema, spans) → SerializedFileWriter → buffer
-  └─ Event::Metric → group by metric subtype
-       ├─ Gauge → write_gauge_columns(schema, dps) → SerializedFileWriter → buffer
-       ├─ Sum → write_sum_columns(schema, dps) → SerializedFileWriter → buffer
-       ├─ Histogram → write_histogram_columns(schema, dps) → SerializedFileWriter → buffer
-       ├─ ExponentialHistogram → write_exp_histogram_columns(schema, dps) → SerializedFileWriter → buffer
-       └─ Summary → write_summary_columns(schema, dps) → SerializedFileWriter → buffer
+  |-- partition events by signal type
+  |-- Event::Log  -> write_log_columns(schema, logs)  -> SerializedFileWriter -> buffer
+  |-- Event::Trace -> write_trace_columns(schema, spans) -> SerializedFileWriter -> buffer
+  +-- Event::Metric -> group by metric subtype
+       |-- Gauge -> write_gauge_columns(schema, dps) -> SerializedFileWriter -> buffer
+       |-- Sum -> write_sum_columns(schema, dps) -> SerializedFileWriter -> buffer
+       |-- Histogram -> write_histogram_columns(schema, dps) -> SerializedFileWriter -> buffer
+       |-- ExponentialHistogram -> write_exp_histogram_columns(schema, dps) -> SerializedFileWriter -> buffer
+       +-- Summary -> write_summary_columns(schema, dps) -> SerializedFileWriter -> buffer
 ```
 
-Each group produces one self-contained Parquet file (header + row group + footer) appended to the output buffer. The sink is responsible for splitting these into separate files if needed (see [mixed-signal batch handling ADR](./adrs/mixed-signal-batch-handling.md)).
+Each group produces one self-contained Parquet file (header + row group + footer) appended to the output buffer. The sink is responsible for splitting these into separate files if needed (see [mixed-signal batch handling ADR](../adrs/0041-mixed-signal-batch-handling.md)).
 
 ### Decisions
 
-- [Parquet writing strategy](./adrs/parquet-writing-strategy.md)
-- [Mixed-signal batch handling](./adrs/mixed-signal-batch-handling.md)
+- [ADR 0040: Parquet writing strategy](../adrs/0040-parquet-writing-strategy.md)
+- [ADR 0041: Mixed-signal batch handling](../adrs/0041-mixed-signal-batch-handling.md)
 
 ## Cross-cutting Concerns
 

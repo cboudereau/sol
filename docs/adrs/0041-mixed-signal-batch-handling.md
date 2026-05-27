@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Mixed-signal batch handling
 
-Addresses: [FR5](../DESIGN.md#fr5)
+Addresses: [FR5](../designs/20260527_parquet-multisignal.md#fr5)
 
 ## Problem
 
