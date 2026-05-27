@@ -21,6 +21,8 @@ use parquet::{
 use snafu::Snafu;
 use sol_config::configurable_component;
 use sol_core::event::{Event, OtelLog};
+use sol_core::event::otel_event::OtelSpan;
+use sol_core::event::otel_metric::OtelMetric;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,72 @@ fn write_optional_bool_column(
     match col.untyped() {
         ColumnWriter::BoolColumnWriter(w) => {
             w.write_batch(values, Some(def_levels), None)
+                .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+        }
+        _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+    }
+    col.close()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    Ok(())
+}
+
+/// Write a REQUIRED FIXED_LEN_BYTE_ARRAY column.
+#[allow(dead_code)]
+fn write_required_fixed_bytes_column(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    values: &[FixedLenByteArray],
+) -> Result<(), ParquetEncodingError> {
+    let mut col = rg
+        .next_column()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+        .ok_or(ParquetEncodingError::NoColumn)?;
+    match col.untyped() {
+        ColumnWriter::FixedLenByteArrayColumnWriter(w) => {
+            w.write_batch(values, None, None)
+                .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+        }
+        _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+    }
+    col.close()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    Ok(())
+}
+
+/// Write a REQUIRED INT32 column.
+#[allow(dead_code)]
+fn write_required_i32_column(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    values: &[i32],
+) -> Result<(), ParquetEncodingError> {
+    let mut col = rg
+        .next_column()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+        .ok_or(ParquetEncodingError::NoColumn)?;
+    match col.untyped() {
+        ColumnWriter::Int32ColumnWriter(w) => {
+            w.write_batch(values, None, None)
+                .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+        }
+        _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+    }
+    col.close()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    Ok(())
+}
+
+/// Write a REQUIRED DOUBLE column.
+#[allow(dead_code)]
+fn write_required_double_column(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    values: &[f64],
+) -> Result<(), ParquetEncodingError> {
+    let mut col = rg
+        .next_column()
+        .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+        .ok_or(ParquetEncodingError::NoColumn)?;
+    match col.untyped() {
+        ColumnWriter::DoubleColumnWriter(w) => {
+            w.write_batch(values, None, None)
                 .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
         }
         _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
@@ -748,6 +816,2462 @@ fn write_log_columns(
     {
         let def_levels: Vec<i16> = vec![0_i16; logs.len()];
         write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Trace schema (Task 3)
+// ---------------------------------------------------------------------------
+
+/// Build the fixed Parquet schema for OTLP Span files (24 columns).
+#[allow(dead_code)]
+pub fn build_trace_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+
+    let fields: Vec<Arc<Type>> = vec![
+        // 0: service_name — REQUIRED UTF8
+        Arc::new(
+            Type::primitive_type_builder("service_name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("service_name field"),
+        ),
+        // 1: start_time_unix_nano — REQUIRED TIMESTAMP NANOS
+        Arc::new(
+            Type::primitive_type_builder("start_time_unix_nano", PhysicalType::INT64)
+                .with_logical_type(Some(LogicalType::Timestamp {
+                    is_adjusted_to_u_t_c: true,
+                    unit: ParquetTimeUnit::NANOS(Default::default()),
+                }))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("start_time_unix_nano field"),
+        ),
+        // 2: duration_nanos — REQUIRED INT64
+        Arc::new(
+            Type::primitive_type_builder("duration_nanos", PhysicalType::INT64)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("duration_nanos field"),
+        ),
+        // 3: trace_id — REQUIRED FIXED_LEN_BYTE_ARRAY(16)
+        Arc::new(
+            Type::primitive_type_builder("trace_id", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+                .with_length(16)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("trace_id field"),
+        ),
+        // 4: span_id — REQUIRED FIXED_LEN_BYTE_ARRAY(8)
+        Arc::new(
+            Type::primitive_type_builder("span_id", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+                .with_length(8)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("span_id field"),
+        ),
+        // 5: parent_span_id — OPTIONAL FIXED_LEN_BYTE_ARRAY(8)
+        Arc::new(
+            Type::primitive_type_builder("parent_span_id", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+                .with_length(8)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("parent_span_id field"),
+        ),
+        // 6: trace_state — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("trace_state", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("trace_state field"),
+        ),
+        // 7: name — REQUIRED UTF8
+        Arc::new(
+            Type::primitive_type_builder("name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("name field"),
+        ),
+        // 8: kind — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("kind", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("kind field"),
+        ),
+        // 9: status_code — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("status_code", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("status_code field"),
+        ),
+        // 10: status_message — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("status_message", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("status_message field"),
+        ),
+        // 11: attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("attributes field"),
+        ),
+        // 12: events — OPTIONAL UTF8 (JSON)
+        Arc::new(
+            Type::primitive_type_builder("events", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("events field"),
+        ),
+        // 13: links — OPTIONAL UTF8 (JSON)
+        Arc::new(
+            Type::primitive_type_builder("links", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("links field"),
+        ),
+        // 14: dropped_attributes_count — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("dropped_attributes_count", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("dropped_attributes_count field"),
+        ),
+        // 15: dropped_events_count — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("dropped_events_count", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("dropped_events_count field"),
+        ),
+        // 16: dropped_links_count — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("dropped_links_count", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("dropped_links_count field"),
+        ),
+        // 17: flags — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("flags", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("flags field"),
+        ),
+        // 18: resource_attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("resource_attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("resource_attributes field"),
+        ),
+        // 19: resource_schema_url — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("resource_schema_url", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("resource_schema_url field"),
+        ),
+        // 20: scope_name — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_name field"),
+        ),
+        // 21: scope_version — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_version", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_version field"),
+        ),
+        // 22: scope_attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_attributes field"),
+        ),
+        // 23: scope_schema_url — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_schema_url", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_schema_url field"),
+        ),
+    ];
+
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("trace schema"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Trace column encoding (Task 3)
+// ---------------------------------------------------------------------------
+
+/// Convert bytes to a REQUIRED fixed-length byte array, zero-filling if empty.
+#[allow(dead_code)]
+fn to_required_fixed_bytes(bytes: &[u8], len: usize) -> FixedLenByteArray {
+    let mut buf = vec![0u8; len];
+    if !bytes.is_empty() {
+        let copy_len = bytes.len().min(len);
+        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    }
+    FixedLenByteArray::from(buf)
+}
+
+/// Write all 24 trace columns into the row group.
+#[allow(dead_code)]
+fn write_trace_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    spans: &[&OtelSpan],
+) -> Result<(), ParquetEncodingError> {
+    // Column 0: service_name (REQUIRED)
+    let service_names: Vec<ByteArray> = spans
+        .iter()
+        .map(|s| ByteArray::from(extract_service_name(s.resource_attrs()).into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &service_names)?;
+
+    // Column 1: start_time_unix_nano (REQUIRED)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = spans
+            .iter()
+            .map(|s| s.span().start_time_unix_nano as i64)
+            .collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // Column 2: duration_nanos (REQUIRED, computed: end - start)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = spans
+            .iter()
+            .map(|s| {
+                (s.span().end_time_unix_nano as i64)
+                    .wrapping_sub(s.span().start_time_unix_nano as i64)
+            })
+            .collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // Column 3: trace_id (REQUIRED FIXED_LEN_BYTE_ARRAY(16))
+    {
+        let values: Vec<FixedLenByteArray> = spans
+            .iter()
+            .map(|s| to_required_fixed_bytes(s.trace_id(), 16))
+            .collect();
+        write_required_fixed_bytes_column(rg, &values)?;
+    }
+
+    // Column 4: span_id (REQUIRED FIXED_LEN_BYTE_ARRAY(8))
+    {
+        let values: Vec<FixedLenByteArray> = spans
+            .iter()
+            .map(|s| to_required_fixed_bytes(s.span_id(), 8))
+            .collect();
+        write_required_fixed_bytes_column(rg, &values)?;
+    }
+
+    // Column 5: parent_span_id (OPTIONAL FIXED_LEN_BYTE_ARRAY(8))
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            match to_fixed_bytes(span.span().parent_span_id.as_slice(), 8) {
+                Some(fb) => {
+                    values.push(fb);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_fixed_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 6: trace_state (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            let ts = &span.span().trace_state;
+            if ts.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(ts.clone().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 7: name (REQUIRED)
+    {
+        let values: Vec<ByteArray> = spans
+            .iter()
+            .map(|s| ByteArray::from(s.name().to_string().into_bytes()))
+            .collect();
+        write_required_bytes_column(rg, &values)?;
+    }
+
+    // Column 8: kind (OPTIONAL INT32, 0 = null)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            let k = span.span().kind;
+            if k == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(k);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 9: status_code (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            match span.span().status.as_ref() {
+                Some(status) => {
+                    values.push(status.code);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 10: status_message (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            match span.span().status.as_ref() {
+                Some(status) if !status.message.is_empty() => {
+                    values.push(ByteArray::from(status.message.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                _ => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 11: attributes (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            let attrs = span.attributes();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 12: events (OPTIONAL UTF8, JSON-serialized)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            if span.span().events.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&span.span().events).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 13: links (OPTIONAL UTF8, JSON-serialized)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            if span.span().links.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&span.span().links).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 14: dropped_attributes_count (OPTIONAL INT32, 0 = null)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "dropped count is u32 in proto, i32 in parquet; values are small"
+            )]
+            let count = span.span().dropped_attributes_count as i32;
+            if count == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(count);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 15: dropped_events_count (OPTIONAL INT32, 0 = null)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "dropped count is u32 in proto, i32 in parquet; values are small"
+            )]
+            let count = span.span().dropped_events_count as i32;
+            if count == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(count);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 16: dropped_links_count (OPTIONAL INT32, 0 = null)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "dropped count is u32 in proto, i32 in parquet; values are small"
+            )]
+            let count = span.span().dropped_links_count as i32;
+            if count == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(count);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 17: flags (OPTIONAL INT32, 0 = null)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "flags is u32 in proto, i32 in parquet; top bit rarely used"
+            )]
+            let flags = span.span().flags as i32;
+            if flags == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(flags);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 18: resource_attributes (OPTIONAL UTF8, excluding service.name)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            let json = attrs_to_json_excluding(span.resource_attrs(), "service.name");
+            if json == "{}" {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 19: resource_schema_url (OPTIONAL UTF8) — always null for now
+    {
+        let def_levels: Vec<i16> = vec![0_i16; spans.len()];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // Column 20: scope_name (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            match span.scope().map(|s| &s.name).filter(|n| !n.is_empty()) {
+                Some(name) => {
+                    values.push(ByteArray::from(name.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 21: scope_version (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            match span.scope().map(|s| &s.version).filter(|v| !v.is_empty()) {
+                Some(version) => {
+                    values.push(ByteArray::from(version.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 22: scope_attributes (OPTIONAL UTF8)
+    {
+        let mut values = Vec::with_capacity(spans.len());
+        let mut def_levels = Vec::with_capacity(spans.len());
+        for span in spans {
+            let attrs = span.scope_attrs();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // Column 23: scope_schema_url (OPTIONAL UTF8) — always null for now
+    {
+        let def_levels: Vec<i16> = vec![0_i16; spans.len()];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Metric schemas (Task 4 & 5)
+// ---------------------------------------------------------------------------
+
+/// Helper: build the 15 common metric schema columns shared by all metric subtypes.
+#[allow(dead_code)]
+fn common_metric_schema_fields() -> Vec<Arc<Type>> {
+    use parquet::basic::Type as PhysicalType;
+
+    vec![
+        // 0: service_name — REQUIRED UTF8
+        Arc::new(
+            Type::primitive_type_builder("service_name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("service_name field"),
+        ),
+        // 1: name — REQUIRED UTF8
+        Arc::new(
+            Type::primitive_type_builder("name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("name field"),
+        ),
+        // 2: description — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("description", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("description field"),
+        ),
+        // 3: unit — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("unit", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("unit field"),
+        ),
+        // 4: time_unix_nano — REQUIRED TIMESTAMP NANOS
+        Arc::new(
+            Type::primitive_type_builder("time_unix_nano", PhysicalType::INT64)
+                .with_logical_type(Some(LogicalType::Timestamp {
+                    is_adjusted_to_u_t_c: true,
+                    unit: ParquetTimeUnit::NANOS(Default::default()),
+                }))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("time_unix_nano field"),
+        ),
+        // 5: start_time_unix_nano — OPTIONAL TIMESTAMP NANOS
+        Arc::new(
+            Type::primitive_type_builder("start_time_unix_nano", PhysicalType::INT64)
+                .with_logical_type(Some(LogicalType::Timestamp {
+                    is_adjusted_to_u_t_c: true,
+                    unit: ParquetTimeUnit::NANOS(Default::default()),
+                }))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("start_time_unix_nano field"),
+        ),
+        // 6: attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("attributes field"),
+        ),
+        // 7: flags — OPTIONAL INT32
+        Arc::new(
+            Type::primitive_type_builder("flags", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("flags field"),
+        ),
+        // 8: exemplars — OPTIONAL UTF8 (JSON)
+        Arc::new(
+            Type::primitive_type_builder("exemplars", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("exemplars field"),
+        ),
+        // 9: resource_attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("resource_attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("resource_attributes field"),
+        ),
+        // 10: resource_schema_url — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("resource_schema_url", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("resource_schema_url field"),
+        ),
+        // 11: scope_name — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_name field"),
+        ),
+        // 12: scope_version — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_version", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_version field"),
+        ),
+        // 13: scope_attributes — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_attributes", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_attributes field"),
+        ),
+        // 14: scope_schema_url — OPTIONAL UTF8
+        Arc::new(
+            Type::primitive_type_builder("scope_schema_url", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .expect("scope_schema_url field"),
+        ),
+    ]
+}
+
+/// Build the Parquet schema for OTLP Gauge metrics (17 columns).
+#[allow(dead_code)]
+pub fn build_gauge_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let mut fields = common_metric_schema_fields();
+    fields.push(Arc::new(
+        Type::primitive_type_builder("int_value", PhysicalType::INT64)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("int_value field"),
+    ));
+    fields.push(Arc::new(
+        Type::primitive_type_builder("double_value", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("double_value field"),
+    ));
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("gauge schema"),
+    )
+}
+
+/// Build the Parquet schema for OTLP Sum metrics (19 columns).
+#[allow(dead_code)]
+pub fn build_sum_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let mut fields = common_metric_schema_fields();
+    fields.push(Arc::new(
+        Type::primitive_type_builder("int_value", PhysicalType::INT64)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("int_value field"),
+    ));
+    fields.push(Arc::new(
+        Type::primitive_type_builder("double_value", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("double_value field"),
+    ));
+    fields.push(Arc::new(
+        Type::primitive_type_builder("aggregation_temporality", PhysicalType::INT32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("aggregation_temporality field"),
+    ));
+    fields.push(Arc::new(
+        Type::primitive_type_builder("is_monotonic", PhysicalType::BOOLEAN)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("is_monotonic field"),
+    ));
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("sum schema"),
+    )
+}
+
+/// Build the Parquet schema for OTLP Histogram metrics (22 columns).
+#[allow(dead_code)]
+pub fn build_histogram_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let mut fields = common_metric_schema_fields();
+    // 15: count — REQUIRED INT64
+    fields.push(Arc::new(
+        Type::primitive_type_builder("count", PhysicalType::INT64)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("count field"),
+    ));
+    // 16: sum — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("sum", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("sum field"),
+    ));
+    // 17: min — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("min", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("min field"),
+    ));
+    // 18: max — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("max", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("max field"),
+    ));
+    // 19: bucket_counts — OPTIONAL UTF8 (JSON)
+    fields.push(Arc::new(
+        Type::primitive_type_builder("bucket_counts", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("bucket_counts field"),
+    ));
+    // 20: explicit_bounds — OPTIONAL UTF8 (JSON)
+    fields.push(Arc::new(
+        Type::primitive_type_builder("explicit_bounds", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("explicit_bounds field"),
+    ));
+    // 21: aggregation_temporality — OPTIONAL INT32
+    fields.push(Arc::new(
+        Type::primitive_type_builder("aggregation_temporality", PhysicalType::INT32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("aggregation_temporality field"),
+    ));
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("histogram schema"),
+    )
+}
+
+/// Build the Parquet schema for OTLP ExponentialHistogram metrics (27 columns).
+#[allow(dead_code)]
+pub fn build_exp_histogram_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let mut fields = common_metric_schema_fields();
+    // 15: count — REQUIRED INT64
+    fields.push(Arc::new(
+        Type::primitive_type_builder("count", PhysicalType::INT64)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("count field"),
+    ));
+    // 16: sum — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("sum", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("sum field"),
+    ));
+    // 17: min — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("min", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("min field"),
+    ));
+    // 18: max — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("max", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("max field"),
+    ));
+    // 19: scale — REQUIRED INT32
+    fields.push(Arc::new(
+        Type::primitive_type_builder("scale", PhysicalType::INT32)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("scale field"),
+    ));
+    // 20: zero_count — REQUIRED INT64
+    fields.push(Arc::new(
+        Type::primitive_type_builder("zero_count", PhysicalType::INT64)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("zero_count field"),
+    ));
+    // 21: zero_threshold — OPTIONAL DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("zero_threshold", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("zero_threshold field"),
+    ));
+    // 22: positive_offset — OPTIONAL INT32
+    fields.push(Arc::new(
+        Type::primitive_type_builder("positive_offset", PhysicalType::INT32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("positive_offset field"),
+    ));
+    // 23: positive_bucket_counts — OPTIONAL UTF8 (JSON)
+    fields.push(Arc::new(
+        Type::primitive_type_builder("positive_bucket_counts", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("positive_bucket_counts field"),
+    ));
+    // 24: negative_offset — OPTIONAL INT32
+    fields.push(Arc::new(
+        Type::primitive_type_builder("negative_offset", PhysicalType::INT32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("negative_offset field"),
+    ));
+    // 25: negative_bucket_counts — OPTIONAL UTF8 (JSON)
+    fields.push(Arc::new(
+        Type::primitive_type_builder("negative_bucket_counts", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("negative_bucket_counts field"),
+    ));
+    // 26: aggregation_temporality — OPTIONAL INT32
+    fields.push(Arc::new(
+        Type::primitive_type_builder("aggregation_temporality", PhysicalType::INT32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("aggregation_temporality field"),
+    ));
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("exp_histogram schema"),
+    )
+}
+
+/// Build the Parquet schema for OTLP Summary metrics (18 columns).
+#[allow(dead_code)]
+pub fn build_summary_schema() -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let mut fields = common_metric_schema_fields();
+    // 15: count — REQUIRED INT64
+    fields.push(Arc::new(
+        Type::primitive_type_builder("count", PhysicalType::INT64)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("count field"),
+    ));
+    // 16: sum — REQUIRED DOUBLE
+    fields.push(Arc::new(
+        Type::primitive_type_builder("sum", PhysicalType::DOUBLE)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("sum field"),
+    ));
+    // 17: quantile_values — OPTIONAL UTF8 (JSON)
+    fields.push(Arc::new(
+        Type::primitive_type_builder("quantile_values", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("quantile_values field"),
+    ));
+    Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()
+            .expect("summary schema"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Metric column encoding (Task 4 & 5)
+// ---------------------------------------------------------------------------
+
+use sol_core::event::otel_metric::{MetricData, NumberDataPointValue};
+
+/// Convert OTLP KeyValue attributes to a JSON string, or None if empty.
+#[allow(dead_code)]
+fn kv_attrs_to_json_opt(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue]) -> Option<String> {
+    if attrs.is_empty() {
+        return None;
+    }
+    let tmp = OtelAttributes::from_key_values(attrs.to_vec());
+    let json = attrs_to_json(&tmp);
+    if json == "{}" { None } else { Some(json) }
+}
+
+/// A flattened row for gauge/sum data points. One row per data point.
+#[allow(dead_code)]
+struct NumberDpRow<'a> {
+    metric: &'a OtelMetric,
+    dp: opentelemetry_proto::tonic::metrics::v1::NumberDataPoint,
+}
+
+/// Collect flattened rows for gauge metrics, using `metric_proto()` to restore dp attrs.
+#[allow(dead_code)]
+fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
+    let mut rows = Vec::new();
+    for metric in metrics {
+        let proto = metric.metric_proto();
+        if let Some(MetricData::Gauge(gauge)) = proto.data {
+            for dp in gauge.data_points {
+                rows.push(NumberDpRow { metric, dp });
+            }
+        }
+    }
+    rows
+}
+
+/// Collect flattened rows for sum metrics, using `metric_proto()` to restore dp attrs.
+#[allow(dead_code)]
+fn collect_sum_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
+    let mut rows = Vec::new();
+    for metric in metrics {
+        let proto = metric.metric_proto();
+        if let Some(MetricData::Sum(sum)) = proto.data {
+            for dp in sum.data_points {
+                rows.push(NumberDpRow { metric, dp });
+            }
+        }
+    }
+    rows
+}
+
+/// Write the 15 common metric columns for number data point rows.
+#[allow(dead_code)]
+fn write_common_metric_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[NumberDpRow<'_>],
+) -> Result<(), ParquetEncodingError> {
+    let n = rows.len();
+
+    // 0: service_name (REQUIRED)
+    let service_names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(extract_service_name(r.metric.resource_attrs()).into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &service_names)?;
+
+    // 1: name (REQUIRED)
+    let names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(r.metric.name().to_string().into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &names)?;
+
+    // 2: description (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let desc = row.metric.description();
+            if desc.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(desc.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 3: unit (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let unit = row.metric.unit();
+            if unit.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(unit.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 4: time_unix_nano (REQUIRED)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.time_unix_nano as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 5: start_time_unix_nano (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.start_time_unix_nano == 0 {
+                def_levels.push(0_i16);
+            } else {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+                )]
+                values.push(row.dp.start_time_unix_nano as i64);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i64_column(rg, &values, &def_levels)?;
+    }
+
+    // 6: attributes (OPTIONAL — from data point attributes)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match kv_attrs_to_json_opt(&row.dp.attributes) {
+                Some(json) => {
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 7: flags (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "flags is u32 in proto, i32 in parquet; top bit rarely used"
+            )]
+            let flags = row.dp.flags as i32;
+            if flags == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(flags);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 8: exemplars (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.exemplars.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.exemplars).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 9: resource_attributes (OPTIONAL, excluding service.name)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let json = attrs_to_json_excluding(row.metric.resource_attrs(), "service.name");
+            if json == "{}" {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 10: resource_schema_url (OPTIONAL) — always null for now
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 11: scope_name (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+                Some(name) => {
+                    values.push(ByteArray::from(name.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 12: scope_version (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.version)
+                .filter(|v| !v.is_empty())
+            {
+                Some(version) => {
+                    values.push(ByteArray::from(version.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 13: scope_attributes (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let attrs = row.metric.scope_attrs();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 14: scope_schema_url (OPTIONAL) — always null for now
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// Write the int_value and double_value columns for gauge/sum data points.
+#[allow(dead_code)]
+fn write_number_value_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[NumberDpRow<'_>],
+) -> Result<(), ParquetEncodingError> {
+    let n = rows.len();
+
+    // int_value (OPTIONAL INT64)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.dp.value {
+                Some(NumberDataPointValue::AsInt(v)) => {
+                    values.push(v);
+                    def_levels.push(1_i16);
+                }
+                _ => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_i64_column(rg, &values, &def_levels)?;
+    }
+
+    // double_value (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.dp.value {
+                Some(NumberDataPointValue::AsDouble(v)) => {
+                    values.push(v);
+                    def_levels.push(1_i16);
+                }
+                _ => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// Write all 17 gauge columns into the row group.
+#[allow(dead_code)]
+fn write_gauge_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    metrics: &[&OtelMetric],
+) -> Result<(), ParquetEncodingError> {
+    let rows = collect_gauge_rows(metrics);
+    write_common_metric_columns(rg, &rows)?;
+    write_number_value_columns(rg, &rows)?;
+    Ok(())
+}
+
+/// Write all 19 sum columns into the row group.
+#[allow(dead_code)]
+fn write_sum_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    metrics: &[&OtelMetric],
+) -> Result<(), ParquetEncodingError> {
+    let rows = collect_sum_rows(metrics);
+    write_common_metric_columns(rg, &rows)?;
+    write_number_value_columns(rg, &rows)?;
+
+    let n = rows.len();
+
+    // aggregation_temporality (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if let Some(MetricData::Sum(sum)) = row.metric.metric().data.as_ref() {
+                values.push(sum.aggregation_temporality);
+                def_levels.push(1_i16);
+            } else {
+                def_levels.push(0_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // is_monotonic (OPTIONAL BOOLEAN)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if let Some(MetricData::Sum(sum)) = row.metric.metric().data.as_ref() {
+                values.push(sum.is_monotonic);
+                def_levels.push(1_i16);
+            } else {
+                def_levels.push(0_i16);
+            }
+        }
+        write_optional_bool_column(rg, &values, &def_levels)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Histogram / ExpHistogram / Summary column encoding (Task 5)
+// ---------------------------------------------------------------------------
+
+/// A flattened row for histogram data points.
+#[allow(dead_code)]
+struct HistogramDpRow<'a> {
+    metric: &'a OtelMetric,
+    dp: opentelemetry_proto::tonic::metrics::v1::HistogramDataPoint,
+}
+
+/// Write the 15 common metric columns for histogram data point rows.
+#[allow(dead_code)]
+fn write_common_metric_columns_histogram(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[HistogramDpRow<'_>],
+) -> Result<(), ParquetEncodingError> {
+    let n = rows.len();
+
+    // 0: service_name (REQUIRED)
+    let service_names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(extract_service_name(r.metric.resource_attrs()).into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &service_names)?;
+
+    // 1: name (REQUIRED)
+    let names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(r.metric.name().to_string().into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &names)?;
+
+    // 2: description (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let desc = row.metric.description();
+            if desc.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(desc.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 3: unit (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let unit = row.metric.unit();
+            if unit.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(unit.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 4: time_unix_nano (REQUIRED)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.time_unix_nano as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 5: start_time_unix_nano (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.start_time_unix_nano == 0 {
+                def_levels.push(0_i16);
+            } else {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+                )]
+                values.push(row.dp.start_time_unix_nano as i64);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i64_column(rg, &values, &def_levels)?;
+    }
+
+    // 6: attributes (OPTIONAL — from data point attributes)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match kv_attrs_to_json_opt(&row.dp.attributes) {
+                Some(json) => {
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 7: flags (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "flags is u32 in proto, i32 in parquet; top bit rarely used"
+            )]
+            let flags = row.dp.flags as i32;
+            if flags == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(flags);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 8: exemplars (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.exemplars.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.exemplars).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 9: resource_attributes (OPTIONAL, excluding service.name)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let json = attrs_to_json_excluding(row.metric.resource_attrs(), "service.name");
+            if json == "{}" {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 10: resource_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 11: scope_name (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+                Some(name) => {
+                    values.push(ByteArray::from(name.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 12: scope_version (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.version)
+                .filter(|v| !v.is_empty())
+            {
+                Some(version) => {
+                    values.push(ByteArray::from(version.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 13: scope_attributes (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let attrs = row.metric.scope_attrs();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 14: scope_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// Write all 22 histogram columns into the row group.
+#[allow(dead_code)]
+fn write_histogram_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    metrics: &[&OtelMetric],
+) -> Result<(), ParquetEncodingError> {
+    let mut rows = Vec::new();
+    for metric in metrics {
+        let proto = metric.metric_proto();
+        if let Some(MetricData::Histogram(hist)) = proto.data {
+            for dp in hist.data_points {
+                rows.push(HistogramDpRow { metric, dp });
+            }
+        }
+    }
+
+    write_common_metric_columns_histogram(rg, &rows)?;
+
+    let n = rows.len();
+
+    // 15: count (REQUIRED INT64)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "u64 count may exceed i64::MAX; acceptable truncation"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.count as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 16: sum (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.sum {
+                Some(s) => {
+                    values.push(s);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 17: min (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.min {
+                Some(m) => {
+                    values.push(m);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 18: max (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.max {
+                Some(m) => {
+                    values.push(m);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 19: bucket_counts (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if row.dp.bucket_counts.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.bucket_counts).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 20: explicit_bounds (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if row.dp.explicit_bounds.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.explicit_bounds).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 21: aggregation_temporality (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if let Some(MetricData::Histogram(hist)) = row.metric.metric().data.as_ref() {
+                values.push(hist.aggregation_temporality);
+                def_levels.push(1_i16);
+            } else {
+                def_levels.push(0_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// A flattened row for exponential histogram data points.
+#[allow(dead_code)]
+struct ExpHistogramDpRow<'a> {
+    metric: &'a OtelMetric,
+    dp: opentelemetry_proto::tonic::metrics::v1::ExponentialHistogramDataPoint,
+}
+
+/// Write the 15 common metric columns for exp histogram data point rows.
+#[allow(dead_code)]
+fn write_common_metric_columns_exp_histogram(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[ExpHistogramDpRow<'_>],
+) -> Result<(), ParquetEncodingError> {
+    let n = rows.len();
+
+    // 0: service_name (REQUIRED)
+    let service_names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(extract_service_name(r.metric.resource_attrs()).into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &service_names)?;
+
+    // 1: name (REQUIRED)
+    let names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(r.metric.name().to_string().into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &names)?;
+
+    // 2: description (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let desc = row.metric.description();
+            if desc.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(desc.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 3: unit (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let unit = row.metric.unit();
+            if unit.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(unit.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 4: time_unix_nano (REQUIRED)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.time_unix_nano as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 5: start_time_unix_nano (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.start_time_unix_nano == 0 {
+                def_levels.push(0_i16);
+            } else {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+                )]
+                values.push(row.dp.start_time_unix_nano as i64);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i64_column(rg, &values, &def_levels)?;
+    }
+
+    // 6: attributes (OPTIONAL — from data point attributes)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match kv_attrs_to_json_opt(&row.dp.attributes) {
+                Some(json) => {
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 7: flags (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "flags is u32 in proto, i32 in parquet; top bit rarely used"
+            )]
+            let flags = row.dp.flags as i32;
+            if flags == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(flags);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 8: exemplars (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.exemplars.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.exemplars).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 9: resource_attributes (OPTIONAL, excluding service.name)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let json = attrs_to_json_excluding(row.metric.resource_attrs(), "service.name");
+            if json == "{}" {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 10: resource_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 11: scope_name (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+                Some(name) => {
+                    values.push(ByteArray::from(name.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 12: scope_version (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.version)
+                .filter(|v| !v.is_empty())
+            {
+                Some(version) => {
+                    values.push(ByteArray::from(version.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 13: scope_attributes (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let attrs = row.metric.scope_attrs();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 14: scope_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// Write all 27 exponential histogram columns into the row group.
+#[allow(dead_code)]
+fn write_exp_histogram_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    metrics: &[&OtelMetric],
+) -> Result<(), ParquetEncodingError> {
+    let mut rows = Vec::new();
+    for metric in metrics {
+        let proto = metric.metric_proto();
+        if let Some(MetricData::ExponentialHistogram(exp)) = proto.data {
+            for dp in exp.data_points {
+                rows.push(ExpHistogramDpRow { metric, dp });
+            }
+        }
+    }
+
+    write_common_metric_columns_exp_histogram(rg, &rows)?;
+
+    let n = rows.len();
+
+    // 15: count (REQUIRED INT64)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "u64 count may exceed i64::MAX; acceptable truncation"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.count as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 16: sum (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.sum {
+                Some(s) => {
+                    values.push(s);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 17: min (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.min {
+                Some(m) => {
+                    values.push(m);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 18: max (OPTIONAL DOUBLE)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.max {
+                Some(m) => {
+                    values.push(m);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 19: scale (REQUIRED INT32)
+    {
+        let values: Vec<i32> = rows.iter().map(|r| r.dp.scale).collect();
+        write_required_i32_column(rg, &values)?;
+    }
+
+    // 20: zero_count (REQUIRED INT64)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "u64 zero_count may exceed i64::MAX; acceptable truncation"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.zero_count as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 21: zero_threshold (OPTIONAL DOUBLE, 0.0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if row.dp.zero_threshold == 0.0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(row.dp.zero_threshold);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_double_column(rg, &values, &def_levels)?;
+    }
+
+    // 22: positive_offset (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.positive.as_ref() {
+                Some(b) => {
+                    values.push(b.offset);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 23: positive_bucket_counts (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.positive.as_ref() {
+                Some(b) if !b.bucket_counts.is_empty() => {
+                    let json = serde_json::to_string(&b.bucket_counts).unwrap_or_default();
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                _ => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 24: negative_offset (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.negative.as_ref() {
+                Some(b) => {
+                    values.push(b.offset);
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 25: negative_bucket_counts (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            match row.dp.negative.as_ref() {
+                Some(b) if !b.bucket_counts.is_empty() => {
+                    let json = serde_json::to_string(&b.bucket_counts).unwrap_or_default();
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                _ => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 26: aggregation_temporality (OPTIONAL INT32)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in &rows {
+            if let Some(MetricData::ExponentialHistogram(exp)) =
+                row.metric.metric().data.as_ref()
+            {
+                values.push(exp.aggregation_temporality);
+                def_levels.push(1_i16);
+            } else {
+                def_levels.push(0_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// A flattened row for summary data points.
+#[allow(dead_code)]
+struct SummaryDpRow<'a> {
+    metric: &'a OtelMetric,
+    dp: opentelemetry_proto::tonic::metrics::v1::SummaryDataPoint,
+}
+
+/// Write the 15 common metric columns for summary data point rows.
+#[allow(dead_code)]
+fn write_common_metric_columns_summary(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[SummaryDpRow<'_>],
+) -> Result<(), ParquetEncodingError> {
+    let n = rows.len();
+
+    // 0: service_name (REQUIRED)
+    let service_names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(extract_service_name(r.metric.resource_attrs()).into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &service_names)?;
+
+    // 1: name (REQUIRED)
+    let names: Vec<ByteArray> = rows
+        .iter()
+        .map(|r| ByteArray::from(r.metric.name().to_string().into_bytes()))
+        .collect();
+    write_required_bytes_column(rg, &names)?;
+
+    // 2: description (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let desc = row.metric.description();
+            if desc.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(desc.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 3: unit (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let unit = row.metric.unit();
+            if unit.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(unit.to_string().into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 4: time_unix_nano (REQUIRED)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.time_unix_nano as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 5: start_time_unix_nano (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            if row.dp.start_time_unix_nano == 0 {
+                def_levels.push(0_i16);
+            } else {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "nanosecond timestamps may exceed i64::MAX in distant future; safe for practical use"
+                )]
+                values.push(row.dp.start_time_unix_nano as i64);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i64_column(rg, &values, &def_levels)?;
+    }
+
+    // 6: attributes (OPTIONAL — from data point attributes)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match kv_attrs_to_json_opt(&row.dp.attributes) {
+                Some(json) => {
+                    values.push(ByteArray::from(json.into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 7: flags (OPTIONAL, 0 = null)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "flags is u32 in proto, i32 in parquet; top bit rarely used"
+            )]
+            let flags = row.dp.flags as i32;
+            if flags == 0 {
+                def_levels.push(0_i16);
+            } else {
+                values.push(flags);
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_i32_column(rg, &values, &def_levels)?;
+    }
+
+    // 8: exemplars (OPTIONAL) — Summary has no exemplars, always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 9: resource_attributes (OPTIONAL, excluding service.name)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let json = attrs_to_json_excluding(row.metric.resource_attrs(), "service.name");
+            if json == "{}" {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 10: resource_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 11: scope_name (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+                Some(name) => {
+                    values.push(ByteArray::from(name.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 12: scope_version (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.version)
+                .filter(|v| !v.is_empty())
+            {
+                Some(version) => {
+                    values.push(ByteArray::from(version.clone().into_bytes()));
+                    def_levels.push(1_i16);
+                }
+                None => {
+                    def_levels.push(0_i16);
+                }
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 13: scope_attributes (OPTIONAL)
+    {
+        let mut values = Vec::with_capacity(n);
+        let mut def_levels = Vec::with_capacity(n);
+        for row in rows {
+            let attrs = row.metric.scope_attrs();
+            if attrs.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                values.push(ByteArray::from(attrs_to_json(attrs).into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
+    }
+
+    // 14: scope_schema_url (OPTIONAL) — always null
+    {
+        let def_levels: Vec<i16> = vec![0_i16; n];
+        write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    Ok(())
+}
+
+/// Write all 18 summary columns into the row group.
+#[allow(dead_code)]
+fn write_summary_columns(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    metrics: &[&OtelMetric],
+) -> Result<(), ParquetEncodingError> {
+    let mut rows = Vec::new();
+    for metric in metrics {
+        let proto = metric.metric_proto();
+        if let Some(MetricData::Summary(summary)) = proto.data {
+            for dp in summary.data_points {
+                rows.push(SummaryDpRow { metric, dp });
+            }
+        }
+    }
+
+    write_common_metric_columns_summary(rg, &rows)?;
+
+    // 15: count (REQUIRED INT64)
+    {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "u64 count may exceed i64::MAX; acceptable truncation"
+        )]
+        let values: Vec<i64> = rows.iter().map(|r| r.dp.count as i64).collect();
+        write_required_i64_column(rg, &values)?;
+    }
+
+    // 16: sum (REQUIRED DOUBLE)
+    {
+        let values: Vec<f64> = rows.iter().map(|r| r.dp.sum).collect();
+        write_required_double_column(rg, &values)?;
+    }
+
+    // 17: quantile_values (OPTIONAL UTF8, JSON)
+    {
+        let mut values = Vec::with_capacity(rows.len());
+        let mut def_levels = Vec::with_capacity(rows.len());
+        for row in &rows {
+            if row.dp.quantile_values.is_empty() {
+                def_levels.push(0_i16);
+            } else {
+                let json = serde_json::to_string(&row.dp.quantile_values).unwrap_or_default();
+                values.push(ByteArray::from(json.into_bytes()));
+                def_levels.push(1_i16);
+            }
+        }
+        write_optional_bytes_column(rg, &values, &def_levels)?;
     }
 
     Ok(())
@@ -1446,6 +3970,1085 @@ mod tests {
             "expected NoEvents error"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 3: Trace schema tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trace_schema_column_count() {
+        let schema = build_trace_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            24,
+            "expected 24 columns in trace schema"
+        );
+    }
+
+    #[test]
+    fn test_trace_schema_column_names() {
+        let schema = build_trace_schema();
+        let names: Vec<&str> = schema.get_fields().iter().map(|f| f.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "service_name",
+                "start_time_unix_nano",
+                "duration_nanos",
+                "trace_id",
+                "span_id",
+                "parent_span_id",
+                "trace_state",
+                "name",
+                "kind",
+                "status_code",
+                "status_message",
+                "attributes",
+                "events",
+                "links",
+                "dropped_attributes_count",
+                "dropped_events_count",
+                "dropped_links_count",
+                "flags",
+                "resource_attributes",
+                "resource_schema_url",
+                "scope_name",
+                "scope_version",
+                "scope_attributes",
+                "scope_schema_url",
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: Trace encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_trace_span() -> OtelSpan {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::Span;
+
+        let span = Span {
+            trace_id: vec![0xAA; 16],
+            span_id: vec![0xBB; 8],
+            parent_span_id: vec![0xCC; 8],
+            name: "test-span".to_string(),
+            kind: 2, // SERVER
+            start_time_unix_nano: 1_000_000_000,
+            end_time_unix_nano: 2_000_000_000,
+            status: Some(opentelemetry_proto::tonic::trace::v1::Status {
+                code: 2, // ERROR
+                message: "something failed".to_string(),
+            }),
+            trace_state: "key=value".to_string(),
+            flags: 1,
+            dropped_attributes_count: 0,
+            dropped_events_count: 0,
+            dropped_links_count: 0,
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "http.method".to_string(),
+                value: Some(string_value("GET")),
+            }],
+            events: vec![],
+            links: vec![],
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("trace-svc")),
+            }],
+            dropped_attributes_count: 0,
+            ..Default::default()
+        };
+
+        let scope = InstrumentationScope {
+            name: "test-scope".to_string(),
+            version: "1.0".to_string(),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+        };
+
+        OtelSpan::from_parts(
+            span,
+            Some(resource),
+            Some(scope),
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_trace_parquet(spans: &[&OtelSpan]) -> Vec<u8> {
+        let schema = build_trace_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_trace_columns(rg, spans))
+            .expect("write trace parquet failed")
+    }
+
+    fn read_string_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<String>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<ByteArray> = Vec::new();
+        let mut def: Vec<i16> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                r.read_records(n, Some(&mut def), None, &mut vals)
+                    .expect("read");
+            }
+            _ => panic!("expected byte array reader for column {col}"),
+        }
+        let mut result = Vec::new();
+        let mut val_idx = 0;
+        for &d in &def {
+            if d == 1 {
+                result.push(Some(String::from_utf8(vals[val_idx].data().to_vec()).expect("utf8")));
+                val_idx += 1;
+            } else {
+                result.push(None);
+            }
+        }
+        result
+    }
+
+    fn read_required_string_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<String> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<ByteArray> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                r.read_records(n, None, None, &mut vals).expect("read");
+            }
+            _ => panic!("expected byte array reader for column {col}"),
+        }
+        vals.iter().map(|v| String::from_utf8(v.data().to_vec()).expect("utf8")).collect()
+    }
+
+    fn read_required_i64_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<i64> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<i64> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::Int64ColumnReader(r) => {
+                r.read_records(n, None, None, &mut vals).expect("read");
+            }
+            _ => panic!("expected int64 reader for column {col}"),
+        }
+        vals
+    }
+
+    fn read_optional_i32_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<i32>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<i32> = Vec::new();
+        let mut def: Vec<i16> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::Int32ColumnReader(r) => {
+                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+            }
+            _ => panic!("expected int32 reader for column {col}"),
+        }
+        let mut result = Vec::new();
+        let mut val_idx = 0;
+        for &d in &def {
+            if d == 1 {
+                result.push(Some(vals[val_idx]));
+                val_idx += 1;
+            } else {
+                result.push(None);
+            }
+        }
+        result
+    }
+
+    fn read_optional_i64_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<i64>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<i64> = Vec::new();
+        let mut def: Vec<i16> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::Int64ColumnReader(r) => {
+                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+            }
+            _ => panic!("expected int64 reader for column {col}"),
+        }
+        let mut result = Vec::new();
+        let mut val_idx = 0;
+        for &d in &def {
+            if d == 1 {
+                result.push(Some(vals[val_idx]));
+                val_idx += 1;
+            } else {
+                result.push(None);
+            }
+        }
+        result
+    }
+
+    fn read_optional_double_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<f64>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<f64> = Vec::new();
+        let mut def: Vec<i16> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::DoubleColumnReader(r) => {
+                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+            }
+            _ => panic!("expected double reader for column {col}"),
+        }
+        let mut result = Vec::new();
+        let mut val_idx = 0;
+        for &d in &def {
+            if d == 1 {
+                result.push(Some(vals[val_idx]));
+                val_idx += 1;
+            } else {
+                result.push(None);
+            }
+        }
+        result
+    }
+
+    fn read_required_double_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<f64> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<f64> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::DoubleColumnReader(r) => {
+                r.read_records(n, None, None, &mut vals).expect("read");
+            }
+            _ => panic!("expected double reader for column {col}"),
+        }
+        vals
+    }
+
+    fn read_optional_bool_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<bool>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<bool> = Vec::new();
+        let mut def: Vec<i16> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::BoolColumnReader(r) => {
+                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+            }
+            _ => panic!("expected bool reader for column {col}"),
+        }
+        let mut result = Vec::new();
+        let mut val_idx = 0;
+        for &d in &def {
+            if d == 1 {
+                result.push(Some(vals[val_idx]));
+                val_idx += 1;
+            } else {
+                result.push(None);
+            }
+        }
+        result
+    }
+
+    fn read_required_fixed_bytes_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Vec<u8>> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<FixedLenByteArray> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::FixedLenByteArrayColumnReader(r) => {
+                r.read_records(n, None, None, &mut vals).expect("read");
+            }
+            _ => panic!("expected fixed len byte array reader for column {col}"),
+        }
+        vals.iter().map(|v| v.data().to_vec()).collect()
+    }
+
+    fn read_required_i32_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<i32> {
+        let mut col_reader = rg.get_column_reader(col).expect("column reader");
+        let mut vals: Vec<i32> = Vec::new();
+        match &mut col_reader {
+            ColumnReader::Int32ColumnReader(r) => {
+                r.read_records(n, None, None, &mut vals).expect("read");
+            }
+            _ => panic!("expected int32 reader for column {col}"),
+        }
+        vals
+    }
+
+    #[test]
+    fn test_trace_encode_single_span() {
+        let span = create_trace_span();
+        let data = write_trace_parquet(&[&span]);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
+        assert_eq!(
+            reader.metadata().file_metadata().schema().get_fields().len(),
+            24
+        );
+    }
+
+    #[test]
+    fn test_trace_encode_duration_nanos() {
+        let span = create_trace_span();
+        let data = write_trace_parquet(&[&span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 2: duration_nanos = end - start = 2_000_000_000 - 1_000_000_000 = 1_000_000_000
+        let durations = read_required_i64_column(&*rg, 2, 1);
+        assert_eq!(durations, vec![1_000_000_000_i64]);
+    }
+
+    #[test]
+    fn test_trace_encode_service_name() {
+        let span = create_trace_span();
+        let data = write_trace_parquet(&[&span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 0: service_name
+        let names = read_required_string_column(&*rg, 0, 1);
+        assert_eq!(names, vec!["trace-svc"]);
+    }
+
+    #[test]
+    fn test_trace_encode_events_as_json() {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{Span, span};
+
+        let span_proto = Span {
+            trace_id: vec![0xAA; 16],
+            span_id: vec![0xBB; 8],
+            name: "with-events".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1_000,
+            end_time_unix_nano: 2_000,
+            events: vec![span::Event {
+                time_unix_nano: 1_500,
+                name: "test-event".to_string(),
+                attributes: vec![],
+                dropped_attributes_count: 0,
+            }],
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("svc")),
+            }],
+            ..Default::default()
+        };
+
+        let otel_span = OtelSpan::from_parts(
+            span_proto,
+            Some(resource),
+            Some(InstrumentationScope::default()),
+            sol_core::event::EventMetadata::default(),
+        );
+
+        let data = write_trace_parquet(&[&otel_span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 12: events (OPTIONAL UTF8)
+        let events = read_string_column(&*rg, 12, 1);
+        assert!(events[0].is_some(), "events should be present");
+        let json: serde_json::Value = serde_json::from_str(events[0].as_ref().unwrap()).expect("valid json");
+        assert!(json.is_array());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "test-event");
+    }
+
+    #[test]
+    fn test_trace_encode_links_as_json() {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{Span, span};
+
+        let span_proto = Span {
+            trace_id: vec![0xAA; 16],
+            span_id: vec![0xBB; 8],
+            name: "with-links".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1_000,
+            end_time_unix_nano: 2_000,
+            links: vec![span::Link {
+                trace_id: vec![0xDD; 16],
+                span_id: vec![0xEE; 8],
+                trace_state: "".to_string(),
+                attributes: vec![],
+                dropped_attributes_count: 0,
+                flags: 0,
+            }],
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("svc")),
+            }],
+            ..Default::default()
+        };
+
+        let otel_span = OtelSpan::from_parts(
+            span_proto,
+            Some(resource),
+            Some(InstrumentationScope::default()),
+            sol_core::event::EventMetadata::default(),
+        );
+
+        let data = write_trace_parquet(&[&otel_span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 13: links (OPTIONAL UTF8)
+        let links = read_string_column(&*rg, 13, 1);
+        assert!(links[0].is_some(), "links should be present");
+        let json: serde_json::Value = serde_json::from_str(links[0].as_ref().unwrap()).expect("valid json");
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_trace_encode_status() {
+        let span = create_trace_span();
+        let data = write_trace_parquet(&[&span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 9: status_code (OPTIONAL INT32)
+        let codes = read_optional_i32_column(&*rg, 9, 1);
+        assert_eq!(codes, vec![Some(2)]); // ERROR = 2
+
+        // Column 10: status_message (OPTIONAL UTF8)
+        let messages = read_string_column(&*rg, 10, 1);
+        assert_eq!(messages, vec![Some("something failed".to_string())]);
+    }
+
+    #[test]
+    fn test_trace_encode_fixed_len_ids() {
+        let span = create_trace_span();
+        let data = write_trace_parquet(&[&span]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 3: trace_id (REQUIRED FIXED_LEN_BYTE_ARRAY(16))
+        let trace_ids = read_required_fixed_bytes_column(&*rg, 3, 1);
+        assert_eq!(trace_ids[0], vec![0xAA_u8; 16]);
+
+        // Column 4: span_id (REQUIRED FIXED_LEN_BYTE_ARRAY(8))
+        let span_ids = read_required_fixed_bytes_column(&*rg, 4, 1);
+        assert_eq!(span_ids[0], vec![0xBB_u8; 8]);
+    }
+
+    #[test]
+    fn test_trace_encode_batch() {
+        let span1 = create_trace_span();
+        let mut span2_proto = opentelemetry_proto::tonic::trace::v1::Span {
+            trace_id: vec![0x11; 16],
+            span_id: vec![0x22; 8],
+            name: "second-span".to_string(),
+            kind: 3, // CLIENT
+            start_time_unix_nano: 3_000_000_000,
+            end_time_unix_nano: 4_000_000_000,
+            ..Default::default()
+        };
+        let _ = &mut span2_proto; // suppress unused warning
+        let resource = opentelemetry_proto::tonic::resource::v1::Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("trace-svc-2")),
+            }],
+            ..Default::default()
+        };
+        let span2 = OtelSpan::from_parts(
+            span2_proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        );
+
+        let data = write_trace_parquet(&[&span1, &span2]);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
+
+        let rg = reader.get_row_group(0).expect("row group");
+        let names = read_required_string_column(&*rg, 7, 2); // Column 7: name
+        assert_eq!(names, vec!["test-span", "second-span"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4: Gauge schema and encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_gauge_metric(int_value: Option<i64>, double_value: Option<f64>) -> OtelMetric {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+        use opentelemetry_proto::tonic::metrics::v1::{Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue};
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let value = match (int_value, double_value) {
+            (Some(i), _) => Some(NDPValue::AsInt(i)),
+            (_, Some(d)) => Some(NDPValue::AsDouble(d)),
+            _ => None,
+        };
+
+        let proto = Metric {
+            name: "test.gauge".to_string(),
+            description: "a test gauge".to_string(),
+            unit: "ms".to_string(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano: 1_000_000_000,
+                    start_time_unix_nano: 500_000_000,
+                    value,
+                    attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                        key: "dp.key".to_string(),
+                        value: Some(string_value("dp-val")),
+                    }],
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("gauge-svc")),
+            }],
+            ..Default::default()
+        };
+
+        let scope = InstrumentationScope {
+            name: "test-scope".to_string(),
+            version: "1.0".to_string(),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+        };
+
+        OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            Some(scope),
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_gauge_parquet(metrics: &[&OtelMetric]) -> Vec<u8> {
+        let schema = build_gauge_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_gauge_columns(rg, metrics))
+            .expect("write gauge parquet failed")
+    }
+
+    #[test]
+    fn test_gauge_schema_column_count() {
+        let schema = build_gauge_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            17,
+            "expected 17 columns in gauge schema"
+        );
+    }
+
+    #[test]
+    fn test_gauge_encode_int_value() {
+        let metric = create_gauge_metric(Some(42), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
+
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 0: service_name
+        let names = read_required_string_column(&*rg, 0, 1);
+        assert_eq!(names, vec!["gauge-svc"]);
+
+        // Column 15: int_value (OPTIONAL INT64)
+        let int_vals = read_optional_i64_column(&*rg, 15, 1);
+        assert_eq!(int_vals, vec![Some(42)]);
+
+        // Column 16: double_value (OPTIONAL DOUBLE)
+        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        assert_eq!(dbl_vals, vec![None]);
+    }
+
+    #[test]
+    fn test_gauge_encode_double_value() {
+        let metric = create_gauge_metric(None, Some(42.5));
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 15: int_value (OPTIONAL INT64)
+        let int_vals = read_optional_i64_column(&*rg, 15, 1);
+        assert_eq!(int_vals, vec![None]);
+
+        // Column 16: double_value (OPTIONAL DOUBLE)
+        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        assert_eq!(dbl_vals.len(), 1);
+        assert!((dbl_vals[0].unwrap() - 42.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_gauge_encode_multiple_data_points() {
+        use opentelemetry_proto::tonic::metrics::v1::{Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue};
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let proto = Metric {
+            name: "multi.gauge".to_string(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint {
+                        time_unix_nano: 1_000,
+                        value: Some(NDPValue::AsInt(10)),
+                        ..Default::default()
+                    },
+                    NumberDataPoint {
+                        time_unix_nano: 2_000,
+                        value: Some(NDPValue::AsInt(20)),
+                        ..Default::default()
+                    },
+                ],
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("svc")),
+            }],
+            ..Default::default()
+        };
+
+        let metric = OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        );
+
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        // Two data points = two rows
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
+
+        let rg = reader.get_row_group(0).expect("row group");
+        let int_vals = read_optional_i64_column(&*rg, 15, 2);
+        assert_eq!(int_vals, vec![Some(10), Some(20)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4: Sum schema and encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_sum_metric(value: f64, is_monotonic: bool, temporality: i32) -> OtelMetric {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+        use opentelemetry_proto::tonic::metrics::v1::{Metric, NumberDataPoint, Sum, number_data_point::Value as NDPValue};
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let proto = Metric {
+            name: "test.sum".to_string(),
+            description: "a test sum".to_string(),
+            unit: "1".to_string(),
+            data: Some(Data::Sum(Sum {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano: 1_000_000_000,
+                    value: Some(NDPValue::AsDouble(value)),
+                    ..Default::default()
+                }],
+                aggregation_temporality: temporality,
+                is_monotonic,
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("sum-svc")),
+            }],
+            ..Default::default()
+        };
+
+        let scope = InstrumentationScope {
+            name: "test-scope".to_string(),
+            version: "1.0".to_string(),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+        };
+
+        OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            Some(scope),
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_sum_parquet(metrics: &[&OtelMetric]) -> Vec<u8> {
+        let schema = build_sum_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_sum_columns(rg, metrics))
+            .expect("write sum parquet failed")
+    }
+
+    #[test]
+    fn test_sum_schema_column_count() {
+        let schema = build_sum_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            19,
+            "expected 19 columns in sum schema"
+        );
+    }
+
+    #[test]
+    fn test_sum_encode_with_temporality() {
+        // CUMULATIVE = 2
+        let metric = create_sum_metric(100.0, false, 2);
+        let data = write_sum_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 17: aggregation_temporality (OPTIONAL INT32)
+        let temps = read_optional_i32_column(&*rg, 17, 1);
+        assert_eq!(temps, vec![Some(2)]);
+
+        // Column 18: is_monotonic (OPTIONAL BOOLEAN)
+        let mono = read_optional_bool_column(&*rg, 18, 1);
+        assert_eq!(mono, vec![Some(false)]);
+    }
+
+    #[test]
+    fn test_sum_encode_counter() {
+        // DELTA = 1, is_monotonic = true
+        let metric = create_sum_metric(99.5, true, 1);
+        let data = write_sum_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 16: double_value
+        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        assert_eq!(dbl_vals.len(), 1);
+        assert!((dbl_vals[0].unwrap() - 99.5).abs() < 1e-10);
+
+        // Column 17: aggregation_temporality
+        let temps = read_optional_i32_column(&*rg, 17, 1);
+        assert_eq!(temps, vec![Some(1)]); // DELTA
+
+        // Column 18: is_monotonic
+        let mono = read_optional_bool_column(&*rg, 18, 1);
+        assert_eq!(mono, vec![Some(true)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5: Histogram schema and encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_histogram_metric() -> OtelMetric {
+        use opentelemetry_proto::tonic::metrics::v1::{Histogram, HistogramDataPoint, Metric};
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let proto = Metric {
+            name: "test.histogram".to_string(),
+            description: "a test histogram".to_string(),
+            unit: "ms".to_string(),
+            data: Some(Data::Histogram(Histogram {
+                data_points: vec![HistogramDataPoint {
+                    time_unix_nano: 1_000_000_000,
+                    count: 100,
+                    sum: Some(5000.0),
+                    min: Some(1.0),
+                    max: Some(999.0),
+                    bucket_counts: vec![10, 30, 40, 20],
+                    explicit_bounds: vec![10.0, 100.0, 500.0],
+                    ..Default::default()
+                }],
+                aggregation_temporality: 2, // CUMULATIVE
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("hist-svc")),
+            }],
+            ..Default::default()
+        };
+
+        OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_histogram_parquet(metrics: &[&OtelMetric]) -> Vec<u8> {
+        let schema = build_histogram_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_histogram_columns(rg, metrics))
+            .expect("write histogram parquet failed")
+    }
+
+    #[test]
+    fn test_histogram_schema_column_count() {
+        let schema = build_histogram_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            22,
+            "expected 22 columns in histogram schema"
+        );
+    }
+
+    #[test]
+    fn test_histogram_encode_buckets() {
+        let metric = create_histogram_metric();
+        let data = write_histogram_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 19: bucket_counts (OPTIONAL UTF8, JSON)
+        let bc = read_string_column(&*rg, 19, 1);
+        assert!(bc[0].is_some());
+        let arr: Vec<u64> = serde_json::from_str(bc[0].as_ref().unwrap()).expect("valid json");
+        assert_eq!(arr, vec![10, 30, 40, 20]);
+
+        // Column 20: explicit_bounds (OPTIONAL UTF8, JSON)
+        let eb = read_string_column(&*rg, 20, 1);
+        assert!(eb[0].is_some());
+        let bounds: Vec<f64> = serde_json::from_str(eb[0].as_ref().unwrap()).expect("valid json");
+        assert_eq!(bounds, vec![10.0, 100.0, 500.0]);
+    }
+
+    #[test]
+    fn test_histogram_encode_count_sum_min_max() {
+        let metric = create_histogram_metric();
+        let data = write_histogram_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 15: count (REQUIRED INT64)
+        let counts = read_required_i64_column(&*rg, 15, 1);
+        assert_eq!(counts, vec![100]);
+
+        // Column 16: sum (OPTIONAL DOUBLE)
+        let sums = read_optional_double_column(&*rg, 16, 1);
+        assert!((sums[0].unwrap() - 5000.0).abs() < 1e-10);
+
+        // Column 17: min (OPTIONAL DOUBLE)
+        let mins = read_optional_double_column(&*rg, 17, 1);
+        assert!((mins[0].unwrap() - 1.0).abs() < 1e-10);
+
+        // Column 18: max (OPTIONAL DOUBLE)
+        let maxes = read_optional_double_column(&*rg, 18, 1);
+        assert!((maxes[0].unwrap() - 999.0).abs() < 1e-10);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5: ExpHistogram schema and encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_exp_histogram_metric() -> OtelMetric {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogram, ExponentialHistogramDataPoint, Metric,
+            exponential_histogram_data_point::Buckets,
+        };
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let proto = Metric {
+            name: "test.exp_histogram".to_string(),
+            data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                data_points: vec![ExponentialHistogramDataPoint {
+                    time_unix_nano: 1_000_000_000,
+                    count: 50,
+                    sum: Some(2500.0),
+                    min: Some(0.5),
+                    max: Some(500.0),
+                    scale: 3,
+                    zero_count: 2,
+                    zero_threshold: 0.001,
+                    positive: Some(Buckets {
+                        offset: 1,
+                        bucket_counts: vec![5, 10, 15, 20],
+                    }),
+                    negative: Some(Buckets {
+                        offset: -2,
+                        bucket_counts: vec![3, 7],
+                    }),
+                    ..Default::default()
+                }],
+                aggregation_temporality: 2,
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("exp-hist-svc")),
+            }],
+            ..Default::default()
+        };
+
+        OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_exp_histogram_parquet(metrics: &[&OtelMetric]) -> Vec<u8> {
+        let schema = build_exp_histogram_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_exp_histogram_columns(rg, metrics))
+            .expect("write exp histogram parquet failed")
+    }
+
+    #[test]
+    fn test_exp_histogram_schema_column_count() {
+        let schema = build_exp_histogram_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            27,
+            "expected 27 columns in exp histogram schema"
+        );
+    }
+
+    #[test]
+    fn test_exp_histogram_encode_buckets() {
+        let metric = create_exp_histogram_metric();
+        let data = write_exp_histogram_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 19: scale (REQUIRED INT32)
+        let scales = read_required_i32_column(&*rg, 19, 1);
+        assert_eq!(scales, vec![3]);
+
+        // Column 20: zero_count (REQUIRED INT64)
+        let zc = read_required_i64_column(&*rg, 20, 1);
+        assert_eq!(zc, vec![2]);
+
+        // Column 22: positive_offset (OPTIONAL INT32)
+        let po = read_optional_i32_column(&*rg, 22, 1);
+        assert_eq!(po, vec![Some(1)]);
+
+        // Column 23: positive_bucket_counts (OPTIONAL UTF8, JSON)
+        let pbc = read_string_column(&*rg, 23, 1);
+        assert!(pbc[0].is_some());
+        let arr: Vec<u64> = serde_json::from_str(pbc[0].as_ref().unwrap()).expect("valid json");
+        assert_eq!(arr, vec![5, 10, 15, 20]);
+
+        // Column 24: negative_offset (OPTIONAL INT32)
+        let no = read_optional_i32_column(&*rg, 24, 1);
+        assert_eq!(no, vec![Some(-2)]);
+
+        // Column 25: negative_bucket_counts (OPTIONAL UTF8, JSON)
+        let nbc = read_string_column(&*rg, 25, 1);
+        assert!(nbc[0].is_some());
+        let narr: Vec<u64> = serde_json::from_str(nbc[0].as_ref().unwrap()).expect("valid json");
+        assert_eq!(narr, vec![3, 7]);
+
+        // Column 26: aggregation_temporality (OPTIONAL INT32)
+        let temps = read_optional_i32_column(&*rg, 26, 1);
+        assert_eq!(temps, vec![Some(2)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 5: Summary schema and encoding tests
+    // -----------------------------------------------------------------------
+
+    fn create_summary_metric() -> OtelMetric {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Metric, Summary, SummaryDataPoint,
+            summary_data_point::ValueAtQuantile,
+        };
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let proto = Metric {
+            name: "test.summary".to_string(),
+            data: Some(Data::Summary(Summary {
+                data_points: vec![SummaryDataPoint {
+                    time_unix_nano: 1_000_000_000,
+                    count: 200,
+                    sum: 10_000.0,
+                    quantile_values: vec![
+                        ValueAtQuantile {
+                            quantile: 0.5,
+                            value: 50.0,
+                        },
+                        ValueAtQuantile {
+                            quantile: 0.99,
+                            value: 990.0,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("summary-svc")),
+            }],
+            ..Default::default()
+        };
+
+        OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        )
+    }
+
+    fn write_summary_parquet(metrics: &[&OtelMetric]) -> Vec<u8> {
+        let schema = build_summary_schema();
+        let props = default_props();
+        write_parquet_file(schema, props, |rg| write_summary_columns(rg, metrics))
+            .expect("write summary parquet failed")
+    }
+
+    #[test]
+    fn test_summary_schema_column_count() {
+        let schema = build_summary_schema();
+        assert_eq!(
+            schema.get_fields().len(),
+            18,
+            "expected 18 columns in summary schema"
+        );
+    }
+
+    #[test]
+    fn test_summary_encode_quantiles() {
+        let metric = create_summary_metric();
+        let data = write_summary_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+
+        // Column 15: count (REQUIRED INT64)
+        let counts = read_required_i64_column(&*rg, 15, 1);
+        assert_eq!(counts, vec![200]);
+
+        // Column 16: sum (REQUIRED DOUBLE)
+        let sums = read_required_double_column(&*rg, 16, 1);
+        assert!((sums[0] - 10_000.0).abs() < 1e-10);
+
+        // Column 17: quantile_values (OPTIONAL UTF8, JSON)
+        let qv = read_string_column(&*rg, 17, 1);
+        assert!(qv[0].is_some());
+        let json: serde_json::Value = serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");
+        assert!(json.is_array());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing tests below
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parquet_config_default_compression() {

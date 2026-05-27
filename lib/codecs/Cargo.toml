@@ -38,6 +38,7 @@ regex.workspace = true
 serde.workspace = true
 serde_with = { version = "3.14.0", default-features = false, features = ["std", "macros", "chrono_0_4"] }
 serde_json.workspace = true
+opentelemetry-proto = { version = "0.30", default-features = false, features = ["full", "with-serde"], optional = true }
 parquet = { version = "56.2.0", default-features = false, features = ["snap", "flate2", "flate2-zlib-rs", "zstd"], optional = true }
 serde_arrow = { version = "0.13", features = ["arrow-56"], optional = true }
 serde-aux = { version = "4.5", optional = true }
@@ -72,7 +73,7 @@ vrl.workspace = true
 
 [features]
 arrow = ["dep:arrow", "dep:serde_arrow"]
-parquet = ["dep:parquet"]
+parquet = ["dep:parquet", "dep:opentelemetry-proto"]
 opentelemetry = ["dep:sol-opentelemetry-proto"]
 syslog = ["dep:syslog_loose", "dep:strum", "dep:derive_more", "dep:serde-aux", "dep:toml"]
 test = []
