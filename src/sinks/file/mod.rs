@@ -38,6 +38,8 @@ use crate::{
     sinks::util::{StreamSink, timezone_to_offset},
     template::Template,
 };
+#[cfg(feature = "codecs-parquet")]
+use sol_lib::{codecs::encoding::BatchSerializerConfig, json_size::JsonSize};
 
 mod bytes_path;
 
@@ -72,6 +74,23 @@ pub struct FileSinkConfig {
     #[serde(flatten)]
     pub encoding: EncodingConfigWithFraming,
 
+    /// Batch encoding for producing complete files per batch (e.g., Parquet).
+    ///
+    /// When set, events are buffered and encoded together. Each batch produces
+    /// a self-contained file. Mutually exclusive with per-event `encoding`.
+    #[cfg(feature = "codecs-parquet")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub batch_encoding: Option<BatchSerializerConfig>,
+
+    /// Batch settings controlling how many events are buffered before writing.
+    ///
+    /// Only used when `batch_encoding` is set.
+    #[cfg(feature = "codecs-parquet")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub batch: Option<FileBatchConfig>,
+
     #[configurable(derived)]
     #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     pub compression: Compression,
@@ -97,6 +116,41 @@ pub struct FileSinkConfig {
     pub truncate: FileTruncateConfig,
 }
 
+/// Batch configuration for the Parquet file sink.
+#[cfg(feature = "codecs-parquet")]
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct FileBatchConfig {
+    /// Maximum number of events per batch.
+    #[serde(default = "default_batch_max_events")]
+    pub max_events: usize,
+
+    /// Maximum time in seconds to wait before flushing a batch.
+    #[serde(default = "default_batch_timeout_secs")]
+    pub timeout_secs: f64,
+}
+
+#[cfg(feature = "codecs-parquet")]
+impl Default for FileBatchConfig {
+    fn default() -> Self {
+        Self {
+            max_events: default_batch_max_events(),
+            timeout_secs: default_batch_timeout_secs(),
+        }
+    }
+}
+
+#[cfg(feature = "codecs-parquet")]
+const fn default_batch_max_events() -> usize {
+    10_000
+}
+
+#[cfg(feature = "codecs-parquet")]
+const fn default_batch_timeout_secs() -> f64 {
+    60.0
+}
+
 /// Configuration for truncating files.
 #[configurable_component]
 #[derive(Clone, Debug, Default)]
@@ -119,6 +173,10 @@ impl GenerateConfig for FileSinkConfig {
             path: Template::try_from("/tmp/vector-%Y-%m-%d.log").unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Default::default(),
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -221,6 +279,22 @@ impl SinkConfig for FileSinkConfig {
         &self,
         cx: SinkContext,
     ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
+        #[cfg(feature = "codecs-parquet")]
+        if let Some(ref batch_encoding) = self.batch_encoding {
+            if self.compression != Compression::None {
+                return Err(
+                    "When using batch_encoding, set compression to 'none'. \
+                     Parquet uses internal column-level compression."
+                        .into(),
+                );
+            }
+            let sink = BatchFileSink::new(self, batch_encoding, cx)?;
+            return Ok((
+                super::VectorSink::from_event_streamsink(sink),
+                future::ok(()).boxed(),
+            ));
+        }
+
         let sink = FileSink::new(self, cx)?;
         Ok((
             super::VectorSink::from_event_streamsink(sink),
@@ -229,6 +303,10 @@ impl SinkConfig for FileSinkConfig {
     }
 
     fn input(&self) -> Input {
+        #[cfg(feature = "codecs-parquet")]
+        if let Some(ref batch_encoding) = self.batch_encoding {
+            return Input::new(batch_encoding.input_type());
+        }
         Input::new(self.encoding.config().1.input_type())
     }
 
@@ -481,6 +559,182 @@ impl FileSink {
     }
 }
 
+#[cfg(feature = "codecs-parquet")]
+pub struct BatchFileSink {
+    path: Template,
+    transformer: Transformer,
+    encoder: sol_lib::codecs::BatchEncoder,
+    max_events: usize,
+    timeout: Duration,
+    events_sent: Registered<EventsSent>,
+    include_file_metric_tag: bool,
+}
+
+#[cfg(feature = "codecs-parquet")]
+impl BatchFileSink {
+    pub fn new(
+        config: &FileSinkConfig,
+        batch_encoding: &BatchSerializerConfig,
+        cx: SinkContext,
+    ) -> crate::Result<Self> {
+        let transformer = config.encoding.transformer();
+        let batch_serializer = batch_encoding.build()?;
+        let encoder = sol_lib::codecs::BatchEncoder::new(batch_serializer);
+
+        let batch_config = config.batch.clone().unwrap_or_default();
+
+        let offset = config
+            .timezone
+            .or(cx.globals.timezone)
+            .and_then(timezone_to_offset);
+
+        Ok(Self {
+            path: config.path.clone().with_tz_offset(offset),
+            transformer,
+            encoder,
+            max_events: batch_config.max_events,
+            timeout: Duration::from_secs_f64(batch_config.timeout_secs),
+            events_sent: register!(EventsSent::from(Output(None))),
+            include_file_metric_tag: config.internal_metrics.include_file_tag,
+        })
+    }
+
+    async fn run(&mut self, mut input: BoxStream<'_, Event>) -> crate::Result<()> {
+        let mut buffer: Vec<Event> = Vec::with_capacity(self.max_events);
+        let sleep = tokio::time::sleep(self.timeout);
+        tokio::pin!(sleep);
+
+        loop {
+            tokio::select! {
+                event = input.next() => {
+                    match event {
+                        Some(event) => {
+                            buffer.push(event);
+                            if buffer.len() >= self.max_events {
+                                self.flush_batch(&mut buffer).await;
+                                sleep.as_mut().reset(tokio::time::Instant::now() + self.timeout);
+                            }
+                        }
+                        None => {
+                            if !buffer.is_empty() {
+                                self.flush_batch(&mut buffer).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+                () = &mut sleep => {
+                    if !buffer.is_empty() {
+                        self.flush_batch(&mut buffer).await;
+                    }
+                    sleep.as_mut().reset(tokio::time::Instant::now() + self.timeout);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn flush_batch(&mut self, buffer: &mut Vec<Event>) {
+        use crate::sinks::util::encoding::Encoder as SinkEncoder;
+
+        let mut events = std::mem::take(buffer);
+        let n_events = events.len();
+
+        let path = match events.first() {
+            Some(first) => match self.path.render(first) {
+                Ok(b) => b,
+                Err(error) => {
+                    emit!(TemplateRenderingError {
+                        error,
+                        field: Some("path"),
+                        drop_event: true,
+                    });
+                    for event in &events {
+                        event.metadata().update_status(EventStatus::Errored);
+                    }
+                    return;
+                }
+            },
+            None => return,
+        };
+
+        let finalizers = events.take_finalizers();
+
+        let encoding = (self.transformer.clone(), self.encoder.clone());
+        let mut writer: Vec<u8> = Vec::new();
+        match encoding.encode_input(events, &mut writer) {
+            Ok((byte_size, _)) => {
+                let bytes_path = BytesPath::new(path.clone());
+                match open_file(bytes_path, false).await {
+                    Ok(mut file) => {
+                        if let Err(error) = file.write_all(&writer).await {
+                            finalizers.update_status(EventStatus::Errored);
+                            emit!(FileIoError {
+                                error,
+                                code: "failed_writing_file",
+                                message: "Failed to write batch to file.",
+                                path: &path,
+                                dropped_events: n_events,
+                            });
+                            return;
+                        }
+                        if let Err(error) = file.shutdown().await {
+                            emit!(FileIoError {
+                                error,
+                                code: "failed_closing_file",
+                                message: "Failed to close batch file.",
+                                path: &path,
+                                dropped_events: 0,
+                            });
+                        }
+                        finalizers.update_status(EventStatus::Delivered);
+                        self.events_sent.emit(CountByteSize(
+                            n_events,
+                            JsonSize::new(byte_size),
+                        ));
+                        emit!(FileBytesSent {
+                            byte_size,
+                            file: String::from_utf8_lossy(&path),
+                            include_file_metric_tag: self.include_file_metric_tag,
+                        });
+                    }
+                    Err(error) => {
+                        finalizers.update_status(EventStatus::Errored);
+                        emit!(FileIoError {
+                            code: "failed_opening_file",
+                            message: "Unable to open file for batch.",
+                            error,
+                            path: &path,
+                            dropped_events: n_events,
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                finalizers.update_status(EventStatus::Errored);
+                emit!(FileIoError {
+                    error,
+                    code: "failed_encoding_batch",
+                    message: "Failed to encode batch.",
+                    path: &path,
+                    dropped_events: n_events,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(feature = "codecs-parquet")]
+#[async_trait]
+impl StreamSink<Event> for BatchFileSink {
+    async fn run(mut self: Box<Self>, input: BoxStream<'_, Event>) -> Result<(), ()> {
+        BatchFileSink::run(&mut self, input)
+            .await
+            .expect("batch file sink error");
+        Ok(())
+    }
+}
+
 async fn open_file(path: impl AsRef<std::path::Path>, truncate: bool) -> std::io::Result<File> {
     let parent = path.as_ref().parent();
 
@@ -557,6 +811,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -584,6 +842,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::Gzip,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -611,6 +873,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::Zstd,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -643,6 +909,10 @@ mod tests {
             path: template.try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -725,6 +995,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: Duration::from_secs(1),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -782,6 +1056,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -814,6 +1092,10 @@ mod tests {
             path: template.try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -868,6 +1150,10 @@ mod tests {
             path: template.clone().try_into().unwrap(),
             idle_timeout: default_idle_timeout(),
             encoding: (None::<FramingConfig>, JsonSerializerConfig::default()).into(),
+            #[cfg(feature = "codecs-parquet")]
+            batch_encoding: None,
+            #[cfg(feature = "codecs-parquet")]
+            batch: None,
             compression: Compression::None,
             acknowledgements: Default::default(),
             timezone: Default::default(),
@@ -923,5 +1209,40 @@ mod tests {
                 .expect("Running sink failed")
         })
         .await;
+    }
+
+    #[cfg(feature = "codecs-parquet")]
+    #[test]
+    fn parquet_batch_config_deserializes() {
+        let yaml = r#"
+            path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
+            encoding:
+              codec: text
+            batch_encoding:
+              codec: parquet
+              compression: zstd
+            batch:
+              max_events: 5000
+              timeout_secs: 30
+        "#;
+        let config: FileSinkConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.batch_encoding.is_some());
+        assert!(config.batch.is_some());
+        assert_eq!(config.batch.unwrap().max_events, 5000);
+    }
+
+    #[cfg(feature = "codecs-parquet")]
+    #[test]
+    fn parquet_batch_config_defaults() {
+        let yaml = r#"
+            path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
+            encoding:
+              codec: text
+            batch_encoding:
+              codec: parquet
+        "#;
+        let config: FileSinkConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.batch_encoding.is_some());
+        assert!(config.batch.is_none());
     }
 }
