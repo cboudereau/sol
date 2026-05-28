@@ -69,6 +69,15 @@ graph TD
 docker compose up -d
 ```
 
+### build from source
+```bash
+# Use a locally built image
+TAG=$(git rev-parse --short HEAD) && docker build -f ../Dockerfile.sol -t sol:$TAG ../.. && SOL_IMAGE=sol:$TAG bash ./up.sh parquet
+
+# analyze parquet files
+./parquet-query.sh
+```
+
 Open Grafana: http://localhost:3000
 
 ## Key Sol features demonstrated
