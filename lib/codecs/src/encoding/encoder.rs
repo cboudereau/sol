@@ -52,6 +52,44 @@ impl BatchEncoder {
     }
 }
 
+impl BatchSerializer {
+    /// Encode events into individual files.
+    /// Returns one `Vec<u8>` per output file.
+    #[allow(unused_variables)]
+    pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
+        #[allow(unreachable_patterns)]
+        match self {
+            #[cfg(feature = "parquet")]
+            BatchSerializer::Parquet(s) => s
+                .encode_files(events)
+                .map_err(|e| Error::SerializingError(Box::new(e))),
+            #[cfg(feature = "arrow")]
+            BatchSerializer::Arrow(s) => {
+                let mut buf = BytesMut::new();
+                s.encode(events, &mut buf).map_err(|err| {
+                    use crate::encoding::ArrowEncodingError;
+                    match err {
+                        ArrowEncodingError::NullConstraint { .. } => {
+                            Error::SchemaConstraintViolation(Box::new(err))
+                        }
+                        _ => Error::SerializingError(Box::new(err)),
+                    }
+                })?;
+                Ok(vec![buf.to_vec()])
+            }
+            _ => unreachable!("BatchSerializer cannot be constructed without encode_files()"),
+        }
+    }
+}
+
+impl BatchEncoder {
+    /// Encode events into individual files.
+    /// Returns one `Vec<u8>` per output file.
+    pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
+        self.serializer.encode_files(events)
+    }
+}
+
 impl tokio_util::codec::Encoder<Vec<Event>> for BatchEncoder {
     type Error = Error;
 

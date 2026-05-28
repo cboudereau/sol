@@ -633,8 +633,6 @@ impl BatchFileSink {
     }
 
     async fn flush_batch(&mut self, buffer: &mut Vec<Event>) {
-        use crate::sinks::util::encoding::Encoder as SinkEncoder;
-
         let mut events = std::mem::take(buffer);
         let n_events = events.len();
 
@@ -658,12 +656,15 @@ impl BatchFileSink {
 
         let finalizers = events.take_finalizers();
 
-        let encoding = (self.transformer.clone(), self.encoder.clone());
-        let mut writer: Vec<u8> = Vec::new();
-        match encoding.encode_input(events, &mut writer) {
-            Ok((byte_size, _)) => {
-                let files = split_parquet_buffer(&writer);
-                let mut total_written = 0usize;
+        // Apply transformer to each event before encoding.
+        for event in &mut events {
+            self.transformer.transform(event);
+        }
+
+        match self.encoder.encode_files(events) {
+            Ok(files) => {
+                let total_byte_size: usize = files.iter().map(|f| f.len()).sum();
+                let mut failed = false;
                 for (i, file_bytes) in files.iter().enumerate() {
                     let file_path = if files.len() == 1 {
                         path.clone()
@@ -674,6 +675,7 @@ impl BatchFileSink {
                     match open_file(bytes_path, false).await {
                         Ok(mut file) => {
                             if let Err(error) = file.write_all(file_bytes).await {
+                                failed = true;
                                 emit!(FileIoError {
                                     error,
                                     code: "failed_writing_file",
@@ -681,9 +683,10 @@ impl BatchFileSink {
                                     path: &file_path,
                                     dropped_events: 0,
                                 });
-                                continue;
+                                break;
                             }
                             if let Err(error) = file.shutdown().await {
+                                failed = true;
                                 emit!(FileIoError {
                                     error,
                                     code: "failed_closing_file",
@@ -691,8 +694,8 @@ impl BatchFileSink {
                                     path: &file_path,
                                     dropped_events: 0,
                                 });
+                                break;
                             }
-                            total_written += file_bytes.len();
                             emit!(FileBytesSent {
                                 byte_size: file_bytes.len(),
                                 file: String::from_utf8_lossy(&file_path),
@@ -700,6 +703,7 @@ impl BatchFileSink {
                             });
                         }
                         Err(error) => {
+                            failed = true;
                             emit!(FileIoError {
                                 code: "failed_opening_file",
                                 message: "Unable to open file for batch.",
@@ -707,21 +711,24 @@ impl BatchFileSink {
                                 path: &file_path,
                                 dropped_events: 0,
                             });
+                            break;
                         }
                     }
                 }
-                if total_written > 0 {
+                if failed {
+                    finalizers.update_status(EventStatus::Errored);
+                } else {
                     finalizers.update_status(EventStatus::Delivered);
                     self.events_sent
-                        .emit(CountByteSize(n_events, JsonSize::new(byte_size)));
-                } else {
-                    finalizers.update_status(EventStatus::Errored);
+                        .emit(CountByteSize(n_events, JsonSize::new(total_byte_size)));
                 }
             }
             Err(error) => {
                 finalizers.update_status(EventStatus::Errored);
+                let io_error =
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string());
                 emit!(FileIoError {
-                    error,
+                    error: io_error,
                     code: "failed_encoding_batch",
                     message: "Failed to encode batch.",
                     path: &path,
@@ -730,58 +737,6 @@ impl BatchFileSink {
             }
         }
     }
-}
-
-/// Split a buffer that may contain multiple concatenated Parquet files into
-/// individual files. Each Parquet file starts and ends with the magic bytes
-/// `PAR1`. The footer structure is: `footer_bytes | footer_len (4B LE) | PAR1`.
-#[cfg(feature = "codecs-parquet")]
-fn split_parquet_buffer(buf: &[u8]) -> Vec<&[u8]> {
-    const MAGIC: &[u8] = b"PAR1";
-    // Minimum Parquet file: 4 (header magic) + 4 (footer len) + 4 (footer magic) = 12
-    if buf.len() < 12 || buf[..4] != *MAGIC {
-        return vec![buf];
-    }
-
-    let mut files = Vec::new();
-    let mut offset = 0;
-
-    while offset + 12 <= buf.len() {
-        if buf[offset..offset + 4] != *MAGIC {
-            break;
-        }
-        // Scan for footer magic: earliest valid position is offset+8
-        // (header 4B + footer_len 4B, then the PAR1 footer magic).
-        let mut found = false;
-        let mut pos = offset + 8;
-        while pos + 4 <= buf.len() {
-            if buf[pos..pos + 4] == *MAGIC {
-                let footer_len =
-                    u32::from_le_bytes([buf[pos - 4], buf[pos - 3], buf[pos - 2], buf[pos - 1]])
-                        as usize;
-                // Footer must fit between the header magic and the footer_len field.
-                if footer_len > 0 && pos >= offset + 4 + footer_len + 4 {
-                    let file_end = pos + 4;
-                    files.push(&buf[offset..file_end]);
-                    offset = file_end;
-                    found = true;
-                    break;
-                }
-            }
-            pos += 1;
-        }
-        if !found {
-            break;
-        }
-    }
-
-    if offset < buf.len() {
-        files.push(&buf[offset..]);
-    }
-    if files.is_empty() {
-        files.push(buf);
-    }
-    files
 }
 
 /// Insert a numeric suffix before the `.parquet` extension:
@@ -1289,8 +1244,6 @@ mod tests {
     fn parquet_batch_config_deserializes() {
         let yaml = r#"
             path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
-            encoding:
-              codec: text
             batch_encoding:
               codec: parquet
               compression: zstd
@@ -1309,8 +1262,6 @@ mod tests {
     fn parquet_batch_config_defaults() {
         let yaml = r#"
             path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
-            encoding:
-              codec: text
             batch_encoding:
               codec: parquet
         "#;
@@ -1320,74 +1271,16 @@ mod tests {
     }
 
     #[cfg(feature = "codecs-parquet")]
-    mod parquet_split_tests {
-        use super::super::{parquet_path_with_suffix, split_parquet_buffer};
+    #[test]
+    fn path_suffix_with_extension() {
+        let path = super::parquet_path_with_suffix(b"data/metrics/2026-01-01.parquet", 2);
+        assert_eq!(&path[..], b"data/metrics/2026-01-01-2.parquet");
+    }
 
-        fn make_parquet_file(payload_len: usize) -> Vec<u8> {
-            let mut buf = Vec::new();
-            buf.extend_from_slice(b"PAR1");
-            buf.extend(vec![0xAA; payload_len]);
-            let footer = vec![0xBB; 8];
-            buf.extend_from_slice(&footer);
-            buf.extend_from_slice(&(footer.len() as u32).to_le_bytes());
-            buf.extend_from_slice(b"PAR1");
-            buf
-        }
-
-        #[test]
-        fn split_single_file() {
-            let file = make_parquet_file(100);
-            let parts = split_parquet_buffer(&file);
-            assert_eq!(parts.len(), 1);
-            assert_eq!(parts[0], &file[..]);
-        }
-
-        #[test]
-        fn split_two_concatenated_files() {
-            let f1 = make_parquet_file(50);
-            let f2 = make_parquet_file(80);
-            let mut combined = f1.clone();
-            combined.extend_from_slice(&f2);
-            let parts = split_parquet_buffer(&combined);
-            assert_eq!(parts.len(), 2);
-            assert_eq!(parts[0], &f1[..]);
-            assert_eq!(parts[1], &f2[..]);
-        }
-
-        #[test]
-        fn split_three_concatenated_files() {
-            let f1 = make_parquet_file(20);
-            let f2 = make_parquet_file(40);
-            let f3 = make_parquet_file(60);
-            let mut combined = Vec::new();
-            combined.extend_from_slice(&f1);
-            combined.extend_from_slice(&f2);
-            combined.extend_from_slice(&f3);
-            let parts = split_parquet_buffer(&combined);
-            assert_eq!(parts.len(), 3);
-            assert_eq!(parts[0], &f1[..]);
-            assert_eq!(parts[1], &f2[..]);
-            assert_eq!(parts[2], &f3[..]);
-        }
-
-        #[test]
-        fn split_empty_returns_original() {
-            let buf = b"not parquet";
-            let parts = split_parquet_buffer(buf);
-            assert_eq!(parts.len(), 1);
-            assert_eq!(parts[0], buf);
-        }
-
-        #[test]
-        fn path_suffix_with_extension() {
-            let path = parquet_path_with_suffix(b"data/metrics/2026-01-01.parquet", 2);
-            assert_eq!(&path[..], b"data/metrics/2026-01-01-2.parquet");
-        }
-
-        #[test]
-        fn path_suffix_without_extension() {
-            let path = parquet_path_with_suffix(b"data/metrics/file", 0);
-            assert_eq!(&path[..], b"data/metrics/file-0");
-        }
+    #[cfg(feature = "codecs-parquet")]
+    #[test]
+    fn path_suffix_without_extension() {
+        let path = super::parquet_path_with_suffix(b"data/metrics/file", 0);
+        assert_eq!(&path[..], b"data/metrics/file-0");
     }
 }

@@ -97,8 +97,6 @@ sinks:
     type: file
     inputs: ["otlp.logs"]
     path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
-    encoding:
-      codec: text
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -110,8 +108,6 @@ sinks:
     type: file
     inputs: ["otlp.traces"]
     path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
-    encoding:
-      codec: text
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -123,8 +119,6 @@ sinks:
     type: file
     inputs: ["promote_resource_attrs"]
     path: "/data/parquet/metrics/%Y-%m-%d-%H-%M-%S.parquet"
-    encoding:
-      codec: text
     batch_encoding:
       codec: parquet
       compression: zstd

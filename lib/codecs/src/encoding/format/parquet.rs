@@ -3343,10 +3343,13 @@ impl From<std::io::Error> for ParquetEncodingError {
     }
 }
 
-impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
-    type Error = ParquetEncodingError;
-
-    fn encode(&mut self, events: Vec<Event>, buffer: &mut BytesMut) -> Result<(), Self::Error> {
+impl ParquetSerializer {
+    /// Encode events into individual Parquet files.
+    /// Returns one `Vec<u8>` per Parquet file (one per signal type / metric subtype).
+    pub fn encode_files(
+        &mut self,
+        events: Vec<Event>,
+    ) -> Result<Vec<Vec<u8>>, ParquetEncodingError> {
         if events.is_empty() {
             return Err(ParquetEncodingError::NoEvents);
         }
@@ -3377,15 +3380,14 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
             }
         }
 
-        let mut wrote_any = false;
+        let mut files = Vec::new();
         let props = Arc::new(self.writer_props.clone());
 
         if !logs.is_empty() {
             let buf = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
                 write_log_columns(rg, &logs)
             })?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !traces.is_empty() {
@@ -3393,8 +3395,7 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
                 write_parquet_file(Arc::clone(&self.trace_schema), Arc::clone(&props), |rg| {
                     write_trace_columns(rg, &traces)
                 })?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !gauge_metrics.is_empty() {
@@ -3402,16 +3403,14 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
                 write_parquet_file(Arc::clone(&self.gauge_schema), Arc::clone(&props), |rg| {
                     write_gauge_columns(rg, &gauge_metrics)
                 })?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !sum_metrics.is_empty() {
             let buf = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
                 write_sum_columns(rg, &sum_metrics)
             })?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !histogram_metrics.is_empty() {
@@ -3420,8 +3419,7 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
                 Arc::clone(&props),
                 |rg| write_histogram_columns(rg, &histogram_metrics),
             )?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !exp_histogram_metrics.is_empty() {
@@ -3430,8 +3428,7 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
                 Arc::clone(&props),
                 |rg| write_exp_histogram_columns(rg, &exp_histogram_metrics),
             )?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
         if !summary_metrics.is_empty() {
@@ -3439,14 +3436,25 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
                 write_parquet_file(Arc::clone(&self.summary_schema), Arc::clone(&props), |rg| {
                     write_summary_columns(rg, &summary_metrics)
                 })?;
-            buffer.put_slice(&buf);
-            wrote_any = true;
+            files.push(buf);
         }
 
-        if !wrote_any {
+        if files.is_empty() {
             return Err(ParquetEncodingError::NoEvents);
         }
 
+        Ok(files)
+    }
+}
+
+impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
+    type Error = ParquetEncodingError;
+
+    fn encode(&mut self, events: Vec<Event>, buffer: &mut BytesMut) -> Result<(), Self::Error> {
+        let files = self.encode_files(events)?;
+        for file in files {
+            buffer.put_slice(&file);
+        }
         Ok(())
     }
 }
@@ -5302,6 +5310,54 @@ mod tests {
         ];
         let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
         assert_eq!(count_parquet_files(&data), 4);
+    }
+
+    #[test]
+    fn test_encode_files_mixed_metrics_produces_valid_parquet() {
+        let config = ParquetSerializerConfig {
+            compression: ParquetCompression::Uncompressed,
+        };
+        let mut serializer = ParquetSerializer::new(&config);
+        let events = vec![
+            create_gauge_event(),
+            create_histogram_event(),
+            create_log_event("INFO", "a log"),
+        ];
+        let files = serializer.encode_files(events).expect("encode_files");
+        assert_eq!(files.len(), 3);
+
+        for (i, file_bytes) in files.iter().enumerate() {
+            let reader = reader_from_bytes(&bytes::Bytes::from(file_bytes.clone()));
+            assert!(
+                reader.metadata().file_metadata().num_rows() > 0,
+                "file {i} should have rows"
+            );
+            assert!(
+                !reader
+                    .metadata()
+                    .file_metadata()
+                    .schema()
+                    .get_fields()
+                    .is_empty(),
+                "file {i} should have columns"
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_files_single_signal_returns_one_file() {
+        let config = ParquetSerializerConfig {
+            compression: ParquetCompression::Uncompressed,
+        };
+        let mut serializer = ParquetSerializer::new(&config);
+        let events = vec![
+            create_log_event("INFO", "log1"),
+            create_log_event("WARN", "log2"),
+        ];
+        let files = serializer.encode_files(events).expect("encode_files");
+        assert_eq!(files.len(), 1);
+        let reader = reader_from_bytes(&bytes::Bytes::from(files[0].clone()));
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
     }
 
     // -----------------------------------------------------------------------

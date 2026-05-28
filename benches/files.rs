@@ -56,6 +56,10 @@ fn benchmark_files_no_partitions(c: &mut Criterion) {
                         path: output.try_into().unwrap(),
                         idle_timeout: Duration::from_secs(30),
                         encoding: (None::<FramingConfig>, TextSerializerConfig::default()).into(),
+                        #[cfg(feature = "codecs-parquet")]
+                        batch_encoding: None,
+                        #[cfg(feature = "codecs-parquet")]
+                        batch: None,
                         compression: sinks::file::Compression::None,
                         acknowledgements: Default::default(),
                         timezone: Default::default(),

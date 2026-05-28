@@ -47,6 +47,15 @@ impl EncodingConfig {
     }
 }
 
+impl Default for EncodingConfig {
+    fn default() -> Self {
+        Self {
+            encoding: crate::encoding::TextSerializerConfig::default().into(),
+            transformer: Transformer::default(),
+        }
+    }
+}
+
 impl<T> From<T> for EncodingConfig
 where
     T: Into<SerializerConfig>,
@@ -68,6 +77,7 @@ pub struct EncodingConfigWithFraming {
     framing: Option<FramingConfig>,
 
     #[configurable(derived)]
+    #[serde(default)]
     encoding: EncodingConfig,
 }
 

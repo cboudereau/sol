@@ -10,7 +10,8 @@ WORKDIR /sol
 
 COPY . .
 RUN scripts/environment/install-protoc.sh
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/sol/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release --bin sol && \
     cp target/release/sol .

@@ -23,6 +23,11 @@ docker compose exec duckdb duckdb -c \
   "DESCRIBE SELECT * FROM read_parquet('/data/parquet/traces/*.parquet');" 2>/dev/null || echo "(no trace files yet)"
 
 echo ""
+echo "=== Metric schema ==="
+docker compose exec duckdb duckdb -c \
+  "DESCRIBE SELECT * FROM read_parquet('/data/parquet/metrics/*.parquet', union_by_name=true);" 2>/dev/null || echo "(no metric files yet)"
+
+echo ""
 echo "=== Logs: last 10 entries ==="
 docker compose exec duckdb duckdb -c "
   SELECT service_name, severity_text, body

@@ -208,8 +208,6 @@ sinks:
     type: file
     inputs: ["otlp.logs"]
     path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
-    encoding:
-      codec: text
     batch_encoding:
       codec: parquet
       compression: zstd
