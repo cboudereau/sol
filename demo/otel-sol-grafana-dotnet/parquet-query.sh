@@ -53,7 +53,7 @@ echo ""
 echo "=== Metrics: distinct metric names ==="
 docker compose exec duckdb duckdb -c "
   SELECT DISTINCT name
-  FROM read_parquet('/data/parquet/metrics/*.parquet')
+  FROM read_parquet('/data/parquet/metrics/*.parquet', union_by_name=true)
   ORDER BY name
   LIMIT 20;
 " 2>/dev/null || echo "(no metric files yet)"

@@ -20,9 +20,9 @@ use parquet::{
 };
 use snafu::Snafu;
 use sol_config::configurable_component;
-use sol_core::event::{Event, OtelLog};
 use sol_core::event::otel_event::OtelSpan;
 use sol_core::event::otel_metric::OtelMetric;
+use sol_core::event::{Event, OtelLog};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,9 @@ use std::sync::Arc;
 fn write_parquet_file(
     schema: Arc<Type>,
     props: Arc<WriterProperties>,
-    write_fn: impl FnOnce(&mut SerializedRowGroupWriter<'_, Vec<u8>>) -> Result<(), ParquetEncodingError>,
+    write_fn: impl FnOnce(
+        &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    ) -> Result<(), ParquetEncodingError>,
 ) -> Result<Vec<u8>, ParquetEncodingError> {
     let buf: Vec<u8> = Vec::new();
     let mut writer = SerializedFileWriter::new(buf, schema, props)
@@ -660,8 +662,7 @@ fn write_log_columns(
 
     // Column 3: observed_time_unix_nano (OPTIONAL, 0 = absent)
     {
-        let (values, def_levels) =
-            collect_optional_nanos(logs, OtelLog::observed_time_unix_nano);
+        let (values, def_levels) = collect_optional_nanos(logs, OtelLog::observed_time_unix_nano);
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
@@ -676,7 +677,11 @@ fn write_log_columns(
     {
         let (values, def_levels) = collect_optional_string(logs, |l| {
             let s = l.severity_text();
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
         });
         write_optional_bytes_column(rg, &values, &def_levels)?;
     }
@@ -691,7 +696,11 @@ fn write_log_columns(
     {
         let (values, def_levels) = collect_optional_string(logs, |l| {
             let attrs = l.attributes();
-            if attrs.is_empty() { None } else { Some(attrs_to_json(attrs)) }
+            if attrs.is_empty() {
+                None
+            } else {
+                Some(attrs_to_json(attrs))
+            }
         });
         write_optional_bytes_column(rg, &values, &def_levels)?;
     }
@@ -1800,7 +1809,9 @@ pub fn build_summary_schema() -> Arc<Type> {
 use sol_core::event::otel_metric::{MetricData, NumberDataPointValue};
 
 /// Convert OTLP KeyValue attributes to a JSON string, or None if empty.
-fn kv_attrs_to_json_opt(attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue]) -> Option<String> {
+fn kv_attrs_to_json_opt(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+) -> Option<String> {
     if attrs.is_empty() {
         return None;
     }
@@ -2006,7 +2017,12 @@ fn write_common_metric_columns(
         let mut values = Vec::with_capacity(n);
         let mut def_levels = Vec::with_capacity(n);
         for row in rows {
-            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.name)
+                .filter(|s| !s.is_empty())
+            {
                 Some(name) => {
                     values.push(ByteArray::from(name.clone().into_bytes()));
                     def_levels.push(1_i16);
@@ -2341,7 +2357,12 @@ fn write_common_metric_columns_histogram(
         let mut values = Vec::with_capacity(n);
         let mut def_levels = Vec::with_capacity(n);
         for row in rows {
-            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.name)
+                .filter(|s| !s.is_empty())
+            {
                 Some(name) => {
                     values.push(ByteArray::from(name.clone().into_bytes()));
                     def_levels.push(1_i16);
@@ -2704,7 +2725,12 @@ fn write_common_metric_columns_exp_histogram(
         let mut values = Vec::with_capacity(n);
         let mut def_levels = Vec::with_capacity(n);
         for row in rows {
-            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.name)
+                .filter(|s| !s.is_empty())
+            {
                 Some(name) => {
                     values.push(ByteArray::from(name.clone().into_bytes()));
                     def_levels.push(1_i16);
@@ -2958,9 +2984,7 @@ fn write_exp_histogram_columns(
         let mut values = Vec::with_capacity(n);
         let mut def_levels = Vec::with_capacity(n);
         for row in &rows {
-            if let Some(MetricData::ExponentialHistogram(exp)) =
-                row.metric.metric().data.as_ref()
-            {
+            if let Some(MetricData::ExponentialHistogram(exp)) = row.metric.metric().data.as_ref() {
                 values.push(exp.aggregation_temporality);
                 def_levels.push(1_i16);
             } else {
@@ -3132,7 +3156,12 @@ fn write_common_metric_columns_summary(
         let mut values = Vec::with_capacity(n);
         let mut def_levels = Vec::with_capacity(n);
         for row in rows {
-            match row.metric.scope().map(|s| &s.name).filter(|s| !s.is_empty()) {
+            match row
+                .metric
+                .scope()
+                .map(|s| &s.name)
+                .filter(|s| !s.is_empty())
+            {
                 Some(name) => {
                     values.push(ByteArray::from(name.clone().into_bytes()));
                     def_levels.push(1_i16);
@@ -3352,10 +3381,9 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
         let props = Arc::new(self.writer_props.clone());
 
         if !logs.is_empty() {
-            let buf =
-                write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
-                    write_log_columns(rg, &logs)
-                })?;
+            let buf = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
+                write_log_columns(rg, &logs)
+            })?;
             buffer.put_slice(&buf);
             wrote_any = true;
         }
@@ -3379,10 +3407,9 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
         }
 
         if !sum_metrics.is_empty() {
-            let buf =
-                write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
-                    write_sum_columns(rg, &sum_metrics)
-                })?;
+            let buf = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
+                write_sum_columns(rg, &sum_metrics)
+            })?;
             buffer.put_slice(&buf);
             wrote_any = true;
         }
@@ -3408,11 +3435,10 @@ impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
         }
 
         if !summary_metrics.is_empty() {
-            let buf = write_parquet_file(
-                Arc::clone(&self.summary_schema),
-                Arc::clone(&props),
-                |rg| write_summary_columns(rg, &summary_metrics),
-            )?;
+            let buf =
+                write_parquet_file(Arc::clone(&self.summary_schema), Arc::clone(&props), |rg| {
+                    write_summary_columns(rg, &summary_metrics)
+                })?;
             buffer.put_slice(&buf);
             wrote_any = true;
         }
@@ -3559,9 +3585,7 @@ mod tests {
         let mut vals: Vec<ByteArray> = Vec::new();
         match &mut col_reader {
             ColumnReader::ByteArrayColumnReader(r) => {
-                let (read, _, _) = r
-                    .read_records(3, None, None, &mut vals)
-                    .expect("read");
+                let (read, _, _) = r.read_records(3, None, None, &mut vals).expect("read");
                 assert_eq!(read, 3);
             }
             _ => panic!("wrong column reader type"),
@@ -3825,11 +3849,7 @@ mod tests {
     #[test]
     fn test_log_schema_column_names() {
         let schema = build_otel_log_schema();
-        let names: Vec<&str> = schema
-            .get_fields()
-            .iter()
-            .map(|f| f.name())
-            .collect();
+        let names: Vec<&str> = schema.get_fields().iter().map(|f| f.name()).collect();
         assert_eq!(
             names,
             vec![
@@ -3889,9 +3909,7 @@ mod tests {
         let mut vals: Vec<ByteArray> = Vec::new();
         match &mut col_reader {
             ColumnReader::ByteArrayColumnReader(r) => {
-                let (read, _, _) = r
-                    .read_records(1, None, None, &mut vals)
-                    .expect("read");
+                let (read, _, _) = r.read_records(1, None, None, &mut vals).expect("read");
                 assert_eq!(read, 1);
             }
             _ => panic!("expected byte array reader"),
@@ -3918,11 +3936,8 @@ mod tests {
             None,
             sol_core::event::EventMetadata::default(),
         );
-        let data = encode_events(
-            vec![Event::Log(log)],
-            ParquetCompression::Uncompressed,
-        )
-        .expect("encode failed");
+        let data = encode_events(vec![Event::Log(log)], ParquetCompression::Uncompressed)
+            .expect("encode failed");
 
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
@@ -3959,11 +3974,8 @@ mod tests {
             None,
             sol_core::event::EventMetadata::default(),
         );
-        let data = encode_events(
-            vec![Event::Log(log)],
-            ParquetCompression::Uncompressed,
-        )
-        .expect("encode failed");
+        let data = encode_events(vec![Event::Log(log)], ParquetCompression::Uncompressed)
+            .expect("encode failed");
 
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
@@ -4004,8 +4016,7 @@ mod tests {
         let events: Vec<Event> = (0..100)
             .map(|i| create_log_event("INFO", &format!("log message {i}")))
             .collect();
-        let data =
-            encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
+        let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
         let reader = reader_from_bytes(&data);
         assert_eq!(reader.metadata().file_metadata().num_rows(), 100);
     }
@@ -4019,8 +4030,7 @@ mod tests {
             ParquetCompression::Uncompressed,
         ] {
             let event = create_log_event("INFO", "compression test");
-            let data =
-                encode_events(vec![event], compression.clone()).expect("encode failed");
+            let data = encode_events(vec![event], compression.clone()).expect("encode failed");
             let reader = reader_from_bytes(&data);
             assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
         }
@@ -4150,7 +4160,11 @@ mod tests {
             .expect("write trace parquet failed")
     }
 
-    fn read_string_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<String>> {
+    fn read_string_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Option<String>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<ByteArray> = Vec::new();
         let mut def: Vec<i16> = Vec::new();
@@ -4165,7 +4179,9 @@ mod tests {
         let mut val_idx = 0;
         for &d in &def {
             if d == 1 {
-                result.push(Some(String::from_utf8(vals[val_idx].data().to_vec()).expect("utf8")));
+                result.push(Some(
+                    String::from_utf8(vals[val_idx].data().to_vec()).expect("utf8"),
+                ));
                 val_idx += 1;
             } else {
                 result.push(None);
@@ -4174,7 +4190,11 @@ mod tests {
         result
     }
 
-    fn read_required_string_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<String> {
+    fn read_required_string_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<String> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<ByteArray> = Vec::new();
         match &mut col_reader {
@@ -4183,10 +4203,16 @@ mod tests {
             }
             _ => panic!("expected byte array reader for column {col}"),
         }
-        vals.iter().map(|v| String::from_utf8(v.data().to_vec()).expect("utf8")).collect()
+        vals.iter()
+            .map(|v| String::from_utf8(v.data().to_vec()).expect("utf8"))
+            .collect()
     }
 
-    fn read_required_i64_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<i64> {
+    fn read_required_i64_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<i64> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<i64> = Vec::new();
         match &mut col_reader {
@@ -4198,13 +4224,18 @@ mod tests {
         vals
     }
 
-    fn read_optional_i32_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<i32>> {
+    fn read_optional_i32_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Option<i32>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<i32> = Vec::new();
         let mut def: Vec<i16> = Vec::new();
         match &mut col_reader {
             ColumnReader::Int32ColumnReader(r) => {
-                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+                r.read_records(n, Some(&mut def), None, &mut vals)
+                    .expect("read");
             }
             _ => panic!("expected int32 reader for column {col}"),
         }
@@ -4221,13 +4252,18 @@ mod tests {
         result
     }
 
-    fn read_optional_i64_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<i64>> {
+    fn read_optional_i64_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Option<i64>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<i64> = Vec::new();
         let mut def: Vec<i16> = Vec::new();
         match &mut col_reader {
             ColumnReader::Int64ColumnReader(r) => {
-                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+                r.read_records(n, Some(&mut def), None, &mut vals)
+                    .expect("read");
             }
             _ => panic!("expected int64 reader for column {col}"),
         }
@@ -4244,13 +4280,18 @@ mod tests {
         result
     }
 
-    fn read_optional_double_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<f64>> {
+    fn read_optional_double_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Option<f64>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<f64> = Vec::new();
         let mut def: Vec<i16> = Vec::new();
         match &mut col_reader {
             ColumnReader::DoubleColumnReader(r) => {
-                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+                r.read_records(n, Some(&mut def), None, &mut vals)
+                    .expect("read");
             }
             _ => panic!("expected double reader for column {col}"),
         }
@@ -4267,7 +4308,11 @@ mod tests {
         result
     }
 
-    fn read_required_double_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<f64> {
+    fn read_required_double_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<f64> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<f64> = Vec::new();
         match &mut col_reader {
@@ -4279,13 +4324,18 @@ mod tests {
         vals
     }
 
-    fn read_optional_bool_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Option<bool>> {
+    fn read_optional_bool_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Option<bool>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<bool> = Vec::new();
         let mut def: Vec<i16> = Vec::new();
         match &mut col_reader {
             ColumnReader::BoolColumnReader(r) => {
-                r.read_records(n, Some(&mut def), None, &mut vals).expect("read");
+                r.read_records(n, Some(&mut def), None, &mut vals)
+                    .expect("read");
             }
             _ => panic!("expected bool reader for column {col}"),
         }
@@ -4302,7 +4352,11 @@ mod tests {
         result
     }
 
-    fn read_required_fixed_bytes_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<Vec<u8>> {
+    fn read_required_fixed_bytes_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<Vec<u8>> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<FixedLenByteArray> = Vec::new();
         match &mut col_reader {
@@ -4314,7 +4368,11 @@ mod tests {
         vals.iter().map(|v| v.data().to_vec()).collect()
     }
 
-    fn read_required_i32_column(rg: &dyn parquet::file::reader::RowGroupReader, col: usize, n: usize) -> Vec<i32> {
+    fn read_required_i32_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        col: usize,
+        n: usize,
+    ) -> Vec<i32> {
         let mut col_reader = rg.get_column_reader(col).expect("column reader");
         let mut vals: Vec<i32> = Vec::new();
         match &mut col_reader {
@@ -4333,7 +4391,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
         assert_eq!(
-            reader.metadata().file_metadata().schema().get_fields().len(),
+            reader
+                .metadata()
+                .file_metadata()
+                .schema()
+                .get_fields()
+                .len(),
             24
         );
     }
@@ -4406,7 +4469,8 @@ mod tests {
         // Column 12: events (OPTIONAL UTF8)
         let events = read_string_column(&*rg, 12, 1);
         assert!(events[0].is_some(), "events should be present");
-        let json: serde_json::Value = serde_json::from_str(events[0].as_ref().unwrap()).expect("valid json");
+        let json: serde_json::Value =
+            serde_json::from_str(events[0].as_ref().unwrap()).expect("valid json");
         assert!(json.is_array());
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -4459,7 +4523,8 @@ mod tests {
         // Column 13: links (OPTIONAL UTF8)
         let links = read_string_column(&*rg, 13, 1);
         assert!(links[0].is_some(), "links should be present");
-        let json: serde_json::Value = serde_json::from_str(links[0].as_ref().unwrap()).expect("valid json");
+        let json: serde_json::Value =
+            serde_json::from_str(links[0].as_ref().unwrap()).expect("valid json");
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 1);
     }
@@ -4538,8 +4603,10 @@ mod tests {
 
     fn create_gauge_metric(int_value: Option<i64>, double_value: Option<f64>) -> OtelMetric {
         use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
-        use opentelemetry_proto::tonic::metrics::v1::{Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue};
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let value = match (int_value, double_value) {
@@ -4648,8 +4715,10 @@ mod tests {
 
     #[test]
     fn test_gauge_encode_multiple_data_points() {
-        use opentelemetry_proto::tonic::metrics::v1::{Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue};
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let proto = Metric {
@@ -4702,8 +4771,10 @@ mod tests {
 
     fn create_sum_metric(value: f64, is_monotonic: bool, temporality: i32) -> OtelMetric {
         use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
-        use opentelemetry_proto::tonic::metrics::v1::{Metric, NumberDataPoint, Sum, number_data_point::Value as NDPValue};
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Metric, NumberDataPoint, Sum, number_data_point::Value as NDPValue,
+        };
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let proto = Metric {
@@ -4806,8 +4877,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn create_histogram_metric() -> OtelMetric {
-        use opentelemetry_proto::tonic::metrics::v1::{Histogram, HistogramDataPoint, Metric};
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{Histogram, HistogramDataPoint, Metric};
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let proto = Metric {
@@ -4912,11 +4983,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn create_exp_histogram_metric() -> OtelMetric {
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
         use opentelemetry_proto::tonic::metrics::v1::{
             ExponentialHistogram, ExponentialHistogramDataPoint, Metric,
             exponential_histogram_data_point::Buckets,
         };
-        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let proto = Metric {
@@ -5024,11 +5095,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn create_summary_metric() -> OtelMetric {
-        use opentelemetry_proto::tonic::metrics::v1::{
-            Metric, Summary, SummaryDataPoint,
-            summary_data_point::ValueAtQuantile,
-        };
         use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Metric, Summary, SummaryDataPoint, summary_data_point::ValueAtQuantile,
+        };
         use opentelemetry_proto::tonic::resource::v1::Resource;
 
         let proto = Metric {
@@ -5105,7 +5175,8 @@ mod tests {
         // Column 17: quantile_values (OPTIONAL UTF8, JSON)
         let qv = read_string_column(&*rg, 17, 1);
         assert!(qv[0].is_some());
-        let json: serde_json::Value = serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");
+        let json: serde_json::Value =
+            serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");
         assert!(json.is_array());
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -5148,7 +5219,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
         assert_eq!(
-            reader.metadata().file_metadata().schema().get_fields().len(),
+            reader
+                .metadata()
+                .file_metadata()
+                .schema()
+                .get_fields()
+                .len(),
             18, // log schema has 18 columns
         );
     }
@@ -5161,7 +5237,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
         assert_eq!(
-            reader.metadata().file_metadata().schema().get_fields().len(),
+            reader
+                .metadata()
+                .file_metadata()
+                .schema()
+                .get_fields()
+                .len(),
             24, // trace schema has 24 columns
         );
     }
@@ -5174,7 +5255,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
         assert_eq!(
-            reader.metadata().file_metadata().schema().get_fields().len(),
+            reader
+                .metadata()
+                .file_metadata()
+                .schema()
+                .get_fields()
+                .len(),
             17, // gauge schema has 17 columns
         );
     }
@@ -5182,10 +5268,7 @@ mod tests {
     #[test]
     fn test_encode_mixed_signals() {
         // logs + traces -> two Parquet files in buffer
-        let events = vec![
-            create_log_event("INFO", "a log"),
-            create_trace_event(),
-        ];
+        let events = vec![create_log_event("INFO", "a log"), create_trace_event()];
         let data = encode_events(events, ParquetCompression::Uncompressed).expect("encode failed");
         assert_eq!(count_parquet_files(&data), 2);
     }

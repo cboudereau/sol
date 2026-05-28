@@ -177,7 +177,9 @@ services:
       - tempo
 
   duckdb:
-    image: datacatering/duckdb:v1.3.1
+    build:
+      context: .
+      dockerfile: duckdb.Dockerfile
     entrypoint: ["sleep", "infinity"]
     volumes:
       - parquet-data:/data/parquet:ro
