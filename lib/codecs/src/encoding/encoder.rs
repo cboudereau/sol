@@ -5,6 +5,8 @@ use tokio_util::codec::Encoder as _;
 
 #[cfg(feature = "arrow")]
 use crate::encoding::ArrowStreamSerializer;
+#[cfg(feature = "parquet")]
+use crate::encoding::ParquetSerializer;
 use crate::{
     encoding::{Error, Framer, Serializer},
     internal_events::{EncoderFramingError, EncoderSerializeError},
@@ -16,6 +18,9 @@ pub enum BatchSerializer {
     /// Arrow IPC stream format serializer.
     #[cfg(feature = "arrow")]
     Arrow(ArrowStreamSerializer),
+    /// Parquet file format serializer.
+    #[cfg(feature = "parquet")]
+    Parquet(Box<ParquetSerializer>),
 }
 
 /// An encoder that encodes batches of events.
@@ -36,11 +41,52 @@ impl BatchEncoder {
     }
 
     /// Get the HTTP content type.
-    #[cfg(feature = "arrow")]
+    #[cfg(any(feature = "arrow", feature = "parquet"))]
     pub const fn content_type(&self) -> &'static str {
         match &self.serializer {
+            #[cfg(feature = "arrow")]
             BatchSerializer::Arrow(_) => "application/vnd.apache.arrow.stream",
+            #[cfg(feature = "parquet")]
+            BatchSerializer::Parquet(_) => "application/vnd.apache.parquet",
         }
+    }
+}
+
+impl BatchSerializer {
+    /// Encode events into individual files.
+    /// Returns one `Vec<u8>` per output file.
+    #[allow(unused_variables)]
+    pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
+        #[allow(unreachable_patterns)]
+        match self {
+            #[cfg(feature = "parquet")]
+            BatchSerializer::Parquet(s) => s
+                .encode_files(events)
+                .map_err(|e| Error::SerializingError(Box::new(e))),
+            #[cfg(feature = "arrow")]
+            BatchSerializer::Arrow(s) => {
+                let mut buf = BytesMut::new();
+                s.encode(events, &mut buf).map_err(|err| {
+                    use crate::encoding::ArrowEncodingError;
+                    match err {
+                        ArrowEncodingError::NullConstraint { .. } => {
+                            Error::SchemaConstraintViolation(Box::new(err))
+                        }
+                        _ => Error::SerializingError(Box::new(err)),
+                    }
+                })?;
+                Ok(vec![buf.to_vec()])
+            }
+            _ => unreachable!("BatchSerializer cannot be constructed without encode_files()"),
+        }
+    }
+}
+
+impl BatchEncoder {
+    /// Encode events into individual files.
+    /// Returns one `Vec<u8>` per output file.
+    pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
+        self.serializer.encode_files(events)
     }
 }
 
@@ -63,6 +109,10 @@ impl tokio_util::codec::Encoder<Vec<Event>> for BatchEncoder {
                     }
                 })
             }
+            #[cfg(feature = "parquet")]
+            BatchSerializer::Parquet(serializer) => serializer
+                .encode(events, buffer)
+                .map_err(|err| Error::SerializingError(Box::new(err))),
             _ => unreachable!("BatchSerializer cannot be constructed without encode()"),
         }
     }
@@ -74,8 +124,8 @@ pub enum EncoderKind {
     /// Uses framing to encode individual events
     Framed(Box<Encoder<Framer>>),
     /// Encodes events in batches without framing
-    #[cfg(feature = "arrow")]
-    Batch(BatchEncoder),
+    #[cfg(any(feature = "arrow", feature = "parquet"))]
+    Batch(Box<BatchEncoder>),
 }
 
 #[derive(Debug, Clone)]

@@ -27,6 +27,7 @@ vrl = { workspace = true, optional = true }
 allocation-tracing = ["sol-top?/allocation-tracing"]
 api-client = ["dep:sol-api-client"]
 arrow = ["codecs/arrow"]
+parquet = ["codecs/parquet"]
 api = ["sol-tap/api"]
 file-source = ["dep:file-source", "dep:file-source-common"]
 lua = ["sol-core/lua"]

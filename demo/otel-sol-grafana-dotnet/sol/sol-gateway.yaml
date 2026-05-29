@@ -92,3 +92,36 @@ sinks:
       batch:
         max_events: 1000
         timeout_secs: 15
+
+  parquet_logs:
+    type: file
+    inputs: ["otlp.logs"]
+    path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
+  parquet_traces:
+    type: file
+    inputs: ["otlp.traces"]
+    path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
+  parquet_metrics:
+    type: file
+    inputs: ["promote_resource_attrs"]
+    path: "/data/parquet/metrics/%Y-%m-%d-%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30

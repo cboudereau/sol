@@ -69,6 +69,15 @@ graph TD
 docker compose up -d
 ```
 
+### build from source
+```bash
+# Use a locally built image
+TAG=$(git rev-parse --short HEAD) && docker build -f ../Dockerfile.sol -t sol:$TAG ../.. && SOL_IMAGE=sol:$TAG bash ./up.sh parquet
+
+# analyze parquet files
+./parquet-query.sh
+```
+
 Open Grafana: http://localhost:3000
 
 ## Key Sol features demonstrated
@@ -197,6 +206,42 @@ Host metrics collected by the sol-gateway's `host_metrics` source, exported with
 [Dashboard JSON](./grafana/provisioning/dashboards/Apps/OpenTelemetry%20dotnet%20webapi.json) | [Grafana.com](https://grafana.com/grafana/dashboards/20568-opentelemetry-dotnet-webapi/)
 
 Application-level dashboard using the RED (Rate, Errors, Duration) and USE (Utilization, Saturation, Errors) methods. Shows ASP.NET request rates, error rates, latency distributions, runtime metrics (GC, thread pool), and HTTP client instrumentation for the .NET client and service applications.
+
+### Parquet output
+
+The sol-gateway writes all OTLP signals (logs, traces, metrics) to Parquet files alongside the Grafana backends. Each batch produces a complete, self-contained Parquet file with Zstd column compression.
+
+```yaml
+sinks:
+  parquet_logs:
+    type: file
+    inputs: ["otlp.logs"]
+    path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+```
+
+To enable the DuckDB query container and inspect the files:
+
+```bash
+docker compose --profile parquet up -d
+# Wait ~30s for the first batch to flush
+./parquet-query.sh
+```
+
+Or run ad-hoc DuckDB queries:
+
+```bash
+docker compose exec duckdb duckdb -c "
+  SELECT service_name, name, duration_nanos / 1e6 AS duration_ms
+  FROM read_parquet('/data/parquet/traces/*.parquet')
+  ORDER BY duration_nanos DESC LIMIT 10;
+"
+```
 
 ## Disclaimer
 

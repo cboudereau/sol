@@ -1,15 +1,13 @@
 name: otel-lgtm-dotnet
 services:
   sol-gateway:
-    # build:
-    #   context: ../..
-    #   dockerfile: demo/Dockerfile.sol
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/sol-gateway.yaml"]
     volumes:
       - ./sol/sol-gateway.yaml:/etc/sol/sol-gateway.yaml:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+      - parquet-data:/data/parquet:rw
     environment:
       - PROCFS_ROOT=/host/proc
       - SYSFS_ROOT=/host/sys
@@ -20,10 +18,7 @@ services:
       - mimir
       - sol-loadbalancer
   sol-loadbalancer:
-    # build:
-    #   context: ../..
-    #   dockerfile: demo/Dockerfile.sol
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/sol-loadbalancer.yaml"]
     volumes:
       - ./sol/sol-loadbalancer.yaml:/etc/sol/sol-loadbalancer.yaml/:ro
@@ -32,10 +27,7 @@ services:
     depends_on:
       - sol-collector
   sol-collector:
-    # build:
-    #   context: ../..
-    #   dockerfile: demo/Dockerfile.sol
-    image: superbeeeeeee/sol:latest
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
     command: ["--config", "/etc/sol/sol-collector.yaml"]
     volumes:
       - ./sol/sol-collector.yaml:/etc/sol/sol-collector.yaml:ro
@@ -174,6 +166,21 @@ services:
       - mimir
       - loki
       - tempo
+
+  duckdb:
+    build:
+      context: .
+      dockerfile: duckdb.Dockerfile
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - parquet-data:/data/parquet:ro
+    networks:
+      - bridge
+    profiles:
+      - parquet
+
+volumes:
+  parquet-data:
 
 networks:
   bridge:

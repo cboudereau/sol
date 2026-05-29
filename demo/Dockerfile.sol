@@ -1,6 +1,5 @@
 ARG RUST_VERSION=1.92
 ARG DEBIAN_RELEASE=trixie
-ARG FEATURES=api,sources-opentelemetry,sources-internal_metrics,sources-host_metrics,sinks-blackhole,sinks-console,sinks-opentelemetry,sinks-prometheus,transforms-remap,transforms-tail_sampling,transforms-span_metrics,transforms-servicegraph
 
 FROM docker.io/rust:${RUST_VERSION}-${DEBIAN_RELEASE} AS builder
 RUN apt-get update && apt-get -y --no-install-recommends install \
@@ -10,13 +9,11 @@ RUN apt-get update && apt-get -y --no-install-recommends install \
 WORKDIR /sol
 
 COPY . .
-ARG FEATURES
 RUN scripts/environment/install-protoc.sh
 RUN --mount=type=cache,target=/sol/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin sol \
-    --no-default-features --features $FEATURES && \
+    cargo build --release --bin sol && \
     cp target/release/sol .
 
 FROM docker.io/debian:${DEBIAN_RELEASE}-slim
