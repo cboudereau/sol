@@ -237,6 +237,7 @@ classDiagram
 - [ADR: process integration](./adrs/query-backend-process-integration.md) — config block + `setup_query` in `app.rs`, server held on `topology/controller.rs`, **not** a source/sink/transform
 - [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — add `datafusion` + `object_store` only under `query-backend`; default build untouched
 - New external dependencies (`datafusion`, `object_store`, `promql-parser`) are **pre-approved by this ADR** — adding them is within the constitution; adding any other crate is not
+- **Front-load verified (2026-06)**: versions pinned `datafusion = "53"` (v53.1.0, incl. `datafusion-functions-nested` for UNNEST), `object_store = "0.13"` (`fs`,`tokio`,`aws`), `promql-parser = "0.9"` — all resolve from crates.io. Parquet file-read interop is version-stable ([datafusion-table-discovery ADR](./adrs/datafusion-table-discovery.md)); the build confirms read-back on a codec fixture.
 - [NFR9](./DESIGN.md#nfr9): `QueryOptions` carries per-signal guardrails — max query range (traces/logs 30d, metrics 13mo default / 2y opt-in), max bytes scanned (~1GB), max concurrent queries; enforced at validation by the API handlers (tasks 3–5, 7) and frontend (task 11)
 **Tests**:
 - `test_query_options_deserializes_from_yaml` — `query: { address, storage: { path } }` parses

@@ -67,7 +67,9 @@ Concretely:
 - Each table's Arrow schema is **declared explicitly in code** (not inferred) from the column lists in [parquet-multisignal](../../../designs/20260527_parquet-multisignal.md) — the binding codec↔query contract; schema mismatch is a hard error.
 - Predicate pushdown for `service_name`, `name`, timestamps via the Parquet reader (row-group stats + page index); `trace_id` bloom read when present.
 
-**Dependency decision:** add `datafusion` and `object_store` behind a new `query-backend` Cargo feature (gating both `src/query/` and the deps), pinned to the DataFusion release whose embedded `parquet` crate is compatible with the codec's `parquet = 56.2.0` (verify alignment at implementation start; if DataFusion's bundled `parquet` major differs, pin DataFusion to the matching release). This is the explicit ratification of [NFR1](../DESIGN.md#nfr1).
+**Dependency decision (resolved at implementation start, 2026-06):** add behind a new `query-backend` Cargo feature (gating both `src/query/` and the deps) — **`datafusion = "53"`** (v53.1.0; includes `parquet` + `datafusion-functions-nested` for UNNEST), **`object_store = "0.13"`** (features `fs`, `tokio`, + `aws` for S3), **`promql-parser = "0.9"`**. This is the explicit ratification of [NFR1](../DESIGN.md#nfr1).
+
+> **Version-compat note**: the earlier worry about aligning DataFusion's bundled `parquet` with the codec's `parquet = 56.2.0` is **low-risk** — the querier *reads* Parquet files written by the codec (it does not share in-process Arrow types with it), and the Parquet *file format* (TIMESTAMP(NANOS), `FIXED_LEN_BYTE_ARRAY`, UTF8) is interoperable across reader/writer crate versions. DataFusion 53's reader reads the codec's parquet-56 output regardless of minor version skew. The first Session-1 build confirms read-back on a codec-written fixture.
 
 ## Consequences
 
