@@ -3,7 +3,7 @@ status: draft
 ---
 # Query caching strategy
 
-Addresses: [FR5](../DESIGN.md#fr5), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR5](../DESIGN.md#fr5), [NFR6](../DESIGN.md#nfr6) (response-time budget; supersedes the earlier NFR3 framing)
 
 ## Problem
 
@@ -17,7 +17,7 @@ How should query results be cached?
 |---|---|---|
 | A. In-memory LRU cache (no external dependency) | Zero operational overhead. Fast lookup. No network latency. Embedded in Sol process. | Not shared across query nodes. Memory-bounded. Lost on restart. |
 | B. Redis / Memcached external cache | Shared across nodes. Survives restarts. Proven at scale (Grafana Mimir uses memcached). | External dependency. Network latency per cache lookup. Operational burden. |
-| C. No caching — rely on DataFusion's built-in optimizations | Simplest. No stale data risk. | Cannot meet NFR3 latency target for histogram quantile queries. Dashboard experience degrades. |
+| C. No caching — rely on DataFusion's built-in optimizations | Simplest. No stale data risk. | Cannot meet the [NFR6](../DESIGN.md#nfr6) latency budget for histogram quantile queries. Dashboard experience degrades. |
 | D. Hybrid: in-memory LRU default, optional Redis backend | Best of A and B. Start simple, scale when needed. | More code to maintain (two cache backends). |
 
 ## Decision

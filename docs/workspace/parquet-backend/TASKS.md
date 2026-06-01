@@ -149,7 +149,7 @@ classDiagram
 | `ParquetCatalog` | [FR4](./DESIGN.md#fr4), [NFR4](./DESIGN.md#nfr4) | Registers + periodically re-lists `ListingTable`s |
 | `SignalTable` | [FR4](./DESIGN.md#fr4) | Seven tables; explicit Arrow schema = codec contract |
 | `QueryEngine` | [FR4](./DESIGN.md#fr4), [NFR1](./DESIGN.md#nfr1) | Thin wrapper over DataFusion `SessionContext` |
-| `QueryCache` / `MokaQueryCache` | [FR5](./DESIGN.md#fr5), [NFR3](./DESIGN.md#nfr3) | Trait + in-memory default ([caching ADR](./adrs/query-caching-strategy.md)) |
+| `QueryCache` / `MokaQueryCache` | [FR5](./DESIGN.md#fr5), [NFR6](./DESIGN.md#nfr6) | Trait + in-memory default ([caching ADR](./adrs/query-caching-strategy.md)) |
 | `CacheKey` | [FR5](./DESIGN.md#fr5) | `hash(query, floor(start/15s), floor(end/15s))` |
 | `LogqlTranslator` | [FR3](./DESIGN.md#fr3) | LogQL subset → SQL |
 | `PromqlTranslator` | [FR1](./DESIGN.md#fr1) | promql-parser AST → SQL ([PromQL ADR](./adrs/promql-parsing-strategy.md)) |
@@ -162,6 +162,7 @@ classDiagram
 | `DeploymentRole` | [NFR8](./DESIGN.md#nfr8) | enum Querier (stateless, scale-out) / QueryFrontend / Compactor (singleton) |
 | `QueryGuardrails` | [NFR9](./DESIGN.md#nfr9) | per-signal max range (traces/logs 30d, metrics 13mo / 2y opt-in) + max bytes scanned (~1GB) + max concurrent/series; reject at validation |
 | `SqlEndpoint` | [FR9](./DESIGN.md#fr9) | raw DataFusion SQL + cross-signal JOINs (`trace_id`; `service_name`+time); HTTP+JSON v1 |
+| `ObjectStore` retry/backoff + paginated LIST | [NFR10](./DESIGN.md#nfr10) | `503 SlowDown` exponential backoff+jitter; prefix-sharded reads; bounded LIST (shared across querier + compactor) |
 
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
@@ -183,7 +184,7 @@ classDiagram
 
 ## Tasks
 
-### 1. `query-backend` feature + module skeleton ([FR1](./DESIGN.md#fr1))
+### 1. `query-backend` feature + module skeleton ([FR1](./DESIGN.md#fr1), [NFR1](./DESIGN.md#nfr1))
 **Goal**: A compilable, feature-gated `src/query/` module and the `query:` config block, wired into app startup like `api`.
 **Types**: `QueryOptions`, `QueryServer` (skeleton) — see domain model
 **Constraints**:
@@ -212,6 +213,7 @@ classDiagram
 - Predicate pushdown enabled for `service_name`, `name`, timestamp columns
 - `Querier::resolve_files` honours **footer supersession** ([compaction-consistency ADR](./adrs/compaction-consistency.md)): when both raw and compacted files are present, pick the highest `level` per sub-range and skip superseded inputs (each datum read once). Pre-compaction (no compacted files yet) this is a no-op.
 - [NFR5](./DESIGN.md#nfr5): bound the DataFusion worker pool (default `min(4, available_parallelism)`) and the Parquet metadata cache so the backend does not starve ingestion
+- [NFR10](./DESIGN.md#nfr10): file discovery uses **paginated LIST** (1000/page) and the `object_store` client must retry `503 SlowDown` with exponential backoff+jitter; prefix-sharded reads (`dt=`/per-signal) spread the per-prefix GET-rate ceiling
 **Tests**:
 - `test_signal_tables_map_to_directories` — `logs/`, `traces/`, and per-subtype metric dirs each register as a table (or single `metrics/` union fallback)
 - `test_catalog_registers_tables_from_dir` — write a fixture Parquet file, register, `SELECT count(*)` returns the row count
@@ -330,7 +332,7 @@ classDiagram
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: downhill
 
-### 8. Query result cache ([FR5](./DESIGN.md#fr5), [NFR3](./DESIGN.md#nfr3))
+### 8. Query result cache ([FR5](./DESIGN.md#fr5), [NFR6](./DESIGN.md#nfr6))
 **Goal**: Wrap the query path in a `QueryCache` (moka LRU default) keyed by query + 15s time bucket.
 **Types**: `QueryCache` trait, `MokaQueryCache`, `CacheKey`
 **Constraints**:
@@ -349,7 +351,7 @@ classDiagram
 **Depends on**: tasks 3, 4
 **Time-box**: ~60 min · **Hill**: downhill
 
-### 9. Query backend observability ([NFR3](./DESIGN.md#nfr3), cross-cutting)
+### 9. Query backend observability ([NFR6](./DESIGN.md#nfr6), cross-cutting)
 **Goal**: Emit `sol_query_*` internal metrics (latency, cache hit rate, rows scanned) so Sol can monitor its own query backend.
 **Types**: internal_events for the query backend (follow `src/internal_events/` conventions)
 **Constraints**:
@@ -375,6 +377,7 @@ classDiagram
 - Layout: day-partitioned path `dt=YYYY-MM-DD/`; merged output globally sorted (`service_name`, `name`, `time_unix_nano`)
 - Retention is a **separate configurable policy** (per-signal TTL), enforced by GC here — independent of the [NFR7](./DESIGN.md#nfr7) query-interval numbers (retention ≥ query interval)
 - [NFR5](./DESIGN.md#nfr5): bounded resources; the gateway is **unchanged**
+- [NFR10](./DESIGN.md#nfr10): compactor reads/writes retry `503 SlowDown` with backoff; merging into fewer files directly lowers the per-query GET rate against S3's per-prefix ceiling
 **Tests**:
 - `test_seal_only_compacts_partitions_older_than_grace` — active day untouched
 - `test_compacted_footer_records_level_and_supersedes`
@@ -415,7 +418,7 @@ classDiagram
 **Time-box**: ~90 min · **Hill**: **downhill** — merge algorithm specified in [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md) (overlap-by-lookback; topk partial-then-merge; sum-buckets-then-quantile); cache-immutability validated in [COMPLEXITY.md §4](./COMPLEXITY.md)
 
 ### 12. Metric rollup tiers (downsampling) ([FR6](./DESIGN.md#fr6), [NFR6](./DESIGN.md#nfr6), [NFR7](./DESIGN.md#nfr7))
-**Goal**: Serve the metrics cold tail (>90d) from pre-aggregated resolutions so 2y ranges meet NFR6.
+**Goal**: Serve the metrics cold tail (beyond the recent window) from pre-aggregated resolutions so 13mo-default / 2y-opt-in ranges meet NFR6.
 **Types**: `RollupTier`, extends `Compactor`
 **Constraints**:
 - [ADR: long-range metrics](./adrs/long-range-metrics-strategy.md) — compactor produces 5m/1h/1d rollups; rollups store **bucket counts** + **counter values** (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct after merge
@@ -434,7 +437,7 @@ classDiagram
 **Depends on**: tasks 10, 11
 **Time-box**: ~90 min · **Hill**: **downhill** — rollup correctness rule fixed ([long-range-metrics ADR](./adrs/long-range-metrics-strategy.md): store bucket counts + counter values, not quantiles); necessity + row-reduction quantified in [COMPLEXITY.md §7](./COMPLEXITY.md) (M2); tolerance measured during the task
 
-> **Per-signal scope note**: tasks 11–12 apply to **metrics only** (90d–2y). Traces (<7d) and logs (<30d) are bounded-window tables registered plainly in task 2 — they skip splitting and rollups ([NFR7](./DESIGN.md#nfr7)).
+> **Per-signal scope note**: tasks 11–12 apply to **metrics only** (13mo default, 2y opt-in). Traces and logs (≤30d) are bounded-window tables registered plainly in task 2 — they skip rollups (splitting optional) ([NFR7](./DESIGN.md#nfr7)).
 
 ### 13. SQL query endpoint + cross-signal JOIN ([FR9](./DESIGN.md#fr9), [NFR8](./DESIGN.md#nfr8), [NFR9](./DESIGN.md#nfr9))
 **Goal**: Expose DataFusion SQL over the catalog — the cross-signal differentiator the three Grafana languages can't do.
@@ -498,13 +501,14 @@ Tasks: 11, 12
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
 **Checkpoint**: `cargo test --no-default-features --features query-backend query::frontend query::rollup && cargo clippy --no-default-features --features query-backend -- -D warnings`
 **Commit point**: yes
-> Both tasks are now `downhill` — merge + rollup correctness rules are fixed in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) and [QUERY-MAPPING.md](./QUERY-MAPPING.md), necessity quantified in [COMPLEXITY.md](./COMPLEXITY.md). End of session: verify a synthetic 90d–2y metric range meets NFR6 with splitting + rollups vs. raw scan (the measured-constant step).
+> Both tasks are now `downhill` — merge + rollup correctness rules are fixed in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) and [QUERY-MAPPING.md](./QUERY-MAPPING.md), necessity quantified in [COMPLEXITY.md](./COMPLEXITY.md). End of session: verify a synthetic long-range (13mo–2y) metric range meets NFR6 with splitting + rollups vs. raw scan (the measured-constant step).
 
 ## Quality gates (post-session review)
 - [ ] Acceptance criteria: all green above
 - [ ] Code review ([code-review](../../../.claude) skill): implementation matches [DESIGN.md](./DESIGN.md) intent and the eight ADRs
 - [ ] Code organization: `src/query/` module structure, one submodule per API + translator + catalog + cache + compaction + frontend; roles (querier/frontend/compactor) cleanly separated
 - [ ] Read scalability ([NFR8](./DESIGN.md#nfr8)): queriers hold no authoritative state; compactor is a strict singleton; cache works behind the shared-backend trait
+- [ ] Object-store limits ([NFR10](./DESIGN.md#nfr10)): `503 SlowDown` retried with backoff; reads prefix-sharded; LIST paginated; a dashboard refresh stays under the per-prefix GET ceiling post-compaction (verified against the demo/synthetic run)
 - [ ] Code quality: translators are pure functions (AST → SQL), no duplication across the three response builders
 - [ ] Security review: no SQL injection from label/tag values into generated SQL (parameterize or escape); dependency audit on the new `datafusion`/`object_store`/`promql-parser` trees; no secrets in storage config logging
 - [ ] Observability: `sol_query_*` metrics present; query latency + cache hit rate visible

@@ -43,7 +43,7 @@ This must also pin the **new external dependency** (DataFusion + object_store), 
 
 ## Decision
 
-**Table registration: Option A — one `ListingTable` per signal *directory*.** This requires a small, low-risk **sink-side change**: write metric subtypes into per-subtype subdirectories so each maps to a clean table:
+**Table registration: Option A — one `ListingTable` per signal table, built from a `resolve_files`-curated list (candidate universe = the signal directory).** This requires a small, low-risk **sink-side change**: write metric subtypes into per-subtype subdirectories so each maps to a clean table:
 
 ```
 logs/                 → table `logs`

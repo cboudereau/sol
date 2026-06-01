@@ -21,7 +21,7 @@ The read path must scale with query concurrency: many dashboards, ~130 queries e
 
 **Option C.** State lives in shared object storage (storage/compute separation), so read scaling is by stateless replication. Three roles, all the same binary selected by config:
 
-- **Querier** — stateless: API translation + DataFusion over shared object storage. Horizontally scalable behind a load balancer. Holds only a per-process cache (best-effort) and re-lists/discovers files independently.
+- **Querier** — stateless: API translation + DataFusion over shared object storage. Horizontally scalable behind a load balancer. Holds only a per-process cache (best-effort) and discovers files via `resolve_files` (footer `level`/`supersedes`, per [compaction-consistency](./compaction-consistency.md)) — **not** a blind directory listing (which would double-count raw + compacted).
 - **Query-frontend** (optional) — fronts the queriers: time-range splitting ([FR8](../DESIGN.md#fr8)) and a **shared** result cache (the multi-node form of [FR5](../DESIGN.md#fr5)); routes shards to queriers and merges.
 - **Compactor** — **singleton** standalone `Parquet → compacted Parquet` component (DataFusion): the only writer of compacted/rollup files; seals past partitions, builds rollups, enforces the retention policy ([FR7](../DESIGN.md#fr7), [compaction-consistency](./compaction-consistency.md)). Replicating it would race the merges and corrupt output.
 

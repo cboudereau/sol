@@ -1,6 +1,6 @@
 # Parquet Backend — Complexity & Cost Model
 
-> Gate: this model must be validated **before** implementation ([TASKS.md](./TASKS.md) Phase 4a gate). It is how the uphill tasks (6, 11, 12) are de-risked analytically rather than by spike.
+> Gate: this model must be validated **before** implementation ([TASKS.md](./TASKS.md) Phase 4a gate). It is how the once-uphill tasks (6, 11, 12) were de-risked analytically rather than by spike (now downhill).
 > Design: [DESIGN.md](./DESIGN.md). Logs are modelled first (highest volume; the wedge to beat Loki/Grafana Cloud — [MARKET §9.1](../../otlp-as-core-protocol-plan/MARKET.md)).
 
 ## 1. Why a model before code
@@ -45,9 +45,17 @@ files_opened ≈ D · Nᴄ           # 7-day query → 7 files
 | 7-day log range — files opened | 20 160 | 7 | **~2 880×** |
 | 7-day — S3 GET requests (footers only) | ~20 160 | ~7 | ~2 880× |
 | 7-day — request $ (footers) | ~$0.008 | ~$0.000003 | — |
-| 7-day — **latency from round-trips** (≈1 ms/GET, partially parallel) | seconds–tens of s | ms | **the real win** |
+| 7-day — **latency from round-trips** (S3 first-byte ≈10–100 ms/GET; local FS sub-ms; partially parallel) | many seconds | ms | **the real win** |
 
-**Conclusion C1 — compaction is mandatory, and it's a latency argument, not a storage one.** S3 GET $ is tiny either way; the killer is **round-trips** (`files_opened`). This holds at *every* scale, even the demo. → [FR7](./DESIGN.md#fr7) is not optional.
+**Conclusion C1 — compaction is mandatory, and it's a latency argument, not a storage one.** S3 GET $ is tiny either way; the killer is **round-trips** (`files_opened`), and S3 first-byte latency is **tens of ms, not sub-ms** — 20 160 footer fetches even at 100-way parallelism ≈ 20 160/100 × ~30 ms ≈ **~6 s** just to open files. This holds at *every* scale, even the demo. → [FR7](./DESIGN.md#fr7) is not optional.
+
+### 3a. S3 request-rate limits (not just $ and latency)
+
+S3 enforces **~5 500 GET/HEAD per second and ~3 500 PUT/POST/DELETE per second _per prefix_** ([S3 performance](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html)); exceeding a prefix's rate returns **`503 SlowDown`**. The small-files problem pushes against this ceiling:
+
+- **Reads**: post-compaction a 30-day log query ≈ 30 files × a few GETs ≈ ~100 GETs; a 130-query dashboard refresh ≈ **~13 000 GETs in a ~2 s burst ≈ 6 500 GET/s** — *at the per-prefix limit*. **Pre**-compaction (thousands of files/query) it is **100×+ over** → guaranteed throttling. So compaction is also an S3-**rate** mitigation, not only latency/$.
+- **Mitigations** (all already in the design): (a) **prefix sharding** — `dt=YYYY-MM-DD/` + per-signal/subtype dirs ([FR7](./DESIGN.md#fr7)) spread load across prefixes, and S3 scales rate *per prefix*, so aggregate ceiling rises with prefix count; (b) **caching** — the query-result + per-day immutable cache ([FR5](./DESIGN.md#fr5)/[FR8](./DESIGN.md#fr8)) serve repeat refreshes with **zero** GETs (the 15 s-refresh pattern would otherwise hammer one prefix); (c) **retry with exponential backoff** on `503` (the `object_store` crate does this — configure it); (d) **bounded LIST** — LIST is paginated (1 000 keys/page) and rate-limited, so re-listing a prefix cost scales with object count → yet another compaction argument.
+- This is formalised as [NFR10](./DESIGN.md#nfr10).
 
 ## 4. Bytes scanned (the second driver) & where splitting/rollups kick in
 
@@ -61,7 +69,7 @@ bytes_scanned ≈ (stored bytes in [Q] days)                       # worst case:
 Stored bytes/day (logs) = `I / cmp` → midpoint **50 GB/day stored**, ceiling **3 TB/day stored**.
 
 - **Logs (Qᵢ ≤ 30d)**: a 30-day midpoint query worst-case scans ~1.5 TB; with `proj`≈0.3 and `sel`≈0.01–0.1 (label/time selective) → 5–150 GB scanned. DataFusion at ~1–2 GB/s/core over S3 → sub-second to seconds. **Splitting helps (parallelism + per-day cache) but logs do not need rollups** — the window is short. ✔ matches [NFR7](./DESIGN.md#nfr7).
-- **Metrics (Qᵢ 90d–2y)**: worst-case scan over 2y is infeasible (`bytes ∝ Q`). This is where **splitting + per-day immutable cache** (refresh re-reads 1 day, not 730) and **rollups** (coarse resolution cuts rows by 12×/5m, 720×/1h) become necessary. → [FR6](./DESIGN.md#fr6)/[FR8](./DESIGN.md#fr8) justified *only* for metrics.
+- **Metrics (Qᵢ 13 mo default, 2 y opt-in)**: worst-case scan over the long tail is infeasible (`bytes ∝ Q`). This is where **splitting + per-day immutable cache** (refresh re-reads 1 day, not ~395/730) and **rollups** (vs 15 s raw: 5m ≈ 20×, 1h ≈ 240×, 1d ≈ 5760×) become necessary. → [FR6](./DESIGN.md#fr6)/[FR8](./DESIGN.md#fr8) justified *only* for metrics.
 
 **Conclusion C2 — splitting/rollups are a metrics-only requirement driven by query interval, not volume.** Logs (short interval) need compaction + pushdown + bloom, not rollups.
 
@@ -73,9 +81,11 @@ Stored bytes/day (logs) = `I / cmp` → midpoint **50 GB/day stored**, ceiling *
 |---|---|---|---|
 | Stored/day (zstd 10×) | 0.1 GB | 50 GB | 3 TB |
 | Resident @30d | 3 GB | 1.5 TB | 90 TB |
-| S3 Standard $/mo | ~$0.07 | ~$33 | ~$1 900 |
+| S3 Standard $/mo | ~$0.07 | ~$35 | ~$2 070 |
 | + Glacier-IA cold tail (>Qᵢ) | — | optional | large saving (×0.04) |
-| Write PUT $/mo (raw `Nʀ`·signals·30d) | <$0.01 | ~$0.01 | ~$0.01 (file count is volume-independent) |
+| Write PUT $/mo (raw `Nʀ`·30d) | ~$0.4/signal | ~$0.4/signal | ~$0.4/signal — **volume-independent** (≈$3/mo all 7 signals; file count set by flush interval) |
+
+> **$/mo basis**: S3 Standard at a flat **$0.023/GB·mo** (first-tier, a conservative upper bound — real tiered pricing drops to $0.022/$0.021 above 50/500 TB, so the multi-PB metric figures below are ~7% high). Excludes request charges (modelled in §3) and Glacier savings. `GB = 1e9 bytes`.
 
 **Conclusion C3 — storage is cheap and comparable to Loki** (both compressed on S3; Loki chunks 70–80% + index 10–20%). Sol's edge is *not* storage price — it's (a) **SQL-queryable** open Parquet vs Loki's opaque chunks, and (b) **fewer always-on components** (see §6).
 
@@ -110,16 +120,17 @@ Driver = **active series `Kₘ`** (cardinality), not byte volume. samples/day = 
 | | Demo | Midpoint (1 M series) | Ceiling (100 M series) |
 |---|---|---|---|
 | Stored/day (Sol, ~20 B/dp) | ~0.5 GB | ~115 GB | ~11.5 TB |
-| Resident @ 2y raw | ~0.4 TB | **~84 TB** | **~8.4 PB** (impractical) |
-| AWS S3 $/mo (raw 2y) | ~$8 | ~$1 760 | ~$180 k |
-| Same in Mimir (2 B/sample) | — | ~$185 | ~$18 k |
-| Raw rows for one 2y `histogram_quantile` | — | ~4.2 T | ~420 T (infeasible) |
+| Resident — **13 mo default** | ~0.2 TB | **~46 TB** | **~4.6 PB** |
+| Resident — 2 y opt-in ceiling | ~0.4 TB | ~84 TB | ~8.4 PB (impractical) |
+| AWS S3 $/mo (raw, 13 mo default) | ~$5 | ~$1 040 | ~$105 k |
+| Same in Mimir (2 B/sample, 13 mo) | — | ~$100 | ~$10 k |
+| Raw rows for one full-range `histogram_quantile` (2 y) | — | ~4.2 T | ~420 T (infeasible) |
 
-**Conclusion M2 — metrics are the highest *query* complexity (windowed `rate`/`histogram_quantile` over billions of rows) AND storage-inefficient vs a TSDB. Both are fixed by the same lever:** the cold tail (>N days) must be served **rollup-only** ([FR6](./DESIGN.md#fr6)) — 1h rollup cuts rows ~240×, 1d ~3 600× — with raw aged out to Glacier or dropped. Splitting + immutable per-day cache ([FR8](./DESIGN.md#fr8)) handle the 15s-refresh repetition. **Sol does not beat Mimir on metric storage $; it wins on unified SQL + cross-signal + open format** — accept the trade-off, or run rollup-only retention for very-high-cardinality shops.
+**Conclusion M2 — metrics are the highest *query* complexity (windowed `rate`/`histogram_quantile` over billions of rows) AND storage-inefficient vs a TSDB. Both are fixed by the same lever:** the cold tail (beyond a configurable recent window) must be served **rollup-only** ([FR6](./DESIGN.md#fr6)) — vs 15 s raw, 1h rollup cuts rows ~240×, 1d ~5760× — with raw aged out to Glacier or dropped. This is what makes even the 13 mo default affordable and the 2 y opt-in feasible. Splitting + immutable per-day cache ([FR8](./DESIGN.md#fr8)) handle the 15s-refresh repetition. **Sol does not beat Mimir on metric storage $; it wins on unified SQL + cross-signal + open format** — accept the trade-off, or run rollup-only retention for very-high-cardinality shops.
 
 ## 8. Traces estimation
 
-Driver = **point lookup** (trace-by-id) + bounded search over a short window (`Qᵢ < 7d`). [Tempo itself stores Parquet + bloom filters](https://grafana.com/docs/tempo/latest/) — so Sol is **architecturally identical** here; parity, not a leap.
+Driver = **point lookup** (trace-by-id) + bounded search over the window (`Qᵢ 30 d default, matching Grafana Cloud; 7 d opt-in for cost`). [Tempo itself stores Parquet + bloom filters](https://grafana.com/docs/tempo/latest/) — so Sol is **architecturally identical** here; parity, not a leap.
 
 | Param | Demo | Midpoint | Ceiling |
 |---|---|---|---|
@@ -127,10 +138,11 @@ Driver = **point lookup** (trace-by-id) + bounded search over a short window (`Q
 | bytes/span (raw, Tempo ref) | ~300 | ~300 | ~300 |
 | spans/day | ~1 M | ~4.3 B | ~86 B |
 | Stored/day (Sol row, dict+zstd ~150 B) | ~0.15 GB | ~650 GB | ~13 TB |
-| Resident @ 7d | ~1 GB | ~4.5 TB | ~90 TB |
-| AWS S3 $/mo (7d) | ~$0.02 | ~$100 | ~$1 900 |
+| Resident @ 30 d (default) | ~4.5 GB | ~19.5 TB | ~390 TB |
+| AWS S3 $/mo (30 d) | ~$0.10 | ~$450 | ~$8 900 |
+| (7 d opt-in) | ~1 GB / ~$0.02 | ~4.5 TB / ~$100 | ~90 TB / ~$2 100 |
 
-**Conclusion T1 — traces are the cheapest signal to get right.** Short query interval → small resident set, **no rollups, no splitting**. The decisive lever is the **`trace_id` bloom filter** ([FR4](./DESIGN.md#fr4)) for sub-150ms point lookups (without it, trace-by-id is a full scan). TraceQL search is a pushdown scan over ≤7d with `json_extract` on attributes (cost-flagged, §9). Sol matches Tempo architecturally; the differentiator is unified SQL + cross-signal JOINs, not trace storage.
+**Conclusion T1 — traces are still the cheapest signal to get right.** At the 30 d default the resident set is ~4× the old 7 d figure but bounded; the verdict holds. **No rollups; splitting optional** (a 30 d trace search benefits from the same per-day splitting as logs, but the dominant path is the point lookup). The decisive lever is the **`trace_id` bloom filter** ([FR4](./DESIGN.md#fr4)) for sub-150ms point lookups (without it, trace-by-id is a full scan). TraceQL search is a pushdown scan over ≤30 d with `json_extract` on attributes (cost-flagged, §9). Sol matches Tempo architecturally (same Parquet + bloom, same 30 d retention); the differentiator is unified SQL + cross-signal JOINs, not trace storage.
 
 ## 9. Mapping trade-offs surfaced by the model (feeds [QUERY-MAPPING.md](./QUERY-MAPPING.md))
 
@@ -141,8 +153,9 @@ The model flags LogQL/PromQL constructs whose naive translation breaks NFR5/NFR6
 | LogQL live tail (`/tail` WS) | needs hot/unflushed data | ⛔ unsupported (hot data = [non-goal](./DESIGN.md#non-goals)) |
 | LogQL `\|~` unbounded regex | full `body` scan | ⚠️ supported, cost-flagged; pushdown `\|=` substring first |
 | LogQL query-time `json`/`logfmt` parse + high-card `sum by` | per-row parse + cardinality blowup | ⚠️ supported, bounded by `limit`/series cap |
-| PromQL `histogram_quantile` over raw 2y | UNNEST over huge scan | ✅ via rollups (FR6) + splitting (FR8); raw only for recent |
+| PromQL `histogram_quantile` over raw long-range | UNNEST over huge scan | ✅ via rollups (FR6) + splitting (FR8); raw only for recent |
 | PromQL subqueries / `predict_linear`/`holt_winters` | unbounded inner range eval | ⛔ deferred (NFR) |
+| PromQL `absent` / `absent_over_time` | needs full series catalog | ⛔ deferred (consistent with [QUERY-MAPPING §2.3](./QUERY-MAPPING.md)) |
 | Selective `{service_name=…}` | — | ✅ bloom + row-group pruning (C4) |
 
 ## 10. What this model proves (and the validation method)
@@ -159,7 +172,7 @@ The model flags LogQL/PromQL constructs whose naive translation breaks NFR5/NFR6
 | Signal | Qᵢ | Compaction | Bloom | Splitting | Rollups | Dominant cost | vs incumbent |
 |---|---|---|---|---|---|---|---|
 | **Logs** | ≤30d | **required** (C1) | **required** on `service_name` (C4) | helpful | no | round-trips + `body` scan | **beat Loki** (fewer components + SQL + open format) |
-| **Traces** | <7d | required | **on `trace_id`** (FR4) | no | no | point-lookup | **parity with Tempo** (same Parquet+bloom) |
-| **Metrics** | 90d–2y | required | — | **required** (FR8) | **required** (FR6) | windowed scan over billions of rows | **lose to Mimir on storage $**, win on SQL/unification → rollup-only cold tail |
+| **Traces** | 30d (7d opt-in) | required | **on `trace_id`** (FR4) | optional | no | point-lookup | **parity with Tempo** (same Parquet+bloom, same 30d) |
+| **Metrics** | 13mo (2y opt-in) | required | — | **required** (FR8) | **required** (FR6) | windowed scan over billions of rows | **lose to Mimir on storage $**, win on SQL/unification → rollup-only cold tail |
 
 **Net:** logs are the wedge (highest volume, clearest win); traces are easy parity; metrics are the hardest (query complexity + storage inefficiency) and need the full FR6+FR7+FR8 machinery, with rollup-only cold retention as the escape valve at high cardinality.

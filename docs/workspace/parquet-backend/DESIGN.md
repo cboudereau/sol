@@ -2,7 +2,7 @@
 
 ## Context
 
-The [parquet-multisignal](../parquet-multisignal/DESIGN.md) workspace defines how Sol writes OTLP logs, traces, and metrics as Parquet files. This workspace addresses the **read side**: how to query those Parquet files to serve Grafana dashboards via the Prometheus (PromQL), Tempo (TraceQL), and Loki (LogQL) APIs.
+The [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) workspace defines how Sol writes OTLP logs, traces, and metrics as Parquet files. This workspace addresses the **read side**: how to query those Parquet files to serve Grafana dashboards via the Prometheus (PromQL), Tempo (TraceQL), and Loki (LogQL) APIs.
 
 ### Current architecture
 
@@ -223,21 +223,21 @@ Cache expensive query results to handle dashboard refresh patterns:
 - In-memory LRU cache as default (no external dependency)
 - Optional Redis backend for shared cache across query nodes
 
-### <a id="fr6"></a>FR6 — Metric downsampling / rollups for the long tail (required for >90d)
+### <a id="fr6"></a>FR6 — Metric downsampling / rollups for the long tail
 
-Because metrics are queried over 90d–2y ([NFR7](#nfr7)), raw-resolution scans over the long tail are infeasible even with time-splitting. Serve metrics from **resolution tiers**, the query-frontend ([FR8](#fr8)) picking the tier from `(range, step)`:
+Because metrics are queried over **13 months by default (2 years opt-in)** ([NFR7](#nfr7)), raw-resolution scans over the long tail are infeasible even with time-splitting. Serve metrics from **resolution tiers**, the query-frontend ([FR8](#fr8)) picking the tier from `(range, step)`:
 - **Recent** (configurable, e.g. last N days): full-resolution raw Parquet — the correctness baseline computed in real time.
 - **Cold tail**: pre-aggregated rollups (e.g. 5m → 1h → 1d), produced by the compaction role ([FR7](#fr7)) as separate Parquet metric rows.
 - Rollups must preserve correctness for the dominant functions: store histogram **bucket counts** (not pre-computed quantiles) so `histogram_quantile` stays accurate after merge; store counter values so `rate` is recomputable across the coarser step.
 - Fall back to real-time raw computation when a rollup tier is absent.
 
-> This was previously framed as an optional ingest-time optimisation. The 2y metrics **query interval** ([NFR7](#nfr7)) makes it **required** to meet [NFR6](#nfr6) on the long tail. It does not apply to traces/logs (short query intervals).
+> This was previously framed as an optional ingest-time optimisation. The metrics **query interval** ([NFR7](#nfr7): 13 mo default, 2 y opt-in) makes it **required** to meet [NFR6](#nfr6) on the long tail — even the 13 mo default is infeasible at raw resolution for high cardinality. It does not apply to traces/logs (short query intervals).
 
 ### <a id="fr7"></a>FR7 — File layout + standalone compaction (Parquet → compacted Parquet)
 
 Bound the small-files problem (the dominant cost driver per the InfluxDB comparison) so NFR5/NFR6 hold. Two parts — a cheap write-side hint and a separate compaction component:
 
-- **Gateway hint (cheap, recommended, not sufficient):** the file sink writes under per-signal (and per-metric-subtype) directories with a time-partitioned path (`…/logs/dt=YYYY-MM-DD/*.parquet`, `…/metrics/gauge/dt=…/`, etc.) and sorts within each batch. Today the sink writes flat `…/logs/%Y-%m-%d-%H-%M-%S.parquet` per signal dir (metric subtypes share `metrics/`); the `dt=` + per-subtype layout is the proposed hint. This gives immediate day-level path pruning, but it does **not** merge the many small per-flush files, build rollups, or globally sort — so it cannot replace compaction. The gateway stays low-latency otherwise. This gives immediate day-level path pruning, but it does **not** merge the many small per-flush files, build rollups, or globally sort — so it cannot replace compaction. The gateway stays unchanged otherwise (low-latency small writes).
+- **Gateway hint (cheap, recommended, not sufficient):** the file sink writes under per-signal (and per-metric-subtype) directories with a time-partitioned path (`…/logs/dt=YYYY-MM-DD/*.parquet`, `…/metrics/gauge/dt=…/`, etc.) and sorts within each batch. Today the sink writes flat `…/logs/%Y-%m-%d-%H-%M-%S.parquet` per signal dir (metric subtypes share `metrics/`); the `dt=` + per-subtype layout is the proposed hint. This gives immediate day-level path pruning, but it does **not** merge the many small per-flush files, build rollups, or globally sort — so it cannot replace compaction. The gateway stays low-latency otherwise (small writes unchanged).
 - **Compactor component (required):** a standalone **Parquet-in → compacted-Parquet-out** component — DataFusion sort-merge, sharing the querier's schemas/catalog — running as the **singleton** compactor role ([NFR8](#nfr8)). It merges small files into few large globally-sorted files, builds metric **rollup tiers** ([FR6](#fr6)), and prunes per the configured retention policy. **Not** a distributed compactor/catalog/GC service.
 - **Sealed-day cadence:** the compactor only processes **sealed** partitions — days (or hours) older than `now − grace`. The **current** day is left as raw small files and scanned directly. One date boundary governs compaction, the immutable-cache line ([FR8](#fr8)), and tier selection.
 - **Consistency without a catalog:** the compacted output records, in its **Parquet footer key-value metadata**, a `level` and the inputs it **supersedes** (written atomically at file close). Queriers resolve by level and skip superseded inputs; coverage references input *provenance*, not an event-time range, so late data stays orthogonal. Deleting superseded inputs is GC, not correctness. See [compaction-consistency ADR](./adrs/compaction-consistency.md).
@@ -248,7 +248,7 @@ Bound the small-files problem (the dominant cost driver per the InfluxDB compari
 For long metric ranges, split a `query_range` into aligned sub-queries (default per-day, aligned to UTC midnight and `step`), execute them across the stateless querier replicas ([NFR8](#nfr8)), and merge:
 - **Per-shard immutable caching**: completed historical shards never change → cache permanently; only the in-progress shard is uncacheable. This is what makes a 2y range refreshed every 15s cheap (729 cache hits + 1 live shard) and fixes the whole-range cache-key defect.
 - **Boundary correctness**: range-vector functions (`rate`, `increase`) overlap shards by the lookback/range window and stitch; non-decomposable aggregations merge correctly across shards (`topk` = partial-topk-then-merge; `histogram_quantile` = sum bucket counts per series across shards, then compute).
-- Traces (<7d) and logs (<30d) may skip splitting — the window is short enough. Splitting is primarily a metrics concern.
+- Traces and logs (≤30d) may skip splitting — the window is short enough. Splitting is primarily a metrics concern (it remains optional for the 30d trace/log windows).
 
 ### <a id="fr9"></a>FR9 — SQL query endpoint (cross-signal, the differentiator)
 
@@ -264,7 +264,7 @@ Expose the DataFusion `SessionContext` directly as a SQL endpoint, alongside the
 
 ### <a id="nfr1"></a>NFR1 — DataFusion as the only query engine dependency
 
-Use Apache DataFusion (Rust-native) as the sole query engine. No JVM (Spark), no embedded databases (DuckDB), no external query services. DataFusion is embeddable, scales via Ballista for distributed execution, and is proven for Parquet-stored observability data (InfluxDB 3.0, GreptimeDB).
+Use Apache DataFusion (Rust-native) as the sole query engine. No JVM (Spark), no embedded databases (DuckDB), no external query services. DataFusion is embeddable and proven for Parquet-stored observability data (InfluxDB 3.0, GreptimeDB). (It *can* scale via Ballista for single-query distribution, but that is a [non-goal](#non-goals); read scaling here is by stateless querier replicas, [NFR8](#nfr8).)
 
 ### <a id="nfr2"></a>NFR2 — Grafana-compatible response formats
 
@@ -275,7 +275,7 @@ All API responses must be compatible with Grafana's data source plugins:
 
 No custom Grafana plugins — standard Prometheus, Tempo, and Loki data sources must work unchanged. The exact endpoint contracts (request params + response JSON schemas, with real bodies extracted from the pcap) are specified in [API-SPEC.md](./API-SPEC.md) — the acceptance target for the response builders.
 
-### <a id="nfr3"></a>NFR3 — Dashboard refresh latency
+### <a id="nfr3"></a>NFR3 — Dashboard refresh latency (superseded by [NFR6](#nfr6))
 
 The pcap dashboard session involves ~130 queries per refresh. Target: complete all queries within 2 seconds for a single-node deployment with data volumes typical of the demo stack (~100 events/second). Caching (FR5) is expected to bring repeat refreshes under 500ms.
 
@@ -311,7 +311,7 @@ Supersedes the latency target in NFR3 with an explicit trade-off contract:
 1. **Memory vs latency** — caches are bounded (NFR5). If a deployment wants lower latency, it raises the cache budget; the default favours co-existing with ingestion over minimum latency.
 2. **Freshness vs file quality (the flush-interval trade-off)** — three *distinct* cadences must not be conflated: the **flush interval** (~30s in the demo) sets ingest→queryable latency; the **rollup resolution** (5m/1h/1d, [FR6](#fr6)) is downsample granularity; the **compaction cadence** (sealed-day) is when files are merged. A *short* flush gives fresher data but more small files; a *long* flush gives larger files but staler data. **Compaction decouples these** — flush short to optimise freshness, compact later to optimise file size; do **not** lengthen the flush to get bigger files. Sweet spot ≈ the freshness SLA ≈ dashboard refresh (15–60s); below ~10s, tiny-file/PUT overhead outweighs the freshness gain. Because hot/unflushed data is a [non-goal](#non-goals), **Sol's freshness floor *is* the flush interval**; matching Grafana Cloud's instant freshness (Loki/Mimir ingesters serve recent data from RAM before flush; see the [InfluxDB comparison](#influxdb-30-iox--fdap-stack--the-reference-use-case)) would require a future **hot tier** — the querier also scanning an in-memory recent-events buffer.
 3. **Write-amplification vs read-latency** — compaction (FR7) spends background CPU/IO to merge small files, buying lower query latency. On the demo target it is cheap; it is configurable and can be disabled for write-heavy/low-query deployments.
-4. **Accuracy vs cost** — rollup/downsampling tiers (FR6) trade ingest/compaction CPU + storage for read-time latency on the metrics long tail. Required for 2y metrics ([NFR7](#nfr7)), not optional.
+4. **Accuracy vs cost** — rollup/downsampling tiers (FR6) trade compaction CPU + storage for read-time latency on the metrics long tail. Required for long-range metrics ([NFR7](#nfr7): 13 mo default, 2 y opt-in), not optional.
 
 ### <a id="nfr7"></a>NFR7 — Per-signal query intervals (calibrated to Grafana Cloud)
 
@@ -347,13 +347,25 @@ Mirror Grafana Cloud's query-protection limits ([Loki query-limit policies](http
 
 On breach, return a clear Grafana-compatible error (e.g. HTTP 422 with a message naming the exceeded limit), never a silent truncation. These are the read-side analogue of the ingest pipeline's rate limits, and the enforcement point for the cost/latency contract in [NFR6](#nfr6).
 
+### <a id="nfr10"></a>NFR10 — Object-store (S3) request-rate limits
+
+The backend's cost/latency budgets assume S3-compatible object storage ([NFR4](#nfr4)), which imposes hard **per-prefix request-rate limits**: ~**5 500 GET/HEAD per second** and ~**3 500 PUT/POST/DELETE per second per prefix**, returning **`503 SlowDown`** when exceeded ([S3 performance guidelines](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html)). These limits — not just $ — constrain the design (quantified in [COMPLEXITY.md §3a](./COMPLEXITY.md): a single dashboard refresh can approach the per-prefix GET ceiling, and is **100×+ over it without compaction**). Required mitigations, all already part of the design:
+
+- **Prefix sharding**: the `dt=YYYY-MM-DD/` + per-signal/subtype layout ([FR7](#fr7)) spreads requests across prefixes; S3 scales rate *per prefix*, so aggregate throughput rises with prefix count.
+- **Fewer files**: compaction ([FR7](#fr7)) cuts GETs-per-query by orders of magnitude — an S3-rate argument on top of latency.
+- **Caching**: the query-result + per-day immutable cache ([FR5](#fr5)/[FR8](#fr8)) serve repeat refreshes with zero object-store requests — without it the 15 s refresh would hammer a single hot prefix.
+- **Backoff & retry**: the querier/compactor must retry `503 SlowDown` with exponential backoff + jitter (the `object_store` crate provides this; it must be configured, not disabled).
+- **Bounded LIST**: file discovery ([datafusion-table-discovery ADR](./adrs/datafusion-table-discovery.md)) uses paginated LIST (1 000 keys/page, rate-limited); the re-list interval and per-prefix object count are bounded by compaction + the refresh interval.
+
+Local-filesystem deployments are not subject to these limits (sub-ms opens, no per-prefix cap); the constraints apply to the S3/object-store production target ([NFR8](#nfr8)).
+
 ## Non-goals
 
 - **Query/API coverage**: the **full read/query API surface** of Mimir/Loki/Tempo is targeted ([API-SPEC.md](./API-SPEC.md)), and the **full query-language surface** is mapped with explicit per-construct trade-off decisions ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) — *not* just the pcap subset. What stays out: genuinely unbounded or hot-data constructs (`predict_linear`/`holt_winters`/subqueries, `absent*`, TraceQL structural operators, TraceQL metrics, live tail) — deferred, with the [SQL endpoint (FR9)](#fr9) as the escape hatch. Ingestion and admin/ring/config endpoints are out (read-only backend).
 - **Single-query distribution (Ballista)**: splitting *one* query across nodes (intra-query parallelism) is deferred — the workload is many *small* queries, not one giant scan. **Horizontal scaling for query concurrency is NOT a non-goal** — it is required (see [NFR8](#nfr8)): the backend runs as stateless querier replicas over shared object storage, scaled behind a load balancer. The two are different axes; only Ballista-style single-query distribution is out of scope.
 - **Write-ahead log / hot data**: queries run over finalized Parquet files only. Real-time tail (last few seconds of data not yet flushed to Parquet) is out of scope — the batch flush interval defines the query freshness boundary.
 - **Multi-tenancy**: single-tenant deployment. Tenant isolation is a future concern.
-- **Alerting / recording rules engine**: FR6 covers pre-computation at ingest time. A full recording rules engine (with rule evaluation loop, alert manager integration) is out of scope.
+- **Alerting / recording rules engine**: FR6 covers pre-computation at compaction time (rollup tiers). A full recording rules engine (with rule evaluation loop, alert manager integration) is out of scope.
 
 ## Rabbit holes
 
@@ -363,11 +375,11 @@ On breach, return a clear Grafana-compatible error (e.g. HTTP 422 with a message
 
 3. **Parquet file lifecycle**: as new Parquet files are written, the query engine must discover them. **Constraint**: simple file-system / object-store re-listing, not a catalog system (Iceberg/Delta Lake). Consistency between raw and compacted files uses footer-level supersession metadata on the sealed-day boundary ([FR7](#fr7), rabbit hole 6), not a transactional catalog.
 
-6. **Read/compact consistency without a catalog**: a querier must read each datum exactly once while the compactor merges files. **Constraint**: only **sealed** partitions are compacted (never the active day); the compacted output declares in its **footer** which inputs it supersedes (+ a `level`); queriers resolve by level and skip superseded inputs. Coverage is by input provenance, not event-time range — late data is bounded and accepted (hot data is a non-goal). Do **not** attempt to mutate input files' state (Parquet footers are immutable; N-file flag flips are not atomic).
-
 4. **JSON attribute extraction performance**: every query that filters on span/metric attributes requires `json_extract` on the `attributes` column. This defeats Parquet predicate pushdown. **Constraint**: accept the performance cost for v1. Attribute promotion (materializing hot attributes as top-level columns) is a future optimization.
 
 5. **Histogram bucket unnesting**: DataFusion's `UNNEST` over JSON-parsed arrays may have performance issues for large batch sizes. **Constraint**: benchmark with realistic histogram cardinality before committing to the JSON-unnest approach. Fall back to Rust-native histogram computation if SQL is too slow.
+
+6. **Read/compact consistency without a catalog**: a querier must read each datum exactly once while the compactor merges files. **Constraint**: only **sealed** partitions are compacted (never the active day); the compacted output declares in its **footer** which inputs it supersedes (+ a `level`); queriers resolve by level and skip superseded inputs. Coverage is by input provenance, not event-time range — late data is bounded and accepted (hot data is a non-goal). Do **not** attempt to mutate input files' state (Parquet footers are immutable; N-file flag flips are not atomic).
 
 ## Design
 
@@ -477,6 +489,6 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 ## Cross-cutting Concerns
 
 - **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs. The endpoint URL changes from `http://mimir:9009` to `http://sol:9009` (or a configurable port). No custom plugins needed.
-- **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../parquet-multisignal/DESIGN.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
+- **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../../designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
 - **Observability of the query backend**: expose query latency, cache hit rate, and DataFusion execution metrics as Sol internal metrics (`sol_query_*`). These feed back into the same pipeline (Sol monitoring Sol).
 - **Service graph metrics**: the `servicegraph` transform already materializes `traces_service_graph_request_server_seconds` as `OtelMetric` events at ingest time. These flow through the pipeline into the histogram Parquet table. The query backend reads them as regular histogram metrics — no special handling needed.
