@@ -158,7 +158,7 @@ InfluxDB 3.0 is the closest published design to this workspace: **F**light + **D
 |---|---|---|
 | **Ingester** | Buffers writes in Arrow memory, flushes **sorted** Parquet at a size/time threshold | Sol's Parquet codec already writes the files — but it does **not sort** them. Sorting on low-cardinality columns is what gives InfluxDB 10–100× compression and fast pruning. |
 | **Querier** | DataFusion over Parquet; also scans **not-yet-persisted** ingester data so queries see fresh data | Sol explicitly makes hot/unflushed data a [non-goal](#non-goals) — accept flush-interval freshness, skip this complexity. |
-| **Compactor** | Merges many small flushed files into fewer large sorted/deduped files (default flush every 15 min → compacted to ≤100 MB/day-of-data files) | **This is the critical lever.** Sol flushes one small file per batch per signal → a "small-files problem". Without compaction, DataFusion must list and open hundreds of files per query — InfluxDB users hit a 432-file query limit when fragmented ([fragmentation issue](https://github.com/influxdata/influxdb/issues/26785)). |
+| **Compactor** | Merges many small flushed files into fewer large sorted/deduped files (InfluxDB default: new file ~every 15 min → compacted to ≤100 MB/day-of-data files; **InfluxDB's number, not Sol's** — Sol flushes ~30s) | **This is the critical lever.** Sol flushes one small file per batch per signal → a "small-files problem". Without compaction, DataFusion must list and open hundreds of files per query — InfluxDB users hit a 432-file query limit when fragmented ([fragmentation issue](https://github.com/influxdata/influxdb/issues/26785)). |
 | **Garbage collector** | Deletes files superseded by compaction / past retention | Sol needs simple retention pruning, not a full GC. |
 
 Two further InfluxDB facts shape Sol's cost/latency NFRs:
@@ -176,7 +176,7 @@ Two further InfluxDB facts shape Sol's cost/latency NFRs:
 | Bounded Parquet/metadata memory cache + query-result cache | **Adopt** (bounded, see [caching ADR](./adrs/query-caching-strategy.md)) | The memory⇄latency trade-off the user asked to balance. |
 | Catalog DB, distributed ingester/querier/compactor split, Apache Flight | **Skip** | Over-engineered for single-node; Grafana talks HTTP, not Flight. |
 | Deduplication / merge-on-read | **Skip** | Sol's Parquet output is append-only (no updates/upserts) → nothing to dedupe. |
-| Querier reading unpersisted hot data | **Skip** | Hot data is a [non-goal](#non-goals); flush interval defines freshness. |
+| Querier reading unpersisted hot data (ingester-memory hot tier) | **Skip (v1)** | Hot data is a [non-goal](#non-goals); **this is precisely what caps Sol's freshness at the flush interval**. Loki/Mimir queriers read recent data from ingester RAM to get instant freshness; adding such a hot tier is the documented future escape ([NFR6](#nfr6) balance #2). |
 
 ## Functional Requirements
 
@@ -309,7 +309,7 @@ Supersedes the latency target in NFR3 with an explicit trade-off contract:
 
 **The balance** (the trade-off the user must be comfortable with):
 1. **Memory vs latency** — caches are bounded (NFR5). If a deployment wants lower latency, it raises the cache budget; the default favours co-existing with ingestion over minimum latency.
-2. **Freshness vs cost** — query freshness is bounded by the flush interval and the catalog refresh interval (default 15s). Tighter freshness means more frequent re-listing (CPU) and more small files (latency). The default aligns both to the 15s dashboard refresh so no work is wasted.
+2. **Freshness vs file quality (the flush-interval trade-off)** — three *distinct* cadences must not be conflated: the **flush interval** (~30s in the demo) sets ingest→queryable latency; the **rollup resolution** (5m/1h/1d, [FR6](#fr6)) is downsample granularity; the **compaction cadence** (sealed-day) is when files are merged. A *short* flush gives fresher data but more small files; a *long* flush gives larger files but staler data. **Compaction decouples these** — flush short to optimise freshness, compact later to optimise file size; do **not** lengthen the flush to get bigger files. Sweet spot ≈ the freshness SLA ≈ dashboard refresh (15–60s); below ~10s, tiny-file/PUT overhead outweighs the freshness gain. Because hot/unflushed data is a [non-goal](#non-goals), **Sol's freshness floor *is* the flush interval**; matching Grafana Cloud's instant freshness (Loki/Mimir ingesters serve recent data from RAM before flush; see the [InfluxDB comparison](#influxdb-30-iox--fdap-stack--the-reference-use-case)) would require a future **hot tier** — the querier also scanning an in-memory recent-events buffer.
 3. **Write-amplification vs read-latency** — compaction (FR7) spends background CPU/IO to merge small files, buying lower query latency. On the demo target it is cheap; it is configurable and can be disabled for write-heavy/low-query deployments.
 4. **Accuracy vs cost** — rollup/downsampling tiers (FR6) trade ingest/compaction CPU + storage for read-time latency on the metrics long tail. Required for 2y metrics ([NFR7](#nfr7)), not optional.
 
