@@ -96,7 +96,7 @@ sinks:
   parquet_logs:
     type: file
     inputs: ["otlp.logs"]
-    path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
+    path: "/data/parquet/logs/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -107,7 +107,7 @@ sinks:
   parquet_traces:
     type: file
     inputs: ["otlp.traces"]
-    path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
+    path: "/data/parquet/traces/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -118,7 +118,7 @@ sinks:
   parquet_metrics:
     type: file
     inputs: ["promote_resource_attrs"]
-    path: "/data/parquet/metrics/%Y-%m-%d-%H-%M-%S.parquet"
+    path: "/data/parquet/metrics/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd

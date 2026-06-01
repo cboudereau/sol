@@ -528,12 +528,17 @@ classDiagram
 - `test_file_sink_sorts_batch_by_sort_key`
 - `test_demo_gateway_config_parses` — the updated `sol-gateway.yaml` parquet sinks validate
 **Verify**: `cargo test --features codecs-parquet sinks::file::`
+> **Discovery (implementation, 2026-06) — task split.** The file sink's `encode_files` returns **opaque, untagged** `Vec<Vec<u8>>` blobs (`src/sinks/file/mod.rs:664`, written via `parquet_path_with_suffix(&path, i)`). The sink therefore **cannot route blobs to per-subtype directories or sort rows without changing the shipped codec API** (`encode_files` signature + per-type sort) — contradicting this task's "sink-only, not the codec" note. Within-constitution decision (signature adjustment is allowed, but it touches the integrated write-side codec, so split + flag at the Session-1 checkpoint):
+> - **14a (done, config-only)**: dt= partitioning + per-signal dirs via strftime path templates.
+> - **14b (deferred)**: codec `encode_files` → tag each blob with signal/subtype + sort rows by (`service_name`,`name`,`time_unix_nano`); sink routes to `metrics/<subtype>/dt=…/`. Until 14b, the catalog (task 2) uses the **`metrics/` union table** ([datafusion-table-discovery ADR Option C](./adrs/datafusion-table-discovery.md)); sort is a pruning *hint* (query correctness holds without it, FR7).
+
 **Acceptance criteria**:
-- [ ] Per-signal + per-metric-subtype directories with `dt=YYYY-MM-DD/` sub-partitions
-- [ ] Rows sorted within each written file by the sort key
-- [ ] Demo `sol-gateway.yaml` updated to the new paths; existing pipeline still flushes
-**Depends on**: (none — write side; unblocks task 2's per-subtype tables)
-**Time-box**: ~60 min · **Hill**: downhill
+- [x] Per-signal directories (`logs/`, `traces/`, `metrics/`) with `dt=YYYY-MM-DD/` sub-partitions — demo `sol-gateway.yaml` paths updated (strftime templating; sink supports it)
+- [x] Demo `sol-gateway.yaml` + `parquet-query.sh` updated to the dt= layout (recursive `**` globs); pipeline flush path unchanged
+- [ ] _14b:_ Per-metric-subtype directories (needs codec blob-tagging) — deferred; metrics use the union fallback meanwhile
+- [ ] _14b:_ Rows sorted within each written file by the sort key (codec sort-on-write) — deferred
+**Depends on**: (none — write side)
+**Time-box**: ~60 min · **Hill**: 14a downhill ✅; 14b deferred (codec API change — flagged for checkpoint review)
 
 ### 15. Demo integration: sol-query service + parallel Grafana datasources + end-to-end ([NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
 **Goal**: Make the demo run Sol-as-backend **alongside** Mimir/Tempo/Loki, so Grafana renders Sol's APIs side-by-side and NFR6/NFR5/NFR10 are measured end-to-end.
