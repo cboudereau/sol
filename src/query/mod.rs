@@ -11,6 +11,7 @@ use tracing::debug;
 
 mod catalog;
 pub mod loki;
+mod udf;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::Options;

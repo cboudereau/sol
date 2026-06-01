@@ -293,7 +293,8 @@ classDiagram
 **Acceptance criteria**:
 - [x] LogQL label + line filters translate to correct SQL (`test_logql_label_matchers_to_where`, `test_logql_line_filter_to_like`, `test_logql_escapes_quotes` ✅; SQL-injection-escaped per NFR9)
 - [x] Response validates against the Loki HTTP API schema (`test_loki_query_range_response_shape`, `test_loki_response_deserializes` ✅ — streams shape per API-SPEC §2)
-- [ ] _3b:_ `GET /loki/api/v1/query_range` serves a fixture dataset (needs `json_get_str` UDF + handler + warp route)
+- [x] _3b:_ `json_get_str` serde_json UDF + `handle_query_range` handler — end-to-end fixture test green (`test_loki_handle_query_range_end_to_end`: LogQL→SQL→UDF→DataFusion→streams JSON; time bound via `CAST(time_unix_nano AS BIGINT)`)
+- [ ] _3c:_ mount `GET /loki/api/v1/query_range` on the QueryServer's warp HTTP listener — **shared warp serving infra** (used by tasks 3/4/5/7), built next; the handler logic above is what it serves
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: 3a downhill ✅; 3b downhill (warp serving + serde_json UDF)
 

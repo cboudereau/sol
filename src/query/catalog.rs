@@ -235,6 +235,7 @@ impl QueryEngine {
             .min(4); // NFR5: bound the worker pool.
         let config = SessionConfig::new().with_target_partitions(parallelism);
         let ctx = SessionContext::new_with_config(config);
+        ctx.register_udf(super::udf::json_get_str_udf());
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
         Ok(Self { ctx, catalog })
