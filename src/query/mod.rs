@@ -9,6 +9,9 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tracing::debug;
 
+mod catalog;
+pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
+
 use crate::config::query::Options;
 
 /// Handle to the running Sol query backend.
