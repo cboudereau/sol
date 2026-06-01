@@ -11,10 +11,13 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tracing::{Span, debug, error};
 
+mod cache;
 mod catalog;
 pub mod loki;
 pub mod prometheus;
 mod routes;
+pub mod telemetry;
+pub mod tempo;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::Options;

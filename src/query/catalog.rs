@@ -223,6 +223,7 @@ impl ParquetCatalog {
 pub struct QueryEngine {
     ctx: SessionContext,
     catalog: ParquetCatalog,
+    cache: super::cache::MokaQueryCache,
 }
 
 impl QueryEngine {
@@ -240,21 +241,37 @@ impl QueryEngine {
         datafusion_functions_json::register_all(&mut ctx)?;
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
-        Ok(Self { ctx, catalog })
+        Ok(Self { ctx, catalog, cache: super::cache::MokaQueryCache::new() })
     }
 
-    /// Run a SQL query, collecting all result batches.
+    /// Run a SQL query, collecting all result batches. Results are cached
+    /// (FR5/NFR6) keyed by the SQL text; a repeat query within the TTL is
+    /// served from memory without re-hitting DataFusion.
     pub async fn sql(
         &self,
         query: &str,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use super::cache::{CacheKey, QueryCache};
+        let key = CacheKey::for_sql(query);
+        if let Some(hit) = self.cache.get(&key) {
+            super::telemetry::record_cache(true);
+            return Ok((*hit).clone());
+        }
+        super::telemetry::record_cache(false);
         let df = self.ctx.sql(query).await?;
-        Ok(df.collect().await?)
+        let batches = df.collect().await?;
+        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        Ok(batches)
     }
 
-    /// Re-list storage for newly written files (called periodically by the server).
+    /// Re-list storage for newly written files (called periodically by the
+    /// server). Invalidates the query cache so freshly discovered data is
+    /// visible immediately rather than after the TTL.
     pub async fn refresh(&self) -> crate::Result<()> {
-        self.catalog.refresh(&self.ctx).await
+        use super::cache::QueryCache;
+        self.catalog.refresh(&self.ctx).await?;
+        self.cache.clear();
+        Ok(())
     }
 }
 

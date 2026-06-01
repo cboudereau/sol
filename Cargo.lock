@@ -12303,6 +12303,7 @@ dependencies = [
  "metrics-util",
  "mlua",
  "mock_instant",
+ "moka",
  "mongodb",
  "netlink-packet-core",
  "netlink-packet-sock-diag",

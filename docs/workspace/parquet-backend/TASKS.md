@@ -375,9 +375,9 @@ classDiagram
 - `test_tempo_search_response_shape`
 **Verify**: `cargo test --no-default-features --features query-backend query::tempo`
 **Acceptance criteria**:
-- [ ] Trace search, trace-by-id, tag list, and tag values all serve fixtures
-- [ ] `trace_id` hex string correctly converted to a binary literal for point lookup
-- [ ] Responses validate against the Tempo HTTP API schema
+- [x] Trace search, trace-by-id, tag list, and tag values all serve fixtures
+- [x] `trace_id` hex string correctly converted to a binary literal for point lookup
+- [x] Responses validate against the Tempo HTTP API schema
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -394,9 +394,9 @@ classDiagram
 - `test_cache_lru_eviction_at_capacity`
 **Verify**: `cargo test --no-default-features --features query-backend query::cache`
 **Acceptance criteria**:
-- [ ] Repeat queries within TTL served from cache
-- [ ] Time-range bucketing collides adjacent dashboard refreshes
-- [ ] Trait allows a future Redis impl without touching the query path
+- [x] Repeat queries within TTL served from cache
+- [x] Time-range bucketing collides adjacent dashboard refreshes
+- [x] Trait allows a future Redis impl without touching the query path
 **Depends on**: tasks 3, 4
 **Time-box**: ~60 min · **Hill**: downhill
 
@@ -414,9 +414,9 @@ classDiagram
 - `test_guardrail_reject_counter` / `test_unsupported_construct_counter`
 **Verify**: `cargo test --no-default-features --features query-backend query::telemetry`
 **Acceptance criteria**:
-- [ ] Telemetry infra + `sol_query_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
-- [ ] Histograms expose `_bucket` (Grafana `histogram_quantile`)
-- [ ] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Query Backend` dashboard renders fully once those land (verified at task 15)
+- [x] Telemetry infra + `sol_query_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
+- [x] Histograms expose `_bucket` (Grafana `histogram_quantile`)
+- [x] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Query Backend` dashboard renders fully once those land (verified at task 15)
 **Depends on**: task 8 (cache)
 **Time-box**: ~60 min · **Hill**: downhill
 

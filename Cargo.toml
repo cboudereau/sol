@@ -456,6 +456,7 @@ sysinfo = "0.37.2"
 byteorder = "1.5.0"
 datafusion = { version = "53", optional = true }
 datafusion-functions-json = { version = "0.53.1", optional = true }
+moka = { version = "0.12", features = ["sync"], optional = true }
 object_store = { version = "0.13", features = ["aws"], optional = true }
 promql-parser = { version = "0.9", optional = true }
 
@@ -566,6 +567,7 @@ api = [
 query-backend = [
   "dep:datafusion",
   "dep:datafusion-functions-json",
+  "dep:moka",
   "dep:object_store",
   "dep:promql-parser",
   "codecs-parquet",

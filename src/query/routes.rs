@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use warp::{Filter, Reply, filters::BoxedFilter};
 
-use super::{QueryEngine, loki, prometheus};
+use super::{QueryEngine, loki, prometheus, tempo};
 
 /// Inject the shared `QueryEngine` into a filter chain.
 fn with_engine(
@@ -128,6 +128,50 @@ async fn prom_series(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, 
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct TempoSearchParams {
+    #[serde(default)]
+    q: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn tempo_search(
+    params: TempoSearchParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    // Tempo `start`/`end` are unix seconds; default to all-time.
+    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
+    let end_ns = parse_time_ns(&params.end);
+    let traceql = params.q.unwrap_or_else(|| "{}".to_string());
+    let limit = params.limit.unwrap_or(20);
+    match tempo::handle_search(&engine, &traceql, start_ns, end_ns, limit).await {
+        Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn tempo_trace_by_id(
+    id: String,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match tempo::handle_trace_by_id(&engine, &id).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn tempo_tag_values(
+    tag: String,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match tempo::handle_tag_values(&engine, &tag).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
 /// Build the query backend's warp routes against a shared engine.
 pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
     let loki = warp::path!("loki" / "api" / "v1" / "query_range")
@@ -162,8 +206,39 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
 
     let prom_series = warp::path!("prometheus" / "api" / "v1" / "series")
         .and(warp::get().or(warp::post()).unify())
-        .and(with_engine(engine))
+        .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_series);
+
+    // Tempo: TraceQL search, trace-by-id, tag discovery.
+    let tempo_search = warp::path!("api" / "search")
+        .and(warp::get())
+        .and(warp::query::<TempoSearchParams>())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_search);
+    let tempo_trace_v2 = warp::path!("api" / "v2" / "traces" / String)
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_trace_by_id);
+    let tempo_trace_v1 = warp::path!("api" / "traces" / String)
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_trace_by_id);
+    let tempo_tags_v2 = warp::path!("api" / "v2" / "search" / "tags")
+        .and(warp::get())
+        .map(|| warp::reply::json(&tempo::tags_response()));
+    let tempo_tags_v1 = warp::path!("api" / "search" / "tags")
+        .and(warp::get())
+        .map(|| warp::reply::json(&tempo::tags_flat_response()));
+    let tempo_tag_values_v2 = warp::path!("api" / "v2" / "search" / "tag" / String / "values")
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_tag_values);
+    let tempo_tag_values_v1 = warp::path!("api" / "search" / "tag" / String / "values")
+        .and(warp::get())
+        .and(with_engine(engine))
+        .and_then(tempo_tag_values);
+    // Tempo data-source health probe.
+    let tempo_echo = warp::path!("api" / "echo").and(warp::get()).map(|| "echo");
 
     // Discovery probe so Grafana data sources "Save & Test" passes.
     let ready = warp::path!("ready")
@@ -174,6 +249,14 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .or(prom_range)
         .or(prom_label_values)
         .or(prom_series)
+        .or(tempo_search)
+        .or(tempo_trace_v2)
+        .or(tempo_trace_v1)
+        .or(tempo_tags_v2)
+        .or(tempo_tags_v1)
+        .or(tempo_tag_values_v2)
+        .or(tempo_tag_values_v1)
+        .or(tempo_echo)
         .or(ready)
         .boxed()
 }
