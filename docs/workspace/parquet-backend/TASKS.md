@@ -163,6 +163,8 @@ classDiagram
 | `QueryGuardrails` | [NFR9](./DESIGN.md#nfr9) | per-signal max range (traces/logs 30d, metrics 13mo / 2y opt-in) + max bytes scanned (~1GB) + max concurrent/series; reject at validation |
 | `SqlEndpoint` | [FR9](./DESIGN.md#fr9) | raw DataFusion SQL + cross-signal JOINs (`trace_id`; `service_name`+time); HTTP+JSON v1 |
 | `ObjectStore` retry/backoff + paginated LIST | [NFR10](./DESIGN.md#nfr10) | `503 SlowDown` exponential backoff+jitter; prefix-sharded reads; bounded LIST (shared across querier + compactor) |
+| File-sink layout (write-side) | [FR7](./DESIGN.md#fr7) | per-signal/subtype dirs + `dt=` partition + sort-on-write (`src/sinks/file` + demo config) — task 14 |
+| Demo artifacts (compose + Grafana provisioning) | [NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6) | `sol-query` service, parallel `Sol-*` datasources, backend-switch dashboard variable — task 15 (no Rust types) |
 
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
@@ -467,13 +469,57 @@ classDiagram
 **Depends on**: task 1 (guardrails config), task 2 (catalog)
 **Time-box**: ~60 min · **Hill**: downhill
 
+### 14. Write-side file-sink layout: per-subtype dirs + `dt=` partition + sort ([FR7](./DESIGN.md#fr7))
+**Goal**: Make the gateway write the layout the query backend needs — per-signal/subtype directories, day-partitioned, locally sorted — so tables register cleanly and day-pruning works. **This is a write-side change (`src/sinks/file` + demo `sol-gateway.yaml`), the documented cross-workspace dependency.**
+**Types**: file-sink path templating (extends the existing `file` sink batch path)
+**Constraints**:
+- [ADR: datafusion-table-discovery](./adrs/datafusion-table-discovery.md) — emit `…/logs/dt=YYYY-MM-DD/`, `…/traces/dt=…/`, `…/metrics/gauge/dt=…/`, `…/metrics/sum/dt=…/`, … (one dir per signal/subtype) so each maps to a clean `ListingTable`
+- [ADR: file-layout-and-compaction](./adrs/file-layout-and-compaction-strategy.md) — sort within each batch by `service_name`, `name`, `time_unix_nano` (write-side hint)
+- Path template uses event-batch flush time for `dt=`; late/cross-midnight data is bounded (compaction re-buckets) — do not block the gateway to sort globally
+- The codec already emits one blob per subtype ([parquet-multisignal](../../designs/20260527_parquet-multisignal.md)); this task only changes the **sink path/sort**, not the codec
+**Tests**:
+- `test_file_sink_writes_per_subtype_dt_partition` — a mixed batch lands in the right `…/<signal|subtype>/dt=YYYY-MM-DD/` dirs
+- `test_file_sink_sorts_batch_by_sort_key`
+- `test_demo_gateway_config_parses` — the updated `sol-gateway.yaml` parquet sinks validate
+**Verify**: `cargo test --features codecs-parquet sinks::file::`
+**Acceptance criteria**:
+- [ ] Per-signal + per-metric-subtype directories with `dt=YYYY-MM-DD/` sub-partitions
+- [ ] Rows sorted within each written file by the sort key
+- [ ] Demo `sol-gateway.yaml` updated to the new paths; existing pipeline still flushes
+**Depends on**: (none — write side; unblocks task 2's per-subtype tables)
+**Time-box**: ~60 min · **Hill**: downhill
+
+### 15. Demo integration: sol-query service + parallel Grafana datasources + end-to-end ([NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
+**Goal**: Make the demo run Sol-as-backend **alongside** Mimir/Tempo/Loki, so Grafana renders Sol's APIs side-by-side and NFR6/NFR5/NFR10 are measured end-to-end.
+**Types**: demo deployment artifacts (compose + Grafana provisioning) — no Rust types
+**Constraints**:
+- **Dual-write (forward to both backends)**: the demo `sol-gateway.yaml` already fans every signal to **both** the real backends (OTLP → Mimir/Tempo/Loki) **and** Parquet (→ Sol). This task **preserves** that — both backends receive identical data so dashboards compare like-for-like. compose feeds both paths from the one gateway; no data is moved off the real backends.
+- A `sol-query` compose service: the locally-built Sol image (`SOL_IMAGE`), `--config sol-query.yaml` (a `query:` block over `parquet-data:/data/parquet:ro`), `internal_metrics` `service.name: sol/query` (so the dashboard `$instance` resolves)
+- **Parallel** Grafana datasources: add `Sol-Prometheus` / `Sol-Tempo` / `Sol-Loki` (uids `sol-prometheus`…) pointing at `http://sol-query:9009/prometheus`, `:/`, `:/loki` — **keep** the existing Mimir/Tempo/Loki for side-by-side ([NFR2](./DESIGN.md#nfr2))
+- **Backend-switch dashboard variable**: every demo dashboard exposes a `$datasource` (per signal type) template variable so a user flips **Sol ↔ Grafana backend** from the dropdown with no panel edits. `SOL Pipeline.json` + `SOL Query Backend.json` already use it; audit the rest (`Node Exporter`, app dashboards) and add the variable where missing, repointing panel `datasource` to `${datasource}`. For multi-signal dashboards use one variable per type (`$prom_ds`, `$loki_ds`, `$tempo_ds`).
+- Provision the existing `SOL Query Backend.json` dashboard; API contracts satisfy [API-SPEC.md](./API-SPEC.md) so stock datasources work unmodified
+**Tests** (integration/manual, not unit):
+- `test_sol_query_yaml_parses` — the demo query config validates
+- `test_dashboards_use_datasource_variable` — every demo dashboard panel references `${...}` datasource var, not a hard-coded uid
+- Grafana "Save & Test" passes for all three `Sol-*` datasources (discovery probes, [API-SPEC §4](./API-SPEC.md))
+- A panel returns matching results from `Sol-Prometheus` vs `Mimir` for a `rate()`/`histogram_quantile` query (parity)
+**Verify**: `SOL_IMAGE=sol:query-backend docker compose --profile parquet up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Query Backend` dashboard renders; NFR6 latency measured
+**Acceptance criteria**:
+- [ ] Gateway forwards every signal to **both** real backends and Parquet (same data queryable via Mimir and Sol-Prometheus)
+- [ ] Three `Sol-*` datasources provisioned in parallel; all pass Save & Test
+- [ ] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits
+- [ ] A metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured
+**Depends on**: tasks 3, 4, 5, 6, 7 (APIs), 9 (telemetry), 10 (compaction), 14 (layout)
+**Time-box**: ~90 min · **Hill**: downhill
+
 ## Sessions
 
-### Session 1 — Foundation: feature, server, catalog (~2.75H)
-Tasks: 1, 2
+### Session 1 — Foundation: feature, server, catalog, write-layout (~3.25H)
+Tasks: 1, 14, 2
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::catalog && cargo build`
+**Checkpoint**: `cargo test --no-default-features --features query-backend query::catalog && cargo test --features codecs-parquet sinks::file:: && cargo build`
 **Commit point**: yes — commit after checkpoint passes
+> Front-load in task 1: pin a DataFusion version compatible with the codec's `parquet 56.2.0` and confirm it reads the codec output (TIMESTAMP(NANOS), `FIXED_LEN_BYTE_ARRAY` trace_id, JSON-string columns); confirm `promql-parser` is available. These are the only "could-surprise" items — resolve them before building on DataFusion.
 
 ### Session 2 — Loki + Prometheus instant (~3H)
 Tasks: 3, 4
@@ -508,12 +554,20 @@ Tasks: 11, 12
 **Commit point**: yes
 > Both tasks are now `downhill` — merge + rollup correctness rules are fixed in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) and [QUERY-MAPPING.md](./QUERY-MAPPING.md), necessity quantified in [COMPLEXITY.md](./COMPLEXITY.md). End of session: verify a synthetic long-range (13mo–2y) metric range meets NFR6 with splitting + rollups vs. raw scan (the measured-constant step).
 
+### Session 7 — Demo integration & end-to-end (capstone) (~1.5H)
+Tasks: 15
+**Skills**: `rust-software-engineer`, `verify`
+**Checkpoint**: `SOL_IMAGE=sol:query-backend docker compose --profile parquet up` → Grafana: all `Sol-*` datasources pass Save & Test; flip a dashboard's datasource var Sol↔Mimir (both render); `SOL Query Backend` dashboard renders; a `rate()` panel matches Mimir within tolerance
+**Commit point**: yes
+> Capstone: the gateway dual-writes (real backends + Parquet), Sol serves the three APIs over the shared Parquet, and Grafana switches between Sol and the reference backends via the datasource variable — proving NFR2 parity and measuring NFR6/NFR5/NFR10 end-to-end.
+
 ## Quality gates (post-session review)
 - [ ] Acceptance criteria: all green above
 - [ ] Code review ([code-review](../../../.claude) skill): implementation matches [DESIGN.md](./DESIGN.md) intent and the eight ADRs
 - [ ] Code organization: `src/query/` module structure, one submodule per API + translator + catalog + cache + compaction + frontend; roles (querier/frontend/compactor) cleanly separated
 - [ ] Read scalability ([NFR8](./DESIGN.md#nfr8)): queriers hold no authoritative state; compactor is a strict singleton; cache works behind the shared-backend trait
 - [ ] Object-store limits ([NFR10](./DESIGN.md#nfr10)): `503 SlowDown` retried with backoff; reads prefix-sharded; LIST paginated; a dashboard refresh stays under the per-prefix GET ceiling post-compaction (verified against the demo/synthetic run)
+- [ ] Demo end-to-end ([NFR2](./DESIGN.md#nfr2), tasks 14–15): gateway dual-writes to both backends; `sol-query` serves the shared Parquet; parallel `Sol-*` datasources + backend-switch dashboard variable; a metric query matches Mimir via Sol within tolerance
 - [ ] Code quality: translators are pure functions (AST → SQL), no duplication across the three response builders
 - [ ] Security review: no SQL injection from label/tag values into generated SQL (parameterize or escape); dependency audit on the new `datafusion`/`object_store`/`promql-parser` trees; no secrets in storage config logging
 - [ ] Observability: `sol_query_*` metrics present; query latency + cache hit rate visible

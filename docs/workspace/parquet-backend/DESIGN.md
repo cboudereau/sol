@@ -488,7 +488,8 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 ## Cross-cutting Concerns
 
-- **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs. The endpoint URL changes from `http://mimir:9009` to `http://sol:9009` (or a configurable port). No custom plugins needed.
+- **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs — only the URL changes (e.g. `http://sol-query:9009/prometheus`). No custom plugins.
+- **Demo integration (parallel, dual-write)**: in `demo/otel-sol-grafana-dotnet/`, the gateway **dual-writes** every signal — OTLP → Mimir/Tempo/Loki **and** Parquet → Sol — so both backends hold identical data. A `sol-query` service serves the APIs over the shared `parquet-data` volume. Grafana gets **parallel** `Sol-Prometheus`/`Sol-Tempo`/`Sol-Loki` datasources next to the existing ones, and every demo dashboard uses a **datasource template variable** so a user flips Sol ↔ Grafana backend from a dropdown (side-by-side parity + latency comparison). Tasked in [TASKS.md](./TASKS.md) tasks 14–15.
 - **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../../designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
 - **Observability of the query backend (Sol monitoring Sol)**: the backend emits internal metrics that flow through the same pipeline (`internal_metrics` source → Mimir), exactly like the existing `sol_component_*` / `sol_tail_sampling_*` metrics. The catalog (dashboarded in `demo/.../grafana/.../Sol/SOL Query Backend.json`):
 
