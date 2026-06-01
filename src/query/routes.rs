@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use warp::{Filter, Reply, filters::BoxedFilter};
 
-use super::{QueryEngine, loki, prometheus, tempo};
+use super::{QueryEngine, loki, prometheus, sql, tempo};
 
 /// Inject the shared `QueryEngine` into a filter chain.
 fn with_engine(
@@ -172,6 +172,32 @@ async fn tempo_tag_values(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SqlBody {
+    #[serde(alias = "query")]
+    sql: String,
+}
+
+async fn sql_query(
+    body: SqlBody,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match sql::handle_sql(&engine, &body.sql).await {
+        Ok(value) => Ok(warp::reply::json(&value).into_response()),
+        Err(error) => {
+            let msg = error.to_string();
+            // NFR9 guardrail breaches surface as HTTP 422.
+            let status = if msg.starts_with("guardrail:") {
+                warp::http::StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                warp::http::StatusCode::BAD_REQUEST
+            };
+            let payload = serde_json::json!({"status": "error", "error": msg});
+            Ok(warp::reply::with_status(warp::reply::json(&payload), status).into_response())
+        }
+    }
+}
+
 /// Build the query backend's warp routes against a shared engine.
 pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
     let loki = warp::path!("loki" / "api" / "v1" / "query_range")
@@ -235,8 +261,15 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and_then(tempo_tag_values);
     let tempo_tag_values_v1 = warp::path!("api" / "search" / "tag" / String / "values")
         .and(warp::get())
-        .and(with_engine(engine))
+        .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_tag_values);
+
+    // Cross-signal SQL endpoint (FR9). Accepts JSON `{"sql"|"query": "…"}`.
+    let sql = warp::path!("api" / "v1" / "sql")
+        .and(warp::post())
+        .and(warp::body::json::<SqlBody>())
+        .and(with_engine(engine))
+        .and_then(sql_query);
     // Tempo data-source health probe.
     let tempo_echo = warp::path!("api" / "echo").and(warp::get()).map(|| "echo");
 
@@ -257,6 +290,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .or(tempo_tag_values_v2)
         .or(tempo_tag_values_v1)
         .or(tempo_echo)
+        .or(sql)
         .or(ready)
         .boxed()
 }

@@ -187,27 +187,7 @@ impl Compactor {
             .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
             .collect();
         let final_path = dir.join(format!("{COMPACTED_PREFIX}{date}.parquet"));
-        let staging = dir.join(format!(".{COMPACTED_PREFIX}{date}.parquet.tmp"));
-
-        {
-            let file = fs::File::create(&staging)?;
-            let mut writer = ArrowWriter::try_new(file, schema, None)?;
-            for batch in &sorted {
-                writer.write(batch)?;
-            }
-            writer.append_key_value_metadata(KeyValue::new(LEVEL_KEY.into(), Some("1".into())));
-            writer.append_key_value_metadata(KeyValue::new(
-                SUPERSEDES_KEY.into(),
-                Some(input_names.join(",")),
-            ));
-            writer
-                .append_key_value_metadata(KeyValue::new(RESOLUTION_KEY.into(), Some("raw".into())));
-            writer.close()?;
-        }
-        // rename is atomic on a local fs: the compacted file appears whole or not
-        // at all. A crash mid-write leaves only the hidden `.tmp`, never a
-        // visible partial compacted file.
-        fs::rename(&staging, &final_path)?;
+        write_with_provenance(&final_path, schema, &sorted, 1, &input_names.join(","), "raw")?;
         Ok(Some((raw_inputs.len(), rows)))
     }
 
@@ -232,8 +212,44 @@ impl Compactor {
     }
 }
 
+/// Atomically write `batches` to `path` with compaction footer provenance:
+/// stages to a hidden `.tmp` sibling and renames into place, so a crash
+/// mid-write never leaves a visible partial file.
+pub(crate) fn write_with_provenance(
+    path: &Path,
+    schema: Arc<datafusion::arrow::datatypes::Schema>,
+    batches: &[RecordBatch],
+    level: i32,
+    supersedes: &str,
+    resolution: &str,
+) -> crate::Result<()> {
+    let staging = path.with_file_name(format!(
+        ".{}.tmp",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("compacted.parquet")
+    ));
+    {
+        let file = fs::File::create(&staging)?;
+        let mut writer = ArrowWriter::try_new(file, schema, None)?;
+        for batch in batches {
+            writer.write(batch)?;
+        }
+        writer.append_key_value_metadata(KeyValue::new(LEVEL_KEY.into(), Some(level.to_string())));
+        writer.append_key_value_metadata(KeyValue::new(
+            SUPERSEDES_KEY.into(),
+            Some(supersedes.to_string()),
+        ));
+        writer.append_key_value_metadata(KeyValue::new(
+            RESOLUTION_KEY.into(),
+            Some(resolution.to_string()),
+        ));
+        writer.close()?;
+    }
+    fs::rename(&staging, path)?;
+    Ok(())
+}
+
 /// Read all record batches from a Parquet file.
-fn read_batches(path: &Path) -> crate::Result<Vec<RecordBatch>> {
+pub(crate) fn read_batches(path: &Path) -> crate::Result<Vec<RecordBatch>> {
     let file = fs::File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
     let mut out = Vec::new();

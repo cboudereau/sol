@@ -15,6 +15,8 @@ mod cache;
 mod catalog;
 pub mod compaction;
 pub mod frontend;
+pub mod rollup;
+pub mod sql;
 pub mod loki;
 pub mod prometheus;
 mod routes;

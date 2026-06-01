@@ -224,6 +224,8 @@ pub struct QueryEngine {
     ctx: SessionContext,
     catalog: ParquetCatalog,
     cache: super::cache::MokaQueryCache,
+    storage_root: std::path::PathBuf,
+    max_scan_bytes: u64,
 }
 
 impl QueryEngine {
@@ -241,7 +243,23 @@ impl QueryEngine {
         datafusion_functions_json::register_all(&mut ctx)?;
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
-        Ok(Self { ctx, catalog, cache: super::cache::MokaQueryCache::new() })
+        Ok(Self {
+            ctx,
+            catalog,
+            cache: super::cache::MokaQueryCache::new(),
+            storage_root: opts.storage.path.clone(),
+            max_scan_bytes: opts.guardrails.max_bytes_scanned,
+        })
+    }
+
+    /// Storage root (`<root>/<signal>/dt=…`), for scan-size guardrail estimates.
+    pub fn storage_root(&self) -> &std::path::Path {
+        &self.storage_root
+    }
+
+    /// Configured maximum bytes a single query may scan (NFR9).
+    pub fn max_scan_bytes(&self) -> u64 {
+        self.max_scan_bytes
     }
 
     /// Run a SQL query, collecting all result batches. Results are cached
