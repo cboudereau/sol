@@ -2,7 +2,7 @@
 
 Design: [DESIGN.md](./DESIGN.md)
 
-ADRs: [process integration](./adrs/query-backend-process-integration.md) · [DataFusion table discovery](./adrs/datafusion-table-discovery.md) · [PromQL parsing](./adrs/promql-parsing-strategy.md) · [query caching](./adrs/query-caching-strategy.md)
+ADRs (8): [process integration](./adrs/query-backend-process-integration.md) · [DataFusion table discovery](./adrs/datafusion-table-discovery.md) · [file layout & compaction](./adrs/file-layout-and-compaction-strategy.md) · [deployment roles & read scaling](./adrs/deployment-roles-and-read-scaling.md) · [long-range metrics](./adrs/long-range-metrics-strategy.md) · [compaction consistency](./adrs/compaction-consistency.md) · [PromQL parsing](./adrs/promql-parsing-strategy.md) · [query caching](./adrs/query-caching-strategy.md)
 
 ## Analysis
 
@@ -139,6 +139,49 @@ classDiagram
     PromqlTranslator ..> PromResponse
     TraceqlTranslator ..> TempoResponse
     LogqlTranslator ..> LokiResponse
+
+    class QueryGuardrails {
+        +check(query, TimeRange) Result
+    }
+    class SqlEndpoint {
+        <<fn>>
+        +sql(str) Result~Json~
+    }
+    class QueryFrontend {
+        +split(query_range) Vec~Shard~
+        +merge(Vec~ShardResult~) Result
+        +select_tier(range, step) RollupTier
+    }
+    class RollupTier {
+        <<enum>>
+        Raw
+        FiveMin
+        OneHour
+        OneDay
+    }
+    class Compactor {
+        <<singleton role>>
+        +seal_partition(dt) Result
+        +run()
+    }
+    class DeploymentRole {
+        <<enum>>
+        Querier
+        QueryFrontend
+        Compactor
+    }
+    class CacheBudget {
+        +u64 max_bytes
+    }
+    QueryServer ..> QueryGuardrails
+    QueryServer ..> SqlEndpoint
+    QueryFrontend ..> QueryEngine
+    QueryFrontend ..> RollupTier
+    QueryFrontend ..> QueryCache
+    Compactor ..> SignalTable
+    Compactor ..> RollupTier
+    QueryCache *-- CacheBudget
+    QueryServer ..> DeploymentRole
 ```
 
 ### Requirement traceability
@@ -183,6 +226,7 @@ classDiagram
 | `QueryFrontend::split` | `metric query_range → Vec<shard>` | Per-day shards aligned to UTC midnight + `step`; range-vector shards overlap by lookback window |
 | `QueryFrontend::merge` | `Vec<shard result> → result` | `topk` = partial-then-merge; `histogram_quantile` = sum bucket counts across shards then compute; never average per-shard quantiles |
 | `QueryFrontend::select_tier` | `(range, step) → RollupTier` | Recent → raw resolution; long tail → coarsest rollup whose resolution ≤ step; fall back to raw if tier absent |
+| `QueryGuardrails::check` | `query × TimeRange → Result<(), Rejected>` | Reject if range > per-signal max (traces/logs 30d, metrics 13mo/2y opt-in) or planned scan > max-bytes; clear Grafana-compatible error, never silent truncation ([NFR9](./DESIGN.md#nfr9)) |
 
 ## Tasks
 
@@ -354,10 +398,10 @@ classDiagram
 **Time-box**: ~60 min · **Hill**: downhill
 
 ### 9. Query backend observability ([NFR6](./DESIGN.md#nfr6), [NFR5](./DESIGN.md#nfr5), [NFR9](./DESIGN.md#nfr9), [NFR10](./DESIGN.md#nfr10), cross-cutting)
-**Goal**: Emit the `sol_query_*` / `sol_objectstore_*` / `sol_compactor_*` metric catalog so Sol monitors its own backend (and the `SOL Query Backend` Grafana dashboard renders).
+**Goal**: Stand up the telemetry infrastructure and emit the **querier-side** metrics so Sol monitors its own backend. The compactor (`sol_compactor_*`) and frontend metrics are emitted by **their own tasks** (10, 11) via this infra — so this task does not depend on them.
 **Types**: internal_events for the query backend (follow `src/internal_events/` conventions)
 **Constraints**:
-- Emit the full catalog in [DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns): request count/duration/bytes-scanned/files-opened histograms, cache hit/miss + memory, guardrail rejects, unsupported-construct counter, object-store requests/throttles/latency, compactor runs/duration/file-reduction/rollup/retention/lag.
+- Emit the querier-side catalog from [DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns): `sol_query_*` (request count/duration/bytes-scanned/files-opened histograms, cache hit/miss + memory, guardrail rejects, unsupported-construct counter) and `sol_objectstore_*` (requests/throttles/latency). `sol_compactor_*` is registered here but **emitted by task 10**; frontend shard metrics **by task 11**.
 - Reuse Sol's internal-event/metric registration; `sol_query_*` / `sol_objectstore_*` / `sol_compactor_*` namespaces; flow through `internal_metrics` → pipeline (Sol monitoring Sol)
 - Histograms use Prometheus `_bucket`/`_sum`/`_count` so `histogram_quantile` works in the dashboard
 **Tests**:
@@ -365,13 +409,12 @@ classDiagram
 - `test_cache_hit_miss_counters`
 - `test_objectstore_throttle_counter` (503 path)
 - `test_guardrail_reject_counter` / `test_unsupported_construct_counter`
-- `test_compactor_file_reduction_metrics`
 **Verify**: `cargo test --no-default-features --features query-backend query::telemetry`
 **Acceptance criteria**:
-- [ ] Full catalog emitted under the three namespaces; labels match the dashboard queries
+- [ ] Telemetry infra + `sol_query_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
 - [ ] Histograms expose `_bucket` (Grafana `histogram_quantile`)
-- [ ] The `SOL Query Backend` dashboard renders against a live run (verify step)
-**Depends on**: task 8 (cache), task 10 (compactor metrics), task 11 (frontend/shard-cache)
+- [ ] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Query Backend` dashboard renders fully once those land (verified at task 15)
+**Depends on**: task 8 (cache)
 **Time-box**: ~60 min · **Hill**: downhill
 
 ### 10. Standalone compactor: sealed-day merge + footer provenance + retention ([FR7](./DESIGN.md#fr7), [NFR5](./DESIGN.md#nfr5), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
@@ -399,7 +442,8 @@ classDiagram
 - [ ] Staging→finalize is atomic; aborted runs leave no partial compacted file
 - [ ] Fewer, globally-sorted files; idempotent; gateway unchanged
 - [ ] Retention GC honours the configured per-signal policy
-**Depends on**: task 2 (catalog + `resolve_files`), task 8 (cache)
+- [ ] Emits `sol_compactor_*` metrics (runs/duration/files-input/files-output/rollup-rows/retention-deleted/lag) via the task-9 telemetry infra
+**Depends on**: task 2 (catalog + `resolve_files`), task 8 (cache), task 9 (telemetry infra)
 **Time-box**: ~90 min · **Hill**: downhill
 
 ### 11. Query-frontend: time-range splitting + merge + per-shard immutable cache ([FR8](./DESIGN.md#fr8), [NFR8](./DESIGN.md#nfr8), [NFR6](./DESIGN.md#nfr6))
@@ -421,7 +465,8 @@ classDiagram
 - [ ] Long range split into aligned shards; results match the unsplit query (rate, topk, histogram_quantile)
 - [ ] Historical shards served from cache on refresh; only the in-progress shard recomputed
 - [ ] Traces/logs short queries bypass splitting
-**Depends on**: tasks 5, 6, 8
+- [ ] Emits frontend metrics (split count, shard-cache hit/miss) via the task-9 telemetry infra
+**Depends on**: tasks 5, 6, 8, 9 (telemetry infra)
 **Time-box**: ~90 min · **Hill**: **downhill** — merge algorithm specified in [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md) (overlap-by-lookback; topk partial-then-merge; sum-buckets-then-quantile); cache-immutability validated in [COMPLEXITY.md §4](./COMPLEXITY.md)
 
 ### 12. Metric rollup tiers (downsampling) ([FR6](./DESIGN.md#fr6), [NFR6](./DESIGN.md#nfr6), [NFR7](./DESIGN.md#nfr7))
@@ -534,25 +579,26 @@ Tasks: 5, 6
 **Commit point**: yes
 > Task 6 is now `downhill` (approach fixed by [QUERY-MAPPING.md §2.3](./QUERY-MAPPING.md) + Rust-native fallback). The UNNEST cost-constant is the one thing measured during the task; if it exceeds budget, take the documented fallback — no plan change.
 
-### Session 4 — Tempo + caching + observability + SQL endpoint (~3.5H)
-Tasks: 7, 8, 9, 13
+### Session 4 — Tempo + caching + observability (~3.5H)
+Tasks: 7, 8, 9
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query:: && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --no-default-features --features query-backend query::tempo query::cache query::telemetry && cargo clippy --no-default-features --features query-backend -- -D warnings`
 **Commit point**: yes
+> Task 9 stands up the telemetry infra + querier-side metrics; the compactor/frontend metrics are emitted by tasks 10/11 (built on this infra), so 9 lands before them.
 
-### Session 5 — File layout, time-partitioning & compaction (~2H)
-Tasks: 10
-**Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::compaction && cargo clippy --no-default-features --features query-backend -- -D warnings`
-**Commit point**: yes
-> End of session: run the `verify` skill — measure NFR6 latency + NFR5 memory/CPU **before vs after** compaction on the demo data.
-
-### Session 6 — Long-range metrics: splitting + rollups (~3H)
-Tasks: 11, 12
+### Session 5 — Compaction + query-frontend splitting (~3H)
+Tasks: 10, 11
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::frontend query::rollup && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --no-default-features --features query-backend query::compaction query::frontend && cargo clippy --no-default-features --features query-backend -- -D warnings`
 **Commit point**: yes
-> Both tasks are now `downhill` — merge + rollup correctness rules are fixed in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) and [QUERY-MAPPING.md](./QUERY-MAPPING.md), necessity quantified in [COMPLEXITY.md](./COMPLEXITY.md). End of session: verify a synthetic long-range (13mo–2y) metric range meets NFR6 with splitting + rollups vs. raw scan (the measured-constant step).
+> Both `downhill`: compaction consistency fixed in the [compaction-consistency ADR](./adrs/compaction-consistency.md); frontend merge rules in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md). End of session: `verify` — measure NFR6 latency + NFR5 memory **before vs after** compaction on the demo data.
+
+### Session 6 — Rollups + SQL endpoint (~2.5H)
+Tasks: 12, 13
+**Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
+**Checkpoint**: `cargo test --no-default-features --features query-backend query::rollup query::sql && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Commit point**: yes
+> Rollup necessity + row-reduction quantified in [COMPLEXITY.md §7](./COMPLEXITY.md). End of session: verify a synthetic long-range (13mo–2y) metric range meets NFR6 via splitting + rollups vs. raw scan (the measured-constant step).
 
 ### Session 7 — Demo integration & end-to-end (capstone) (~1.5H)
 Tasks: 15
