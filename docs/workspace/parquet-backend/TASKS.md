@@ -440,12 +440,12 @@ classDiagram
 - `test_retention_gc_deletes_past_policy` — configurable TTL, not the query-interval numbers
 **Verify**: `cargo test --no-default-features --features query-backend query::compaction`
 **Acceptance criteria**:
-- [ ] Only sealed partitions compacted; active day scanned raw
-- [ ] Compacted footer carries `level` + `supersedes`; querier resolves by level and reads each datum exactly once
-- [ ] Staging→finalize is atomic; aborted runs leave no partial compacted file
-- [ ] Fewer, globally-sorted files; idempotent; gateway unchanged
-- [ ] Retention GC honours the configured per-signal policy
-- [ ] Emits `sol_compactor_*` metrics (runs/duration/files-input/files-output/rollup-rows/retention-deleted/lag) via the task-9 telemetry infra
+- [x] Only sealed partitions compacted; active day scanned raw
+- [x] Compacted footer carries `level` + `supersedes`; querier resolves by level and reads each datum exactly once
+- [x] Staging→finalize is atomic; aborted runs leave no partial compacted file
+- [x] Fewer, globally-sorted files; idempotent; gateway unchanged
+- [x] Retention GC honours the configured per-signal policy
+- [x] Emits `sol_compactor_*` metrics (runs/duration/files-input/files-output/rollup-rows/retention-deleted/lag) via the task-9 telemetry infra
 **Depends on**: task 2 (catalog + `resolve_files`), task 8 (cache), task 9 (telemetry infra)
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -465,10 +465,10 @@ classDiagram
 - `test_historical_shard_cached_permanently` — re-query advancing `end`: only the live shard misses
 **Verify**: `cargo test --no-default-features --features query-backend query::frontend`
 **Acceptance criteria**:
-- [ ] Long range split into aligned shards; results match the unsplit query (rate, topk, histogram_quantile)
-- [ ] Historical shards served from cache on refresh; only the in-progress shard recomputed
-- [ ] Traces/logs short queries bypass splitting
-- [ ] Emits frontend metrics (split count, shard-cache hit/miss) via the task-9 telemetry infra
+- [x] Long range split into aligned shards; results match the unsplit query (rate, topk, histogram_quantile)
+- [x] Historical shards served from cache on refresh; only the in-progress shard recomputed
+- [x] Traces/logs short queries bypass splitting
+- [x] Emits frontend metrics (split count, shard-cache hit/miss) via the task-9 telemetry infra
 **Depends on**: tasks 5, 6, 8, 9 (telemetry infra)
 **Time-box**: ~90 min · **Hill**: **downhill** — merge algorithm specified in [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md) (overlap-by-lookback; topk partial-then-merge; sum-buckets-then-quantile); cache-immutability validated in [COMPLEXITY.md §4](./COMPLEXITY.md)
 

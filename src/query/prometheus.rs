@@ -588,7 +588,7 @@ fn histogram_quantile_parts(expr: &Expr) -> Option<(f64, &VectorSelector)> {
 /// `bounds` are the `explicit_bounds` (length n); `counts` are the per-bucket
 /// `bucket_counts` (length n+1, last is the `+Inf` overflow bucket). Returns
 /// `None` for an empty histogram (no panic, no division by zero).
-fn histogram_quantile(phi: f64, counts: &[f64], bounds: &[f64]) -> Option<f64> {
+pub(crate) fn histogram_quantile(phi: f64, counts: &[f64], bounds: &[f64]) -> Option<f64> {
     let total: f64 = counts.iter().sum();
     if total <= 0.0 || counts.is_empty() {
         return None;

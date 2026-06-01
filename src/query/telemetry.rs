@@ -80,6 +80,38 @@ pub fn record_unsupported(lang: &str, construct: &str) {
         .increment(1);
 }
 
+/// Record a compaction run (task 10): input/output file counts, rows merged,
+/// and wall-clock duration.
+pub fn record_compaction(files_input: u64, files_output: u64, rows: u64, duration: Duration) {
+    counter!("sol_compactor_files_input_total").increment(files_input);
+    counter!("sol_compactor_files_output_total").increment(files_output);
+    counter!("sol_compactor_rollup_rows_total").increment(rows);
+    histogram!("sol_compactor_duration_seconds").record(duration.as_secs_f64());
+}
+
+/// Record retention GC deletions.
+pub fn record_retention_deleted(files: u64) {
+    counter!("sol_compactor_retention_deleted_total").increment(files);
+}
+
+/// Set the compactor lag (seconds behind the active partition boundary).
+pub fn set_compactor_lag(seconds: f64) {
+    gauge!("sol_compactor_lag_seconds").set(seconds);
+}
+
+/// Record a query-frontend split (task 11): one split, into `shards` shards.
+#[allow(clippy::cast_precision_loss)]
+pub fn record_shard_split(shards: u64) {
+    counter!("sol_query_shard_splits_total").increment(1);
+    histogram!("sol_query_shards_per_query").record(shards as f64);
+}
+
+/// Record a per-shard cache lookup outcome (`result=hit|miss`).
+pub fn record_shard_cache(hit: bool) {
+    let result = if hit { "hit" } else { "miss" };
+    counter!("sol_query_shard_cache_requests_total", "result" => result).increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

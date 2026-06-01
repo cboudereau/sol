@@ -13,6 +13,8 @@ use tracing::{Span, debug, error};
 
 mod cache;
 mod catalog;
+pub mod compaction;
+pub mod frontend;
 pub mod loki;
 pub mod prometheus;
 mod routes;
