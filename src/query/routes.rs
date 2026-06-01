@@ -89,6 +89,28 @@ async fn prom_instant(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PromRangeParams {
+    query: String,
+    start: Option<String>,
+    end: Option<String>,
+    #[allow(dead_code)]
+    step: Option<String>,
+}
+
+async fn prom_range(
+    params: PromRangeParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    // start defaults to 0 (not "now"), end to now/latest.
+    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
+    let end_ns = parse_time_ns(&params.end);
+    match prometheus::handle_range(&engine, &params.query, start_ns, end_ns).await {
+        Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
 async fn prom_label_values(
     label: String,
     engine: Arc<QueryEngine>,
@@ -124,6 +146,15 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_instant);
 
+    let prom_range_params = warp::get()
+        .and(warp::query::<PromRangeParams>())
+        .or(warp::post().and(warp::body::form::<PromRangeParams>()))
+        .unify();
+    let prom_range = warp::path!("prometheus" / "api" / "v1" / "query_range")
+        .and(prom_range_params)
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(prom_range);
+
     let prom_label_values = warp::path!("prometheus" / "api" / "v1" / "label" / String / "values")
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
@@ -140,6 +171,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .map(|| warp::reply::with_status("ready", warp::http::StatusCode::OK));
 
     loki.or(prom_query)
+        .or(prom_range)
         .or(prom_label_values)
         .or(prom_series)
         .or(ready)

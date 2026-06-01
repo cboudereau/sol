@@ -337,9 +337,9 @@ classDiagram
 - `test_prom_matrix_response_shape`
 **Verify**: `cargo test --no-default-features --features query-backend query::prometheus::range`
 **Acceptance criteria**:
-- [ ] `rate`, `sum by`, `topk`, `max_over_time` produce correct values on fixtures
-- [ ] Counter resets handled per ADR
-- [ ] Matrix response validates against the Prometheus API schema
+- [x] `rate`, `sum by`, `topk`, `max_over_time` produce correct values on fixtures
+- [x] Counter resets handled per ADR
+- [x] Matrix response validates against the Prometheus API schema
 **Depends on**: task 4
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -354,8 +354,8 @@ classDiagram
 - `test_histogram_quantile_handles_empty_buckets`
 **Verify**: `cargo test --no-default-features --features query-backend query::prometheus::histogram`
 **Acceptance criteria**:
-- [ ] p50/p95/p99 computed within tolerance on a fixture histogram
-- [ ] Empty/zero-count buckets do not panic or divide by zero
+- [x] p50/p95/p99 computed within tolerance on a fixture histogram
+- [x] Empty/zero-count buckets do not panic or divide by zero
 **Depends on**: task 5
 **Time-box**: ~90 min · **Hill**: **downhill** — approach settled by [QUERY-MAPPING.md §2.3](./QUERY-MAPPING.md) (CTE+UNNEST) with the Rust-native fallback as the documented escape ([COMPLEXITY.md §10](./COMPLEXITY.md)); only UNNEST cost-constant is measured during the task
 
