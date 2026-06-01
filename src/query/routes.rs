@@ -9,13 +9,13 @@ use std::sync::Arc;
 use serde::Deserialize;
 use warp::{Filter, Reply, filters::BoxedFilter};
 
-use super::{QueryEngine, loki};
+use super::{QueryEngine, loki, prometheus};
 
 /// Inject the shared `QueryEngine` into a filter chain.
 fn with_engine(
     engine: Arc<QueryEngine>,
 ) -> impl Filter<Extract = (Arc<QueryEngine>,), Error = Infallible> + Clone {
-    warp::any().map(move || engine.clone())
+    warp::any().map(move || Arc::clone(&engine))
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,20 +52,98 @@ async fn loki_query_range(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PromInstantParams {
+    query: String,
+    time: Option<String>,
+}
+
+/// Parse a Prometheus `time` (unix seconds, possibly fractional) to nanoseconds.
+/// Absent/unparseable means "now" → the latest sample (`i64::MAX`).
+fn parse_time_ns(s: &Option<String>) -> i64 {
+    s.as_ref()
+        .and_then(|v| v.parse::<f64>().ok())
+        // Prometheus `time` is unix seconds; truncation to ns is intentional.
+        .map(|secs| {
+            #[allow(clippy::cast_possible_truncation)]
+            let ns = (secs * 1_000_000_000.0) as i64;
+            ns
+        })
+        .unwrap_or(i64::MAX)
+}
+
+fn error_response(error: impl std::fmt::Display) -> warp::reply::Response {
+    let body = serde_json::json!({"status": "error", "error": error.to_string()});
+    warp::reply::with_status(warp::reply::json(&body), warp::http::StatusCode::BAD_REQUEST)
+        .into_response()
+}
+
+async fn prom_instant(
+    params: PromInstantParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    let time_ns = parse_time_ns(&params.time);
+    match prometheus::handle_instant(&engine, &params.query, time_ns).await {
+        Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn prom_label_values(
+    label: String,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match prometheus::handle_label_values(&engine, &label).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn prom_series(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
+    match prometheus::handle_series(&engine).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
 /// Build the query backend's warp routes against a shared engine.
 pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
     let loki = warp::path!("loki" / "api" / "v1" / "query_range")
         .and(warp::get())
         .and(warp::query::<LokiQueryParams>())
-        .and(with_engine(engine))
+        .and(with_engine(Arc::clone(&engine)))
         .and_then(loki_query_range);
+
+    // Prometheus instant query — accept params from GET query string or POST form.
+    let prom_params = warp::get()
+        .and(warp::query::<PromInstantParams>())
+        .or(warp::post().and(warp::body::form::<PromInstantParams>()))
+        .unify();
+    let prom_query = warp::path!("prometheus" / "api" / "v1" / "query")
+        .and(prom_params)
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(prom_instant);
+
+    let prom_label_values = warp::path!("prometheus" / "api" / "v1" / "label" / String / "values")
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(prom_label_values);
+
+    let prom_series = warp::path!("prometheus" / "api" / "v1" / "series")
+        .and(warp::get().or(warp::post()).unify())
+        .and(with_engine(engine))
+        .and_then(prom_series);
 
     // Discovery probe so Grafana data sources "Save & Test" passes.
     let ready = warp::path!("ready")
         .and(warp::get())
         .map(|| warp::reply::with_status("ready", warp::http::StatusCode::OK));
 
-    loki.or(ready).boxed()
+    loki.or(prom_query)
+        .or(prom_label_values)
+        .or(prom_series)
+        .or(ready)
+        .boxed()
 }
 
 #[cfg(test)]

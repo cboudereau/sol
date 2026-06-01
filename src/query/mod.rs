@@ -13,8 +13,8 @@ use tracing::{Span, debug, error};
 
 mod catalog;
 pub mod loki;
+pub mod prometheus;
 mod routes;
-mod udf;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::Options;
@@ -55,7 +55,7 @@ impl Server {
                     return;
                 }
             };
-            let routes = routes::make_routes(engine.clone());
+            let routes = routes::make_routes(Arc::clone(&engine));
             debug!(message = "Sol query backend serving.", %addr);
 
             let mut refresh =

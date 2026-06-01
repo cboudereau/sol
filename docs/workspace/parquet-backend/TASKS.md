@@ -312,12 +312,12 @@ classDiagram
 - `test_promql_unsupported_fn_returns_error` — e.g. `predict_linear(...)` → `UnsupportedFn`
 - `test_label_values_distinct` / `test_series_existence`
 - `test_prom_vector_response_shape`
-**Verify**: `cargo test --no-default-features --features query-backend query::prometheus::instant`
+**Verify**: `cargo test --features query-backend query::prometheus`
 **Acceptance criteria**:
-- [ ] Gauge instant queries return correct latest values
-- [ ] `label/:name/values` and `series` return distinct results
-- [ ] Unsupported PromQL functions return a clear error, never a panic
-- [ ] Vector response validates against the Prometheus API schema
+- [x] Gauge instant queries return correct latest values
+- [x] `label/:name/values` and `series` return distinct results
+- [x] Unsupported PromQL functions return a clear error, never a panic
+- [x] Vector response validates against the Prometheus API schema
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -577,7 +577,7 @@ Tasks: 1, 14, 2
 ### Session 2 — Loki + Prometheus instant (~3H)
 Tasks: 3, 4
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::loki query::prometheus::instant && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --features query-backend query:: && cargo clippy --features query-backend -- -D warnings` (cargo test takes a single filter; `--no-default-features` omitted — query-backend composes with defaults)
 **Commit point**: yes
 
 ### Session 3 — Prometheus range + histogram_quantile (~3H)

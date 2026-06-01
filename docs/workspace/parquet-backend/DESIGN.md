@@ -266,6 +266,8 @@ Expose the DataFusion `SessionContext` directly as a SQL endpoint, alongside the
 
 Use Apache DataFusion (Rust-native) as the sole query engine. No JVM (Spark), no embedded databases (DuckDB), no external query services. DataFusion is embeddable and proven for Parquet-stored observability data (InfluxDB 3.0, GreptimeDB). (It *can* scale via Ballista for single-query distribution, but that is a [non-goal](#non-goals); read scaling here is by stateless querier replicas, [NFR8](#nfr8).)
 
+**DataFusion extension crates from its own ecosystem are in scope** (they extend the engine, they do not replace it): `datafusion-functions-json` provides the JSON attribute extraction DataFusion core lacks ([JSON extraction ADR](./adrs/json-attribute-extraction.md)). The pinned set is datafusion / datafusion-functions-json / object_store / promql-parser.
+
 ### <a id="nfr2"></a>NFR2 — Grafana-compatible response formats
 
 All API responses must be compatible with Grafana's data source plugins:
@@ -375,7 +377,7 @@ Local-filesystem deployments are not subject to these limits (sub-ms opens, no p
 
 3. **Parquet file lifecycle**: as new Parquet files are written, the query engine must discover them. **Constraint**: simple file-system / object-store re-listing, not a catalog system (Iceberg/Delta Lake). Consistency between raw and compacted files uses footer-level supersession metadata on the sealed-day boundary ([FR7](#fr7), rabbit hole 6), not a transactional catalog.
 
-4. **JSON attribute extraction performance**: every query that filters on span/metric attributes requires `json_extract` on the `attributes` column. This defeats Parquet predicate pushdown. **Constraint**: accept the performance cost for v1. Attribute promotion (materializing hot attributes as top-level columns) is a future optimization.
+4. **JSON attribute extraction performance**: every query that filters on span/metric attributes requires `json_extract` on the `attributes` column. This defeats Parquet predicate pushdown. **Constraint**: accept the performance cost for v1, using the `datafusion-functions-json` extension ([JSON extraction ADR](./adrs/json-attribute-extraction.md)) — its `jiter`-backed lazy parser is materially cheaper than full `serde_json` document parsing, but it still parses per row. **State of the art (deferred — would supersede the JSON-string design, own ADR):** stop storing attributes as a JSON string at all. Two industry approaches: (a) **ClickHouse `JSON`/`Object` columns** auto-materialise frequently-seen keys into real *subcolumns* on write, so `attributes.host` reads as a native column (O(1) columnar, no per-row parse) — the InfluxDB 3 / GreptimeDB equivalent is promoting tags to top-level columns; (b) the **Parquet/Arrow `VARIANT` type + shredding spec** (Spark 4, 2024–25 Arrow/Parquet) stores semi-structured data in a binary, partially-columnarised form with the same effect. Sol's "attribute promotion" (materialising hot attributes as top-level Parquet columns at compaction time) is the pragmatic on-ramp to (a) and the recommended future optimisation.
 
 5. **Histogram bucket unnesting**: DataFusion's `UNNEST` over JSON-parsed arrays may have performance issues for large batch sizes. **Constraint**: benchmark with realistic histogram cardinality before committing to the JSON-unnest approach. Fall back to Rust-native histogram computation if SQL is too slow.
 
@@ -478,6 +480,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 - [Compaction consistency](./adrs/compaction-consistency.md) — standalone Parquet→Parquet compactor, sealed-day cadence, footer supersession metadata (no catalog)
 - [PromQL parsing strategy](./adrs/promql-parsing-strategy.md)
 - [Query caching strategy](./adrs/query-caching-strategy.md)
+- [JSON attribute extraction](./adrs/json-attribute-extraction.md) — `datafusion-functions-json` extension over a hand-rolled UDF; attribute-promotion / Variant as the deferred SOTA (rabbit hole #4)
 
 **Analysis artifacts (Phase 4a gate, before implementation):**
 - [COMPLEXITY.md](./COMPLEXITY.md) — cost/complexity model (logs/metrics/traces) at demo / midpoint / ceiling vs AWS pricing; validates compaction/rollups/splitting and the beat-Loki / parity-Tempo / lose-to-Mimir-on-storage verdicts.

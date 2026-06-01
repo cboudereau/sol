@@ -455,6 +455,7 @@ mlua = { version = "0.10.5", default-features = false, features = ["lua54", "sen
 sysinfo = "0.37.2"
 byteorder = "1.5.0"
 datafusion = { version = "53", optional = true }
+datafusion-functions-json = { version = "0.53.1", optional = true }
 object_store = { version = "0.13", features = ["aws"], optional = true }
 promql-parser = { version = "0.9", optional = true }
 
@@ -564,6 +565,7 @@ api = [
 # Gates src/query/ and src/config/query.rs. See docs/workspace/parquet-backend/.
 query-backend = [
   "dep:datafusion",
+  "dep:datafusion-functions-json",
   "dep:object_store",
   "dep:promql-parser",
   "codecs-parquet",

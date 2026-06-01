@@ -2,9 +2,9 @@
 //!
 //! Covers the pcap subset (label matchers `=`/`!=`/`=~`/`!~`, line filters
 //! `|=`/`!=`/`|~`/`!~`) per [QUERY-MAPPING.md](../../../docs/workspace/parquet-backend/QUERY-MAPPING.md).
-//! Non-promoted labels use `json_get_str(<col>, '<key>')` — a Sol UDF backed by
-//! `serde_json` (registered by the engine in task 3b); DataFusion core has no
-//! built-in JSON extraction and we do not add a new crate for it.
+//! Non-promoted labels use `json_get_str(<col>, '<key>')` from the
+//! `datafusion-functions-json` extension (registered by the engine — ADR 0039);
+//! DataFusion core has no built-in JSON extraction.
 
 use std::collections::BTreeMap;
 
@@ -203,7 +203,7 @@ pub async fn handle_query_range(
     use datafusion::arrow::datatypes::TimestampNanosecondType;
 
     let sql = translate_query_range(query, start_ns, end_ns, limit, forward)
-        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e))?;
+        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
     let batches = engine.sql(&sql).await?;
 
     let mut rows: Vec<(String, i64, String)> = Vec::new();

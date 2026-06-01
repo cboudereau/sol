@@ -234,8 +234,10 @@ impl QueryEngine {
             .unwrap_or(4)
             .min(4); // NFR5: bound the worker pool.
         let config = SessionConfig::new().with_target_partitions(parallelism);
-        let ctx = SessionContext::new_with_config(config);
-        ctx.register_udf(super::udf::json_get_str_udf());
+        let mut ctx = SessionContext::new_with_config(config);
+        // JSON extraction over the `attributes` string column (ADR 0039):
+        // registers `json_get_str`/`json_get_*`, `->`/`->>`, `json_contains`, …
+        datafusion_functions_json::register_all(&mut ctx)?;
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
         Ok(Self { ctx, catalog })
