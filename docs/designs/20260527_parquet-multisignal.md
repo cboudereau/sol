@@ -1,31 +1,10 @@
 # Parquet Multisignal — Design Doc
 
-> Implemented in `932f31077`, `2d2683600`, `8a0bd6e82`. Native column writers for all OTLP signal types — **no `arrow`/`serde_arrow`** in the `parquet` feature (the earlier Arrow path was removed; see [ADR 0040](../adrs/0040-parquet-writing-strategy.md)). The `arrow` crate remains only for the separate ClickHouse ArrowStream codec.
+> **Status: implemented** (`932f31077`, `2d2683600`, `8a0bd6e82`) — this doc now serves as the **schema reference** for the Parquet write side. Native column writers for all OTLP signal types; **no `arrow`/`serde_arrow`** in the `parquet` feature (the earlier Arrow path was removed; see [ADR 0040](../adrs/0040-parquet-writing-strategy.md)). The `arrow` crate remains only for the separate ClickHouse ArrowStream codec.
 
 ## Context
 
-The Parquet codec originally encoded only OTLP logs (via an Arrow/`serde_arrow` path, since removed). Sol's `Event` enum has three variants — `Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)` — and the codec must handle all three to be a complete OTLP-to-Parquet pipeline. This doc records the rewrite that did so with native column writers.
-
-### Current implementation problem
-
-The log implementation uses `arrow` + `serde_arrow` as an intermediary:
-
-```
-OtelLog → as_map() → ObjectMap → serde_arrow → Arrow RecordBatch → ArrowWriter → Parquet
-```
-
-This path has structural problems:
-- **serde_arrow round-trip**: serializes to a dynamic ObjectMap, then deserializes into Arrow arrays with type inference — requiring `cast_with_options` corrections after the fact
-- **as_map() dependency**: flattens proto fields into a dynamic key-value map, losing type safety. `OtelMetric` has no `as_map()`, making this path impossible for metrics
-- **arrow dependency**: the `arrow` crate is a large intermediary that is not needed — the `parquet` crate (v56) provides a native column writer API that writes Parquet files directly from typed data
-
-The `parquet` crate's `SerializedFileWriter` + `SerializedColumnWriter` API writes Parquet files column-by-column from typed slices (`&[i64]`, `&[ByteArray]`, etc.) with explicit definition levels for nullability. This path is:
-
-```
-Proto struct fields → Vec<T> per column → SerializedColumnWriter → Parquet bytes
-```
-
-This approach works uniformly for all signal types, has no intermediary, and provides compile-time type safety.
+The Parquet codec originally encoded only OTLP logs via an `arrow` + `serde_arrow` intermediary (`OtelLog → as_map() → ObjectMap → serde_arrow → RecordBatch → ArrowWriter`), which lost type safety and had no path for metrics (`OtelMetric` has no `as_map()`). It was **replaced** with direct native column writing — `proto struct fields → Vec<T> per column → SerializedColumnWriter → Parquet bytes` — which works uniformly across Sol's three `Event` variants (`Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)`) with compile-time type safety and no intermediary. The schemas it produces are documented below.
 
 ### State of the Art
 
@@ -53,25 +32,24 @@ Reference implementations that define the state of the art:
 | **Duration for traces** | OTAP and otlp2parquet store computed `duration_nanos` instead of raw `end_time_unix_nano` |
 | **Exemplars** | JSON string column |
 
-## Functional Requirements
+## Requirements (as implemented)
 
-### <a id="fr1"></a>FR1 — Native Parquet column writing (replace Arrow intermediary)
+> Recorded as the original FR/NFR numbering; phrased as the implemented behaviour.
 
-Replace the current log encoding path (`ObjectMap → serde_arrow → RecordBatch → ArrowWriter`) with direct column writing using the `parquet` crate's native API (`SerializedFileWriter` + `SerializedColumnWriter`).
+### <a id="fr1"></a>FR1 — Native Parquet column writing
 
-This removes the `arrow` and `serde_arrow` dependencies from the `parquet` feature. The encoding path for ALL signal types becomes:
+Encoding for all signal types uses direct column writing via the `parquet` crate's native API (`SerializedFileWriter` + `SerializedColumnWriter`) — no `arrow`/`serde_arrow` intermediary. The path for every signal type is:
 
 1. Extract column vectors from proto structs (e.g., `Vec<ByteArray>` for string columns, `Vec<i64>` for timestamps)
 2. Compute definition levels (`Vec<i16>`) for nullable columns (0 = null, 1 = present)
 3. Write each column using the typed `ColumnWriter` variant (`ByteArrayColumnWriter`, `Int64ColumnWriter`, etc.)
 4. Close the row group and file writer to produce a complete Parquet file
 
-### <a id="fr2"></a>FR2 — Log schema and encoding (rewrite)
+### <a id="fr2"></a>FR2 — Log schema and encoding
 
-Rewrite the existing log encoding to use native column writers. Update the schema:
-- Promote `service.name` from resource attributes to a top-level `service_name` column
-- Add `event_name` column (added to OTLP LogRecord proto)
-- Extract fields directly from `OtelLog`'s proto (`record`, `resource`, `scope`) — no `as_map()` needed
+Logs are encoded with native column writers from `OtelLog`'s proto (`record`, `resource`, `scope`) — no `as_map()`. The schema:
+- Promotes `service.name` from resource attributes to a top-level `service_name` column
+- Includes an `event_name` column (OTLP LogRecord proto)
 
 ### <a id="fr3"></a>FR3 — Trace schema and encoding
 
@@ -111,11 +89,9 @@ Extract common resource/scope column writing into shared helpers usable across a
 
 ## Non-Functional Requirements
 
-### <a id="nfr1"></a>NFR1 — Remove `arrow` and `serde_arrow` from parquet feature
+### <a id="nfr1"></a>NFR1 — No `arrow`/`serde_arrow` in the parquet feature
 
-The `parquet` feature must depend only on `dep:parquet` (with compression features: `snap`, `flate2`, `zstd`). The `arrow` and `serde_arrow` crates are not needed for writing Parquet files and must be removed from the `parquet` feature's dependency list.
-
-The `arrow` feature (for ClickHouse ArrowStream codec) remains independent and unchanged.
+The `parquet` feature depends only on `dep:parquet` (compression features `snap`, `flate2`, `zstd`); `arrow` and `serde_arrow` were removed from it. The separate `arrow` feature (ClickHouse ArrowStream codec) is independent and unchanged.
 
 ### <a id="nfr2"></a>NFR2 — Queryable output
 
@@ -135,15 +111,12 @@ All schemas share the same resource/scope column block. `service_name` is always
 - **Attribute promotion beyond service.name**: Tempo promotes HTTP method/status/URL. This is configurable and out of scope for the initial implementation. `service.name` is the only universally agreed-upon promotion.
 - **Arrow as intermediary**: the `parquet` crate's native column writer API is sufficient. Using Arrow `RecordBatch` as an intermediary adds complexity and dependencies without benefit for the write path.
 
-## Rabbit holes
+## Implementation notes (resolved during build)
 
-1. **Parquet native writer API learning curve**: The `SerializedFileWriter` + `SerializedColumnWriter` API is lower-level than `ArrowWriter`. Each column must be written separately with explicit definition levels. **Constraint**: build a thin helper (`write_parquet_file`) that encapsulates the file/row-group/column lifecycle. Test with logs first before extending to traces and metrics.
-
-2. **Mixed-signal batches**: If a sink sends a `Vec<Event>` with logs and traces mixed, the serializer must handle this. **Constraint**: decide in ADR (reject vs. split).
-
-3. **Timestamp logical types**: Native Parquet timestamps use `INT64` physical type with `TIMESTAMP(NANOS, isAdjustedToUTC=true)` logical type. **Constraint**: verify that DuckDB, Athena, and Spark correctly interpret these as timestamps with a spike test.
-
-4. **FixedLenByteArray for trace_id/span_id**: The native writer requires `FixedLenByteArray` values to be exactly the declared length (16 bytes for trace_id, 8 for span_id). Proto fields are `bytes` which may be empty. **Constraint**: use zero-filled arrays for empty IDs; document this in the schema.
+1. **Native writer API**: `SerializedFileWriter` + `SerializedColumnWriter` is lower-level than `ArrowWriter` — each column is written separately with explicit definition levels. Resolved with a thin `write_parquet_file` helper encapsulating the file/row-group/column lifecycle.
+2. **Mixed-signal batches**: handled by grouping events by signal type / metric subtype and emitting one Parquet blob per group — see [ADR 0041](../adrs/0041-mixed-signal-batch-handling.md).
+3. **Timestamp logical types**: `INT64` physical + `TIMESTAMP(NANOS, isAdjustedToUTC=true)` logical, so query engines interpret them as timestamps.
+4. **FixedLenByteArray for trace_id/span_id**: empty proto `bytes` are zero-filled to the declared length (16 for `trace_id`, 8 for `span_id`/`parent_span_id`).
 
 ## Design
 
