@@ -289,12 +289,13 @@ classDiagram
 - `test_loki_query_range_response_shape` — handler returns valid `streams` JSON for a fixture
 - `test_loki_response_deserializes_as_grafana_expects` — round-trips through the Loki response schema
 **Verify**: `cargo test --no-default-features --features query-backend query::loki`
+> **Discovery (2026-06): JSON extraction + task split.** DataFusion core has **no built-in `json_extract`** for the JSON-string `attributes`/`resource_attributes` columns. Rather than add `datafusion-functions-json` (a new dependency — outside-constitution), non-promoted labels translate to **`json_get_str(<col>, '<key>')`, a Sol scalar UDF backed by `serde_json`** (already in the tree) — within-constitution (helper using existing deps). Applies to all attribute filtering (logs/metrics/traces). Split: **3a** translator + response (done); **3b** the `json_get_str` UDF registration + Loki handler + the shared warp HTTP route (the QueryServer skeleton needs warp serving, shared by tasks 3/4/5/7).
 **Acceptance criteria**:
-- [ ] `GET /loki/api/v1/query_range` serves a fixture dataset
-- [ ] LogQL label + line filters translate to correct SQL
-- [ ] Response validates against the Loki HTTP API schema
+- [x] LogQL label + line filters translate to correct SQL (`test_logql_label_matchers_to_where`, `test_logql_line_filter_to_like`, `test_logql_escapes_quotes` ✅; SQL-injection-escaped per NFR9)
+- [x] Response validates against the Loki HTTP API schema (`test_loki_query_range_response_shape`, `test_loki_response_deserializes` ✅ — streams shape per API-SPEC §2)
+- [ ] _3b:_ `GET /loki/api/v1/query_range` serves a fixture dataset (needs `json_get_str` UDF + handler + warp route)
 **Depends on**: task 2
-**Time-box**: ~90 min · **Hill**: downhill
+**Time-box**: ~90 min · **Hill**: 3a downhill ✅; 3b downhill (warp serving + serde_json UDF)
 
 ### 4. Prometheus instant queries: gauge + label/series discovery ([FR1](./DESIGN.md#fr1), [NFR2](./DESIGN.md#nfr2))
 **Goal**: `POST /prometheus/api/v1/query`, `GET /prometheus/api/v1/label/:name/values`, `GET /prometheus/api/v1/series` for the simple (gauge instant + discovery) tier.

@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use tracing::debug;
 
 mod catalog;
+pub mod loki;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::Options;
