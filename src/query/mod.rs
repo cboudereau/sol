@@ -4,13 +4,16 @@
 //! Gated behind the `query-backend` feature; absent from default builds.
 
 use std::net::TcpListener;
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tracing::{Span, debug, error};
 
 mod catalog;
 pub mod loki;
+mod routes;
 mod udf;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
@@ -27,9 +30,10 @@ pub struct Server {
 impl Server {
     /// Bind and spawn the query backend HTTP server on `opts.address`.
     ///
-    /// Skeleton: binds the listener and holds it until shutdown. The
-    /// Prometheus/Tempo/Loki/SQL routers + DataFusion catalog are layered in by
-    /// tasks 2–7 and 13. Mirrors [`crate::api::Server::start`].
+    /// Builds the [`QueryEngine`] (catalog over the configured Parquet storage),
+    /// mounts the warp routes ([`routes::make_routes`]), serves over a manual
+    /// hyper accept loop (mirroring [`crate::api::Server`]), and periodically
+    /// refreshes the catalog. Gracefully shuts down when dropped.
     pub fn start(opts: &Options, handle: &Handle) -> crate::Result<Self> {
         let (_shutdown, rx) = oneshot::channel::<()>();
         let _guard = handle.enter();
@@ -38,25 +42,55 @@ impl Server {
         let std_listener = TcpListener::bind(addr)?;
         std_listener.set_nonblocking(true)?;
 
+        let opts = opts.clone();
+        let span = Span::current();
         handle.spawn(async move {
-            let _listener = tokio::net::TcpListener::from_std(std_listener)
+            let listener = tokio::net::TcpListener::from_std(std_listener)
                 .expect("failed to create tokio TcpListener");
-            debug!(message = "Sol query backend started (skeleton).", %addr);
-            // TODO(tasks 2–7, 13): register the ParquetCatalog and mount the
-            // PromQL / TraceQL / LogQL / SQL routers on `_listener`.
-            rx.await.ok();
+
+            let engine = match QueryEngine::new(&opts).await {
+                Ok(engine) => Arc::new(engine),
+                Err(error) => {
+                    error!(message = "Sol query backend failed to build the query engine.", %error, %addr);
+                    return;
+                }
+            };
+            let routes = routes::make_routes(engine.clone());
+            debug!(message = "Sol query backend serving.", %addr);
+
+            let mut refresh =
+                tokio::time::interval(Duration::from_secs(opts.refresh_interval_secs.max(1)));
+            refresh.tick().await; // consume the immediate first tick
+
+            let shutdown = async {
+                rx.await.ok();
+            };
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let (stream, _) = match result {
+                            Ok(conn) => conn,
+                            Err(err) => { error!("query backend accept error: {err:?}"); continue; }
+                        };
+                        let svc = tower::ServiceBuilder::new()
+                            .layer(crate::http::build_http_trace_layer(span.clone()))
+                            .service(warp::service(routes.clone()));
+                        tokio::spawn(async move {
+                            let io = hyper_util::rt::TokioIo::new(stream);
+                            hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, hyper_util::service::TowerToHyperService::new(svc))
+                                .await
+                                .ok();
+                        });
+                    }
+                    _ = refresh.tick() => { let _ = engine.refresh().await; }
+                    _ = &mut shutdown => break,
+                }
+            }
             debug!(message = "Sol query backend stopped.", %addr);
         });
 
         Ok(Server { _shutdown })
     }
-}
-
-/// Smoke reference ensuring the query-backend dependency tree links until the
-/// real `QueryEngine`/`ParquetCatalog` (task 2) exercises these crates.
-#[doc(hidden)]
-pub fn _deps_smoke() {
-    let _ctx = datafusion::prelude::SessionContext::new();
-    let _path = object_store::path::Path::from("parquet");
-    let _ = promql_parser::parser::parse("up");
 }

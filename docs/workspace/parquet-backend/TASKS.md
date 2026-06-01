@@ -294,7 +294,7 @@ classDiagram
 - [x] LogQL label + line filters translate to correct SQL (`test_logql_label_matchers_to_where`, `test_logql_line_filter_to_like`, `test_logql_escapes_quotes` ✅; SQL-injection-escaped per NFR9)
 - [x] Response validates against the Loki HTTP API schema (`test_loki_query_range_response_shape`, `test_loki_response_deserializes` ✅ — streams shape per API-SPEC §2)
 - [x] _3b:_ `json_get_str` serde_json UDF + `handle_query_range` handler — end-to-end fixture test green (`test_loki_handle_query_range_end_to_end`: LogQL→SQL→UDF→DataFusion→streams JSON; time bound via `CAST(time_unix_nano AS BIGINT)`)
-- [ ] _3c:_ mount `GET /loki/api/v1/query_range` on the QueryServer's warp HTTP listener — **shared warp serving infra** (used by tasks 3/4/5/7), built next; the handler logic above is what it serves
+- [x] _3c:_ `GET /loki/api/v1/query_range` mounted on the QueryServer's warp HTTP listener — **shared warp serving infra** in `src/query/routes.rs` (hyper accept loop mirroring `api::Server`; `make_routes(Arc<QueryEngine>)`; periodic catalog refresh; `/ready` probe). `test_loki_route_serves_streams_json` (warp::test → 200 + streams JSON) + `test_ready_probe` ✅. Tasks 4/5/7/13 add their filters here.
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: 3a downhill ✅; 3b downhill (warp serving + serde_json UDF)
 
