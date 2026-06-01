@@ -490,5 +490,24 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 - **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs. The endpoint URL changes from `http://mimir:9009` to `http://sol:9009` (or a configurable port). No custom plugins needed.
 - **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../../designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
-- **Observability of the query backend**: expose query latency, cache hit rate, and DataFusion execution metrics as Sol internal metrics (`sol_query_*`). These feed back into the same pipeline (Sol monitoring Sol).
+- **Observability of the query backend (Sol monitoring Sol)**: the backend emits internal metrics that flow through the same pipeline (`internal_metrics` source → Mimir), exactly like the existing `sol_component_*` / `sol_tail_sampling_*` metrics. The catalog (dashboarded in `demo/.../grafana/.../Sol/SOL Query Backend.json`):
+
+  | Metric | Type | Labels | Watches (NFR) |
+  |---|---|---|---|
+  | `sol_query_requests_total` | counter | `api,signal,status` | throughput / error rate |
+  | `sol_query_request_duration_seconds` | histogram | `api,signal` | [NFR6](#nfr6) latency budget (p50/p95/p99) |
+  | `sol_query_bytes_scanned` | histogram | `signal` | [NFR5](#nfr5)/[NFR9](#nfr9) scan budget |
+  | `sol_query_files_opened` | histogram | `signal` | small-files / compaction effect ([FR7](#fr7)) |
+  | `sol_query_cache_requests_total` | counter | `cache(result\|metadata\|shard),result(hit\|miss)` | [FR5](#fr5)/[FR8](#fr8) hit rate |
+  | `sol_query_cache_memory_bytes`, `sol_query_inflight` | gauge | — | [NFR5](#nfr5) budget / concurrency |
+  | `sol_query_rejected_total` | counter | `reason(range\|bytes\|concurrency)` | [NFR9](#nfr9) guardrails |
+  | `sol_query_unsupported_total` | counter | `lang,construct` | ⛔/⚠️ usage ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) |
+  | `sol_objectstore_requests_total` | counter | `op(get\|list\|put),status` | [NFR10](#nfr10) request rate |
+  | `sol_objectstore_throttled_total` | counter | — | [NFR10](#nfr10) `503 SlowDown` |
+  | `sol_objectstore_request_duration_seconds` | histogram | `op` | object-store latency |
+  | `sol_compactor_runs_total`, `_duration_seconds` | counter/histogram | `signal,status` | [FR7](#fr7) compaction health |
+  | `sol_compactor_files_input_total` / `_files_output_total` | counter | `signal` | file-count reduction (the C1 lever) |
+  | `sol_compactor_rollup_rows_total` | counter | `resolution` | [FR6](#fr6) rollup output |
+  | `sol_compactor_retention_deleted_total` | counter | `signal` | retention GC |
+  | `sol_compactor_lag_seconds` | gauge | `signal` | sealed-boundary lag (compaction freshness) |
 - **Service graph metrics**: the `servicegraph` transform already materializes `traces_service_graph_request_server_seconds` as `OtelMetric` events at ingest time. These flow through the pipeline into the histogram Parquet table. The query backend reads them as regular histogram metrics — no special handling needed.

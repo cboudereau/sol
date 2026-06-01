@@ -351,21 +351,26 @@ classDiagram
 **Depends on**: tasks 3, 4
 **Time-box**: ~60 min · **Hill**: downhill
 
-### 9. Query backend observability ([NFR6](./DESIGN.md#nfr6), cross-cutting)
-**Goal**: Emit `sol_query_*` internal metrics (latency, cache hit rate, rows scanned) so Sol can monitor its own query backend.
+### 9. Query backend observability ([NFR6](./DESIGN.md#nfr6), [NFR5](./DESIGN.md#nfr5), [NFR9](./DESIGN.md#nfr9), [NFR10](./DESIGN.md#nfr10), cross-cutting)
+**Goal**: Emit the `sol_query_*` / `sol_objectstore_*` / `sol_compactor_*` metric catalog so Sol monitors its own backend (and the `SOL Query Backend` Grafana dashboard renders).
 **Types**: internal_events for the query backend (follow `src/internal_events/` conventions)
 **Constraints**:
-- Reuse Sol's internal-event/metric registration pattern; metric names under the `sol_query_` namespace ([DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns))
-- These metrics flow through the same pipeline (Sol monitoring Sol)
+- Emit the full catalog in [DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns): request count/duration/bytes-scanned/files-opened histograms, cache hit/miss + memory, guardrail rejects, unsupported-construct counter, object-store requests/throttles/latency, compactor runs/duration/file-reduction/rollup/retention/lag.
+- Reuse Sol's internal-event/metric registration; `sol_query_*` / `sol_objectstore_*` / `sol_compactor_*` namespaces; flow through `internal_metrics` → pipeline (Sol monitoring Sol)
+- Histograms use Prometheus `_bucket`/`_sum`/`_count` so `histogram_quantile` works in the dashboard
 **Tests**:
-- `test_query_latency_metric_emitted`
-- `test_cache_hit_rate_metric`
+- `test_request_duration_histogram_emitted` (by api/signal)
+- `test_cache_hit_miss_counters`
+- `test_objectstore_throttle_counter` (503 path)
+- `test_guardrail_reject_counter` / `test_unsupported_construct_counter`
+- `test_compactor_file_reduction_metrics`
 **Verify**: `cargo test --no-default-features --features query-backend query::telemetry`
 **Acceptance criteria**:
-- [ ] Per-request latency and cache hit/miss counters emitted under `sol_query_*`
-- [ ] Metric names follow existing namespace conventions
-**Depends on**: task 8
-**Time-box**: ~45 min · **Hill**: downhill
+- [ ] Full catalog emitted under the three namespaces; labels match the dashboard queries
+- [ ] Histograms expose `_bucket` (Grafana `histogram_quantile`)
+- [ ] The `SOL Query Backend` dashboard renders against a live run (verify step)
+**Depends on**: task 8 (cache), task 10 (compactor metrics), task 11 (frontend/shard-cache)
+**Time-box**: ~60 min · **Hill**: downhill
 
 ### 10. Standalone compactor: sealed-day merge + footer provenance + retention ([FR7](./DESIGN.md#fr7), [NFR5](./DESIGN.md#nfr5), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
 **Goal**: A standalone `Parquet → compacted Parquet` component (singleton role) that bounds the small-files problem without slowing the gateway, with catalog-free read/compact consistency.
