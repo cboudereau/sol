@@ -1,0 +1,35 @@
+apiVersion: 1
+
+# Sol query-backend datasources, provisioned in parallel with the stock
+# Mimir/Tempo/Loki ones so dashboards can flip Sol <-> Grafana backend via the
+# $datasource template variable. All three point at the one sol-query service.
+datasources:
+- name: Sol-Prometheus
+  type: prometheus
+  uid: sol-prometheus
+  access: proxy
+  orgId: 1
+  url: http://sol-query:9009/prometheus
+  basicAuth: false
+  isDefault: false
+  editable: false
+
+- name: Sol-Tempo
+  type: tempo
+  uid: sol-tempo
+  access: proxy
+  orgId: 1
+  url: http://sol-query:9009
+  basicAuth: false
+  isDefault: false
+  editable: false
+
+- name: Sol-Loki
+  type: loki
+  uid: sol-loki
+  access: proxy
+  orgId: 1
+  url: http://sol-query:9009/loki
+  basicAuth: false
+  isDefault: false
+  editable: false

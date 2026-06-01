@@ -558,10 +558,12 @@ classDiagram
 - A panel returns matching results from `Sol-Prometheus` vs `Mimir` for a `rate()`/`histogram_quantile` query (parity)
 **Verify**: `SOL_IMAGE=sol:query-backend docker compose --profile parquet up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Query Backend` dashboard renders; NFR6 latency measured
 **Acceptance criteria**:
-- [ ] Gateway forwards every signal to **both** real backends and Parquet (same data queryable via Mimir and Sol-Prometheus)
-- [ ] Three `Sol-*` datasources provisioned in parallel; all pass Save & Test
-- [ ] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits
-- [ ] A metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured
+- [x] Gateway forwards every signal to **both** real backends and Parquet (same data queryable via Mimir and Sol-Prometheus) — existing `sol-gateway.yaml` dual-forward preserved
+- [x] Three `Sol-*` datasources provisioned in parallel (`grafana/provisioning/datasources/sol.yml` → `sol-query:9009`); **Save & Test ⏳ manual** (needs live Grafana)
+- [x] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits — all 4 dashboards verified (Node Exporter repointed: 0 hard-coded backend uids)
+- [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose --profile parquet up` (not runnable in this environment)
+
+**Static verification done here:** `sol validate --no-environment sol-query.yaml` → ✅ (RC=0, `test_sol_query_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-query` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
 **Depends on**: tasks 3, 4, 5, 6, 7 (APIs), 9 (telemetry), 10 (compaction), 14 (layout)
 **Time-box**: ~90 min · **Hill**: downhill
 

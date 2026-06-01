@@ -179,6 +179,21 @@ services:
     profiles:
       - parquet
 
+  # Sol-as-backend: serves Prometheus/Tempo/Loki + SQL over the gateway's
+  # Parquet (read-only), alongside Mimir/Tempo/Loki for side-by-side compare.
+  sol-query:
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    command: ["--config", "/etc/sol/sol-query.yaml"]
+    volumes:
+      - ./sol/sol-query.yaml:/etc/sol/sol-query.yaml:ro
+      - parquet-data:/data/parquet:ro
+    networks:
+      - bridge
+    depends_on:
+      - mimir
+    profiles:
+      - parquet
+
 volumes:
   parquet-data:
 
