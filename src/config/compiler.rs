@@ -44,6 +44,8 @@ pub fn compile(mut builder: ConfigBuilder) -> Result<(Config, Vec<String>), Vec<
         global,
         #[cfg(feature = "api")]
         api,
+        #[cfg(feature = "query-backend")]
+        query,
         schema,
         healthchecks,
         enrichment_tables,
@@ -130,6 +132,8 @@ pub fn compile(mut builder: ConfigBuilder) -> Result<(Config, Vec<String>), Vec<
             global,
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "query-backend")]
+            query,
             schema,
             healthchecks,
             enrichment_tables,

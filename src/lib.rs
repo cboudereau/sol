@@ -76,6 +76,9 @@ pub mod amqp;
 #[cfg(feature = "api")]
 #[allow(unreachable_pub)]
 pub mod api;
+#[cfg(feature = "query-backend")]
+#[allow(unreachable_pub)]
+pub mod query;
 pub mod app;
 pub mod async_read;
 #[cfg(feature = "aws-config")]

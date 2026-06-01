@@ -31,6 +31,8 @@ use crate::{
 };
 
 pub mod api;
+#[cfg(feature = "query-backend")]
+pub mod query;
 mod builder;
 mod cmd;
 mod compiler;
@@ -148,6 +150,8 @@ impl ConfigPath {
 pub struct Config {
     #[cfg(feature = "api")]
     pub api: api::Options,
+    #[cfg(feature = "query-backend")]
+    pub query: query::Options,
     pub schema: schema::Options,
     pub global: GlobalOptions,
     pub healthchecks: HealthcheckOptions,

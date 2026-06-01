@@ -454,6 +454,9 @@ heim = { git = "https://github.com/vectordotdev/heim.git", branch = "update-nix"
 mlua = { version = "0.10.5", default-features = false, features = ["lua54", "send", "vendored", "macros"], optional = true }
 sysinfo = "0.37.2"
 byteorder = "1.5.0"
+datafusion = { version = "53", optional = true }
+object_store = { version = "0.13", features = ["aws"], optional = true }
+promql-parser = { version = "0.9", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"
@@ -555,6 +558,15 @@ api = [
   "dep:async-graphql-warp",
   "dep:base64",
   "sol-lib/api",
+]
+
+# Read-side query backend: serve Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
+# Gates src/query/ and src/config/query.rs. See docs/workspace/parquet-backend/.
+query-backend = [
+  "dep:datafusion",
+  "dep:object_store",
+  "dep:promql-parser",
+  "codecs-parquet",
 ]
 
 # API client
@@ -1090,6 +1102,9 @@ codecs-benches = []
 loki-benches = ["sinks-loki"]
 enrichment-tables-benches = ["enrichment-tables-geoip", "enrichment-tables-mmdb", "enrichment-tables-memory"]
 proptest = ["dep:proptest", "dep:proptest-derive", "vrl/proptest"]
+datafusion = ["dep:datafusion"]
+object_store = ["dep:object_store"]
+promql-parser = ["dep:promql-parser"]
 
 [[bench]]
 name = "default"

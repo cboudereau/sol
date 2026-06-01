@@ -48,6 +48,8 @@ pub struct ApplicationConfig {
     pub internal_topologies: Vec<RunningTopology>,
     #[cfg(feature = "api")]
     pub api: config::api::Options,
+    #[cfg(feature = "query-backend")]
+    pub query: config::query::Options,
     pub extra_context: ExtraContext,
 }
 
@@ -98,6 +100,8 @@ impl ApplicationConfig {
     ) -> Result<Self, ExitCode> {
         #[cfg(feature = "api")]
         let api = config.api;
+        #[cfg(feature = "query-backend")]
+        let query = config.query.clone();
 
         let (topology, graceful_crash_receiver) =
             RunningTopology::start_init_validated(config, extra_context.clone())
@@ -111,6 +115,8 @@ impl ApplicationConfig {
             internal_topologies: Vec::new(),
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "query-backend")]
+            query,
             extra_context,
         })
     }
@@ -162,6 +168,26 @@ impl ApplicationConfig {
             info!(
                 message = "API is disabled, enable by setting `api.enabled` to `true` and use commands like `vector top`."
             );
+            None
+        }
+    }
+
+    /// Configure the query backend server, if enabled. Mirrors [`Self::setup_api`].
+    #[cfg(feature = "query-backend")]
+    pub fn setup_query(&self, handle: &Handle) -> Option<crate::query::Server> {
+        if self.query.enabled {
+            match crate::query::Server::start(&self.query, handle) {
+                Ok(server) => {
+                    info!(message = "Sol query backend started.", address = %self.query.address);
+                    Some(server)
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    error!(message = "Sol query backend failed to start.", %error);
+                    None
+                }
+            }
+        } else {
             None
         }
     }
@@ -259,6 +285,8 @@ impl Application {
         let topology_controller = SharedTopologyController::new(TopologyController {
             #[cfg(feature = "api")]
             api_server: config.setup_api(handle),
+            #[cfg(feature = "query-backend")]
+            query_server: config.setup_query(handle),
             topology: config.topology,
             config_paths: config.config_paths.clone(),
             require_healthy: root_opts.require_healthy,

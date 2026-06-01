@@ -5,6 +5,8 @@ use sol_lib::{config::GlobalOptions, configurable::configurable_component};
 
 #[cfg(feature = "api")]
 use super::api;
+#[cfg(feature = "query-backend")]
+use super::query;
 use super::{
     BoxedSink, BoxedSource, BoxedTransform, ComponentKey, Config, EnrichmentTableOuter,
     HealthcheckOptions, SinkOuter, SourceOuter, TestDefinition, TransformOuter, compiler, schema,
@@ -23,6 +25,11 @@ pub struct ConfigBuilder {
     #[configurable(derived)]
     #[serde(default)]
     pub api: api::Options,
+
+    #[cfg(feature = "query-backend")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub query: query::Options,
 
     #[configurable(derived)]
     #[configurable(metadata(docs::hidden))]
@@ -82,6 +89,8 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "query-backend")]
+            query,
             schema,
             healthchecks,
             enrichment_tables,
@@ -114,6 +123,8 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "query-backend")]
+            query,
             schema,
             healthchecks,
             enrichment_tables,
@@ -211,6 +222,13 @@ impl ConfigBuilder {
         #[cfg(feature = "api")]
         if let Err(error) = self.api.merge(with.api) {
             errors.push(error);
+        }
+
+        // Query backend has no field-level merge; later config wins (last-writer).
+        // Assumption (within constitution): a single `query:` block per deployment.
+        #[cfg(feature = "query-backend")]
+        {
+            self.query = with.query;
         }
 
         self.provider = with.provider;

@@ -244,12 +244,12 @@ classDiagram
 - `test_default_build_excludes_query_backend` — module is absent without the feature (compile-gate check)
 **Verify**: `cargo build --no-default-features --features query-backend && cargo build` (default still builds)
 **Acceptance criteria**:
-- [ ] `query-backend` feature exists in `Cargo.toml` and gates `src/query/` + the new deps
-- [ ] `QueryOptions` is a `configurable_component`-style config struct deserializable from YAML
-- [ ] `setup_query` starts a `QueryServer` from `app.rs` mirroring `setup_api`; server stored on the topology controller
-- [ ] Default `cargo build` (no feature) is unchanged and green
+- [x] `query-backend` feature exists in `Cargo.toml` and gates `src/query/` + the new deps
+- [x] `QueryOptions` is a `configurable_component`-style config struct deserializable from YAML (`test_query_options_deserializes_from_yaml` ✅)
+- [x] `setup_query` starts a `QueryServer` from `app.rs` mirroring `setup_api`; server stored on the topology controller (`query_server` field)
+- [x] Default `cargo build` (no feature) is unchanged and green (`cargo check` clean; the 2nd "test" is the default-build gate, verified via the checkpoint command rather than a unit test)
 **Depends on**: (none)
-**Time-box**: ~75 min · **Hill**: downhill
+**Time-box**: ~75 min · **Hill**: downhill — ✅ DONE
 
 ### 2. Signal table schemas + ParquetCatalog ([FR4](./DESIGN.md#fr4), [NFR4](./DESIGN.md#nfr4))
 **Goal**: Register the seven Parquet signal tables in a DataFusion `SessionContext` from a storage root, with periodic refresh.
