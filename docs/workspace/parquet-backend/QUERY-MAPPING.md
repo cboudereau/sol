@@ -137,6 +137,7 @@ Target table: `traces`. Query interval 30 d ([NFR7](./DESIGN.md#nfr7)).
 | aggregates `count() / avg(duration) > …` (span-set) | `GROUP BY trace_id HAVING …` | ⚠️ |
 | `select(...)` | column projection | ✅ |
 | structural `>>` (descendant), `>` (child), `~` (sibling) | self-join on `parent_span_id`/`trace_id` (recursive) | ⛔ defer v1 ([rabbit hole 2](./DESIGN.md#rabbit-holes)) |
+| **TraceQL metrics** (`rate`/`quantile_over_time`/`histogram_over_time` over spans, `/api/metrics/query_range`) | window/aggregate SQL over `traces` (same family as PromQL) | ⚠️ defer — sizeable, not in pcap ([API-SPEC.md §3](./API-SPEC.md)) |
 
 **TraceQL verdict**: attribute-filter search, trace-by-id, and tag discovery (the pcap surface) are covered. **Structural/span-set operators are ⛔ deferred** — they require recursive self-joins on the span tree, expensive and rare for dashboards. Trace-by-id is bloom-accelerated.
 

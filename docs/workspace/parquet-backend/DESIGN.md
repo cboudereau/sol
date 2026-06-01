@@ -188,7 +188,7 @@ Implement the Prometheus HTTP API endpoints observed in the pcap:
 - `GET /prometheus/api/v1/label/:name/values` — label value discovery
 - `GET /prometheus/api/v1/series` — series existence check
 
-Translate PromQL to DataFusion SQL over metric Parquet tables (gauge, sum, histogram, exp_histogram, summary).
+Translate PromQL to DataFusion SQL over metric Parquet tables (gauge, sum, histogram, exp_histogram, summary). Full endpoint surface + response schemas: [API-SPEC.md §1](./API-SPEC.md).
 
 ### <a id="fr2"></a>FR2 — Tempo-compatible HTTP API
 
@@ -198,14 +198,14 @@ Implement the Tempo HTTP API endpoints observed in the pcap:
 - `GET /api/v2/search/tags` — list available tag names
 - `GET /api/v2/search/tag/:tag/values` — tag value discovery with TraceQL filter
 
-Translate TraceQL to DataFusion SQL over the traces Parquet table.
+Translate TraceQL to DataFusion SQL over the traces Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §3](./API-SPEC.md).
 
 ### <a id="fr3"></a>FR3 — Loki-compatible HTTP API
 
 Implement the Loki HTTP API endpoints observed in the pcap:
 - `GET /loki/api/v1/query_range` — log range query with LogQL filter
 
-Translate LogQL to DataFusion SQL over the logs Parquet table.
+Translate LogQL to DataFusion SQL over the logs Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §2](./API-SPEC.md).
 
 ### <a id="fr4"></a>FR4 — DataFusion query engine integration
 
@@ -273,7 +273,7 @@ All API responses must be compatible with Grafana's data source plugins:
 - Tempo API: JSON response format per Tempo HTTP API spec
 - Loki API: JSON response format per Loki HTTP API spec
 
-No custom Grafana plugins — standard Prometheus, Tempo, and Loki data sources must work unchanged.
+No custom Grafana plugins — standard Prometheus, Tempo, and Loki data sources must work unchanged. The exact endpoint contracts (request params + response JSON schemas, with real bodies extracted from the pcap) are specified in [API-SPEC.md](./API-SPEC.md) — the acceptance target for the response builders.
 
 ### <a id="nfr3"></a>NFR3 — Dashboard refresh latency
 
@@ -349,7 +349,7 @@ On breach, return a clear Grafana-compatible error (e.g. HTTP 422 with a message
 
 ## Non-goals
 
-- **Full PromQL/TraceQL/LogQL coverage**: only the subset observed in the pcap (and commonly used in Grafana dashboards) is in scope. Exotic functions (`predict_linear`, `absent_over_time`, TraceQL structural operators) are deferred.
+- **Query/API coverage**: the **full read/query API surface** of Mimir/Loki/Tempo is targeted ([API-SPEC.md](./API-SPEC.md)), and the **full query-language surface** is mapped with explicit per-construct trade-off decisions ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) — *not* just the pcap subset. What stays out: genuinely unbounded or hot-data constructs (`predict_linear`/`holt_winters`/subqueries, `absent*`, TraceQL structural operators, TraceQL metrics, live tail) — deferred, with the [SQL endpoint (FR9)](#fr9) as the escape hatch. Ingestion and admin/ring/config endpoints are out (read-only backend).
 - **Single-query distribution (Ballista)**: splitting *one* query across nodes (intra-query parallelism) is deferred — the workload is many *small* queries, not one giant scan. **Horizontal scaling for query concurrency is NOT a non-goal** — it is required (see [NFR8](#nfr8)): the backend runs as stateless querier replicas over shared object storage, scaled behind a load balancer. The two are different axes; only Ballista-style single-query distribution is out of scope.
 - **Write-ahead log / hot data**: queries run over finalized Parquet files only. Real-time tail (last few seconds of data not yet flushed to Parquet) is out of scope — the batch flush interval defines the query freshness boundary.
 - **Multi-tenancy**: single-tenant deployment. Tenant isolation is a future concern.
@@ -470,6 +470,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 **Analysis artifacts (Phase 4a gate, before implementation):**
 - [COMPLEXITY.md](./COMPLEXITY.md) — cost/complexity model (logs/metrics/traces) at demo / midpoint / ceiling vs AWS pricing; validates compaction/rollups/splitting and the beat-Loki / parity-Tempo / lose-to-Mimir-on-storage verdicts.
 - [QUERY-MAPPING.md](./QUERY-MAPPING.md) — full-surface PromQL/LogQL/TraceQL → SQL with per-construct trade-off decisions.
+- [API-SPEC.md](./API-SPEC.md) — Grafana-compatible HTTP contracts per backend (request params + response JSON), grounded in real pcap response bodies; the NFR2 acceptance target.
 
 > **Note (analysis):** Sol's existing [`lib/prometheus-parser`](../../../lib/prometheus-parser/) parses the Prometheus **text exposition format**, not PromQL queries. The `promql-parser` crate decision is unaffected — the two solve different problems.
 

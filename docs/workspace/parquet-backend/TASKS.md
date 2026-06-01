@@ -12,6 +12,7 @@ Per the directive *"compute/validate the complexity model first, and analyse the
 
 - [ ] [COMPLEXITY.md](./COMPLEXITY.md) — cost/complexity model (logs/metrics/traces) instantiated at demo / midpoint / ceiling vs AWS pricing. **Validated analytically**: compaction mandatory (C1), rollups/splitting metrics-only (C2/M2), beat-Loki = fewer components + bloom + SQL (C4), metrics lose to Mimir on storage → rollup-only cold tail.
 - [ ] [QUERY-MAPPING.md](./QUERY-MAPPING.md) — full-surface PromQL/LogQL/TraceQL → SQL with per-construct trade-off decisions (✅/⚠️/⛔). Restricted constructs reach the [SQL endpoint (FR9)](./DESIGN.md#fr9).
+- [ ] [API-SPEC.md](./API-SPEC.md) — Grafana-compatible HTTP contracts (request params + response JSON per endpoint), grounded in real pcap bodies. The acceptance target for the response-builder tasks (3, 4, 5, 7) and the [NFR2](./DESIGN.md#nfr2) gate.
 
 These resolve the previously-uphill tasks **analytically** (no spike): the model gives each its approach + fallback and the mapping gives each its exact SQL. Open constants (DataFusion scan GB/s, UNNEST cost, bloom FP rate) are measured *during* the task, not blocking the plan ([COMPLEXITY.md §10](./COMPLEXITY.md)).
 
