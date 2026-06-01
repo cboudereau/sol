@@ -35,7 +35,7 @@ The decision is fundamentally a set of **cost/latency trade-offs**.
 Retention pruning (delete files past a configured age) runs in the same background task.
 
 > **Extended for long-range metrics + standalone compaction** (see [NFR7](../DESIGN.md#nfr7), [long-range-metrics-strategy](./long-range-metrics-strategy.md), [compaction-consistency](./compaction-consistency.md)):
-> - Files are written under a **time-partitioned path** (`dt=YYYY-MM-DD/…_<signal>.parquet`) so the catalog prunes whole days by path.
+> - Files are written under per-signal/subtype directories with a **time-partitioned sub-path** (`…/logs/dt=YYYY-MM-DD/*.parquet`, `…/metrics/gauge/dt=…/`) so the catalog prunes whole days by path. (Current sink writes flat `…/logs/%Y-%m-%d-%H-%M-%S.parquet`; `dt=` + per-subtype dirs are the proposed hint — see [datafusion-table-discovery](./datafusion-table-discovery.md).)
 > - The numbers traces <7d / logs <30d / metrics 90d–2y are **query intervals** ([NFR7](../DESIGN.md#nfr7)), *not* retention TTLs. **Retention** (deletion policy) is a separate, configurable per-signal knob enforced by the compactor's GC, ≥ the query interval.
 > - For metrics, compaction additionally produces **rollup tiers** (5m/1h/1d, [FR6](../DESIGN.md#fr6)) for the cold tail, storing bucket counts / counter values (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct.
 > - Compaction is a **standalone Parquet→Parquet component**, run as the **singleton** compactor role on a **sealed-day cadence** with footer-provenance consistency — see [compaction-consistency](./compaction-consistency.md), which supersedes the embedded-background-task framing above.

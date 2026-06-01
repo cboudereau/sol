@@ -87,7 +87,7 @@ classDiagram
         ExpHistogram
         Summary
         +arrow_schema() SchemaRef
-        +file_glob() str
+        +listing_dir() str
     }
     class QueryEngine {
         +sql(str) Result~Vec~RecordBatch~~
@@ -206,13 +206,13 @@ classDiagram
 **Goal**: Register the seven Parquet signal tables in a DataFusion `SessionContext` from a storage root, with periodic refresh.
 **Types**: `SignalTable`, `ParquetCatalog`, `QueryEngine`
 **Constraints**:
-- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — one `ListingTable` per signal, explicit Arrow schema, glob by filename suffix, periodic re-list (default 15s)
+- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — one `ListingTable` per signal **directory** (`logs/`, `traces/`, per-subtype metric dirs; or single `metrics/` union fallback), explicit Arrow schema, periodic re-list (default 15s). Requires the sink to write per-subtype metric dirs — a documented write-side dependency
 - Invariant: `SignalTable::arrow_schema()` columns match [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) exactly (names, types, nullability)
 - Predicate pushdown enabled for `service_name`, `name`, timestamp columns
 - `Querier::resolve_files` honours **footer supersession** ([compaction-consistency ADR](./adrs/compaction-consistency.md)): when both raw and compacted files are present, pick the highest `level` per sub-range and skip superseded inputs (each datum read once). Pre-compaction (no compacted files yet) this is a no-op.
 - [NFR5](./DESIGN.md#nfr5): bound the DataFusion worker pool (default `min(4, available_parallelism)`) and the Parquet metadata cache so the backend does not starve ingestion
 **Tests**:
-- `test_signal_table_globs_cover_all_seven` — each subtype maps to its `*_<signal>.parquet` glob
+- `test_signal_tables_map_to_directories` — `logs/`, `traces/`, and per-subtype metric dirs each register as a table (or single `metrics/` union fallback)
 - `test_catalog_registers_tables_from_dir` — write a fixture Parquet file, register, `SELECT count(*)` returns the row count
 - `test_catalog_refresh_picks_up_new_file` — add a file after registration, refresh, count increases
 - `test_catalog_empty_dir_is_not_an_error` — registering against an empty/absent dir succeeds with 0 rows

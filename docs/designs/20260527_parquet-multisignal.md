@@ -1,11 +1,10 @@
 # Parquet Multisignal — Design Doc
 
-> Implemented in `932f31077`, `2d2683600`, `8a0bd6e82`. Native column writers for all OTLP signal types.
-> Amends: [parquet-codec](20260527_parquet-codec.md)
+> Implemented in `932f31077`, `2d2683600`, `8a0bd6e82`. Native column writers for all OTLP signal types — **no `arrow`/`serde_arrow`** in the `parquet` feature (the earlier Arrow path was removed; see [ADR 0040](../adrs/0040-parquet-writing-strategy.md)). The `arrow` crate remains only for the separate ClickHouse ArrowStream codec.
 
 ## Context
 
-The [parquet codec](20260527_parquet-codec.md) currently encodes only OTLP logs. Sol's `Event` enum has three variants — `Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)` — and the Parquet codec must handle all three to be a complete OTLP-to-Parquet pipeline.
+The Parquet codec originally encoded only OTLP logs (via an Arrow/`serde_arrow` path, since removed). Sol's `Event` enum has three variants — `Log(OtelLog)`, `Metric(OtelMetric)`, `Trace(OtelSpan)` — and the codec must handle all three to be a complete OTLP-to-Parquet pipeline. This doc records the rewrite that did so with native column writers.
 
 ### Current implementation problem
 
@@ -338,5 +337,5 @@ Each group produces one self-contained Parquet file (header + row group + footer
 
 - **Backward compatibility**: the log schema is rewritten (native column writers replace serde_arrow). Column names and types remain identical except for 2 new columns (`service_name`, `event_name`). Downstream queries using `SELECT *` will see new columns. Named column queries are unaffected.
 - **Dependency reduction**: the `parquet` feature no longer pulls in `arrow` or `serde_arrow`. The `arrow` feature (for ClickHouse ArrowStream) is unaffected.
-- **File naming**: when a batch produces multiple Parquet outputs (mixed signals or mixed metric subtypes), the sink must name files with a signal suffix (e.g., `data_001_logs.parquet`, `data_001_traces.parquet`, `data_001_gauge.parquet`). This is a sink-level concern, not a codec concern.
+- **File naming / layout (actual)**: the codec returns one Parquet byte-blob per signal/metric-subtype; **the file sink decides the path**. As configured in the demo (`demo/otel-sol-grafana-dotnet/sol/sol-gateway.yaml`), the sink writes **one directory per signal** with timestamped files: `…/logs/%Y-%m-%d-%H-%M-%S.parquet`, `…/traces/…`, `…/metrics/…`. Metric subtypes currently share the `metrics/` directory (queried with `union_by_name`, per `parquet-query.sh`). This is a sink-level concern, not a codec concern.
 - **Observability**: reuse existing codec metrics. No new metrics needed.
