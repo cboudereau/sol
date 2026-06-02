@@ -72,7 +72,7 @@ docker compose up -d
 ### build from source
 ```bash
 # Use a locally built image
-TAG=$(git rev-parse --short HEAD) && docker build -f ../Dockerfile.sol -t sol:$TAG ../.. && SOL_IMAGE=sol:$TAG bash ./up.sh parquet
+TAG=$(git rev-parse --short HEAD) && docker build -f ../Dockerfile.sol -t sol:$TAG ../.. && SOL_IMAGE=sol:$TAG bash ./up.sh
 
 # analyze parquet files
 ./parquet-query.sh
@@ -228,7 +228,7 @@ sinks:
 To enable the DuckDB query container and inspect the files:
 
 ```bash
-docker compose --profile parquet up -d
+docker compose up -d
 # Wait ~30s for the first batch to flush
 ./parquet-query.sh
 ```

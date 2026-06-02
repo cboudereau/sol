@@ -5,7 +5,7 @@ set -eu
 # Usage: ./parquet-query.sh
 #
 # Requires the demo stack to be running (./up.sh) with the parquet profile:
-#   docker compose --profile parquet up
+#   docker compose up
 #
 # Wait ~30s for the first batch to flush, then run this script.
 

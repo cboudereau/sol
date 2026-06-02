@@ -176,8 +176,6 @@ services:
       - parquet-data:/data/parquet:ro
     networks:
       - bridge
-    profiles:
-      - parquet
 
   # Sol-as-backend: serves Prometheus/Tempo/Loki + SQL over the gateway's
   # Parquet (read-only), alongside Mimir/Tempo/Loki for side-by-side compare.
@@ -191,8 +189,6 @@ services:
       - bridge
     depends_on:
       - mimir
-    profiles:
-      - parquet
 
   # Sol compactor (singleton role): seals sealed-day partitions, builds rollup
   # tiers, runs retention GC. The only writer of compacted/rollup files (rw);
@@ -207,8 +203,6 @@ services:
       - bridge
     depends_on:
       - mimir
-    profiles:
-      - parquet
 
 volumes:
   parquet-data:

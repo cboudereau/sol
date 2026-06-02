@@ -36,7 +36,7 @@ The demo (`demo/otel-sol-grafana-dotnet/`) runs Sol from a configurable image: `
 
 ```
 # build local Sol image with the query backend, then:
-SOL_IMAGE=sol:query-backend docker compose --profile parquet up
+SOL_IMAGE=sol:query-backend docker compose up
 ```
 
 Add a `query:` block to `sol/sol-gateway.yaml` (or a dedicated query role) pointing at the Parquet path the file sink writes (`/data/parquet/...`), then run the session `verify` against Grafana. This is how NFR6 latency / NFR5 resources are measured end-to-end.
@@ -556,12 +556,12 @@ classDiagram
 - `test_dashboards_use_datasource_variable` — every demo dashboard panel references `${...}` datasource var, not a hard-coded uid
 - Grafana "Save & Test" passes for all three `Sol-*` datasources (discovery probes, [API-SPEC §4](./API-SPEC.md))
 - A panel returns matching results from `Sol-Prometheus` vs `Mimir` for a `rate()`/`histogram_quantile` query (parity)
-**Verify**: `SOL_IMAGE=sol:query-backend docker compose --profile parquet up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Query Backend` dashboard renders; NFR6 latency measured
+**Verify**: `SOL_IMAGE=sol:query-backend docker compose up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Query Backend` dashboard renders; NFR6 latency measured
 **Acceptance criteria**:
 - [x] Gateway forwards every signal to **both** real backends and Parquet (same data queryable via Mimir and Sol-Prometheus) — existing `sol-gateway.yaml` dual-forward preserved
 - [x] Three `Sol-*` datasources provisioned in parallel (`grafana/provisioning/datasources/sol.yml` → `sol-query:9009`); **Save & Test ⏳ manual** (needs live Grafana)
 - [x] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits — all 4 dashboards verified (Node Exporter repointed: 0 hard-coded backend uids)
-- [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose --profile parquet up` (not runnable in this environment)
+- [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose up` (not runnable in this environment)
 
 **Static verification done here:** `sol validate --no-environment sol-query.yaml` → ✅ (RC=0, `test_sol_query_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-query` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
 **Depends on**: tasks 3, 4, 5, 6, 7 (APIs), 9 (telemetry), 10 (compaction), 14 (layout)
@@ -613,7 +613,7 @@ Tasks: 12, 13
 ### Session 7 — Demo integration & end-to-end (capstone) (~1.5H)
 Tasks: 15
 **Skills**: `rust-software-engineer`, `verify`
-**Checkpoint**: `SOL_IMAGE=sol:query-backend docker compose --profile parquet up` → Grafana: all `Sol-*` datasources pass Save & Test; flip a dashboard's datasource var Sol↔Mimir (both render); `SOL Query Backend` dashboard renders; a `rate()` panel matches Mimir within tolerance
+**Checkpoint**: `SOL_IMAGE=sol:query-backend docker compose up` → Grafana: all `Sol-*` datasources pass Save & Test; flip a dashboard's datasource var Sol↔Mimir (both render); `SOL Query Backend` dashboard renders; a `rate()` panel matches Mimir within tolerance
 **Commit point**: yes
 > Capstone: the gateway dual-writes (real backends + Parquet), Sol serves the three APIs over the shared Parquet, and Grafana switches between Sol and the reference backends via the datasource variable — proving NFR2 parity and measuring NFR6/NFR5/NFR10 end-to-end.
 
