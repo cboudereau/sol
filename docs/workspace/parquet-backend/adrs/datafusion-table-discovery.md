@@ -75,7 +75,7 @@ Concretely:
 
 ## Consequences
 
-- One new heavyweight dependency tree (`datafusion`, transitively `arrow`, `object_store`) enters the build, isolated behind `query-backend` — default builds and the codec's `parquet` feature are unaffected.
+- One new heavyweight dependency tree (`datafusion`, transitively `arrow`, `object_store`) enters the build behind the `query-backend` feature. **Update (2026-06):** by user decision `query-backend` is now in the **`default`** feature set — the stock Sol binary/image ships the query backend so the demo (and downstream images) work without a custom build. The lean-agent path remains available via `--no-default-features` (or a default set excluding `query-backend`); the accepted trade-off is a larger default binary + DataFusion/Arrow in every standard build.
 - The seven Arrow schemas live in `src/query/` as the single source of truth mirroring the codec; any codec schema change is a coordinated change here (already flagged in [DESIGN.md Cross-cutting](../DESIGN.md#cross-cutting-concerns)).
 - Attribute filters use `json_*` extraction on the JSON-string `attributes`/`resource_attributes`/`scope_attributes` columns ([ADR 0038](../../../adrs/0038-attributes-serialization-strategy.md)); these do not push down into Parquet — accepted per [rabbit hole 4](../DESIGN.md#rabbit-holes).
 - S3 support is "free" via `object_store`; local FS is the development default. Both share the same `ListingTable` code path ([NFR4](../DESIGN.md#nfr4)).
