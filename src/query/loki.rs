@@ -50,6 +50,21 @@ pub(super) fn unescape_dquoted(s: &str) -> String {
     out
 }
 
+/// Map an OTLP `severity_number` to Loki's `detected_level` stream label
+/// (the value Grafana uses to colour log lines). Ranges per the OTLP log
+/// spec; out-of-range/unspecified (0, NULL) mirrors Loki's `"unknown"`.
+fn detected_level(severity_number: i32) -> &'static str {
+    match severity_number {
+        1..=4 => "trace",
+        5..=8 => "debug",
+        9..=12 => "info",
+        13..=16 => "warn",
+        17..=20 => "error",
+        21..=24 => "fatal",
+        _ => "unknown",
+    }
+}
+
 /// Render a label predicate. Promoted label → column; others → `prom_attr`,
 /// which matches the Prometheus-normalized name against the raw OTLP key (so
 /// `deployment_environment` hits the stored `deployment.environment`). Matcher
@@ -176,7 +191,7 @@ pub fn translate_query_range(
 
     let dir = if forward { "ASC" } else { "DESC" };
     Ok(format!(
-        "SELECT service_name, time_unix_nano, body FROM logs WHERE {} ORDER BY time_unix_nano {dir} LIMIT {limit}",
+        "SELECT service_name, time_unix_nano, body, severity_number FROM logs WHERE {} ORDER BY time_unix_nano {dir} LIMIT {limit}",
         preds.join(" AND ")
     ))
 }
@@ -212,20 +227,23 @@ pub struct LokiStream {
 }
 
 impl LokiResponse {
-    /// Build a `streams` response from `(service_name, ts_ns, body)` rows.
-    pub fn streams(rows: impl IntoIterator<Item = (String, i64, String)>) -> Self {
-        let mut by_stream: BTreeMap<String, Vec<[String; 2]>> = BTreeMap::new();
-        for (service_name, ts, body) in rows {
+    /// Build a `streams` response from `(service_name, detected_level, ts_ns, body)`
+    /// rows. Streams are keyed by (service, level) — `detected_level` is the
+    /// label Loki itself attaches for Grafana's log-level colouring.
+    pub fn streams(rows: impl IntoIterator<Item = (String, &'static str, i64, String)>) -> Self {
+        let mut by_stream: BTreeMap<(String, &'static str), Vec<[String; 2]>> = BTreeMap::new();
+        for (service_name, level, ts, body) in rows {
             by_stream
-                .entry(service_name)
+                .entry((service_name, level))
                 .or_default()
                 .push([ts.to_string(), body]);
         }
         let result = by_stream
             .into_iter()
-            .map(|(service_name, values)| {
+            .map(|((service_name, level), values)| {
                 let mut stream = BTreeMap::new();
                 stream.insert("service_name".to_string(), service_name);
+                stream.insert("detected_level".to_string(), level.to_string());
                 LokiStream { stream, values }
             })
             .collect();
@@ -249,22 +267,24 @@ pub async fn handle_query_range(
     forward: bool,
 ) -> crate::Result<LokiResponse> {
     use datafusion::arrow::array::{Array, AsArray};
-    use datafusion::arrow::datatypes::TimestampNanosecondType;
+    use datafusion::arrow::datatypes::{Int32Type, TimestampNanosecondType};
 
     let sql = translate_query_range(query, start_ns, end_ns, limit, forward)
         .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
     let batches = engine.sql(&sql).await?;
 
-    let mut rows: Vec<(String, i64, String)> = Vec::new();
+    let mut rows: Vec<(String, &'static str, i64, String)> = Vec::new();
     for batch in &batches {
         let svc = batch.column(0).as_string::<i32>();
         let ts = batch.column(1).as_primitive::<TimestampNanosecondType>();
         let body = batch.column(2).as_string::<i32>();
+        let sev = batch.column(3).as_primitive::<Int32Type>();
         for i in 0..batch.num_rows() {
             let service = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
             let nanos = if ts.is_null(i) { 0 } else { ts.value(i) };
             let line = if body.is_null(i) { String::new() } else { body.value(i).to_string() };
-            rows.push((service, nanos, line));
+            let level = detected_level(if sev.is_null(i) { 0 } else { sev.value(i) });
+            rows.push((service, level, nanos, line));
         }
     }
     Ok(LokiResponse::streams(rows))
@@ -353,13 +373,57 @@ mod tests {
     #[test]
     fn test_loki_query_range_response_shape() {
         let resp = LokiResponse::streams([
-            ("client".to_string(), 1700000000000000000, "hello".to_string()),
-            ("client".to_string(), 1700000000000000001, "world".to_string()),
+            ("client".to_string(), "info", 1700000000000000000, "hello".to_string()),
+            ("client".to_string(), "info", 1700000000000000001, "world".to_string()),
         ]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"streams""#), "json: {json}");
-        assert!(json.contains(r#""stream":{"service_name":"client"}"#), "json: {json}");
+        assert!(
+            json.contains(r#""stream":{"detected_level":"info","service_name":"client"}"#),
+            "json: {json}"
+        );
         assert!(json.contains(r#"["1700000000000000000","hello"]"#), "json: {json}");
+    }
+
+    #[test]
+    fn test_detected_level_otlp_severity_ranges() {
+        // OTLP severity_number ranges -> Loki detected_level values (what the
+        // real Loki attaches for Grafana's log-level colouring).
+        assert_eq!(detected_level(1), "trace");
+        assert_eq!(detected_level(5), "debug");
+        assert_eq!(detected_level(9), "info"); // .NET "Information"
+        assert_eq!(detected_level(13), "warn"); // .NET "Warning"
+        assert_eq!(detected_level(17), "error"); // .NET "Error"
+        assert_eq!(detected_level(21), "fatal");
+        assert_eq!(detected_level(0), "unknown");
+        assert_eq!(detected_level(99), "unknown");
+    }
+
+    #[test]
+    fn test_streams_group_by_service_and_level() {
+        let resp = LokiResponse::streams([
+            ("client".to_string(), "info", 1, "a".to_string()),
+            ("client".to_string(), "error", 2, "b".to_string()),
+            ("client".to_string(), "info", 3, "c".to_string()),
+        ]);
+        assert_eq!(resp.data.result.len(), 2, "one stream per (service, level)");
+        let err = resp
+            .data
+            .result
+            .iter()
+            .find(|s| s.stream["detected_level"] == "error")
+            .expect("error stream");
+        assert_eq!(err.values.len(), 1);
+        assert_eq!(err.values[0][1], "b");
+    }
+
+    #[test]
+    fn test_logql_selects_severity_number() {
+        let sql = translate_query_range(r#"{service_name="client"}"#, 0, 1, 10, true).unwrap();
+        assert!(
+            sql.contains("SELECT service_name, time_unix_nano, body, severity_number"),
+            "sql: {sql}"
+        );
     }
 
     #[tokio::test]
@@ -411,13 +475,15 @@ mod tests {
         assert_eq!(resp.data.result.len(), 1, "one stream (client)");
         let s = &resp.data.result[0];
         assert_eq!(s.stream["service_name"], "client");
+        // Fixture has no severity_number column -> NULL -> "unknown" (Loki parity).
+        assert_eq!(s.stream["detected_level"], "unknown");
         assert_eq!(s.values.len(), 1, "only 'hello world' matches");
         assert_eq!(s.values[0][1], "hello world");
     }
 
     #[test]
     fn test_loki_response_deserializes() {
-        let resp = LokiResponse::streams([("svc".to_string(), 1, "x".to_string())]);
+        let resp = LokiResponse::streams([("svc".to_string(), "info", 1, "x".to_string())]);
         let json = serde_json::to_string(&resp).unwrap();
         let back: LokiResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.status, "success");
