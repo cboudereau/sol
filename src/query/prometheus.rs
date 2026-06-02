@@ -173,6 +173,18 @@ fn lower(expr: &Expr, time_ns: i64) -> Result<String, String> {
 
 /// `SELECT DISTINCT` SQL for `label/:name/values`.
 pub fn label_values_sql(label: &str) -> String {
+    if label == "__name__" {
+        // Metric-name discovery (Grafana's metric browser): the normalized
+        // base names plus the synthetic `_bucket`/`_count`/`_sum` series
+        // exposed for histogram metrics.
+        return "SELECT DISTINCT v FROM ( \
+                SELECT prom_metric_name(name, unit, is_monotonic) AS v FROM metrics \
+                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_bucket' FROM metrics WHERE bucket_counts IS NOT NULL \
+                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_count' FROM metrics WHERE bucket_counts IS NOT NULL \
+                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_sum' FROM metrics WHERE bucket_counts IS NOT NULL \
+            ) AS t WHERE v IS NOT NULL ORDER BY v"
+            .to_string();
+    }
     let lhs = label_lhs(label);
     format!("SELECT DISTINCT {lhs} AS v FROM metrics WHERE {lhs} IS NOT NULL ORDER BY v")
 }
@@ -297,16 +309,17 @@ pub async fn handle_instant(
     Ok(PromResponse::vector(samples))
 }
 
-/// Run `label/:name/values` and build `{status, data:[...]}`.
-pub async fn handle_label_values(
+/// Run a single-string-column SQL and collect the non-null values. Shared by
+/// the label/tag discovery endpoints (Prometheus, Loki).
+pub(super) async fn string_column(
     engine: &super::QueryEngine,
-    label: &str,
-) -> crate::Result<serde_json::Value> {
+    sql: &str,
+) -> crate::Result<Vec<String>> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let batches = engine.sql(&label_values_sql(label)).await?;
+    let batches = engine.sql(sql).await?;
     let mut values: Vec<String> = Vec::new();
     for batch in &batches {
         let col = cast(batch.column(0), &DataType::Utf8)?;
@@ -317,7 +330,44 @@ pub async fn handle_label_values(
             }
         }
     }
+    Ok(values)
+}
+
+/// Distinct raw attribute keys across a JSON object column. Bounded by label-set
+/// cardinality: only each *distinct* blob is parsed.
+pub(super) async fn distinct_json_keys(
+    engine: &super::QueryEngine,
+    table: &str,
+    column: &str,
+) -> crate::Result<std::collections::BTreeSet<String>> {
+    let sql = format!("SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL");
+    let mut keys = std::collections::BTreeSet::new();
+    for blob in string_column(engine, &sql).await? {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&blob) {
+            keys.extend(map.keys().cloned());
+        }
+    }
+    Ok(keys)
+}
+
+/// Run `label/:name/values` and build `{status, data:[...]}`.
+pub async fn handle_label_values(
+    engine: &super::QueryEngine,
+    label: &str,
+) -> crate::Result<serde_json::Value> {
+    let values = string_column(engine, &label_values_sql(label)).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
+}
+
+/// Run `labels` (label-name discovery for Grafana's metric browser): the
+/// promoted columns plus the Prometheus-normalized metric attribute keys.
+pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
+    let keys = distinct_json_keys(engine, "metrics", "attributes").await?;
+    let mut names: std::collections::BTreeSet<String> =
+        ["__name__".to_string(), "service_name".to_string()].into();
+    names.extend(keys.into_iter().map(|k| super::udf::normalize(&k)));
+    let names: Vec<String> = names.into_iter().collect();
+    Ok(serde_json::json!({ "status": "success", "data": names }))
 }
 
 /// Run `series` and build `{status, data:[{__name__, service_name}, ...]}`.
@@ -1165,6 +1215,24 @@ async fn handle_histogram(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_label_values_sql_metric_name_discovery() {
+        // `__name__` lists normalized metric names plus the synthetic
+        // histogram series; other labels keep the plain DISTINCT path.
+        let sql = label_values_sql("__name__");
+        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic)"), "sql: {sql}");
+        for suffix in ["'_bucket'", "'_count'", "'_sum'"] {
+            assert!(sql.contains(suffix), "missing {suffix}: {sql}");
+        }
+        assert!(sql.contains("bucket_counts IS NOT NULL"), "sql: {sql}");
+
+        let plain = label_values_sql("service_name");
+        assert!(
+            plain.contains("SELECT DISTINCT service_name AS v FROM metrics"),
+            "sql: {plain}"
+        );
+    }
 
     #[test]
     fn test_promql_instant_selector_to_sql() {

@@ -141,6 +141,44 @@ async fn prom_series(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, 
     }
 }
 
+async fn prom_labels(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
+    match prometheus::handle_labels(&engine).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn loki_labels(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
+    match loki::handle_labels(&engine).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn loki_label_values(
+    label: String,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match loki::handle_label_values(&engine, &label).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn tempo_tags(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
+    match tempo::handle_tags(&engine).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn tempo_tags_flat(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
+    match tempo::handle_tags_flat(&engine).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct TempoSearchParams {
     #[serde(default)]
@@ -243,10 +281,30 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_label_values);
 
+    let prom_labels = warp::path!("prometheus" / "api" / "v1" / "labels")
+        .and(warp::get().or(warp::post()).unify())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(prom_labels);
+
+    // Grafana probes rules on datasource load; no rule storage -> empty groups.
+    let prom_rules = warp::path!("prometheus" / "api" / "v1" / "rules").and(warp::get()).map(|| {
+        warp::reply::json(&serde_json::json!({ "status": "success", "data": { "groups": [] } }))
+    });
+
     let prom_series = warp::path!("prometheus" / "api" / "v1" / "series")
         .and(warp::get().or(warp::post()).unify())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_series);
+
+    let loki_labels = warp::path!("loki" / "api" / "v1" / "labels")
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_labels);
+
+    let loki_label_values = warp::path!("loki" / "api" / "v1" / "label" / String / "values")
+        .and(warp::get())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_label_values);
 
     // Tempo: TraceQL search, trace-by-id, tag discovery.
     let tempo_search = warp::path!("tempo" / "api" / "search")
@@ -264,10 +322,12 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and_then(tempo_trace_by_id);
     let tempo_tags_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tags")
         .and(warp::get())
-        .map(|| warp::reply::json(&tempo::tags_response()));
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_tags);
     let tempo_tags_v1 = warp::path!("tempo" / "api" / "search" / "tags")
         .and(warp::get())
-        .map(|| warp::reply::json(&tempo::tags_flat_response()));
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(tempo_tags_flat);
     let tempo_tag_values_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tag" / String / "values")
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
@@ -291,9 +351,13 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::get())
         .map(|| warp::reply::with_status("ready", warp::http::StatusCode::OK));
 
-    loki.or(prom_query)
+    loki.or(loki_labels)
+        .or(loki_label_values)
+        .or(prom_query)
         .or(prom_range)
         .or(prom_label_values)
+        .or(prom_labels)
+        .or(prom_rules)
         .or(prom_series)
         .or(tempo_search)
         .or(tempo_trace_v2)

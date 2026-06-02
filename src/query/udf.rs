@@ -17,8 +17,9 @@ use datafusion::logical_expr::{ColumnarValue, ScalarUDF, Volatility, create_udf}
 
 /// Normalize an OTLP attribute key to its Prometheus label name: every
 /// character outside `[A-Za-z0-9_]` becomes `_` (matches the OTLP→Prometheus
-/// normalization Mimir applies on ingest).
-fn normalize(key: &str) -> String {
+/// normalization Mimir applies on ingest). Shared with the label-discovery
+/// endpoints (`/labels`), which surface stored keys under their normalized name.
+pub(super) fn normalize(key: &str) -> String {
     key.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
 

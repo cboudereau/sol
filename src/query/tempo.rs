@@ -386,20 +386,32 @@ pub async fn handle_trace_by_id(
     }))
 }
 
-/// `GET /api/v2/search/tags` (scoped) response.
-pub fn tags_response() -> Value {
-    json!({
+/// Run `GET /api/v2/search/tags` (scoped): intrinsics plus the stored span /
+/// resource attribute keys (raw OTLP dotted names — TraceQL uses them
+/// unnormalized), so Grafana's trace browser offers real tags.
+pub async fn handle_tags(engine: &super::QueryEngine) -> crate::Result<Value> {
+    let span = super::prometheus::distinct_json_keys(engine, "traces", "attributes").await?;
+    let resource =
+        super::prometheus::distinct_json_keys(engine, "traces", "resource_attributes").await?;
+    Ok(json!({
         "scopes": [
             { "name": "intrinsic", "tags": intrinsic_tags() },
-            { "name": "span", "tags": [] },
-            { "name": "resource", "tags": [] },
+            { "name": "resource", "tags": resource.into_iter().collect::<Vec<_>>() },
+            { "name": "span", "tags": span.into_iter().collect::<Vec<_>>() },
         ]
-    })
+    }))
 }
 
-/// `GET /api/search/tags` (v1 flat) response.
-pub fn tags_flat_response() -> Value {
-    json!({ "tagNames": intrinsic_tags() })
+/// Run `GET /api/search/tags` (v1 flat): intrinsics + span + resource keys.
+pub async fn handle_tags_flat(engine: &super::QueryEngine) -> crate::Result<Value> {
+    let span = super::prometheus::distinct_json_keys(engine, "traces", "attributes").await?;
+    let resource =
+        super::prometheus::distinct_json_keys(engine, "traces", "resource_attributes").await?;
+    let mut names: std::collections::BTreeSet<String> =
+        intrinsic_tags().into_iter().map(String::from).collect();
+    names.extend(resource);
+    names.extend(span);
+    Ok(json!({ "tagNames": names.into_iter().collect::<Vec<_>>() }))
 }
 
 /// Run `tag/:tag/values` and build the typed `{tagValues:[…]}` response.
@@ -452,6 +464,33 @@ mod tests {
         let sql = translate_search(r#"{span.http.method="GET" && .code!="0"}"#, 0, 1, 5).unwrap();
         assert!(sql.contains("json_get_str(attributes, 'http.method') = 'GET'"), "sql: {sql}");
         assert!(sql.contains("json_get_str(attributes, 'code') <> '0'"), "sql: {sql}");
+    }
+
+    #[tokio::test]
+    async fn test_tags_include_stored_attribute_keys() {
+        let engine = trace_engine().await;
+        let v = handle_tags(&engine).await.unwrap();
+        let scopes = v["scopes"].as_array().unwrap();
+        let tags_of = |name: &str| -> Vec<String> {
+            scopes.iter().find(|s| s["name"] == name).unwrap()["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t.as_str().unwrap().to_string())
+                .collect()
+        };
+        let span = tags_of("span");
+        assert!(span.contains(&"http.method".to_string()), "span: {span:?}");
+        assert!(span.contains(&"db.system".to_string()), "span: {span:?}");
+        assert!(tags_of("resource").contains(&"host".to_string()));
+        assert!(tags_of("intrinsic").contains(&"name".to_string()));
+
+        let flat = handle_tags_flat(&engine).await.unwrap();
+        let names: Vec<&str> =
+            flat["tagNames"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        for expected in ["name", "http.method", "db.system", "host"] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
     }
 
     #[test]

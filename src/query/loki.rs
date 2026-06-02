@@ -196,6 +196,35 @@ pub fn translate_query_range(
     ))
 }
 
+/// `SELECT DISTINCT` SQL for Loki `label/:name/values` over the logs table.
+pub fn label_values_sql(label: &str) -> String {
+    let lhs = if label == PROMOTED_LABEL {
+        PROMOTED_LABEL.to_string()
+    } else {
+        format!("prom_attr(resource_attributes, '{}')", esc(label))
+    };
+    format!("SELECT DISTINCT {lhs} AS v FROM logs WHERE {lhs} IS NOT NULL ORDER BY v")
+}
+
+/// Run Loki `labels` (label-name discovery for Grafana's log browser): the
+/// promoted column plus the normalized resource-attribute keys.
+pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
+    let keys = super::prometheus::distinct_json_keys(engine, "logs", "resource_attributes").await?;
+    let mut names: std::collections::BTreeSet<String> = [PROMOTED_LABEL.to_string()].into();
+    names.extend(keys.into_iter().map(|k| super::udf::normalize(&k)));
+    let names: Vec<String> = names.into_iter().collect();
+    Ok(serde_json::json!({ "status": "success", "data": names }))
+}
+
+/// Run Loki `label/:name/values` and build `{status, data:[...]}`.
+pub async fn handle_label_values(
+    engine: &super::QueryEngine,
+    label: &str,
+) -> crate::Result<serde_json::Value> {
+    let values = super::prometheus::string_column(engine, &label_values_sql(label)).await?;
+    Ok(serde_json::json!({ "status": "success", "data": values }))
+}
+
 // --- Loki query_range response (resultType=streams) ---
 
 /// Loki `query_range` response envelope.
@@ -479,6 +508,73 @@ mod tests {
         assert_eq!(s.stream["detected_level"], "unknown");
         assert_eq!(s.values.len(), 1, "only 'hello world' matches");
         assert_eq!(s.values[0][1], "hello world");
+    }
+
+    #[test]
+    fn test_loki_label_values_sql() {
+        assert!(
+            label_values_sql("service_name").contains("SELECT DISTINCT service_name AS v FROM logs"),
+        );
+        assert!(label_values_sql("deployment_environment")
+            .contains("prom_attr(resource_attributes, 'deployment_environment')"));
+    }
+
+    #[tokio::test]
+    async fn test_loki_labels_end_to_end() {
+        use crate::config::query::{Options, StorageConfig};
+        use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                true,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"])),
+                Arc::new(TimestampNanosecondArray::from(vec![10i64]).with_timezone("UTC")),
+                Arc::new(StringArray::from(vec!["hello"])),
+                Arc::new(StringArray::from(vec![Some(
+                    r#"{"deployment.environment":"dev","service.version":"1.0.0"}"#,
+                )])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = Options {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..Options::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+
+        // Label names: promoted column + normalized resource-attribute keys.
+        let labels = handle_labels(&engine).await.unwrap();
+        let names: Vec<&str> =
+            labels["data"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        for expected in ["service_name", "deployment_environment", "service_version"] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+
+        // Label values resolve through the normalized attribute lookup.
+        let values = handle_label_values(&engine, "deployment_environment").await.unwrap();
+        assert_eq!(values["data"].as_array().unwrap(), &[serde_json::json!("dev")]);
     }
 
     #[test]
