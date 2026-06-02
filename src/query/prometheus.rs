@@ -18,12 +18,13 @@ fn esc(v: &str) -> String {
 }
 
 /// Left-hand side for a label: promoted `service_name` is a column; everything
-/// else is extracted from the JSON `attributes` column.
+/// else is extracted from the JSON `attributes` column via `prom_attr`, which
+/// matches the Prometheus-normalized name against the raw OTLP key.
 fn label_lhs(key: &str) -> String {
     if key == "service_name" {
         "service_name".to_string()
     } else {
-        format!("json_get_str(attributes, '{}')", esc(key))
+        format!("prom_attr(attributes, '{}')", esc(key))
     }
 }
 
@@ -36,11 +37,18 @@ fn matcher_pred(m: &Matcher) -> Option<String> {
         return None;
     }
     let lhs = label_lhs(&m.name);
+    // Prometheus matcher semantics: an absent label behaves like the empty
+    // string. So `=""` matches absent/empty; `!="v"` matches absent; regex
+    // matchers test the value with absent coerced to '' (so `=~".*"` matches
+    // everything, including series lacking the label).
+    let v = esc(&m.value);
     Some(match &m.op {
-        MatchOp::Equal => format!("{lhs} = '{}'", esc(&m.value)),
-        MatchOp::NotEqual => format!("{lhs} <> '{}'", esc(&m.value)),
-        MatchOp::Re(_) => format!("regexp_like({lhs}, '{}')", esc(&m.value)),
-        MatchOp::NotRe(_) => format!("NOT regexp_like({lhs}, '{}')", esc(&m.value)),
+        MatchOp::Equal if m.value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
+        MatchOp::Equal => format!("{lhs} = '{v}'"),
+        MatchOp::NotEqual if m.value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
+        MatchOp::NotEqual => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
+        MatchOp::Re(_) => format!("regexp_like(COALESCE({lhs}, ''), '{v}')"),
+        MatchOp::NotRe(_) => format!("NOT regexp_like(COALESCE({lhs}, ''), '{v}')"),
     })
 }
 
@@ -94,10 +102,14 @@ fn lower_aggregate(agg: &AggregateExpr, time_ns: i64) -> Result<String, String> 
     let op = agg_name(agg.op)?;
     let by = match &agg.modifier {
         Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        _ => return Err("aggregation requires `by (...)` grouping in v1".to_string()),
+        Some(LabelModifier::Exclude(_)) => {
+            return Err("`without (...)` aggregation not supported (v1)".to_string());
+        }
+        None => Vec::new(), // bare `sum(...)` → aggregate across all series
     };
+    let inner = latest_selected(vs, time_ns)?;
     if by.is_empty() {
-        return Err("aggregation requires at least one `by` label in v1".to_string());
+        return Ok(format!("SELECT {op}(v) AS v FROM ({inner})"));
     }
     let select_cols: Vec<String> =
         by.iter().map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k))).collect();
@@ -106,7 +118,7 @@ fn lower_aggregate(agg: &AggregateExpr, time_ns: i64) -> Result<String, String> 
         "SELECT {}, {}(v) AS v FROM ({}) GROUP BY {}",
         select_cols.join(", "),
         op,
-        latest_selected(vs, time_ns)?,
+        inner,
         group_refs.join(", ")
     ))
 }
@@ -403,16 +415,21 @@ fn lower_range_aggregate(
         let dir = if agg.op.id() == token::T_TOPK { "DESC" } else { "ASC" };
         return Ok(format!("SELECT * FROM ({inner}) ORDER BY v {dir} LIMIT {n}"));
     }
-    // sum/max/min/avg/count by (...) over a range expression.
+    // sum/max/min/avg/count [by (...)] over a range expression.
     let op = agg_name(agg.op)?;
     let by = match &agg.modifier {
         Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        _ => return Err("range aggregation requires `by (...)` grouping in v1".to_string()),
+        Some(LabelModifier::Exclude(_)) => {
+            return Err("`without (...)` aggregation not supported (v1)".to_string());
+        }
+        None => Vec::new(), // bare `sum(rate(...))` → aggregate across all series
     };
-    if by.is_empty() {
-        return Err("range aggregation requires at least one `by` label in v1".to_string());
-    }
     let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
+    if by.is_empty() {
+        return Ok(format!(
+            "SELECT time_unix_nano, {op}(v) AS v FROM ({inner}) GROUP BY time_unix_nano"
+        ));
+    }
     let select_cols: Vec<String> =
         by.iter().map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k))).collect();
     let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
@@ -754,7 +771,7 @@ mod tests {
     fn test_promql_instant_selector_to_sql() {
         let sql = translate_instant(r#"node_memory_total_bytes{host="h1"}"#, 1000).unwrap();
         assert!(sql.contains("name = 'node_memory_total_bytes'"), "sql: {sql}");
-        assert!(sql.contains("json_get_str(attributes, 'host') = 'h1'"), "sql: {sql}");
+        assert!(sql.contains("prom_attr(attributes, 'host') = 'h1'"), "sql: {sql}");
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) <= 1000"));
         assert!(sql.contains("WHERE rn = 1"));
     }
@@ -763,8 +780,8 @@ mod tests {
     fn test_promql_sum_by_label_groups_on_json_extract() {
         let sql = translate_instant(r#"sum by (le) (http_bucket{service_name="client"})"#, 5).unwrap();
         assert!(sql.contains("sum(v) AS v"), "sql: {sql}");
-        assert!(sql.contains("json_get_str(attributes, 'le')"), "sql: {sql}");
-        assert!(sql.contains("GROUP BY json_get_str(attributes, 'le')"), "sql: {sql}");
+        assert!(sql.contains("prom_attr(attributes, 'le')"), "sql: {sql}");
+        assert!(sql.contains("GROUP BY prom_attr(attributes, 'le')"), "sql: {sql}");
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
     }
 
@@ -782,7 +799,7 @@ mod tests {
             label_values_sql("service_name"),
             "SELECT DISTINCT service_name AS v FROM metrics WHERE service_name IS NOT NULL ORDER BY v"
         );
-        assert!(label_values_sql("http_route").contains("json_get_str(attributes, 'http_route')"));
+        assert!(label_values_sql("http_route").contains("prom_attr(attributes, 'http_route')"));
         assert!(series_sql().contains("SELECT DISTINCT name, service_name FROM metrics"));
     }
 

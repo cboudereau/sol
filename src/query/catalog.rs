@@ -335,6 +335,9 @@ impl QueryEngine {
         // JSON extraction over the `attributes` string column (ADR 0039):
         // registers `json_get_str`/`json_get_*`, `->`/`->>`, `json_contains`, …
         datafusion_functions_json::register_all(&mut ctx)?;
+        // prom_attr(attributes, 'name'): OTLP→Prometheus normalized attribute
+        // lookup so the Prometheus API matches dashboards (ADR 0039 / query-side).
+        ctx.register_udf(super::udf::prom_attr_udf());
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
         Ok(Self {

@@ -21,6 +21,7 @@ pub mod loki;
 pub mod prometheus;
 mod routes;
 pub mod telemetry;
+mod udf;
 pub mod tempo;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
