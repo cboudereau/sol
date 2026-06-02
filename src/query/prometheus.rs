@@ -918,6 +918,21 @@ async fn handle_bucket_heatmap(
     Ok(PromMatrixResponse::matrix(out))
 }
 
+/// If `expr` is `topk(n, inner)` / `bottomk(n, inner)`, return
+/// `(n, is_topk, inner_promql)`. Prometheus `topk` selects the top-N *series*
+/// (each returned with all its points) — applied in Rust over the matrix, not
+/// as a SQL row `LIMIT` (which would collapse series to N scattered points).
+fn strip_topk(expr: &Expr) -> Option<(i64, bool, String)> {
+    match expr {
+        Expr::Paren(p) => strip_topk(&p.expr),
+        Expr::Aggregate(agg) if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK => {
+            let n = as_count(agg.param.as_deref()?).ok()?;
+            Some((n, agg.op.id() == token::T_TOPK, agg.expr.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Pick the table to serve a range query: the coarsest registered rollup tier
 /// whose resolution ≤ `step_ns` (FR6), else raw `metrics`.
 fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
@@ -952,6 +967,15 @@ pub async fn handle_range(
         }
     }
 
+    // Strip a top-level topk/bottomk so we can select top-N *series* in Rust
+    // (the inner expression is what we actually scan + group).
+    let mut topk: Option<(i64, bool)> = None;
+    let inner = parser::parse(query).ok().and_then(|e| strip_topk(&e)).map(|(n, is_topk, inner)| {
+        topk = Some((n, is_topk));
+        inner
+    });
+    let q: &str = inner.as_deref().unwrap_or(query);
+
     let table = select_range_table(engine, step_ns);
     let mut merged: RangeSeries = BTreeMap::new();
     if super::frontend::should_split(start_ns, end_ns) {
@@ -960,21 +984,36 @@ pub async fn handle_range(
         let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
         for shard in super::frontend::split(start_ns, end_ns, 0, sealed_ns) {
             for (key, (metric, points)) in
-                range_series(engine, query, shard.start_ns, shard.end_ns, &table).await?
+                range_series(engine, q, shard.start_ns, shard.end_ns, &table).await?
             {
                 merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
             }
         }
     } else {
-        merged = range_series(engine, query, start_ns, end_ns, &table).await?;
+        merged = range_series(engine, q, start_ns, end_ns, &table).await?;
     }
 
-    let out = merged.into_values().map(|(metric, mut points)| {
-        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        points.dedup_by(|a, b| a.0 == b.0); // drop boundary-overlap duplicates
-        (metric, points)
-    });
-    Ok(PromMatrixResponse::matrix(out))
+    let mut series: Vec<(BTreeMap<String, String>, Vec<(f64, f64)>)> = merged
+        .into_values()
+        .map(|(metric, mut points)| {
+            points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            points.dedup_by(|a, b| a.0 == b.0); // drop boundary-overlap duplicates
+            (metric, points)
+        })
+        .collect();
+
+    // topk/bottomk: keep the N highest/lowest *series* (by peak value), each with
+    // all its points and labels — not N individual points.
+    if let Some((n, is_topk)) = topk {
+        let score = |p: &[(f64, f64)]| p.iter().map(|x| x.1).fold(f64::MIN, f64::max);
+        series.sort_by(|a, b| {
+            let (sa, sb) = (score(&a.1), score(&b.1));
+            if is_topk { sb.partial_cmp(&sa) } else { sa.partial_cmp(&sb) }
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        series.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
+    }
+    Ok(PromMatrixResponse::matrix(series))
 }
 
 // --- histogram_quantile (OTLP explicit-bounds histograms, Rust-native) ---
@@ -1304,6 +1343,76 @@ mod tests {
             vec![(2.0, "20".to_string()), (3.0, "30".to_string())],
             "split+merge equals the unsplit rate"
         );
+    }
+
+    #[tokio::test]
+    async fn test_topk_returns_top_n_series_with_all_points() {
+        // topk must keep the top-N *series* (all their points + labels), not N
+        // scattered rows. Two series (sc=a high, sc=b low); topk(1) → sc=a only.
+        use crate::config::query::{Options, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("sum").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+        ]));
+        // two counter series at t=1s,2s: sc=a rises 10→30 (rate 20), sc=b 5→10 (rate 5)
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["s", "s", "s", "s"])),
+                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"sc":"a"}"#),
+                    Some(r#"{"sc":"a"}"#),
+                    Some(r#"{"sc":"b"}"#),
+                    Some(r#"{"sc":"b"}"#),
+                ])),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![
+                        1_000_000_000i64,
+                        2_000_000_000,
+                        1_000_000_000,
+                        2_000_000_000,
+                    ])
+                    .with_timezone("UTC"),
+                ),
+                Arc::new(Float64Array::from(vec![10.0, 30.0, 5.0, 10.0])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = Options {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..Options::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let resp =
+            handle_range(&engine, "topk(1, sum by (sc) (rate(reqs[5m])))", 0, 10_000_000_000, 0)
+                .await
+                .unwrap();
+        // exactly the one top series (sc=a), with its point(s) — not 1 scattered row
+        assert_eq!(resp.data.result.len(), 1, "top-1 series only: {:?}", resp.data.result);
+        assert_eq!(resp.data.result[0].metric["sc"], "a", "the higher series");
+        assert_eq!(resp.data.result[0].values, vec![(2.0, "20".to_string())]);
     }
 
     #[tokio::test]
