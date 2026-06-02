@@ -85,8 +85,8 @@ pub fn translate_search(traceql: &str, start_ns: i64, end_ns: i64, limit: u32) -
     }
     preds.push(format!("CAST(start_time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
     Ok(format!(
-        "SELECT encode(trace_id, 'hex') AS trace_hex, service_name, name, \
-         start_time_unix_nano, duration_nanos, parent_span_id \
+        "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
+         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id \
          FROM traces WHERE {} ORDER BY start_time_unix_nano DESC LIMIT {}",
         preds.join(" AND "),
         limit.saturating_mul(64) // headroom: several spans per trace
@@ -128,6 +128,47 @@ pub fn intrinsic_tags() -> Vec<&'static str> {
 pub struct TempoSearchResponse {
     /// One entry per matching trace.
     pub traces: Vec<TempoTrace>,
+    /// Search metrics envelope (Grafana's Tempo datasource reads it).
+    pub metrics: TempoSearchMetrics,
+}
+
+/// `metrics` block of a Tempo search response.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct TempoSearchMetrics {
+    /// Traces inspected.
+    #[serde(rename = "inspectedTraces")]
+    pub inspected_traces: u64,
+    /// Completed jobs (single-node: 1).
+    #[serde(rename = "completedJobs")]
+    pub completed_jobs: u64,
+    /// Total jobs (single-node: 1).
+    #[serde(rename = "totalJobs")]
+    pub total_jobs: u64,
+}
+
+/// A span set on a search hit — the matched spans Grafana renders as table rows.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TempoSpanSet {
+    /// Matched spans.
+    pub spans: Vec<TempoSpan>,
+    /// Number of matched spans.
+    pub matched: usize,
+}
+
+/// One matched span in a search hit.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TempoSpan {
+    /// Hex span id.
+    #[serde(rename = "spanID")]
+    pub span_id: String,
+    /// Span start (ns) as a string.
+    #[serde(rename = "startTimeUnixNano")]
+    pub start_time_unix_nano: String,
+    /// Span duration (ns) as a string.
+    #[serde(rename = "durationNanos")]
+    pub duration_nanos: String,
+    /// Matched attributes (empty for resource/intrinsic-only matches).
+    pub attributes: Vec<serde_json::Value>,
 }
 
 /// A single search hit (one trace).
@@ -148,6 +189,10 @@ pub struct TempoTrace {
     /// Trace duration in milliseconds.
     #[serde(rename = "durationMs")]
     pub duration_ms: i64,
+    /// Matched span set — Grafana's TraceQL results table builds its columns
+    /// from these; an absent `spanSet` makes the frame undefined.
+    #[serde(rename = "spanSet")]
+    pub span_set: TempoSpanSet,
 }
 
 /// Run a TraceQL search and group matching spans into trace hits.
@@ -166,60 +211,88 @@ pub async fn handle_search(
     let sql = translate_search(traceql, start_ns, end_ns, limit).map_err(to_err)?;
     let batches = engine.sql(&sql).await?;
 
-    // trace_hex → (root_service, root_name, start_ns, duration_ns, has_root)
-    let mut traces: std::collections::BTreeMap<String, (String, String, i64, i64, bool)> =
-        std::collections::BTreeMap::new();
+    // Per-trace accumulator: root fields + the matched spans (for spanSet).
+    struct Acc {
+        service: String,
+        name: String,
+        start_ns: i64,
+        duration_ns: i64,
+        has_root: bool,
+        spans: Vec<TempoSpan>,
+    }
+    let mut traces: std::collections::BTreeMap<String, Acc> = std::collections::BTreeMap::new();
+    let mut inspected: u64 = 0;
     for batch in &batches {
-        let hex_arr = cast(batch.column(0), &DataType::Utf8)?;
-        let hex = hex_arr.as_string::<i32>();
-        let svc_arr = cast(batch.column(1), &DataType::Utf8)?;
-        let svc = svc_arr.as_string::<i32>();
-        let name_arr = cast(batch.column(2), &DataType::Utf8)?;
-        let name = name_arr.as_string::<i32>();
-        let start = cast(batch.column(3), &DataType::Int64)?;
+        let hex = cast(batch.column(0), &DataType::Utf8)?;
+        let hex = hex.as_string::<i32>();
+        let span_hex = cast(batch.column(1), &DataType::Utf8)?;
+        let span_hex = span_hex.as_string::<i32>();
+        let svc = cast(batch.column(2), &DataType::Utf8)?;
+        let svc = svc.as_string::<i32>();
+        let name = cast(batch.column(3), &DataType::Utf8)?;
+        let name = name.as_string::<i32>();
+        let start = cast(batch.column(4), &DataType::Int64)?;
         let start = start.as_primitive::<Int64Type>();
-        let dur = cast(batch.column(4), &DataType::Int64)?;
+        let dur = cast(batch.column(5), &DataType::Int64)?;
         let dur = dur.as_primitive::<Int64Type>();
-        let parent = batch.column(5);
+        let parent = batch.column(6);
         for i in 0..batch.num_rows() {
             if hex.is_null(i) {
                 continue;
             }
+            inspected += 1;
             let id = hex.value(i).to_string();
             let service = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
             let span_name = if name.is_null(i) { String::new() } else { name.value(i).to_string() };
             let start_ns = if start.is_null(i) { 0 } else { start.value(i) };
             let duration_ns = if dur.is_null(i) { 0 } else { dur.value(i) };
             let is_root = parent.is_null(i);
+            let span = TempoSpan {
+                span_id: if span_hex.is_null(i) { String::new() } else { span_hex.value(i).to_string() },
+                start_time_unix_nano: start_ns.to_string(),
+                duration_nanos: duration_ns.to_string(),
+                attributes: Vec::new(),
+            };
 
-            let entry = traces.entry(id).or_insert((
-                service.clone(),
-                span_name.clone(),
+            let entry = traces.entry(id).or_insert_with(|| Acc {
+                service: service.clone(),
+                name: span_name.clone(),
                 start_ns,
                 duration_ns,
-                false,
-            ));
-            // Prefer the root span; otherwise keep the earliest-starting span.
-            if !entry.4 && (is_root || start_ns < entry.2) {
-                *entry = (service, span_name, start_ns, duration_ns, is_root || entry.4);
+                has_root: false,
+                spans: Vec::new(),
+            });
+            entry.spans.push(span);
+            // Prefer the root span's fields; else the earliest-starting span.
+            if !entry.has_root && (is_root || start_ns < entry.start_ns) {
+                entry.service = service;
+                entry.name = span_name;
+                entry.start_ns = start_ns;
+                entry.duration_ns = duration_ns;
             }
             if is_root {
-                entry.4 = true;
+                entry.has_root = true;
             }
         }
     }
 
-    let traces = traces
+    let traces: Vec<TempoTrace> = traces
         .into_iter()
-        .map(|(id, (svc, name, start_ns, dur_ns, _))| TempoTrace {
+        .map(|(id, acc)| TempoTrace {
             trace_id: id,
-            root_service_name: svc,
-            root_trace_name: name,
-            start_time_unix_nano: start_ns.to_string(),
-            duration_ms: dur_ns / 1_000_000,
+            root_service_name: acc.service,
+            root_trace_name: acc.name,
+            start_time_unix_nano: acc.start_ns.to_string(),
+            duration_ms: acc.duration_ns / 1_000_000,
+            span_set: TempoSpanSet { matched: acc.spans.len(), spans: acc.spans },
         })
         .collect();
-    Ok(TempoSearchResponse { traces })
+    let metrics = TempoSearchMetrics {
+        inspected_traces: inspected,
+        completed_jobs: 1,
+        total_jobs: 1,
+    };
+    Ok(TempoSearchResponse { traces, metrics })
 }
 
 /// Run a trace-by-id lookup and build an OTLP-JSON `{trace:{resourceSpans:[…]}}`.
@@ -370,12 +443,26 @@ mod tests {
                 root_trace_name: "GET /randomuser".to_string(),
                 start_time_unix_nano: "1779817095000000000".to_string(),
                 duration_ms: 42,
+                span_set: TempoSpanSet {
+                    spans: vec![TempoSpan {
+                        span_id: "abc".to_string(),
+                        start_time_unix_nano: "1779817095000000000".to_string(),
+                        duration_nanos: "42000000".to_string(),
+                        attributes: Vec::new(),
+                    }],
+                    matched: 1,
+                },
             }],
+            metrics: TempoSearchMetrics { inspected_traces: 1, completed_jobs: 1, total_jobs: 1 },
         };
         let j = serde_json::to_string(&resp).unwrap();
         assert!(j.contains(r#""traceID":"3bc59070ba6c121cad3d88a3f889b303""#), "json: {j}");
         assert!(j.contains(r#""rootServiceName":"client""#), "json: {j}");
         assert!(j.contains(r#""durationMs":42"#), "json: {j}");
+        // spanSet present (Grafana's TraceQL table needs it) + metrics envelope
+        assert!(j.contains(r#""spanSet":{"spans":[{"spanID":"abc""#), "json: {j}");
+        assert!(j.contains(r#""matched":1"#), "json: {j}");
+        assert!(j.contains(r#""inspectedTraces":1"#), "json: {j}");
     }
 
     // --- end-to-end over a 2-span trace fixture ---
