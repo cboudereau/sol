@@ -64,6 +64,29 @@ fn parse_selector(traceql: &str) -> Result<Vec<(String, String, String)>, String
     Ok(out)
 }
 
+/// Convert a span's stored `attributes` JSON object to the OTLP KeyValue array
+/// Tempo/Grafana expect: `[{"key":"http.method","value":{"stringValue":"GET"}}]`.
+/// Keys stay raw OTLP (TraceQL uses dotted names, unlike the Prometheus surface).
+fn otlp_attributes(json: &str) -> Vec<Value> {
+    let Ok(map) = serde_json::from_str::<serde_json::Map<String, Value>>(json) else {
+        return Vec::new();
+    };
+    map.into_iter()
+        .map(|(key, v)| {
+            let value = match v {
+                Value::String(s) => json!({ "stringValue": s }),
+                Value::Bool(b) => json!({ "boolValue": b }),
+                Value::Number(n) if n.is_i64() => {
+                    json!({ "intValue": n.as_i64().unwrap_or(0).to_string() })
+                }
+                Value::Number(n) => json!({ "doubleValue": n.as_f64().unwrap_or(0.0) }),
+                other => json!({ "stringValue": other.to_string() }),
+            };
+            json!({ "key": key, "value": value })
+        })
+        .collect()
+}
+
 fn matcher_sql(key: &str, op: &str, val: &str) -> String {
     let lhs = traceql_lhs(key);
     match op {
@@ -86,7 +109,7 @@ pub fn translate_search(traceql: &str, start_ns: i64, end_ns: i64, limit: u32) -
     preds.push(format!("CAST(start_time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
     Ok(format!(
         "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
-         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id \
+         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id, attributes \
          FROM traces WHERE {} ORDER BY start_time_unix_nano DESC LIMIT {}",
         preds.join(" AND "),
         limit.saturating_mul(64) // headroom: several spans per trace
@@ -236,6 +259,8 @@ pub async fn handle_search(
         let dur = cast(batch.column(5), &DataType::Int64)?;
         let dur = dur.as_primitive::<Int64Type>();
         let parent = batch.column(6);
+        let attrs = cast(batch.column(7), &DataType::Utf8)?;
+        let attrs = attrs.as_string::<i32>();
         for i in 0..batch.num_rows() {
             if hex.is_null(i) {
                 continue;
@@ -251,7 +276,7 @@ pub async fn handle_search(
                 span_id: if span_hex.is_null(i) { String::new() } else { span_hex.value(i).to_string() },
                 start_time_unix_nano: start_ns.to_string(),
                 duration_nanos: duration_ns.to_string(),
-                attributes: Vec::new(),
+                attributes: if attrs.is_null(i) { Vec::new() } else { otlp_attributes(attrs.value(i)) },
             };
 
             let entry = traces.entry(id).or_insert_with(|| Acc {
@@ -564,6 +589,11 @@ mod tests {
         assert_eq!(t.root_service_name, "client");
         assert_eq!(t.root_trace_name, "GET /randomuser", "root span chosen by null parent");
         assert_eq!(t.duration_ms, 42);
+        // spanSet carries both spans, with their attributes as OTLP KeyValue
+        assert_eq!(t.span_set.matched, 2, "both spans in the span set");
+        let j = serde_json::to_string(&t.span_set).unwrap();
+        assert!(j.contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#), "json: {j}");
+        assert!(j.contains(r#"{"key":"db.system","value":{"stringValue":"pg"}}"#), "json: {j}");
     }
 
     #[tokio::test]
