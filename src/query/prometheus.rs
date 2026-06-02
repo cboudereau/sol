@@ -56,7 +56,7 @@ fn matcher_pred(m: &Matcher) -> Option<String> {
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
     let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
-    let mut preds = vec![format!("name = '{}'", esc(name))];
+    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -327,7 +327,7 @@ pub async fn handle_series(engine: &super::QueryEngine) -> crate::Result<serde_j
 /// grouping columns plus a numeric `v` (gauge/counter value) and the time.
 fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
-    let mut preds = vec![format!("name = '{}'", esc(name))];
+    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -719,7 +719,7 @@ async fn handle_histogram(
     use datafusion::arrow::datatypes::DataType;
 
     let name = vs.name.as_deref().ok_or_else(|| to_err("histogram selector requires a name".into()))?;
-    let mut preds = vec![format!("name = '{}'", esc(name))];
+    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn test_promql_instant_selector_to_sql() {
         let sql = translate_instant(r#"node_memory_total_bytes{host="h1"}"#, 1000).unwrap();
-        assert!(sql.contains("name = 'node_memory_total_bytes'"), "sql: {sql}");
+        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'node_memory_total_bytes'"), "sql: {sql}");
         assert!(sql.contains("prom_attr(attributes, 'host') = 'h1'"), "sql: {sql}");
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) <= 1000"));
         assert!(sql.contains("WHERE rn = 1"));
@@ -822,7 +822,7 @@ mod tests {
             "sql: {sql}"
         );
         assert!(sql.contains("WHERE prev_t IS NOT NULL"), "sql: {sql}");
-        assert!(sql.contains("name = 'http_total'"), "sql: {sql}");
+        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "sql: {sql}");
     }
 
     #[test]

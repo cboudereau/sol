@@ -338,6 +338,9 @@ impl QueryEngine {
         // prom_attr(attributes, 'name'): OTLP→Prometheus normalized attribute
         // lookup so the Prometheus API matches dashboards (ADR 0039 / query-side).
         ctx.register_udf(super::udf::prom_attr_udf());
+        // prom_metric_name(name, unit, is_monotonic): OTLP→Prometheus metric-name
+        // normalization (dots→_, unit suffix, _total) so queries match Mimir names.
+        ctx.register_udf(super::udf::prom_metric_name_udf());
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
         Ok(Self {
