@@ -220,12 +220,12 @@ mod tests {
         let s = snap.snapshot().into_vec();
         assert!(
             s.iter().any(|(k, _, _, _)| k.kind() == MetricKind::Counter
-                && k.key().name() == "sol_query_shard_splits_total"),
+                && k.key().name() == "query_shard_splits_total"),
             "split count emitted"
         );
         assert!(
             s.iter().any(|(k, _, _, _)| k.kind() == MetricKind::Counter
-                && k.key().name() == "sol_query_shard_cache_requests_total"),
+                && k.key().name() == "query_shard_cache_requests_total"),
             "shard-cache counter emitted"
         );
     }
