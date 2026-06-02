@@ -586,6 +586,181 @@ async fn range_series(
     Ok(series)
 }
 
+// --- Classic-histogram synthesis from OTLP array histograms (#4) ---
+//
+// Mimir explodes OTLP histograms into classic `<base>_bucket{le}`/`_count`/`_sum`
+// series; Sol stores the native OTLP histogram (bucket_counts + explicit_bounds
+// arrays). The dashboards send `histogram_quantile(φ, sum(rate(<base>_bucket[d]))
+// by (le, G))` (often under `topk`). We recognise that shape, match the OTLP
+// histogram by its normalized base name, and compute the quantile per (group G,
+// timestamp) from the arrays.
+
+/// A recognised classic-histogram quantile query (owned, no AST borrow).
+struct HistSpec {
+    phi: f64,
+    base: String,       // normalized base name (without `_bucket`)
+    preds: Vec<String>, // matcher predicates (excluding `le`)
+    group_by: Vec<String>,
+    topk: Option<(i64, bool)>, // (n, is_topk) — bottomk when false
+}
+
+/// Find the underlying histogram selector + `by(...)` labels (minus `le`).
+fn find_hist_base(expr: &Expr) -> Option<(&VectorSelector, Vec<String>)> {
+    match expr {
+        Expr::Paren(p) => find_hist_base(&p.expr),
+        Expr::Aggregate(agg) => {
+            let mut gb = match &agg.modifier {
+                Some(LabelModifier::Include(l)) => l.labels.clone(),
+                _ => Vec::new(),
+            };
+            gb.retain(|x| x != "le");
+            let (vs, _) = find_hist_base(agg.expr.as_ref())?;
+            Some((vs, gb))
+        }
+        Expr::Call(c) => match c.args.args.first().map(|b| b.as_ref()) {
+            Some(Expr::MatrixSelector(ms)) => Some((&ms.vs, Vec::new())),
+            Some(Expr::VectorSelector(vs)) => Some((vs, Vec::new())),
+            Some(other) => find_hist_base(other),
+            None => None,
+        },
+        Expr::MatrixSelector(ms) => Some((&ms.vs, Vec::new())),
+        Expr::VectorSelector(vs) => Some((vs, Vec::new())),
+        _ => None,
+    }
+}
+
+/// Detect `histogram_quantile(φ, …)` (optionally under `topk`/`bottomk`).
+fn detect_hist_quantile(expr: &Expr) -> Option<HistSpec> {
+    match expr {
+        Expr::Paren(p) => detect_hist_quantile(&p.expr),
+        Expr::Aggregate(agg)
+            if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK =>
+        {
+            let n = as_count(agg.param.as_deref()?).ok()?;
+            let mut spec = detect_hist_quantile(agg.expr.as_ref())?;
+            spec.topk = Some((n, agg.op.id() == token::T_TOPK));
+            Some(spec)
+        }
+        Expr::Call(c) if c.func.name == "histogram_quantile" => {
+            let phi = match c.args.args.first().map(|b| b.as_ref()) {
+                Some(Expr::NumberLiteral(n)) => n.val,
+                _ => return None,
+            };
+            let inner = c.args.args.get(1).map(|b| b.as_ref())?;
+            let (vs, group_by) = find_hist_base(inner)?;
+            let name = vs.name.as_deref()?;
+            let base = name.strip_suffix("_bucket").unwrap_or(name).to_string();
+            let preds = vs.matchers.matchers.iter().filter_map(matcher_pred).collect();
+            Some(HistSpec { phi, base, preds, group_by, topk: None })
+        }
+        _ => None,
+    }
+}
+
+/// Serve a classic-histogram quantile query from OTLP array histograms: match
+/// the histogram by normalized base name, sum bucket counts per (group, ts),
+/// and interpolate the quantile from the arrays.
+async fn handle_hist_quantile_range(
+    engine: &super::QueryEngine,
+    spec: &HistSpec,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<PromMatrixResponse> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::{DataType, Int64Type};
+
+    let mut preds =
+        vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(&spec.base))];
+    preds.extend(spec.preds.iter().cloned());
+    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    let group_cols: String = spec
+        .group_by
+        .iter()
+        .map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g)))
+        .collect();
+    let sql = format!(
+        "SELECT time_unix_nano, bucket_counts, explicit_bounds{group_cols} FROM metrics WHERE {}",
+        preds.join(" AND ")
+    );
+    let batches = engine.sql(&sql).await?;
+
+    // group key → (label map, ts → summed bucket counts, bounds)
+    type Group = (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>, Vec<f64>);
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    for batch in &batches {
+        let t = cast(batch.column(0), &DataType::Int64)?;
+        let t = t.as_primitive::<Int64Type>();
+        let bc = batch.column(1).as_string::<i32>();
+        let eb = batch.column(2).as_string::<i32>();
+        let labels: Vec<(String, _)> = spec
+            .group_by
+            .iter()
+            .enumerate()
+            .map(|(j, g)| (g.clone(), cast(batch.column(3 + j), &DataType::Utf8)))
+            .collect();
+        for i in 0..batch.num_rows() {
+            if t.is_null(i) {
+                continue;
+            }
+            let counts = parse_f64_array((!bc.is_null(i)).then(|| bc.value(i)));
+            let bounds = parse_f64_array((!eb.is_null(i)).then(|| eb.value(i)));
+            if counts.is_empty() {
+                continue;
+            }
+            let mut metric = BTreeMap::new();
+            for (name, arr) in &labels {
+                let arr = arr.as_ref().map_err(|e| to_err(e.to_string()))?;
+                let arr = arr.as_string::<i32>();
+                if !arr.is_null(i) {
+                    metric.insert(name.clone(), arr.value(i).to_string());
+                }
+            }
+            let key = format!("{metric:?}");
+            let entry =
+                groups.entry(key).or_insert_with(|| (metric, BTreeMap::new(), bounds.clone()));
+            let acc = entry.1.entry(t.value(i)).or_insert_with(|| vec![0.0; counts.len()]);
+            if acc.len() < counts.len() {
+                acc.resize(counts.len(), 0.0);
+            }
+            for (a, c) in acc.iter_mut().zip(&counts) {
+                *a += c;
+            }
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let to_secs = |ns: i64| ns as f64 / 1_000_000_000.0;
+    let mut series: Vec<(BTreeMap<String, String>, Vec<(f64, f64)>)> = groups
+        .into_values()
+        .map(|(metric, by_ts, bounds)| {
+            let mut points: Vec<(f64, f64)> = by_ts
+                .into_iter()
+                .filter_map(|(ts, counts)| {
+                    histogram_quantile(spec.phi, &counts, &bounds).map(|q| (to_secs(ts), q))
+                })
+                .collect();
+            points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            (metric, points)
+        })
+        .collect();
+
+    if let Some((n, is_topk)) = spec.topk {
+        let last = |p: &Vec<(f64, f64)>| p.last().map(|x| x.1).unwrap_or(f64::MIN);
+        series.sort_by(|a, b| {
+            let (la, lb) = (last(&a.1), last(&b.1));
+            if is_topk {
+                lb.partial_cmp(&la)
+            } else {
+                la.partial_cmp(&lb)
+            }
+            .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        series.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
+    }
+    Ok(PromMatrixResponse::matrix(series))
+}
+
 /// Pick the table to serve a range query: the coarsest registered rollup tier
 /// whose resolution ≤ `step_ns` (FR6), else raw `metrics`.
 fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
@@ -609,6 +784,13 @@ pub async fn handle_range(
     end_ns: i64,
     step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
+    // Classic-histogram quantile queries are computed from OTLP array buckets.
+    if let Ok(expr) = parser::parse(query)
+        && let Some(spec) = detect_hist_quantile(&expr)
+    {
+        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
+    }
+
     let table = select_range_table(engine, step_ns);
     let mut merged: RangeSeries = BTreeMap::new();
     if super::frontend::should_split(start_ns, end_ns) {
@@ -973,6 +1155,78 @@ mod tests {
         assert_eq!(
             s.values,
             vec![(1.0, "10".to_string()), (2.0, "30".to_string()), (3.0, "60".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_histogram_quantile_range_from_otlp_arrays() {
+        // #4: the dashboard's `histogram_quantile(φ, sum(rate(<base>_bucket[d])) by (le))`
+        // is served from the native OTLP array histogram (no classic _bucket series).
+        use crate::config::query::{Options, StorageConfig};
+        use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("histogram").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"])),
+                Arc::new(StringArray::from(vec!["http.server.request.duration"])),
+                Arc::new(StringArray::from(vec![Some("s")])),
+                Arc::new(BooleanArray::from(vec![Some(false)])),
+                Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC")),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![Some("[0,20,30,30,15,5]")])),
+                Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("h.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = Options {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..Options::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        // base `_bucket` query (normalized name http_server_request_duration_seconds)
+        let resp = handle_range(
+            &engine,
+            "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket[1m])) by (le))",
+            0,
+            10_000_000_000,
+            15,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.data.result_type, "matrix");
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let v = &resp.data.result[0].values;
+        assert_eq!(v.len(), 1, "one point: {v:?}");
+        assert!(
+            (v[0].1.parse::<f64>().unwrap() - 50.0).abs() < 1e-9,
+            "p95 from OTLP buckets = 50: {v:?}"
         );
     }
 
