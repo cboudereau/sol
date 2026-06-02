@@ -487,13 +487,17 @@ impl PromMatrixResponse {
     }
 }
 
-/// Run a range PromQL query and build a `resultType=matrix` response.
-pub async fn handle_range(
+/// A grouped range result: label-set debug key → (label set, time-ordered points).
+type RangeSeries = BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)>;
+
+/// Run a range PromQL query over a single `[start_ns, end_ns)` window and group
+/// the rows into per-series point lists.
+async fn range_series(
     engine: &super::QueryEngine,
     query: &str,
     start_ns: i64,
     end_ns: i64,
-) -> crate::Result<PromMatrixResponse> {
+) -> crate::Result<RangeSeries> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type, Int64Type};
@@ -504,7 +508,7 @@ pub async fn handle_range(
     const NON_LABEL: [&str; 3] = ["v", "attributes", "time_unix_nano"];
 
     // Group points by their (ordered) label set; BTreeMap key keeps it stable.
-    let mut series: BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)> = BTreeMap::new();
+    let mut series: RangeSeries = BTreeMap::new();
     for batch in &batches {
         let schema = batch.schema();
         let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
@@ -543,9 +547,37 @@ pub async fn handle_range(
             series.entry(key).or_insert_with(|| (metric, Vec::new())).1.push((ts_s, v.value(i)));
         }
     }
+    Ok(series)
+}
 
-    let out = series.into_values().map(|(metric, mut points)| {
+/// Run a range PromQL query and build a `resultType=matrix` response. Long
+/// ranges are split into per-day shards by the query-frontend ([`super::frontend`])
+/// and merged (FR8); short ranges run as a single window.
+pub async fn handle_range(
+    engine: &super::QueryEngine,
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<PromMatrixResponse> {
+    let mut merged: RangeSeries = BTreeMap::new();
+    if super::frontend::should_split(start_ns, end_ns) {
+        // Per-day shards aligned to UTC midnight; everything before the last day
+        // is sealed/cacheable. `split` emits the shard-count metric.
+        let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
+        for shard in super::frontend::split(start_ns, end_ns, 0, sealed_ns) {
+            for (key, (metric, points)) in
+                range_series(engine, query, shard.start_ns, shard.end_ns).await?
+            {
+                merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
+            }
+        }
+    } else {
+        merged = range_series(engine, query, start_ns, end_ns).await?;
+    }
+
+    let out = merged.into_values().map(|(metric, mut points)| {
         points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        points.dedup_by(|a, b| a.0 == b.0); // drop boundary-overlap duplicates
         (metric, points)
     });
     Ok(PromMatrixResponse::matrix(out))
@@ -851,6 +883,22 @@ mod tests {
         assert_eq!(s.metric["service_name"], "client");
         // first sample has no predecessor → dropped; rate at 2s,3s = 20,30 per sec.
         assert_eq!(s.values, vec![(2.0, "20".to_string()), (3.0, "30".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_range_splits_long_window_and_merges() {
+        // A >1-day range is split into per-day shards by the frontend and merged.
+        // The counter fixture's data lives in the first shard; the merged result
+        // must equal the unsplit rate (split/merge preserves results — FR8).
+        let engine = counter_engine().await;
+        let two_days = 2 * 86_400_000_000_000i64;
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days).await.unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
+        assert_eq!(
+            resp.data.result[0].values,
+            vec![(2.0, "20".to_string()), (3.0, "30".to_string())],
+            "split+merge equals the unsplit rate"
+        );
     }
 
     #[tokio::test]

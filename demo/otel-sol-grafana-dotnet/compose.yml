@@ -194,6 +194,22 @@ services:
     profiles:
       - parquet
 
+  # Sol compactor (singleton role): seals sealed-day partitions, builds rollup
+  # tiers, runs retention GC. The only writer of compacted/rollup files (rw);
+  # queriers stay read-only.
+  sol-compactor:
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    command: ["--config", "/etc/sol/sol-compactor.yaml"]
+    volumes:
+      - ./sol/sol-compactor.yaml:/etc/sol/sol-compactor.yaml:ro
+      - parquet-data:/data/parquet:rw
+    networks:
+      - bridge
+    depends_on:
+      - mimir
+    profiles:
+      - parquet
+
 volumes:
   parquet-data:
 

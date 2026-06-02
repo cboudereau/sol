@@ -1826,6 +1826,18 @@ struct NumberDpRow<'a> {
     dp: opentelemetry_proto::tonic::metrics::v1::NumberDataPoint,
 }
 
+/// Sort metric data-point rows by the read-side sort key
+/// `(service_name, name, time_unix_nano)` so each written Parquet file is
+/// locally sorted (task 14b / file-layout ADR write-side hint — improves
+/// columnar compression and read-time pruning). `key` extracts the metric and
+/// the data-point timestamp from each row type.
+fn sort_dp_rows<R>(rows: &mut [R], key: impl Fn(&R) -> (&OtelMetric, u64)) {
+    rows.sort_by_cached_key(|r| {
+        let (metric, time_unix_nano) = key(r);
+        (extract_service_name(metric.resource_attrs()), metric.name().to_string(), time_unix_nano)
+    });
+}
+
 /// Collect flattened rows for gauge metrics, using `metric_proto()` to restore dp attrs.
 fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
     let mut rows = Vec::new();
@@ -1837,6 +1849,7 @@ fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
     rows
 }
 
@@ -1851,6 +1864,7 @@ fn collect_sum_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
     rows
 }
 
@@ -2437,6 +2451,7 @@ fn write_histogram_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_histogram(rg, &rows)?;
 
@@ -2805,6 +2820,7 @@ fn write_exp_histogram_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_exp_histogram(rg, &rows)?;
 
@@ -3236,6 +3252,7 @@ fn write_summary_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_summary(rg, &rows)?;
 
@@ -4771,6 +4788,74 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
         let int_vals = read_optional_i64_column(&*rg, 15, 2);
         assert_eq!(int_vals, vec![Some(10), Some(20)]);
+    }
+
+    #[test]
+    fn test_metric_rows_sorted_by_service_name_time() {
+        // Sort-on-write (task 14b): rows must come out ordered by
+        // (service_name, name, time_unix_nano) regardless of input order.
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let gauge = |name: &str, svc: &str, times: &[u64]| {
+            let proto = Metric {
+                name: name.to_string(),
+                data: Some(Data::Gauge(Gauge {
+                    data_points: times
+                        .iter()
+                        .map(|t| NumberDataPoint {
+                            time_unix_nano: *t,
+                            value: Some(NDPValue::AsInt(1)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                })),
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelMetric::from_parts(
+                proto,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+
+        // Deliberately unsorted: later service first, names reversed, times jumbled.
+        let m_z = gauge("z.metric", "svc-a", &[3000, 1000]);
+        let m_a = gauge("a.metric", "svc-a", &[2000]);
+        let m_b = gauge("only", "svc-b", &[500]);
+
+        let rows = collect_gauge_rows(&[&m_z, &m_a, &m_b]);
+        let got: Vec<(String, &str, u64)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    extract_service_name(r.metric.resource_attrs()),
+                    r.metric.name(),
+                    r.dp.time_unix_nano,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), "a.metric", 2000),
+                ("svc-a".to_string(), "z.metric", 1000),
+                ("svc-a".to_string(), "z.metric", 3000),
+                ("svc-b".to_string(), "only", 500),
+            ],
+            "rows sorted by (service_name, name, time_unix_nano)"
+        );
     }
 
     // -----------------------------------------------------------------------

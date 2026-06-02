@@ -24,7 +24,7 @@ pub mod telemetry;
 pub mod tempo;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
-use crate::config::query::Options;
+use crate::config::query::{Options, QueryRole};
 
 /// Handle to the running Sol query backend.
 ///
@@ -35,13 +35,64 @@ pub struct Server {
 }
 
 impl Server {
+    /// Start the query backend in the configured role: a read-only HTTP querier
+    /// or the singleton compactor loop. Gracefully shuts down when dropped.
+    pub fn start(opts: &Options, handle: &Handle) -> crate::Result<Self> {
+        match opts.role {
+            QueryRole::Querier => Self::start_querier(opts, handle),
+            QueryRole::Compactor => Self::start_compactor(opts, handle),
+        }
+    }
+
+    /// Spawn the periodic compactor loop (no HTTP): seal → rollup → GC every
+    /// `compaction.interval_secs`, starting immediately.
+    fn start_compactor(opts: &Options, handle: &Handle) -> crate::Result<Self> {
+        let (_shutdown, rx) = oneshot::channel::<()>();
+        let _guard = handle.enter();
+        let opts = opts.clone();
+        handle.spawn(async move {
+            let cfg = compaction::CompactorConfig {
+                grace_days: opts.compaction.grace_days,
+                retention_days: opts.compaction.retention_days,
+            };
+            let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
+            let mut tick =
+                tokio::time::interval(Duration::from_secs(opts.compaction.interval_secs.max(1)));
+            let shutdown = async {
+                rx.await.ok();
+            };
+            tokio::pin!(shutdown);
+            debug!(message = "Sol compactor started.", interval = opts.compaction.interval_secs);
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let today = chrono::Utc::now().date_naive();
+                        match compactor.run_once(today, opts.compaction.rollups).await {
+                            Ok(report) => debug!(
+                                message = "Sol compactor pass complete.",
+                                partitions_sealed = report.partitions_sealed,
+                                rows = report.rows,
+                            ),
+                            Err(error) => {
+                                error!(message = "Sol compactor pass failed.", %error)
+                            }
+                        }
+                    }
+                    _ = &mut shutdown => break,
+                }
+            }
+            debug!(message = "Sol compactor stopped.");
+        });
+        Ok(Server { _shutdown })
+    }
+
     /// Bind and spawn the query backend HTTP server on `opts.address`.
     ///
     /// Builds the [`QueryEngine`] (catalog over the configured Parquet storage),
     /// mounts the warp routes ([`routes::make_routes`]), serves over a manual
     /// hyper accept loop (mirroring [`crate::api::Server`]), and periodically
     /// refreshes the catalog. Gracefully shuts down when dropped.
-    pub fn start(opts: &Options, handle: &Handle) -> crate::Result<Self> {
+    fn start_querier(opts: &Options, handle: &Handle) -> crate::Result<Self> {
         let (_shutdown, rx) = oneshot::channel::<()>();
         let _guard = handle.enter();
         let addr = opts.address;

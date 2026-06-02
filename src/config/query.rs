@@ -32,6 +32,46 @@ pub struct Options {
 
     /// Per-signal query guardrails (max range, max bytes scanned, max concurrency).
     pub guardrails: GuardrailsConfig,
+
+    /// Which role this instance runs: stateless `querier` (HTTP APIs) or the
+    /// singleton `compactor` (seal → rollup → retention loop). See the
+    /// deployment-roles ADR.
+    pub role: QueryRole,
+
+    /// Compactor settings (used when `role = compactor`).
+    pub compaction: CompactionConfig,
+}
+
+/// The deployment role an instance runs.
+#[configurable_component]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryRole {
+    /// Stateless read-only querier serving the HTTP APIs (default).
+    #[default]
+    Querier,
+    /// Singleton compactor: periodically seals sealed-day partitions, generates
+    /// metric rollups, and runs retention GC. No HTTP server.
+    Compactor,
+}
+
+/// Compactor loop settings (NFR5/NFR6; FR6/FR7).
+#[configurable_component]
+#[derive(Clone, Copy, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompactionConfig {
+    /// How often (seconds) the compactor runs a seal → rollup → GC pass.
+    pub interval_secs: u64,
+
+    /// A partition is sealable once it is at least this many days old (the
+    /// active day is never compacted).
+    pub grace_days: i64,
+
+    /// Partitions older than this are deleted by retention GC.
+    pub retention_days: i64,
+
+    /// Whether to generate metric rollup tiers (5m / 1h / 1d).
+    pub rollups: bool,
 }
 
 /// Where the query backend discovers Parquet files written by the codec.
@@ -96,6 +136,19 @@ impl Default for Options {
             cache: CacheConfig::default(),
             refresh_interval_secs: 15,
             guardrails: GuardrailsConfig::default(),
+            role: QueryRole::default(),
+            compaction: CompactionConfig::default(),
+        }
+    }
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 3600, // hourly
+            grace_days: 1,       // seal everything before today
+            retention_days: 30,
+            rollups: true,
         }
     }
 }

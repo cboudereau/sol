@@ -19,7 +19,7 @@ datasources:
   uid: sol-tempo
   access: proxy
   orgId: 1
-  url: http://sol-query:9009
+  url: http://sol-query:9009/tempo
   basicAuth: false
   isDefault: false
   editable: false

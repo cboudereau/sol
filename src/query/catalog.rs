@@ -1,9 +1,11 @@
 //! Parquet table catalog + DataFusion query engine (task 2).
 //!
 //! Registers one DataFusion table per signal directory written by the file sink
-//! (`logs/`, `traces/`, and `metrics/` as a single union table until task 14b
-//! adds per-subtype directories). Schemas are declared explicitly here as the
-//! binding contract with the codec ([parquet-multisignal](../../../docs/designs/20260527_parquet-multisignal.md));
+//! (`logs/`, `traces/`, and `metrics/`). With task 14b the gateway writes
+//! metrics into per-subtype subdirs (`metrics/<subtype>/dt=…`); the `metrics`
+//! table is a ListingTable over the `metrics/` prefix, so it recurses into
+//! those subdirs and unions the narrow per-subtype files. Schemas are declared
+//! explicitly here as the binding contract with the codec ([parquet-multisignal](../../../docs/designs/20260527_parquet-multisignal.md));
 //! DataFusion's schema adapter fills columns missing from a given file with null.
 
 use std::path::PathBuf;
@@ -12,7 +14,9 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::datasource::MemTable;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::ListingOptions;
+use datafusion::datasource::listing::{
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+};
 use datafusion::execution::context::SessionContext;
 use datafusion::prelude::SessionConfig;
 
@@ -190,17 +194,28 @@ impl ParquetCatalog {
         for table in SignalTable::ALL {
             let dir = self.root.join(table.listing_dir());
             let schema = table.arrow_schema();
-            if dir.is_dir() {
-                let url = format!("file://{}/", dir.display());
-                let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
-                    .with_file_extension(".parquet");
-                ctx.register_listing_table(table.table_name(), &url, options, Some(schema), None)
-                    .await?;
-            } else {
-                // Absent directory → empty table with the declared schema
+            // Enumerate the surviving files ourselves (recursive walk + per-partition
+            // supersession via `resolve_files`) and register over that explicit list.
+            // This finds files at any partition depth — `logs/dt=…/` and (task 14b)
+            // `metrics/<subtype>/dt=…/` — and skips raw inputs already superseded by a
+            // compacted file, so the querier never double-counts (compaction ADR).
+            let files = if dir.is_dir() { resolve_signal_files(&dir)? } else { Vec::new() };
+            if files.is_empty() {
+                // Absent/empty → empty table with the declared schema
                 // (one empty partition; MemTable requires ≥1 partition).
                 let empty = MemTable::try_new(schema, vec![vec![]])?;
                 ctx.register_table(table.table_name(), Arc::new(empty))?;
+            } else {
+                let paths = files
+                    .iter()
+                    .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let options = ListingOptions::new(Arc::new(ParquetFormat::default()));
+                let config = ListingTableConfig::new_with_multi_paths(paths)
+                    .with_listing_options(options)
+                    .with_schema(schema);
+                let listing = ListingTable::try_new(config)?;
+                ctx.register_table(table.table_name(), Arc::new(listing))?;
             }
         }
         Ok(())
@@ -215,6 +230,38 @@ impl ParquetCatalog {
         }
         self.register(ctx).await
     }
+}
+
+/// Recursively collect the queryable Parquet files under a signal root: walks to
+/// every partition directory (any depth — `dt=…/` and task-14b
+/// `<subtype>/dt=…/`), applies per-directory supersession ([`super::compaction::resolve_files`]
+/// — compacted files plus raw not yet superseded), and excludes `rollup-*` files
+/// (those back separate tier tables, not the main union).
+fn resolve_signal_files(root: &std::path::Path) -> crate::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let mut has_parquet = false;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "parquet") {
+                has_parquet = true;
+            }
+        }
+        if has_parquet {
+            for file in super::compaction::resolve_files(&dir)? {
+                let name = file.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+                if !name.starts_with("rollup-") {
+                    out.push(file);
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Thin wrapper over a DataFusion `SessionContext` with the signal catalog registered.
@@ -417,5 +464,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows[0].num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_union_recurses_into_per_subtype_dirs() {
+        // task 14b: the gateway writes metrics/<subtype>/dt=…; the `metrics`
+        // union ListingTable must recurse into those nested dirs and union the
+        // narrow per-subtype files (adapter fills the missing columns).
+        let tmp = tempfile::tempdir().unwrap();
+        for subtype in ["gauge", "sum", "histogram"] {
+            let dir = tmp.path().join("metrics").join(subtype).join("dt=2026-06-01");
+            std::fs::create_dir_all(&dir).unwrap();
+            write_min_log_parquet(&dir.join("f.parquet"), 2); // 2 rows each
+        }
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        // 3 subtypes × 2 rows, all under metrics/ → one union table.
+        assert_eq!(count(&engine, "metrics").await, 6);
+    }
+
+    #[tokio::test]
+    async fn test_querier_reads_each_datum_once_after_compaction() {
+        // Compaction correctness (ADR): raw inputs and the compacted file that
+        // supersedes them coexist on disk; the querier must read each datum
+        // exactly once — count the compacted rows, NOT raw + compacted.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_min_log_parquet(&dir.join("raw-a.parquet"), 2); // raw input, 2 rows
+
+        // compacted file (3 rows) declaring it supersedes raw-a.parquet
+        let schema = Arc::new(Schema::new(vec![Field::new("service_name", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec!["svc", "svc", "svc"]))],
+        )
+        .unwrap();
+        crate::query::compaction::write_with_provenance(
+            &dir.join("compacted-2026-06-01.parquet"),
+            schema,
+            &[batch],
+            1,
+            "raw-a.parquet",
+            "raw",
+        )
+        .unwrap();
+
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        // raw-a.parquet is superseded → only the 3 compacted rows, not 5.
+        assert_eq!(count(&engine, "logs").await, 3);
     }
 }

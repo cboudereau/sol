@@ -236,30 +236,30 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and_then(prom_series);
 
     // Tempo: TraceQL search, trace-by-id, tag discovery.
-    let tempo_search = warp::path!("api" / "search")
+    let tempo_search = warp::path!("tempo" / "api" / "search")
         .and(warp::get())
         .and(warp::query::<TempoSearchParams>())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_search);
-    let tempo_trace_v2 = warp::path!("api" / "v2" / "traces" / String)
+    let tempo_trace_v2 = warp::path!("tempo" / "api" / "v2" / "traces" / String)
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
-    let tempo_trace_v1 = warp::path!("api" / "traces" / String)
+    let tempo_trace_v1 = warp::path!("tempo" / "api" / "traces" / String)
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
-    let tempo_tags_v2 = warp::path!("api" / "v2" / "search" / "tags")
+    let tempo_tags_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tags")
         .and(warp::get())
         .map(|| warp::reply::json(&tempo::tags_response()));
-    let tempo_tags_v1 = warp::path!("api" / "search" / "tags")
+    let tempo_tags_v1 = warp::path!("tempo" / "api" / "search" / "tags")
         .and(warp::get())
         .map(|| warp::reply::json(&tempo::tags_flat_response()));
-    let tempo_tag_values_v2 = warp::path!("api" / "v2" / "search" / "tag" / String / "values")
+    let tempo_tag_values_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tag" / String / "values")
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_tag_values);
-    let tempo_tag_values_v1 = warp::path!("api" / "search" / "tag" / String / "values")
+    let tempo_tag_values_v1 = warp::path!("tempo" / "api" / "search" / "tag" / String / "values")
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_tag_values);
@@ -271,7 +271,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(with_engine(engine))
         .and_then(sql_query);
     // Tempo data-source health probe.
-    let tempo_echo = warp::path!("api" / "echo").and(warp::get()).map(|| "echo");
+    let tempo_echo = warp::path!("tempo" / "api" / "echo").and(warp::get()).map(|| "echo");
 
     // Discovery probe so Grafana data sources "Save & Test" passes.
     let ready = warp::path!("ready")

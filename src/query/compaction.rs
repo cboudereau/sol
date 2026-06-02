@@ -82,19 +82,26 @@ impl Compactor {
 
     /// `dt=YYYY-MM-DD` partition dirs for a signal, with parsed dates.
     fn partition_dirs(&self, signal: &str) -> Vec<(NaiveDate, PathBuf)> {
-        let base = self.root.join(signal);
+        // Recursively find `dt=YYYY-MM-DD` partition dirs at any depth under the
+        // signal root: `logs/dt=…`, `traces/dt=…`, and (task 14b) the nested
+        // `metrics/<subtype>/dt=…`.
         let mut out = Vec::new();
-        let Ok(entries) = fs::read_dir(&base) else { return out };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-            if let Some(date_str) = name.strip_prefix("dt=")
-                && let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-            {
-                out.push((date, path));
+        let mut stack = vec![self.root.join(signal)];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                if let Some(date_str) = name.strip_prefix("dt=")
+                    && let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                {
+                    out.push((date, path));
+                } else {
+                    stack.push(path); // descend (e.g. metrics/<subtype>/)
+                }
             }
         }
         out.sort_by_key(|(d, _)| *d);
@@ -209,6 +216,40 @@ impl Compactor {
             super::telemetry::record_retention_deleted(deleted as u64);
         }
         Ok(deleted)
+    }
+
+    /// Run one full compaction pass over all signals: seal sealed-day partitions,
+    /// generate metric rollup tiers (when `rollups`), then retention GC. `today`
+    /// is the current UTC date. This is the body the compactor daemon loops.
+    pub async fn run_once(
+        &self,
+        today: NaiveDate,
+        rollups: bool,
+    ) -> crate::Result<CompactionReport> {
+        let mut report = CompactionReport::default();
+        for signal in ["logs", "traces", "metrics"] {
+            let r = self.seal_signal(signal, today).await?;
+            report.partitions_sealed += r.partitions_sealed;
+            report.files_input += r.files_input;
+            report.files_output += r.files_output;
+            report.rows += r.rows;
+        }
+        if rollups {
+            // Pre-aggregate sealed metric partitions into resolution tiers.
+            for (date, dir) in self.partition_dirs("metrics") {
+                if (today - date).num_days() < self.config.grace_days {
+                    continue;
+                }
+                for tier in super::rollup::RollupTier::all() {
+                    super::rollup::generate_rollup(&dir, tier).await?;
+                }
+            }
+        }
+        for signal in ["logs", "traces", "metrics"] {
+            self.gc_retention(signal, today)?;
+        }
+        super::telemetry::set_compactor_lag(0.0); // caught up after a full pass
+        Ok(report)
     }
 }
 
@@ -466,5 +507,57 @@ mod tests {
         assert_eq!(deleted, 1, "only the >30d partition deleted");
         assert!(!old.exists(), "old partition removed");
         assert!(recent.exists(), "recent partition kept");
+    }
+
+    #[tokio::test]
+    async fn test_run_once_seals_all_signals_and_rolls_up_metrics() {
+        let tmp = tempfile::tempdir().unwrap();
+        // sealed-day raw across signals; metrics nested under a subtype dir (14b).
+        let logs = tmp.path().join("logs").join("dt=2026-05-30");
+        let metrics = tmp.path().join("metrics").join("gauge").join("dt=2026-05-30");
+        write_raw(&logs, "a.parquet", &["s"], &[1], &[1]);
+        // metrics fixture needs name + attributes (the rollup group-by key).
+        {
+            use datafusion::arrow::array::Float64Array;
+            fs::create_dir_all(&metrics).unwrap();
+            let s = Arc::new(Schema::new(vec![
+                Field::new("name", DataType::Utf8, false),
+                Field::new("service_name", DataType::Utf8, false),
+                Field::new("attributes", DataType::Utf8, true),
+                Field::new(
+                    "time_unix_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    false,
+                ),
+                Field::new("double_value", DataType::Float64, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                s.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["cpu", "cpu"])),
+                    Arc::new(StringArray::from(vec!["s", "s"])),
+                    Arc::new(StringArray::from(vec!["{}", "{}"])),
+                    Arc::new(
+                        TimestampNanosecondArray::from(vec![1000i64, 2000]).with_timezone("UTC"),
+                    ),
+                    Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                ],
+            )
+            .unwrap();
+            let f = fs::File::create(metrics.join("m.parquet")).unwrap();
+            let mut w = ArrowWriter::try_new(f, s, None).unwrap();
+            w.write(&batch).unwrap();
+            w.close().unwrap();
+        }
+
+        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30 });
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let report = c.run_once(today, true).await.unwrap();
+
+        assert!(report.partitions_sealed >= 2, "logs + metrics sealed: {report:?}");
+        assert!(logs.join("compacted-2026-05-30.parquet").exists(), "logs compacted");
+        assert!(metrics.join("compacted-2026-05-30.parquet").exists(), "metrics compacted");
+        // rollup tiers generated for the metric partition (14b nested dir reached)
+        assert!(metrics.join("rollup-1h.parquet").exists(), "1h rollup generated");
     }
 }

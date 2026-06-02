@@ -1,0 +1,45 @@
+# Sol compactor node (singleton role) for the demo.
+#
+# Seals sealed-day Parquet partitions into compacted + sorted files, generates
+# metric rollup tiers (5m/1h/1d), and runs retention GC over the shared Parquet
+# volume (read-write). No HTTP server. Its own metrics are forwarded to Mimir as
+# service.name = sol/compactor so the SOL Query Backend dashboard's sol_compactor_*
+# panels populate.
+
+query:
+  enabled: true
+  role: compactor
+  storage:
+    path: "/data/parquet"
+  compaction:
+    interval_secs: 300 # run a seal -> rollup -> GC pass every 5 minutes
+    grace_days: 1 # never touch the active (current) day
+    retention_days: 30
+    rollups: true
+
+sources:
+  self_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+    resource_attributes:
+      service.name: sol/compactor
+      service.namespace: compactor
+
+transforms:
+  promote_self_metrics_attrs:
+    type: remap
+    inputs: ["self_metrics"]
+    source: |
+      .attributes."service.name" = .resource.attributes."service.name"
+      .attributes."service.namespace" = .resource.attributes."service.namespace"
+
+sinks:
+  otlp_self_metrics:
+    type: opentelemetry
+    inputs: ["promote_self_metrics_attrs"]
+    protocol:
+      type: http
+      endpoint: "http://mimir:9009/otlp"
+      batch:
+        max_events: 1000
+        timeout_secs: 15
