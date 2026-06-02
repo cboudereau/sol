@@ -58,8 +58,15 @@ fn parse_selector(traceql: &str) -> Result<Vec<(String, String, String)>, String
         } else {
             return Err(format!("unsupported TraceQL matcher: {part} (only = / != in v1)"));
         };
-        let val = val.trim().trim_matches('"');
-        out.push((key.trim().to_string(), op.to_string(), val.to_string()));
+        // Strip the quotes, then unescape Go-style escapes (`\\` -> `\`) —
+        // TraceQL string literals are escaped on the wire like LogQL/PromQL.
+        let val = val.trim();
+        let val = if let Some(inner) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            super::loki::unescape_dquoted(inner)
+        } else {
+            val.trim_matches('"').to_string()
+        };
+        out.push((key.trim().to_string(), op.to_string(), val));
     }
     Ok(out)
 }
@@ -430,6 +437,14 @@ mod tests {
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
         assert!(sql.contains("name = 'GET /x'"), "sql: {sql}");
         assert!(sql.contains("encode(trace_id, 'hex')"), "sql: {sql}");
+    }
+
+    #[test]
+    fn test_traceql_double_backslash_unescaped() {
+        // Wire form carries Go-style escapes: `name="a\\b"` must collapse to
+        // the literal value `a\b` (same regression as the LogQL log panels).
+        let sql = translate_search(r#"{name="a\\b"}"#, 0, 100, 20).unwrap();
+        assert!(sql.contains(r#"name = 'a\b'"#), "sql: {sql}");
     }
 
     #[test]

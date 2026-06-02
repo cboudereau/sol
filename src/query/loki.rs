@@ -20,6 +20,36 @@ fn esc(value: &str) -> String {
     value.replace('\'', "''")
 }
 
+/// Unescape a double-quoted LogQL/PromQL/TraceQL string literal (Go-style
+/// escapes). Grafana sends regex matchers with escaped backslashes
+/// (`"1\\.0\\.0"` on the wire), which must collapse to the regex `1\.0\.0` to
+/// match `1.0.0`. Recognized: `\\ \" \n \t \r`; any other `\x` is kept
+/// verbatim (lenient — preserves regex metasequences like `\.`/`\d` when a
+/// client single-escapes). Shared with the TraceQL parser ([`super::tempo`]).
+pub(super) fn unescape_dquoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Render a label predicate. Promoted label → column; others → `prom_attr`,
 /// which matches the Prometheus-normalized name against the raw OTLP key (so
 /// `deployment_environment` hits the stored `deployment.environment`). Matcher
@@ -78,8 +108,17 @@ fn parse_selector(sel: &str) -> Result<Vec<(String, String, String)>, String> {
         } else {
             return Err(format!("malformed label matcher: {part}"));
         };
-        let val = val.trim().trim_matches('"');
-        out.push((key.trim().to_string(), op.to_string(), val.to_string()));
+        // Strip the quotes, then unescape: double-quoted values use Go-style
+        // escapes (`\\` -> `\`); backtick values are raw strings (verbatim).
+        let val = val.trim();
+        let val = if let Some(inner) = val.strip_prefix('`').and_then(|s| s.strip_suffix('`')) {
+            inner.to_string()
+        } else if let Some(inner) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            unescape_dquoted(inner)
+        } else {
+            val.trim_matches('"').to_string()
+        };
+        out.push((key.trim().to_string(), op.to_string(), val));
     }
     Ok(out)
 }
@@ -101,9 +140,11 @@ fn parse_line_filters(pipeline: &str) -> Result<Vec<(String, String)>, String> {
             _ => return Err("line filter value must be quoted".to_string()),
         };
         let end = rest[1..].find(quote).ok_or("unterminated line filter string")?;
-        let val = &rest[1..=end];
+        let raw = &rest[1..=end];
+        // Double-quoted filter values carry Go-style escapes; backticks are raw.
+        let val = if quote == '"' { unescape_dquoted(raw) } else { raw.to_string() };
         if !val.is_empty() {
-            out.push((op.to_string(), val.to_string()));
+            out.push((op.to_string(), val));
         }
         rest = rest[end + 2..].trim_start();
     }
@@ -250,6 +291,28 @@ mod tests {
         );
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) BETWEEN 100 AND 200"));
         assert!(sql.contains("ORDER BY time_unix_nano DESC LIMIT 1000"));
+    }
+
+    #[test]
+    fn test_logql_regex_double_backslash_unescaped() {
+        // Grafana sends regex matchers with escaped backslashes on the wire:
+        //   service_version=~"1\\.0\\.0"
+        // A double-quoted LogQL/PromQL string must be unescaped (`\\` -> `\`)
+        // before use, collapsing to the regex `1\.0\.0` which matches "1.0.0".
+        // Regression: the value was used verbatim, producing a regex with literal
+        // backslashes that never matched -> empty log panels in the demo.
+        let sql = translate_query_range(
+            r#"{service_name="client", service_version=~"1\\.0\\.0"}"#,
+            100,
+            200,
+            1000,
+            false,
+        )
+        .unwrap();
+        assert!(
+            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '1\.0\.0')"#),
+            "double-backslash regex must unescape to single backslash: {sql}"
+        );
     }
 
     #[test]
