@@ -561,12 +561,17 @@ async fn range_series(
     end_ns: i64,
     table: &str,
 ) -> crate::Result<RangeSeries> {
+    let sql = translate_range_on(query, start_ns, end_ns, table).map_err(to_err)?;
+    range_series_sql(engine, &sql).await
+}
+
+/// Group the rows of an already-built range SQL into per-series point lists.
+async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result<RangeSeries> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type, Int64Type};
 
-    let sql = translate_range_on(query, start_ns, end_ns, table).map_err(to_err)?;
-    let batches = engine.sql(&sql).await?;
+    let batches = engine.sql(sql).await?;
 
     const NON_LABEL: [&str; 3] = ["v", "attributes", "time_unix_nano"];
 
@@ -919,15 +924,17 @@ async fn handle_bucket_heatmap(
 }
 
 /// If `expr` is `topk(n, inner)` / `bottomk(n, inner)`, return
-/// `(n, is_topk, inner_promql)`. Prometheus `topk` selects the top-N *series*
-/// (each returned with all its points) — applied in Rust over the matrix, not
-/// as a SQL row `LIMIT` (which would collapse series to N scattered points).
-fn strip_topk(expr: &Expr) -> Option<(i64, bool, String)> {
+/// `(n, is_topk, &inner)`. Prometheus `topk` selects the top-N *series* (each
+/// returned with all its points) — applied in Rust over the matrix, not as a
+/// SQL row `LIMIT` (which would collapse series to N scattered points). The
+/// inner is returned as a borrowed AST node so we translate it directly (no
+/// `Display`→re-parse round-trip, which could mangle matcher values).
+fn topk_parts(expr: &Expr) -> Option<(i64, bool, &Expr)> {
     match expr {
-        Expr::Paren(p) => strip_topk(&p.expr),
+        Expr::Paren(p) => topk_parts(&p.expr),
         Expr::Aggregate(agg) if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK => {
             let n = as_count(agg.param.as_deref()?).ok()?;
-            Some((n, agg.op.id() == token::T_TOPK, agg.expr.to_string()))
+            Some((n, agg.op.id() == token::T_TOPK, agg.expr.as_ref()))
         }
         _ => None,
     }
@@ -956,41 +963,51 @@ pub async fn handle_range(
     end_ns: i64,
     step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
+    let parsed = parser::parse(query).ok();
     // Classic-histogram queries are computed from OTLP array buckets:
     // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
-    if let Ok(expr) = parser::parse(query) {
-        if let Some(spec) = detect_hist_quantile(&expr) {
+    if let Some(expr) = &parsed {
+        if let Some(spec) = detect_hist_quantile(expr) {
             return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
         }
-        if let Some(spec) = detect_bucket_heatmap(&expr) {
+        if let Some(spec) = detect_bucket_heatmap(expr) {
             return handle_bucket_heatmap(engine, &spec, start_ns, end_ns).await;
         }
     }
 
-    // Strip a top-level topk/bottomk so we can select top-N *series* in Rust
-    // (the inner expression is what we actually scan + group).
+    // A top-level topk/bottomk: select top-N *series* in Rust; translate the
+    // inner AST node directly (no Display round-trip).
     let mut topk: Option<(i64, bool)> = None;
-    let inner = parser::parse(query).ok().and_then(|e| strip_topk(&e)).map(|(n, is_topk, inner)| {
+    let inner_expr: Option<&Expr> = parsed.as_ref().and_then(topk_parts).map(|(n, is_topk, inner)| {
         topk = Some((n, is_topk));
         inner
     });
-    let q: &str = inner.as_deref().unwrap_or(query);
 
     let table = select_range_table(engine, step_ns);
-    let mut merged: RangeSeries = BTreeMap::new();
-    if super::frontend::should_split(start_ns, end_ns) {
+    let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
         // Per-day shards aligned to UTC midnight; everything before the last day
         // is sealed/cacheable. `split` emits the shard-count metric.
         let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
-        for shard in super::frontend::split(start_ns, end_ns, 0, sealed_ns) {
-            for (key, (metric, points)) in
-                range_series(engine, q, shard.start_ns, shard.end_ns, &table).await?
-            {
-                merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
-            }
-        }
+        super::frontend::split(start_ns, end_ns, 0, sealed_ns)
+            .into_iter()
+            .map(|s| (s.start_ns, s.end_ns))
+            .collect()
     } else {
-        merged = range_series(engine, q, start_ns, end_ns, &table).await?;
+        vec![(start_ns, end_ns)]
+    };
+
+    let mut merged: RangeSeries = BTreeMap::new();
+    for (s, e) in windows {
+        let part = match inner_expr {
+            Some(inner) => {
+                let sql = lower_range(inner, s, e, &table).map_err(to_err)?;
+                range_series_sql(engine, &sql).await?
+            }
+            None => range_series(engine, query, s, e, &table).await?,
+        };
+        for (key, (metric, points)) in part {
+            merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
+        }
     }
 
     let mut series: Vec<(BTreeMap<String, String>, Vec<(f64, f64)>)> = merged
