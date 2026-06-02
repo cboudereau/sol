@@ -32,6 +32,31 @@ fn sql_ident(key: &str) -> String {
     key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
 }
 
+/// Resolve a metric selector to `(value_expr, name_predicate)`, synthesizing the
+/// classic histogram component series from the OTLP histogram columns:
+/// `<base>_count` → the `count` column, `<base>_sum` → the `sum` column (both
+/// guarded to histogram rows), anything else → the gauge/counter value. The
+/// name predicate also matches a real metric named exactly `<name>`.
+fn metric_value_and_match(name: &str) -> (String, String) {
+    let exact = format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name));
+    let hist = |base: &str| {
+        format!(
+            "prom_metric_name(name, unit, is_monotonic) = '{}' AND bucket_counts IS NOT NULL",
+            esc(base)
+        )
+    };
+    if let Some(base) = name.strip_suffix("_count") {
+        (
+            "COALESCE(double_value, CAST(int_value AS DOUBLE), CAST(\"count\" AS DOUBLE))".to_string(),
+            format!("({exact} OR ({}))", hist(base)),
+        )
+    } else if let Some(base) = name.strip_suffix("_sum") {
+        ("COALESCE(double_value, \"sum\")".to_string(), format!("({exact} OR ({}))", hist(base)))
+    } else {
+        ("COALESCE(double_value, CAST(int_value AS DOUBLE))".to_string(), exact)
+    }
+}
+
 fn matcher_pred(m: &Matcher) -> Option<String> {
     if m.name == "__name__" {
         return None;
@@ -56,7 +81,8 @@ fn matcher_pred(m: &Matcher) -> Option<String> {
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
     let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
-    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
+    let (value_expr, name_pred) = metric_value_and_match(name);
+    let mut preds = vec![name_pred];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -65,7 +91,7 @@ fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String
     preds.push(format!("CAST(time_unix_nano AS BIGINT) <= {time_ns}"));
     Ok(format!(
         "SELECT name, service_name, attributes, \
-         COALESCE(double_value, CAST(int_value AS DOUBLE)) AS v, time_unix_nano, \
+         {value_expr} AS v, time_unix_nano, \
          row_number() OVER (PARTITION BY name, attributes ORDER BY time_unix_nano DESC) AS rn \
          FROM metrics WHERE {}",
         preds.join(" AND ")
@@ -327,7 +353,8 @@ pub async fn handle_series(engine: &super::QueryEngine) -> crate::Result<serde_j
 /// grouping columns plus a numeric `v` (gauge/counter value) and the time.
 fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
-    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
+    let (value_expr, name_pred) = metric_value_and_match(name);
+    let mut preds = vec![name_pred];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -336,7 +363,7 @@ fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> 
     preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
     Ok(format!(
         "SELECT name, service_name, attributes, time_unix_nano, \
-         COALESCE(double_value, CAST(int_value AS DOUBLE)) AS v FROM {table} WHERE {}",
+         {value_expr} AS v FROM {table} WHERE {}",
         preds.join(" AND ")
     ))
 }
@@ -761,6 +788,136 @@ async fn handle_hist_quantile_range(
     Ok(PromMatrixResponse::matrix(series))
 }
 
+// --- Classic `_bucket{le}` heatmap synthesis (#4, heatmap panels) ---
+//
+// `sum(rate(<base>_bucket[d])) by (le[, G])` (no histogram_quantile — a heatmap)
+// needs the classic per-`le` *cumulative* bucket series. We explode the OTLP
+// `bucket_counts`/`explicit_bounds` arrays into per-`le` cumulative counts and
+// emit a per-`(le, G)` rate series.
+
+/// A recognised `_bucket`-by-`le` heatmap query.
+struct BucketSpec {
+    base: String,
+    preds: Vec<String>,
+    group_by: Vec<String>, // extra grouping labels (the `by` set minus `le`)
+}
+
+/// Detect `sum(rate(<base>_bucket[d])) by (le[, G])` (no histogram_quantile).
+fn detect_bucket_heatmap(expr: &Expr) -> Option<BucketSpec> {
+    let agg = match expr {
+        Expr::Paren(p) => return detect_bucket_heatmap(&p.expr),
+        Expr::Aggregate(a) => a,
+        _ => return None,
+    };
+    // must group by `le` (the bucket dimension)
+    let by = match &agg.modifier {
+        Some(LabelModifier::Include(l)) => l.labels.clone(),
+        _ => return None,
+    };
+    if !by.iter().any(|l| l == "le") {
+        return None;
+    }
+    let (vs, _) = find_hist_base(agg.expr.as_ref())?;
+    let name = vs.name.as_deref()?;
+    let base = name.strip_suffix("_bucket")?.to_string(); // only `_bucket` selectors
+    let preds = vs.matchers.matchers.iter().filter_map(matcher_pred).collect();
+    let group_by: Vec<String> = by.into_iter().filter(|l| l != "le").collect();
+    Some(BucketSpec { base, preds, group_by })
+}
+
+/// Serve a `_bucket`-by-`le` heatmap from OTLP array histograms: explode each
+/// row to per-`le` cumulative counts, then emit a per-`(le, G)` rate series
+/// (consecutive-sample delta, counter-reset aware — like `rate_sql`).
+#[allow(clippy::cast_precision_loss)] // ns→seconds; sub-ms precision irrelevant
+async fn handle_bucket_heatmap(
+    engine: &super::QueryEngine,
+    spec: &BucketSpec,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<PromMatrixResponse> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::{DataType, Int64Type};
+
+    let mut preds = vec![
+        format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(&spec.base)),
+        "bucket_counts IS NOT NULL".to_string(),
+    ];
+    preds.extend(spec.preds.iter().cloned());
+    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    let group_cols: String =
+        spec.group_by.iter().map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g))).collect();
+    let sql = format!(
+        "SELECT time_unix_nano, bucket_counts, explicit_bounds{group_cols} FROM metrics WHERE {}",
+        preds.join(" AND ")
+    );
+    let batches = engine.sql(&sql).await?;
+
+    // (G-values + le) → ts → cumulative count
+    let mut series: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<i64, f64>)> =
+        BTreeMap::new();
+    for batch in &batches {
+        let t = cast(batch.column(0), &DataType::Int64)?;
+        let t = t.as_primitive::<Int64Type>();
+        let bc = batch.column(1).as_string::<i32>();
+        let eb = batch.column(2).as_string::<i32>();
+        let glabels: Vec<(String, _)> = spec
+            .group_by
+            .iter()
+            .enumerate()
+            .map(|(j, g)| (g.clone(), cast(batch.column(3 + j), &DataType::Utf8)))
+            .collect();
+        for i in 0..batch.num_rows() {
+            if t.is_null(i) || bc.is_null(i) {
+                continue;
+            }
+            let counts = parse_f64_array(Some(bc.value(i)));
+            let bounds = parse_f64_array((!eb.is_null(i)).then(|| eb.value(i)));
+            if counts.is_empty() {
+                continue;
+            }
+            // base label set G for this row
+            let mut base_metric = BTreeMap::new();
+            for (name, arr) in &glabels {
+                let arr = arr.as_ref().map_err(|e| to_err(e.to_string()))?;
+                let arr = arr.as_string::<i32>();
+                if !arr.is_null(i) {
+                    base_metric.insert(name.clone(), arr.value(i).to_string());
+                }
+            }
+            // cumulative counts → classic `_bucket{le}` (le = bound, last = +Inf)
+            let mut cum = 0.0;
+            for (idx, c) in counts.iter().enumerate() {
+                cum += c;
+                let le = bounds.get(idx).map_or_else(|| "+Inf".to_string(), |b| format!("{b}"));
+                let mut metric = base_metric.clone();
+                metric.insert("le".to_string(), le);
+                let key = format!("{metric:?}");
+                let entry = series.entry(key).or_insert_with(|| (metric, BTreeMap::new()));
+                *entry.1.entry(t.value(i)).or_insert(0.0) += cum;
+            }
+        }
+    }
+
+    let to_secs = |ns: i64| ns as f64 / 1_000_000_000.0;
+    let out = series.into_values().map(|(metric, by_ts)| {
+        // per-le rate: consecutive-sample delta / dt (counter-reset aware)
+        let pts: Vec<(i64, f64)> = by_ts.into_iter().collect(); // BTreeMap → ts-sorted
+        let mut rated = Vec::new();
+        for w in pts.windows(2) {
+            let (t0, v0) = w[0];
+            let (t1, v1) = w[1];
+            let dt = (t1 - t0) as f64 / 1_000_000_000.0;
+            if dt > 0.0 {
+                let delta = if v1 >= v0 { v1 - v0 } else { v1 };
+                rated.push((to_secs(t1), delta / dt));
+            }
+        }
+        (metric, rated)
+    });
+    Ok(PromMatrixResponse::matrix(out))
+}
+
 /// Pick the table to serve a range query: the coarsest registered rollup tier
 /// whose resolution ≤ `step_ns` (FR6), else raw `metrics`.
 fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
@@ -784,11 +941,15 @@ pub async fn handle_range(
     end_ns: i64,
     step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
-    // Classic-histogram quantile queries are computed from OTLP array buckets.
-    if let Ok(expr) = parser::parse(query)
-        && let Some(spec) = detect_hist_quantile(&expr)
-    {
-        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
+    // Classic-histogram queries are computed from OTLP array buckets:
+    // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
+    if let Ok(expr) = parser::parse(query) {
+        if let Some(spec) = detect_hist_quantile(&expr) {
+            return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
+        }
+        if let Some(spec) = detect_bucket_heatmap(&expr) {
+            return handle_bucket_heatmap(engine, &spec, start_ns, end_ns).await;
+        }
     }
 
     let table = select_range_table(engine, step_ns);
@@ -1228,6 +1389,87 @@ mod tests {
             (v[0].1.parse::<f64>().unwrap() - 50.0).abs() < 1e-9,
             "p95 from OTLP buckets = 50: {v:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_bucket_heatmap_explodes_le_series() {
+        // #4 heatmap: sum(rate(<base>_bucket[d])) by (le) → per-le cumulative
+        // bucket rate series, exploded from the OTLP arrays.
+        use crate::config::query::{Options, StorageConfig};
+        use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("histogram").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+        ]));
+        // two cumulative-increasing snapshots at t=1s and t=2s (bounds [10,20])
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client", "client"])),
+                Arc::new(StringArray::from(vec![
+                    "http.server.request.duration",
+                    "http.server.request.duration",
+                ])),
+                Arc::new(StringArray::from(vec![Some("s"), Some("s")])),
+                Arc::new(BooleanArray::from(vec![Some(false), Some(false)])),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000])
+                        .with_timezone("UTC"),
+                ),
+                Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+                Arc::new(StringArray::from(vec![Some("[0,2,3]"), Some("[0,4,6]")])),
+                Arc::new(StringArray::from(vec![Some("[10,20]"), Some("[10,20]")])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("h.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = Options {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..Options::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let resp = handle_range(
+            &engine,
+            "sum(rate(http_server_request_duration_seconds_bucket[1m])) by (le)",
+            0,
+            10_000_000_000,
+            15,
+        )
+        .await
+        .unwrap();
+        // three le buckets: 10, 20, +Inf
+        assert_eq!(resp.data.result.len(), 3, "le series: {:?}", resp.data.result);
+        let by_le: std::collections::BTreeMap<String, f64> = resp
+            .data
+            .result
+            .iter()
+            .map(|r| (r.metric["le"].clone(), r.values.last().unwrap().1.parse().unwrap()))
+            .collect();
+        // cumulative: le=10 stays 0 → rate 0; le=20: (4-2)/1s=2; le=+Inf: (10-5)/1s=5
+        assert!((by_le["20"] - 2.0).abs() < 1e-9, "le=20 rate: {by_le:?}");
+        assert!((by_le["+Inf"] - 5.0).abs() < 1e-9, "le=+Inf rate: {by_le:?}");
     }
 
     #[test]
