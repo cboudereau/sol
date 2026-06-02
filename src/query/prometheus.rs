@@ -313,7 +313,7 @@ pub async fn handle_series(engine: &super::QueryEngine) -> crate::Result<serde_j
 
 /// Base per-sample selection over `metrics` for a range query: exposes the
 /// grouping columns plus a numeric `v` (gauge/counter value) and the time.
-fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64) -> Result<String, String> {
+fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
     let mut preds = vec![format!("name = '{}'", esc(name))];
     for m in &vs.matchers.matchers {
@@ -324,7 +324,7 @@ fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64) -> Result<String
     preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
     Ok(format!(
         "SELECT name, service_name, attributes, time_unix_nano, \
-         COALESCE(double_value, CAST(int_value AS DOUBLE)) AS v FROM metrics WHERE {}",
+         COALESCE(double_value, CAST(int_value AS DOUBLE)) AS v FROM {table} WHERE {}",
         preds.join(" AND ")
     ))
 }
@@ -332,8 +332,8 @@ fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64) -> Result<String
 /// `rate(m[d])` — per-sample delta via `LAG` over the series window. Counter
 /// resets (`v < prev_v`) use the current value as the delta (simplified, per
 /// the PromQL ADR). The range `[d]` bounds the outer time filter only.
-fn rate_sql(vs: &VectorSelector, start_ns: i64, end_ns: i64) -> Result<String, String> {
-    let base = metric_base(vs, start_ns, end_ns)?;
+fn rate_sql(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
+    let base = metric_base(vs, start_ns, end_ns, table)?;
     Ok(format!(
         "WITH ordered AS (SELECT name, service_name, attributes, time_unix_nano, v, \
          LAG(v) OVER w AS prev_v, LAG(CAST(time_unix_nano AS BIGINT)) OVER w AS prev_t \
@@ -352,8 +352,9 @@ fn over_time_sql(
     start_ns: i64,
     end_ns: i64,
     agg: &str,
+    table: &str,
 ) -> Result<String, String> {
-    let base = metric_base(vs, start_ns, end_ns)?;
+    let base = metric_base(vs, start_ns, end_ns, table)?;
     let range_ns = i64::try_from(range.as_nanos()).unwrap_or(i64::MAX);
     Ok(format!(
         "SELECT service_name, attributes, time_unix_nano, \
@@ -363,18 +364,18 @@ fn over_time_sql(
     ))
 }
 
-fn lower_call(c: &Call, start_ns: i64, end_ns: i64) -> Result<String, String> {
+fn lower_call(c: &Call, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     let (vs, range) = match c.args.args.first().map(|b| b.as_ref()) {
         Some(Expr::MatrixSelector(ms)) => (&ms.vs, ms.range),
         _ => return Err(format!("{}() expects a range-vector argument like m[5m]", c.func.name)),
     };
     match c.func.name {
-        "rate" | "irate" | "increase" => rate_sql(vs, start_ns, end_ns),
-        "max_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MAX"),
-        "min_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MIN"),
-        "avg_over_time" => over_time_sql(vs, range, start_ns, end_ns, "AVG"),
-        "sum_over_time" => over_time_sql(vs, range, start_ns, end_ns, "SUM"),
-        "count_over_time" => over_time_sql(vs, range, start_ns, end_ns, "COUNT"),
+        "rate" | "irate" | "increase" => rate_sql(vs, start_ns, end_ns, table),
+        "max_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MAX", table),
+        "min_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MIN", table),
+        "avg_over_time" => over_time_sql(vs, range, start_ns, end_ns, "AVG", table),
+        "sum_over_time" => over_time_sql(vs, range, start_ns, end_ns, "SUM", table),
+        "count_over_time" => over_time_sql(vs, range, start_ns, end_ns, "COUNT", table),
         other => Err(format!("unsupported range function: {other}() (v1)")),
     }
 }
@@ -389,11 +390,16 @@ fn as_count(expr: &Expr) -> Result<i64, String> {
     }
 }
 
-fn lower_range_aggregate(agg: &AggregateExpr, start_ns: i64, end_ns: i64) -> Result<String, String> {
+fn lower_range_aggregate(
+    agg: &AggregateExpr,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> Result<String, String> {
     // topk/bottomk: order the inner series by value and limit.
     if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK {
         let n = as_count(agg.param.as_deref().ok_or("topk/bottomk requires a count")?)?;
-        let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns)?;
+        let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
         let dir = if agg.op.id() == token::T_TOPK { "DESC" } else { "ASC" };
         return Ok(format!("SELECT * FROM ({inner}) ORDER BY v {dir} LIMIT {n}"));
     }
@@ -406,7 +412,7 @@ fn lower_range_aggregate(agg: &AggregateExpr, start_ns: i64, end_ns: i64) -> Res
     if by.is_empty() {
         return Err("range aggregation requires at least one `by` label in v1".to_string());
     }
-    let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns)?;
+    let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
     let select_cols: Vec<String> =
         by.iter().map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k))).collect();
     let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
@@ -419,11 +425,11 @@ fn lower_range_aggregate(agg: &AggregateExpr, start_ns: i64, end_ns: i64) -> Res
     ))
 }
 
-fn lower_range(expr: &Expr, start_ns: i64, end_ns: i64) -> Result<String, String> {
+fn lower_range(expr: &Expr, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     match expr {
-        Expr::Call(c) => lower_call(c, start_ns, end_ns),
-        Expr::Paren(p) => lower_range(&p.expr, start_ns, end_ns),
-        Expr::Aggregate(agg) => lower_range_aggregate(agg, start_ns, end_ns),
+        Expr::Call(c) => lower_call(c, start_ns, end_ns, table),
+        Expr::Paren(p) => lower_range(&p.expr, start_ns, end_ns, table),
+        Expr::Aggregate(agg) => lower_range_aggregate(agg, start_ns, end_ns, table),
         Expr::VectorSelector(_) => Err(
             "range query needs a function over a range vector, e.g. rate(m[5m]) (v1)".to_string(),
         ),
@@ -437,7 +443,19 @@ fn lower_range(expr: &Expr, start_ns: i64, end_ns: i64) -> Result<String, String
 /// Translate a range PromQL query to SQL over the `metrics` table. The `step`
 /// is applied by the caller (no SQL-side resampling in v1).
 pub fn translate_range(query: &str, start_ns: i64, end_ns: i64) -> Result<String, String> {
-    lower_range(&parser::parse(query)?, start_ns, end_ns)
+    translate_range_on(query, start_ns, end_ns, "metrics")
+}
+
+/// Like [`translate_range`] but targeting an explicit table — the query-frontend
+/// passes a rollup tier table (`metrics_5m`/`metrics_1h`/`metrics_1d`) for coarse
+/// long-range queries (FR6).
+pub fn translate_range_on(
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> Result<String, String> {
+    lower_range(&parser::parse(query)?, start_ns, end_ns, table)
 }
 
 /// Prometheus `query_range` response envelope (`resultType=matrix`).
@@ -497,12 +515,13 @@ async fn range_series(
     query: &str,
     start_ns: i64,
     end_ns: i64,
+    table: &str,
 ) -> crate::Result<RangeSeries> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type, Int64Type};
 
-    let sql = translate_range(query, start_ns, end_ns).map_err(to_err)?;
+    let sql = translate_range_on(query, start_ns, end_ns, table).map_err(to_err)?;
     let batches = engine.sql(&sql).await?;
 
     const NON_LABEL: [&str; 3] = ["v", "attributes", "time_unix_nano"];
@@ -550,15 +569,30 @@ async fn range_series(
     Ok(series)
 }
 
+/// Pick the table to serve a range query: the coarsest registered rollup tier
+/// whose resolution ≤ `step_ns` (FR6), else raw `metrics`.
+fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
+    let available: Vec<super::rollup::RollupTier> = super::rollup::RollupTier::all()
+        .into_iter()
+        .filter(|t| engine.has_table(&format!("metrics_{}", t.label())))
+        .collect();
+    match super::rollup::select_tier(step_ns, &available) {
+        super::rollup::RollupTier::Raw => "metrics".to_string(),
+        tier => format!("metrics_{}", tier.label()),
+    }
+}
+
 /// Run a range PromQL query and build a `resultType=matrix` response. Long
 /// ranges are split into per-day shards by the query-frontend ([`super::frontend`])
-/// and merged (FR8); short ranges run as a single window.
+/// and merged (FR8); a coarse `step_ns` selects a rollup tier table (FR6).
 pub async fn handle_range(
     engine: &super::QueryEngine,
     query: &str,
     start_ns: i64,
     end_ns: i64,
+    step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
+    let table = select_range_table(engine, step_ns);
     let mut merged: RangeSeries = BTreeMap::new();
     if super::frontend::should_split(start_ns, end_ns) {
         // Per-day shards aligned to UTC midnight; everything before the last day
@@ -566,13 +600,13 @@ pub async fn handle_range(
         let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
         for shard in super::frontend::split(start_ns, end_ns, 0, sealed_ns) {
             for (key, (metric, points)) in
-                range_series(engine, query, shard.start_ns, shard.end_ns).await?
+                range_series(engine, query, shard.start_ns, shard.end_ns, &table).await?
             {
                 merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
             }
         }
     } else {
-        merged = range_series(engine, query, start_ns, end_ns).await?;
+        merged = range_series(engine, query, start_ns, end_ns, &table).await?;
     }
 
     let out = merged.into_values().map(|(metric, mut points)| {
@@ -775,6 +809,17 @@ mod tests {
     }
 
     #[test]
+    fn test_range_targets_selected_tier_table() {
+        // FR6: the frontend routes coarse queries to a rollup tier table.
+        let tier = translate_range_on("rate(http_total[1m])", 0, 100, "metrics_1h").unwrap();
+        assert!(tier.contains("FROM metrics_1h WHERE"), "sql: {tier}");
+        // the default still targets raw `metrics`
+        let raw = translate_range("rate(http_total[1m])", 0, 100).unwrap();
+        assert!(raw.contains("FROM metrics WHERE"), "sql: {raw}");
+        assert!(!raw.contains("metrics_1h"), "sql: {raw}");
+    }
+
+    #[test]
     fn test_rate_counter_reset_uses_current_value() {
         let sql = translate_range("rate(http_total[1m])", 0, 100).unwrap();
         assert!(
@@ -876,7 +921,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_executes_and_computes_values() {
         let engine = counter_engine().await;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000).await.unwrap();
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0).await.unwrap();
         assert_eq!(resp.data.result_type, "matrix");
         assert_eq!(resp.data.result.len(), 1, "one series");
         let s = &resp.data.result[0];
@@ -892,7 +937,7 @@ mod tests {
         // must equal the unsplit rate (split/merge preserves results — FR8).
         let engine = counter_engine().await;
         let two_days = 2 * 86_400_000_000_000i64;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days).await.unwrap();
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days, 0).await.unwrap();
         assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
         assert_eq!(
             resp.data.result[0].values,
@@ -905,7 +950,7 @@ mod tests {
     async fn test_max_over_time_executes_with_range_frame() {
         let engine = counter_engine().await;
         let resp =
-            handle_range(&engine, "max_over_time(http_total[5m])", 0, 10_000_000_000).await.unwrap();
+            handle_range(&engine, "max_over_time(http_total[5m])", 0, 10_000_000_000, 0).await.unwrap();
         let s = &resp.data.result[0];
         // sliding max up to each point: 10, 30, 60.
         assert_eq!(

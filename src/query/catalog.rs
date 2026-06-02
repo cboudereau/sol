@@ -218,18 +218,65 @@ impl ParquetCatalog {
                 ctx.register_table(table.table_name(), Arc::new(listing))?;
             }
         }
+
+        // Rollup tier tables (FR6): metrics_5m / metrics_1h / metrics_1d over the
+        // compactor's rollup-<tier>.parquet files. Registered only when present,
+        // so the frontend can detect availability and fall back to raw.
+        let metrics_root = self.root.join("metrics");
+        let metric_schema = SignalTable::Metrics.arrow_schema();
+        for tier in ROLLUP_TIERS {
+            let files = rollup_tier_files(&metrics_root, tier);
+            if files.is_empty() {
+                continue;
+            }
+            let paths = files
+                .iter()
+                .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
+                .collect::<Result<Vec<_>, _>>()?;
+            let options = ListingOptions::new(Arc::new(ParquetFormat::default()));
+            let config = ListingTableConfig::new_with_multi_paths(paths)
+                .with_listing_options(options)
+                .with_schema(Arc::clone(&metric_schema));
+            ctx.register_table(format!("metrics_{tier}"), Arc::new(ListingTable::try_new(config)?))?;
+        }
         Ok(())
     }
 
     /// Re-register tables to pick up newly-created directories / files.
-    /// (ListingTable re-lists files on each scan; this re-registers in case a
-    /// previously-absent directory now exists.)
+    /// (ListingTable lists files at registration; this re-registers so newly
+    /// written files — and new compacted/rollup files — become visible.)
     pub async fn refresh(&self, ctx: &SessionContext) -> crate::Result<()> {
         for table in SignalTable::ALL {
             let _ = ctx.deregister_table(table.table_name());
         }
+        for tier in ROLLUP_TIERS {
+            let _ = ctx.deregister_table(format!("metrics_{tier}"));
+        }
         self.register(ctx).await
     }
+}
+
+/// Rollup tier labels matching [`super::rollup::RollupTier::label`].
+const ROLLUP_TIERS: [&str; 3] = ["5m", "1h", "1d"];
+
+/// Collect `rollup-<tier>.parquet` files at any depth under the metrics root.
+fn rollup_tier_files(metrics_root: &std::path::Path, tier: &str) -> Vec<PathBuf> {
+    let target = format!("rollup-{tier}.parquet");
+    let mut out = Vec::new();
+    let mut stack = vec![metrics_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().and_then(|s| s.to_str()) == Some(target.as_str()) {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Recursively collect the queryable Parquet files under a signal root: walks to
@@ -307,6 +354,11 @@ impl QueryEngine {
     /// Configured maximum bytes a single query may scan (NFR9).
     pub fn max_scan_bytes(&self) -> u64 {
         self.max_scan_bytes
+    }
+
+    /// Whether a table is registered (e.g. a rollup tier table `metrics_1h`).
+    pub fn has_table(&self, name: &str) -> bool {
+        self.ctx.table_exist(name).unwrap_or(false)
     }
 
     /// Run a SQL query, collecting all result batches. Results are cached
@@ -482,6 +534,26 @@ mod tests {
             .unwrap();
         // 3 subtypes × 2 rows, all under metrics/ → one union table.
         assert_eq!(count(&engine, "metrics").await, 6);
+    }
+
+    #[tokio::test]
+    async fn test_rollup_tier_tables_registered_separately() {
+        // task 12/D: rollup-<tier>.parquet files back per-tier tables, excluded
+        // from the main `metrics` union (no double count) but queryable directly.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("gauge").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_min_log_parquet(&dir.join("m.parquet"), 2); // raw, 2 rows
+        write_min_log_parquet(&dir.join("rollup-1h.parquet"), 1); // 1h rollup, 1 row
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        // main union excludes the rollup file → only the 2 raw rows
+        assert_eq!(count(&engine, "metrics").await, 2);
+        // the 1h tier table is registered over the rollup file
+        assert!(engine.has_table("metrics_1h"));
+        assert!(!engine.has_table("metrics_5m"), "absent tier not registered");
+        assert_eq!(count(&engine, "metrics_1h").await, 1);
     }
 
     #[tokio::test]

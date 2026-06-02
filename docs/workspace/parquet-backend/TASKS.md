@@ -537,8 +537,8 @@ classDiagram
 **Acceptance criteria**:
 - [x] Per-signal directories (`logs/`, `traces/`, `metrics/`) with `dt=YYYY-MM-DD/` sub-partitions — demo `sol-gateway.yaml` paths updated (strftime templating; sink supports it)
 - [x] Demo `sol-gateway.yaml` + `parquet-query.sh` updated to the dt= layout (recursive `**` globs); pipeline flush path unchanged
-- [ ] _14b:_ Per-metric-subtype directories (needs codec blob-tagging) — deferred; metrics use the union fallback meanwhile
-- [ ] _14b:_ Rows sorted within each written file by the sort key (codec sort-on-write) — deferred
+- [x] _14b:_ Per-metric-subtype directories — done via a gateway `route` transform → per-subtype file sinks (`metrics/<subtype>/dt=…`); no codec blob-tagging needed. The querier registers each table over an explicit, recursively-walked file list, so it reads the nested layout and (via `resolve_files`) skips superseded raw.
+- [x] _14b:_ Rows sorted within each written file by the sort key — codec `sort_dp_rows` orders every metric Parquet by `(service_name, name, time_unix_nano)` on write.
 **Depends on**: (none — write side)
 **Time-box**: ~60 min · **Hill**: 14a downhill ✅; 14b deferred (codec API change — flagged for checkpoint review)
 

@@ -94,8 +94,20 @@ struct PromRangeParams {
     query: String,
     start: Option<String>,
     end: Option<String>,
-    #[allow(dead_code)]
     step: Option<String>,
+}
+
+/// Parse a Prometheus `step` (seconds, possibly fractional) to nanoseconds.
+/// Unparseable/absent → 0, which selects the raw `metrics` table (no rollup).
+fn parse_step_ns(s: &Option<String>) -> i64 {
+    s.as_ref()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|secs| {
+            #[allow(clippy::cast_possible_truncation)]
+            let ns = (secs * 1_000_000_000.0) as i64;
+            ns
+        })
+        .unwrap_or(0)
 }
 
 async fn prom_range(
@@ -105,7 +117,8 @@ async fn prom_range(
     // start defaults to 0 (not "now"), end to now/latest.
     let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
-    match prometheus::handle_range(&engine, &params.query, start_ns, end_ns).await {
+    let step_ns = parse_step_ns(&params.step);
+    match prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns).await {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
         Err(error) => Ok(error_response(error)),
     }
