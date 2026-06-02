@@ -2,9 +2,9 @@
 //!
 //! Covers the pcap subset (label matchers `=`/`!=`/`=~`/`!~`, line filters
 //! `|=`/`!=`/`|~`/`!~`) per [QUERY-MAPPING.md](../../../docs/workspace/parquet-backend/QUERY-MAPPING.md).
-//! Non-promoted labels use `json_get_str(<col>, '<key>')` from the
-//! `datafusion-functions-json` extension (registered by the engine — ADR 0039);
-//! DataFusion core has no built-in JSON extraction.
+//! Non-promoted labels use `prom_attr(resource_attributes, '<key>')` — the
+//! query-side OTLP→Prometheus normalization, matching the Prometheus label name
+//! against the raw OTLP key (`deployment_environment` → `deployment.environment`).
 
 use std::collections::BTreeMap;
 
@@ -20,18 +20,24 @@ fn esc(value: &str) -> String {
     value.replace('\'', "''")
 }
 
-/// Render a label predicate. Promoted label → column; others → `json_get_str`.
+/// Render a label predicate. Promoted label → column; others → `prom_attr`,
+/// which matches the Prometheus-normalized name against the raw OTLP key (so
+/// `deployment_environment` hits the stored `deployment.environment`). Matcher
+/// semantics mirror Prometheus: an absent label behaves like the empty string.
 fn label_pred(key: &str, op: &str, value: &str) -> Result<String, String> {
     let lhs = if key == PROMOTED_LABEL {
         PROMOTED_LABEL.to_string()
     } else {
-        format!("json_get_str(resource_attributes, '{}')", esc(key))
+        format!("prom_attr(resource_attributes, '{}')", esc(key))
     };
+    let v = esc(value);
     Ok(match op {
-        "=" => format!("{lhs} = '{}'", esc(value)),
-        "!=" => format!("{lhs} <> '{}'", esc(value)),
-        "=~" => format!("regexp_like({lhs}, '{}')", esc(value)),
-        "!~" => format!("NOT regexp_like({lhs}, '{}')", esc(value)),
+        "=" if value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
+        "=" => format!("{lhs} = '{v}'"),
+        "!=" if value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
+        "!=" => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
+        "=~" => format!("regexp_like(COALESCE({lhs}, ''), '{v}')"),
+        "!~" => format!("NOT regexp_like(COALESCE({lhs}, ''), '{v}')"),
         other => return Err(format!("unsupported label matcher op: {other}")),
     })
 }
@@ -88,15 +94,17 @@ fn parse_line_filters(pipeline: &str) -> Result<Vec<(String, String)>, String> {
             .find(|o| rest.starts_with(**o))
             .ok_or_else(|| format!("unsupported LogQL pipeline near: {rest}"))?;
         rest = rest[op.len()..].trim_start();
-        let rest_bytes = rest.as_bytes();
-        if rest_bytes.first() != Some(&b'"') {
-            return Err("line filter value must be quoted".to_string());
-        }
-        let end = rest[1..]
-            .find('"')
-            .ok_or("unterminated line filter string")?;
+        // LogQL line-filter values are quoted with `"` or backticks; Grafana's
+        // Explore sends an empty `|= \`\`` which is a no-op (matches everything).
+        let quote = match rest.chars().next() {
+            Some(q @ ('"' | '`')) => q,
+            _ => return Err("line filter value must be quoted".to_string()),
+        };
+        let end = rest[1..].find(quote).ok_or("unterminated line filter string")?;
         let val = &rest[1..=end];
-        out.push((op.to_string(), val.to_string()));
+        if !val.is_empty() {
+            out.push((op.to_string(), val.to_string()));
+        }
         rest = rest[end + 2..].trim_start();
     }
     Ok(out)
@@ -237,7 +245,7 @@ mod tests {
         .unwrap();
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
         assert!(
-            sql.contains(r#"regexp_like(json_get_str(resource_attributes, 'service_version'), '1\.0\.0')"#),
+            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '1\.0\.0')"#),
             "sql: {sql}"
         );
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) BETWEEN 100 AND 200"));
@@ -256,6 +264,27 @@ mod tests {
     fn test_logql_escapes_quotes() {
         let sql = translate_query_range(r#"{service_name="a'b"}"#, 0, 1, 1, true).unwrap();
         assert!(sql.contains("service_name = 'a''b'"), "sql: {sql}");
+    }
+
+    #[test]
+    fn test_logql_empty_backtick_filter_is_noop() {
+        // Grafana Explore sends an empty backtick line filter; it must parse and
+        // add no body predicate (matches everything), not error.
+        let sql = translate_query_range(
+            "{service_name=\"client\", deployment_environment=\"dev\"} |= ``",
+            0,
+            1,
+            10,
+            true,
+        )
+        .unwrap();
+        assert!(!sql.contains("body LIKE"), "empty filter adds no body predicate: {sql}");
+        assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
+        // normalized attribute label
+        assert!(
+            sql.contains("prom_attr(resource_attributes, 'deployment_environment') = 'dev'"),
+            "sql: {sql}"
+        );
     }
 
     #[test]

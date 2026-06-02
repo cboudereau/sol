@@ -29,7 +29,9 @@ datasources:
   uid: sol-loki
   access: proxy
   orgId: 1
-  url: http://sol-query:9009/loki
+  # Loki's API path is /loki/api/v1/...; Grafana's Loki datasource appends that
+  # to the base URL, so the base must NOT include /loki (else /loki/loki/...).
+  url: http://sol-query:9009
   basicAuth: false
   isDefault: false
   editable: false
