@@ -1,15 +1,18 @@
 //! Querier-side telemetry (task 9).
 //!
-//! Emits the `sol_query_*` and `sol_objectstore_*` metric catalog from
+//! Emits the `query_*` and `objectstore_*` metric catalog from
 //! [DESIGN.md §cross-cutting](../../../docs/workspace/parquet-backend/DESIGN.md#cross-cutting-concerns)
 //! via Vector's `metrics` facility, so Sol monitors its own backend through the
-//! `internal_metrics` source. Names and labels match the `SOL Query Backend`
-//! dashboard. Histograms (`*_duration_seconds`, `*_bytes_scanned`,
+//! `internal_metrics` source. Names are emitted **unprefixed**: the
+//! `internal_metrics` source prepends its namespace (default `sol`), so they
+//! surface as `sol_query_*` / `sol_objectstore_*` — prefixing here would
+//! double up (`sol_sol_query_*`). Surfaced names and labels match the
+//! `SOL Query Backend` dashboard. Histograms (`*_duration_seconds`, `*_bytes_scanned`,
 //! `*_files_opened`) are exposed with Prometheus `_bucket`/`_sum`/`_count` by
 //! `internal_metrics`, so `histogram_quantile` works in the dashboard.
 //!
-//! `sol_compactor_*` shares the namespace but is emitted by the compactor
-//! (task 10); frontend shard metrics by task 11.
+//! `compactor_*` (surfaced `sol_compactor_*`) shares the namespace but is
+//! emitted by the compactor (task 10); frontend shard metrics by task 11.
 
 use std::time::Duration;
 
@@ -28,88 +31,88 @@ pub fn record_request(
 ) {
     let api = api.to_string();
     let signal = signal.to_string();
-    counter!("sol_query_requests_total", "api" => api.clone(), "signal" => signal.clone())
+    counter!("query_requests_total", "api" => api.clone(), "signal" => signal.clone())
         .increment(1);
-    histogram!("sol_query_request_duration_seconds", "api" => api.clone(), "signal" => signal.clone())
+    histogram!("query_request_duration_seconds", "api" => api.clone(), "signal" => signal.clone())
         .record(duration.as_secs_f64());
-    histogram!("sol_query_bytes_scanned", "api" => api.clone(), "signal" => signal.clone())
+    histogram!("query_bytes_scanned", "api" => api.clone(), "signal" => signal.clone())
         .record(bytes_scanned as f64);
-    histogram!("sol_query_files_opened", "api" => api, "signal" => signal)
+    histogram!("query_files_opened", "api" => api, "signal" => signal)
         .record(files_opened as f64);
 }
 
 /// Record a cache lookup outcome (`result=hit|miss`).
 pub fn record_cache(hit: bool) {
     let result = if hit { "hit" } else { "miss" };
-    counter!("sol_query_cache_requests_total", "result" => result).increment(1);
+    counter!("query_cache_requests_total", "result" => result).increment(1);
 }
 
 /// Set the current cache memory footprint (bytes).
 #[allow(clippy::cast_precision_loss)]
 pub fn set_cache_memory(bytes: u64) {
-    gauge!("sol_query_cache_memory_bytes").set(bytes as f64);
+    gauge!("query_cache_memory_bytes").set(bytes as f64);
 }
 
 /// Increment / decrement the in-flight query gauge.
 pub fn inc_inflight() {
-    gauge!("sol_query_inflight").increment(1.0);
+    gauge!("query_inflight").increment(1.0);
 }
 
 /// Decrement the in-flight query gauge.
 pub fn dec_inflight() {
-    gauge!("sol_query_inflight").decrement(1.0);
+    gauge!("query_inflight").decrement(1.0);
 }
 
 /// Record an object-store request, flagging throttles (HTTP 503, NFR10).
 pub fn record_objectstore(duration: Duration, throttled: bool) {
-    counter!("sol_objectstore_requests_total").increment(1);
+    counter!("objectstore_requests_total").increment(1);
     if throttled {
-        counter!("sol_objectstore_throttled_total").increment(1);
+        counter!("objectstore_throttled_total").increment(1);
     }
-    histogram!("sol_objectstore_request_duration_seconds").record(duration.as_secs_f64());
+    histogram!("objectstore_request_duration_seconds").record(duration.as_secs_f64());
 }
 
 /// Record a guardrail rejection (NFR9 — `reason` e.g. `range`/`bytes`).
 pub fn record_rejected(reason: &str) {
-    counter!("sol_query_rejected_total", "reason" => reason.to_string()).increment(1);
+    counter!("query_rejected_total", "reason" => reason.to_string()).increment(1);
 }
 
 /// Record an unsupported query construct (`lang` e.g. promql, `construct`).
 pub fn record_unsupported(lang: &str, construct: &str) {
-    counter!("sol_query_unsupported_total", "lang" => lang.to_string(), "construct" => construct.to_string())
+    counter!("query_unsupported_total", "lang" => lang.to_string(), "construct" => construct.to_string())
         .increment(1);
 }
 
 /// Record a compaction run (task 10): input/output file counts, rows merged,
 /// and wall-clock duration.
 pub fn record_compaction(files_input: u64, files_output: u64, rows: u64, duration: Duration) {
-    counter!("sol_compactor_files_input_total").increment(files_input);
-    counter!("sol_compactor_files_output_total").increment(files_output);
-    counter!("sol_compactor_rollup_rows_total").increment(rows);
-    histogram!("sol_compactor_duration_seconds").record(duration.as_secs_f64());
+    counter!("compactor_files_input_total").increment(files_input);
+    counter!("compactor_files_output_total").increment(files_output);
+    counter!("compactor_rollup_rows_total").increment(rows);
+    histogram!("compactor_duration_seconds").record(duration.as_secs_f64());
 }
 
 /// Record retention GC deletions.
 pub fn record_retention_deleted(files: u64) {
-    counter!("sol_compactor_retention_deleted_total").increment(files);
+    counter!("compactor_retention_deleted_total").increment(files);
 }
 
 /// Set the compactor lag (seconds behind the active partition boundary).
 pub fn set_compactor_lag(seconds: f64) {
-    gauge!("sol_compactor_lag_seconds").set(seconds);
+    gauge!("compactor_lag_seconds").set(seconds);
 }
 
 /// Record a query-frontend split (task 11): one split, into `shards` shards.
 #[allow(clippy::cast_precision_loss)]
 pub fn record_shard_split(shards: u64) {
-    counter!("sol_query_shard_splits_total").increment(1);
-    histogram!("sol_query_shards_per_query").record(shards as f64);
+    counter!("query_shard_splits_total").increment(1);
+    histogram!("query_shards_per_query").record(shards as f64);
 }
 
 /// Record a per-shard cache lookup outcome (`result=hit|miss`).
 pub fn record_shard_cache(hit: bool) {
     let result = if hit { "hit" } else { "miss" };
-    counter!("sol_query_shard_cache_requests_total", "result" => result).increment(1);
+    counter!("query_shard_cache_requests_total", "result" => result).increment(1);
 }
 
 #[cfg(test)]
@@ -138,13 +141,13 @@ mod tests {
             record_request("prometheus", "metrics", Duration::from_millis(12), 4096, 3);
         });
         let s = snap.snapshot().into_vec();
-        let labels = has_metric(&s, MetricKind::Histogram, "sol_query_request_duration_seconds")
+        let labels = has_metric(&s, MetricKind::Histogram, "query_request_duration_seconds")
             .expect("duration histogram emitted");
         assert!(labels.contains(&("api".to_string(), "prometheus".to_string())), "labels: {labels:?}");
         assert!(labels.contains(&("signal".to_string(), "metrics".to_string())), "labels: {labels:?}");
-        assert!(has_metric(&s, MetricKind::Histogram, "sol_query_bytes_scanned").is_some());
-        assert!(has_metric(&s, MetricKind::Histogram, "sol_query_files_opened").is_some());
-        assert!(has_metric(&s, MetricKind::Counter, "sol_query_requests_total").is_some());
+        assert!(has_metric(&s, MetricKind::Histogram, "query_bytes_scanned").is_some());
+        assert!(has_metric(&s, MetricKind::Histogram, "query_files_opened").is_some());
+        assert!(has_metric(&s, MetricKind::Counter, "query_requests_total").is_some());
     }
 
     #[test]
@@ -159,13 +162,13 @@ mod tests {
         // both hit and miss variants of the labelled counter are present
         let hits = s.iter().filter(|(k, _, _, _)| {
             k.kind() == MetricKind::Counter
-                && k.key().name() == "sol_query_cache_requests_total"
+                && k.key().name() == "query_cache_requests_total"
                 && k.key().labels().any(|l| l.key() == "result" && l.value() == "hit")
         });
         assert_eq!(hits.count(), 1, "hit counter emitted");
         let misses = s.iter().filter(|(k, _, _, _)| {
             k.kind() == MetricKind::Counter
-                && k.key().name() == "sol_query_cache_requests_total"
+                && k.key().name() == "query_cache_requests_total"
                 && k.key().labels().any(|l| l.key() == "result" && l.value() == "miss")
         });
         assert_eq!(misses.count(), 1, "miss counter emitted");
@@ -180,12 +183,12 @@ mod tests {
         });
         let s = snap.snapshot().into_vec();
         assert!(
-            has_metric(&s, MetricKind::Counter, "sol_objectstore_throttled_total").is_some(),
+            has_metric(&s, MetricKind::Counter, "objectstore_throttled_total").is_some(),
             "503 throttle counter emitted"
         );
-        assert!(has_metric(&s, MetricKind::Counter, "sol_objectstore_requests_total").is_some());
+        assert!(has_metric(&s, MetricKind::Counter, "objectstore_requests_total").is_some());
         assert!(
-            has_metric(&s, MetricKind::Histogram, "sol_objectstore_request_duration_seconds")
+            has_metric(&s, MetricKind::Histogram, "objectstore_request_duration_seconds")
                 .is_some()
         );
     }
@@ -196,7 +199,7 @@ mod tests {
         let snap = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || record_rejected("range"));
         let s = snap.snapshot().into_vec();
-        let labels = has_metric(&s, MetricKind::Counter, "sol_query_rejected_total")
+        let labels = has_metric(&s, MetricKind::Counter, "query_rejected_total")
             .expect("guardrail reject counter emitted");
         assert!(labels.contains(&("reason".to_string(), "range".to_string())), "labels: {labels:?}");
     }
@@ -207,7 +210,7 @@ mod tests {
         let snap = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || record_unsupported("promql", "subquery"));
         let s = snap.snapshot().into_vec();
-        let labels = has_metric(&s, MetricKind::Counter, "sol_query_unsupported_total")
+        let labels = has_metric(&s, MetricKind::Counter, "query_unsupported_total")
             .expect("unsupported construct counter emitted");
         assert!(labels.contains(&("lang".to_string(), "promql".to_string())), "labels: {labels:?}");
         assert!(labels.contains(&("construct".to_string(), "subquery".to_string())), "labels: {labels:?}");
