@@ -218,9 +218,32 @@ pub fn label_values_sql(label: &str) -> String {
     format!("SELECT DISTINCT {lhs} AS v FROM metrics WHERE {lhs} IS NOT NULL ORDER BY v")
 }
 
-/// `SELECT DISTINCT` SQL for `series` (identifying columns).
-pub fn series_sql() -> String {
-    "SELECT DISTINCT name, service_name FROM metrics".to_string()
+/// `SELECT DISTINCT` SQL for `series`, optionally filtered by a `match[]`
+/// selector. Emits the Prometheus-normalized `__name__` (not the raw dotted
+/// OTLP name) and applies the selector's matchers (C-P1/C-P2).
+pub fn series_sql(matcher: Option<&str>) -> Result<String, String> {
+    let mut preds: Vec<String> = Vec::new();
+    if let Some(sel) = matcher.map(str::trim).filter(|s| !s.is_empty()) {
+        let expr = parser::parse(sel)?;
+        let vs = match &expr {
+            Expr::VectorSelector(vs) => vs,
+            _ => return Err("series match[] must be a metric selector".to_string()),
+        };
+        if let Some(name) = vs.name.as_deref() {
+            preds.push(metric_value_and_match(name).1);
+        }
+        for m in &vs.matchers.matchers {
+            if let Some(p) = matcher_pred(m) {
+                preds.push(p);
+            }
+        }
+    }
+    let where_clause =
+        if preds.is_empty() { String::new() } else { format!(" WHERE {}", preds.join(" AND ")) };
+    Ok(format!(
+        "SELECT DISTINCT prom_metric_name(name, unit, is_monotonic) AS name, service_name \
+         FROM metrics{where_clause}"
+    ))
 }
 
 // --- Prometheus API response (resultType=vector) ---
@@ -417,12 +440,16 @@ pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_j
 }
 
 /// Run `series` and build `{status, data:[{__name__, service_name}, ...]}`.
-pub async fn handle_series(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
+pub async fn handle_series(
+    engine: &super::QueryEngine,
+    matcher: Option<&str>,
+) -> crate::Result<serde_json::Value> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let batches = engine.sql(&series_sql()).await?;
+    let sql = series_sql(matcher).map_err(to_err)?;
+    let batches = engine.sql(&sql).await?;
     let mut series: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
         let name_arr = cast(batch.column(0), &DataType::Utf8)?;
@@ -1440,7 +1467,13 @@ mod tests {
             "SELECT DISTINCT service_name AS v FROM metrics WHERE service_name IS NOT NULL ORDER BY v"
         );
         assert!(label_values_sql("http_route").contains("prom_attr(attributes, 'http_route')"));
-        assert!(series_sql().contains("SELECT DISTINCT name, service_name FROM metrics"));
+        // C-P1/C-P2: normalized __name__, and match[] applied as predicates.
+        let all = series_sql(None).unwrap();
+        assert!(all.contains("prom_metric_name(name, unit, is_monotonic) AS name"), "{all}");
+        assert!(!all.contains("WHERE"), "no match[] → no filter: {all}");
+        let filtered = series_sql(Some(r#"http_total{service_name="client"}"#)).unwrap();
+        assert!(filtered.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "{filtered}");
+        assert!(filtered.contains("service_name = 'client'"), "{filtered}");
     }
 
     #[test]

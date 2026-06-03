@@ -171,8 +171,17 @@ async fn prom_label_values(
     }
 }
 
-async fn prom_series(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
-    match prometheus::handle_series(&engine).await {
+#[derive(Debug, Deserialize)]
+struct SeriesParams {
+    #[serde(rename = "match[]", default)]
+    matcher: Option<String>,
+}
+
+async fn prom_series(
+    params: SeriesParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    match prometheus::handle_series(&engine, params.matcher.as_deref()).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -333,8 +342,20 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
             warp::reply::json(&serde_json::json!({ "status": "success", "data": { "groups": [] } }))
         });
 
+    // Metric metadata (Grafana metric browser type/unit hints). Minimal: empty.
+    let prom_metadata = warp::path!("prometheus" / "api" / "v1" / "metadata")
+        .and(warp::get())
+        .map(|| {
+            warp::reply::json(&serde_json::json!({ "status": "success", "data": {} }))
+        });
+
+    // `series` takes `match[]` from the query string (GET) or form body (POST).
+    let series_params = warp::get()
+        .and(warp::query::<SeriesParams>())
+        .or(warp::post().and(warp::body::form::<SeriesParams>()))
+        .unify();
     let prom_series = warp::path!("prometheus" / "api" / "v1" / "series")
-        .and(warp::get().or(warp::post()).unify())
+        .and(series_params)
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_series);
 
@@ -403,6 +424,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .or(prom_label_values)
         .or(prom_labels)
         .or(prom_rules)
+        .or(prom_metadata)
         .or(prom_series)
         .or(tempo_search)
         .or(tempo_trace_v2)
