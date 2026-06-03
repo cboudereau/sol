@@ -6,21 +6,49 @@ judgement. "Verified" = confirmed by reading the code (not just flagged).
 
 Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
 
+## Status summary (after the fix pass)
+
+| Item | Status | Where |
+|---|---|---|
+| B1 SQL endpoint lockdown | ✅ fixed | `bcd2ccf95` — `sql_user()` w/ `SQLOptions` (no DDL/DML/stmts) |
+| B2 NFR9 byte guardrail | 🔁 mitigated | arbitrary file read/write **closed by B1**; byte-estimate still coarse (DoS-class, not exfil). Real fix = DataFusion memory pool — open |
+| B3 cache wiring + NFR5 byte ceiling | ✅ fixed | `6d6f06f0b` — byte weigher, wired from config, `max_entries` dropped |
+| B4 / B4b rollup from compacted + idempotent | ✅ fixed | `0f3d87367` |
+| H1 regex matchers unanchored | ✅ fixed | `e5ee66178` — `^(?:RE)$` (PromQL + LogQL labels) |
+| H2 gc relies on fs mtime | ⬜ deferred | needs a compactor-written marker (larger); mtime caveat documented |
+| H3 frontend lookback=0 + dead merge_* | ⬜ deferred | larger refactor; impact narrow (multi-day ranges crossing UTC midnight) |
+| H4 query-backend config not hot-reloaded | ⬜ documented | restart-required noted in deployment-roles ADR; full reload deferred |
+| M1 rate/increase/irate ignore `[d]` window | ⬜ deferred | Mimir-parity, larger |
+| M2 rate ÷0 on duplicate timestamps | ✅ fixed | `e5ee66178` |
+| M3 distinct_json_keys unbounded | ✅ fixed | `bcd2ccf95` — `LIMIT 10_000` |
+| M4 `__name__` matchers dropped | ⬜ non-issue | analysis: `{__name__=~…}` already rejected (needs literal name); implicit drop is correct dedup; only nonsensical `foo{__name__=~"other"}` over-broad |
+| M5 seal supersede-set TOCTOU | ⬜ deferred | microsecond window, sealed days get no concurrent writes |
+| M6 error responses leak engine internals | ⬜ deferred | single-tenant; genericizing would hide useful translation/guardrail errors |
+| L2 non-integer topk truncation | ✅ fixed | `e5ee66178` |
+| L1/L3/L4/L5 | ⬜ minor | as noted below |
+
+**Datasource-contract fixes (found while polishing the demo, not in the original review):**
+
+| Item | Status | Where |
+|---|---|---|
+| Tempo search missing `spanSets` (plural) → Grafana 13 Search crash | ✅ fixed | `11c64a8c6` |
+| Loki "Logs volume" metric query rejected (→ matrix) | ✅ fixed | `11c64a8c6` |
+
 ## BLOCKER
 
-- ⬜ **B1 — SQL endpoint runs arbitrary statements.** `handle_sql` → `engine.sql` →
+- ✅ **B1 — SQL endpoint runs arbitrary statements.** `handle_sql` → `engine.sql` →
   `ctx.sql()` with no `SQLOptions`. `COPY … TO '/path'` writes any file;
   `CREATE EXTERNAL TABLE … LOCATION '…'` reads any file (bypassing catalog +
   guardrail); `DROP`/`CREATE VIEW` mutate the catalog. `src/query/sql.rs:85`,
   `src/query/catalog.rs` (`ctx.sql`). Fix: user path via
   `ctx.sql_with_options(sql, SQLOptions::new().with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false))`.
-- ⬜ **B2 — NFR9 byte guardrail unsound/bypassable.** `estimate_scan_bytes` =
+- 🔁 **B2 — NFR9 byte guardrail unsound/bypassable.** `estimate_scan_bytes` =
   `sql.to_lowercase().contains(signal)` × whole-dir size: 0 bytes for any query
   without those substrings (B1's external-table read is "free"), ignores
   `WHERE`/`LIMIT`/pruning, false-positives on column names. `src/query/sql.rs:24-34`.
   Fix: enforce limits in DataFusion (memory pool / inspect `ExecutionPlan`); pair
   with B1 to restrict reachable tables.
-- ⬜ **B3 — Cache config is dead + NFR5 byte ceiling unenforced.**
+- ✅ **B3 — Cache config is dead + NFR5 byte ceiling unenforced.**
   `QueryEngine::new` hardcodes `MokaQueryCache::new()`; `ttl_secs`/`max_entries`/
   `max_bytes` inert. No byte weigher → entry-count cap only; `set_cache_memory`
   never called. `src/query/catalog.rs:354`, `src/query/cache.rs:74`. Fix:
