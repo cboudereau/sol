@@ -103,9 +103,6 @@ pub struct CacheConfig {
 
     /// Result-cache TTL, in seconds (one dashboard refresh cycle by default).
     pub ttl_secs: u64,
-
-    /// Maximum number of cached query results.
-    pub max_entries: u64,
 }
 
 /// Per-signal query guardrails (NFR9): reject queries beyond these bounds.
@@ -176,7 +173,6 @@ impl Default for CacheConfig {
         Self {
             max_bytes: 256 * 1024 * 1024, // 256 MB (NFR5)
             ttl_secs: 15,
-            max_entries: 1000,
         }
     }
 }

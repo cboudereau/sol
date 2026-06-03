@@ -366,7 +366,10 @@ impl QueryEngine {
         Ok(Self {
             ctx,
             catalog,
-            cache: super::cache::MokaQueryCache::new(),
+            cache: super::cache::MokaQueryCache::with_budget(
+                opts.cache.max_bytes,
+                std::time::Duration::from_secs(opts.cache.ttl_secs),
+            ),
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
         })
@@ -404,6 +407,7 @@ impl QueryEngine {
         let df = self.ctx.sql(query).await?;
         let batches = df.collect().await?;
         self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
     }
 
@@ -431,6 +435,7 @@ impl QueryEngine {
         let df = self.ctx.sql_with_options(query, options).await?;
         let batches = df.collect().await?;
         self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
     }
 

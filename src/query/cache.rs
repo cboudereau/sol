@@ -1,8 +1,10 @@
 //! Query result cache (task 8).
 //!
 //! A [`QueryCache`] trait with an in-memory `moka` default ([caching ADR](../../../docs/workspace/parquet-backend/adrs/query-caching-strategy.md)):
-//! TTL 15s, max 1000 entries, TinyLFU eviction, no active invalidation. The
-//! trait lets a future Redis backend slot in without touching the query path.
+//! TTL 15s, bounded by a **byte budget** (NFR5 memory ceiling, via a per-entry
+//! weigher over the cached batches' memory size), TinyLFU eviction, no active
+//! invalidation. The trait lets a future Redis backend slot in without touching
+//! the query path.
 //!
 //! [`CacheKey`] floors the query time range to a 15s bucket so adjacent
 //! dashboard refreshes (which move the range by a few seconds) collide on the
@@ -15,8 +17,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 
 /// Time-bucket width: 15 seconds, in nanoseconds.
 const BUCKET_NS: i64 = 15_000_000_000;
-/// Default max entries (caching ADR).
-const DEFAULT_CAPACITY: u64 = 1000;
+/// Default cache memory budget in bytes (NFR5; 256 MB).
+const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 /// Default time-to-live (caching ADR).
 const DEFAULT_TTL: Duration = Duration::from_secs(15);
 
@@ -65,19 +67,30 @@ pub struct MokaQueryCache {
 }
 
 impl MokaQueryCache {
-    /// Default cache: capacity 1000, TTL 15s.
+    /// Default cache: 256 MB budget, TTL 15s.
     pub fn new() -> Self {
-        Self::with_params(DEFAULT_CAPACITY, DEFAULT_TTL)
+        Self::with_budget(DEFAULT_MAX_BYTES, DEFAULT_TTL)
     }
 
-    /// Cache with explicit capacity and TTL (used in tests).
-    pub fn with_params(max_capacity: u64, ttl: Duration) -> Self {
+    /// Cache bounded by total result **bytes** (NFR5 memory ceiling) with a TTL.
+    /// Each entry weighs the in-memory size of its `RecordBatch`es, so the cache
+    /// holds at most ~`max_bytes` of results regardless of entry count.
+    pub fn with_budget(max_bytes: u64, ttl: Duration) -> Self {
         Self {
             inner: moka::sync::Cache::builder()
-                .max_capacity(max_capacity)
+                .max_capacity(max_bytes)
+                .weigher(|_k, v: &CachedResult| {
+                    let bytes: usize = v.iter().map(RecordBatch::get_array_memory_size).sum();
+                    u32::try_from(bytes).unwrap_or(u32::MAX)
+                })
                 .time_to_live(ttl)
                 .build(),
         }
+    }
+
+    /// Approximate total bytes currently cached (NFR5 gauge).
+    pub fn weighted_size(&self) -> u64 {
+        self.inner.weighted_size()
     }
 }
 
@@ -147,13 +160,37 @@ mod tests {
 
     #[test]
     fn test_cache_ttl_expiry() {
-        let cache = MokaQueryCache::with_params(10, Duration::from_millis(40));
+        let cache = MokaQueryCache::with_budget(1_000_000, Duration::from_millis(40));
         let key = CacheKey::for_sql("SELECT 1");
         cache.insert(key.clone(), Arc::new(Vec::new()));
         assert!(cache.get(&key).is_some(), "fresh entry present");
         std::thread::sleep(Duration::from_millis(80));
         cache.inner.run_pending_tasks();
         assert!(cache.get(&key).is_none(), "entry expired after TTL");
+    }
+
+    #[test]
+    fn test_byte_budget_bounds_the_cache() {
+        // B3 / NFR5: the cache is bounded by result *bytes*, not entry count.
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let val: CachedResult = Arc::new(vec![batch]);
+
+        // Budget smaller than one entry → not admitted.
+        let tiny = MokaQueryCache::with_budget(1, Duration::from_secs(60));
+        tiny.insert(CacheKey::for_sql("q"), Arc::clone(&val));
+        tiny.inner.run_pending_tasks();
+        assert!(tiny.get(&CacheKey::for_sql("q")).is_none(), "oversized entry rejected by budget");
+
+        // Ample budget → admitted, and weighted_size tracks the cached bytes.
+        let big = MokaQueryCache::with_budget(10_000_000, Duration::from_secs(60));
+        big.insert(CacheKey::for_sql("q"), val);
+        big.inner.run_pending_tasks();
+        assert!(big.get(&CacheKey::for_sql("q")).is_some());
+        assert!(big.weighted_size() > 0, "weighted size tracks cached bytes");
     }
 
     #[test]
@@ -166,16 +203,4 @@ mod tests {
         assert!(cache.get(&key).is_none(), "refresh must drop stale entries");
     }
 
-    #[test]
-    fn test_cache_lru_eviction_at_capacity() {
-        let cache = MokaQueryCache::with_params(2, Duration::from_secs(60));
-        for i in 0..3 {
-            cache.insert(CacheKey::for_sql(&format!("q{i}")), Arc::new(Vec::new()));
-        }
-        cache.inner.run_pending_tasks();
-        assert!(
-            cache.inner.entry_count() <= 2,
-            "capacity bound enforced (eviction)"
-        );
-    }
 }

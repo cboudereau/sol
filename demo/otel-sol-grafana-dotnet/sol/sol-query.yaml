@@ -15,7 +15,7 @@ querier:
   refresh_interval_secs: 15
   cache:
     ttl_secs: 15
-    max_entries: 1000
+    max_bytes: 268435456 # 256 MB (NFR5 cache budget)
   guardrails:
     metrics_max_range_secs: 34128000 # 13 months
     max_bytes_scanned: 1073741824 # 1 GB
