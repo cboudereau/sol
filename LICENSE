@@ -9,8 +9,15 @@ Sol is **dual-licensed**. Which license applies depends on the file:
 
 ## How to tell which license covers a file
 
-1. If the file begins with `// SPDX-License-Identifier: AGPL-3.0-only`, it is licensed under the **AGPL-3.0-only**.
-2. Otherwise, the file is derived from Vector and remains under the **MPL-2.0**, as required by that license.
+The authoritative, machine-readable boundary is [`REUSE.toml`](REUSE.toml)
+([REUSE 3.0](https://reuse.software); check with `reuse lint`). In short:
+
+1. If the file begins with `// SPDX-License-Identifier: AGPL-3.0-only`, or matches an AGPL path in `REUSE.toml`, it is **AGPL-3.0-only**.
+2. Vendored OpenTelemetry protobufs (`lib/otel-proto-types/src/proto/**`) are **Apache-2.0**.
+3. Otherwise the file is derived from Vector and remains under the **MPL-2.0**, as required by that license.
+
+The full derivation (and why a git diff is *not* the boundary) is in
+[docs/LICENSE-BOUNDARY.md](docs/LICENSE-BOUNDARY.md).
 
 MPL-2.0 is file-level copyleft: modifications to Vector-derived files stay MPL-2.0
 and cannot be relicensed. Sol's new code lives in separate files and is therefore
