@@ -57,6 +57,8 @@ impl Server {
                 retention_days: opts.compaction.retention_days,
                 intraday: opts.compaction.intraday,
                 hour_grace_secs: opts.compaction.hour_grace_secs,
+                delete_superseded: opts.compaction.delete_superseded,
+                delete_grace_secs: opts.compaction.delete_grace_secs,
             };
             let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
             let mut tick =

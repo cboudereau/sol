@@ -52,11 +52,22 @@ pub struct CompactorConfig {
     pub intraday: bool,
     /// Grace before a completed hour is compacted, for late-arriving data.
     pub hour_grace_secs: i64,
+    /// Delete inputs once superseded (after `delete_grace_secs`).
+    pub delete_superseded: bool,
+    /// How long a superseding file must exist before its inputs are deleted.
+    pub delete_grace_secs: i64,
 }
 
 impl Default for CompactorConfig {
     fn default() -> Self {
-        Self { grace_days: 1, retention_days: 30, intraday: true, hour_grace_secs: 600 }
+        Self {
+            grace_days: 1,
+            retention_days: 30,
+            intraday: true,
+            hour_grace_secs: 600,
+            delete_superseded: true,
+            delete_grace_secs: 60,
+        }
     }
 }
 
@@ -71,6 +82,8 @@ pub struct CompactionReport {
     pub files_output: usize,
     /// Rows written across the compacted files.
     pub rows: usize,
+    /// Superseded input files deleted (disk reclamation).
+    pub files_deleted: usize,
 }
 
 /// The standalone compactor over a storage root (`<root>/<signal>/dt=…/`).
@@ -274,6 +287,55 @@ impl Compactor {
         Ok(report)
     }
 
+    /// Delete inputs that a compacted file supersedes, once that compacted file
+    /// has existed at least `delete_grace_secs` — long enough for every querier
+    /// (which re-registers its file list every `refresh_interval_secs` and
+    /// excludes superseded files) to have stopped referencing them. Returns the
+    /// number of files deleted.
+    ///
+    /// Orphan-free: a superseder is always newer than its inputs, so whenever a
+    /// higher-level file is old enough to authorize deletion, the mid-level
+    /// files it supersedes are older still and their own inputs are collected in
+    /// the same pass (all supersedes lists are read before any file is removed).
+    pub fn gc_superseded(&self, signal: &str, now: DateTime<Utc>) -> crate::Result<usize> {
+        if !self.config.delete_superseded {
+            return Ok(0);
+        }
+        let now_s = now.timestamp();
+        let mut deleted = 0;
+        for (_date, dir) in self.partition_dirs(signal) {
+            // Collect the inputs of every *aged* compacted file first, so
+            // deleting one compacted file never loses another's provenance.
+            let mut to_delete: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for entry in fs::read_dir(&dir)?.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                if !name.starts_with(COMPACTED_PREFIX) || !name.ends_with(".parquet") {
+                    continue;
+                }
+                let modified = fs::metadata(&path)?
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|d| i64::try_from(d.as_secs()).ok())
+                    .unwrap_or(0);
+                if now_s - modified < self.config.delete_grace_secs {
+                    continue; // too fresh — a querier may still reference its inputs
+                }
+                let (_, supersedes) = read_provenance(&path)?;
+                to_delete.extend(supersedes);
+            }
+            for name in &to_delete {
+                let path = dir.join(name);
+                if path.is_file() {
+                    fs::remove_file(&path)?;
+                    deleted += 1;
+                }
+            }
+        }
+        Ok(deleted)
+    }
+
     /// Delete partitions older than the retention policy. Returns files deleted.
     pub fn gc_retention(&self, signal: &str, today: NaiveDate) -> crate::Result<usize> {
         let mut deleted = 0;
@@ -329,6 +391,7 @@ impl Compactor {
             }
         }
         for signal in ["logs", "traces", "metrics"] {
+            report.files_deleted += self.gc_superseded(signal, now)?;
             self.gc_retention(signal, today)?;
         }
         super::telemetry::set_compactor_lag(0.0); // caught up after a full pass
@@ -384,7 +447,14 @@ pub(crate) fn write_with_provenance(
         ));
         writer.close()?;
     }
+    // Durably persist the file contents before the rename is relied upon: a
+    // later pass deletes the inputs this file supersedes, so it must survive a
+    // crash. fsync the file, rename, then fsync the directory entry.
+    fs::File::open(&staging)?.sync_all()?;
     fs::rename(&staging, path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -741,6 +811,82 @@ mod tests {
         let batches = read_batches(&dir.join("compacted-2026-06-02.parquet")).unwrap();
         let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total, 4, "no data lost across the level chain");
+    }
+
+    #[tokio::test]
+    async fn test_gc_superseded_deletes_inputs_after_grace_not_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_raw(&dir, "08-00-00.parquet", &["s"], &[1], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
+            .await
+            .unwrap();
+        assert_eq!(count_parquet(&dir, false), 2, "raw inputs still on disk after merge");
+
+        // Within the delete grace (file just written): nothing removed.
+        let deleted = c.gc_superseded("metrics", chrono::Utc::now()).unwrap();
+        assert_eq!(deleted, 0, "fresh superseder: inputs kept for read safety");
+        assert_eq!(count_parquet(&dir, false), 2);
+
+        // Past the grace: superseded raw inputs are reclaimed, hourly kept.
+        let later = chrono::Utc::now() + ChronoDuration::seconds(120);
+        let deleted = c.gc_superseded("metrics", later).unwrap();
+        assert_eq!(deleted, 2, "both superseded raw files deleted");
+        assert_eq!(count_parquet(&dir, false), 0, "raw gone");
+        assert_eq!(count_parquet(&dir, true), 1, "hourly file kept");
+        assert_eq!(resolve_files(&dir).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_gc_superseded_transitive_cleanup_no_orphans() {
+        // raw -> hourly -> daily; after seal + aged GC only the daily survives
+        // on disk (raw and hourly both reclaimed, none orphaned).
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_raw(&dir, "08-00-00.parquet", &["a"], &[10], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["b"], &[20], &[2]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
+            .await
+            .unwrap();
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 3).unwrap()).await.unwrap();
+
+        let later = chrono::Utc::now() + ChronoDuration::seconds(120);
+        c.gc_superseded("metrics", later).unwrap();
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into())
+            .filter(|n: &String| n.ends_with(".parquet"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["compacted-2026-06-02.parquet".to_string()],
+            "only the daily file remains on disk: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gc_superseded_disabled_keeps_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_raw(&dir, "08-00-00.parquet", &["s"], &[1], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
+        let c = Compactor::new(
+            tmp.path(),
+            CompactorConfig { delete_superseded: false, ..Default::default() },
+        );
+        c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
+            .await
+            .unwrap();
+        let later = chrono::Utc::now() + ChronoDuration::seconds(120);
+        assert_eq!(c.gc_superseded("metrics", later).unwrap(), 0, "deletion disabled");
+        assert_eq!(count_parquet(&dir, false), 2, "raw inputs retained");
     }
 
     #[tokio::test]

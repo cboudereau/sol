@@ -18,6 +18,8 @@ query:
     rollups: true
     intraday: true # compact completed hours of the active day (bounds open files)
     hour_grace_secs: 600 # wait 10 min past an hour's end for late data
+    delete_superseded: true # reclaim disk/inodes once inputs are safely superseded
+    delete_grace_secs: 60 # must exceed the querier refresh_interval_secs (15s)
 
 sources:
   self_metrics:

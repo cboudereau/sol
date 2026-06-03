@@ -80,6 +80,16 @@ pub struct CompactionConfig {
     /// Grace before a completed hour is compacted, for late-arriving data. An
     /// hour H is compacted once `now > end(H) + this`.
     pub hour_grace_secs: i64,
+
+    /// Whether to delete raw/lower-level inputs once a compacted file
+    /// supersedes them (reclaims disk + inodes intra-day, not just at
+    /// retention). Deletion is deferred by `delete_grace_secs` for read safety.
+    pub delete_superseded: bool,
+
+    /// How long a superseding compacted file must exist before its inputs are
+    /// deleted. MUST exceed the querier `refresh_interval_secs` so no querier
+    /// still references the inputs in a registered table.
+    pub delete_grace_secs: i64,
 }
 
 /// Where the query backend discovers Parquet files written by the codec.
@@ -158,7 +168,9 @@ impl Default for CompactionConfig {
             retention_days: 30,
             rollups: true,
             intraday: true,
-            hour_grace_secs: 600, // 10 min for late-arriving data
+            hour_grace_secs: 600,    // 10 min for late-arriving data
+            delete_superseded: true, // reclaim disk once safely superseded
+            delete_grace_secs: 60,   // > querier refresh_interval_secs (15s)
         }
     }
 }
