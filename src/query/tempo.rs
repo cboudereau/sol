@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! TraceQL → SQL translation + Tempo HTTP API response types (task 7).
 //!
 //! Covers the pcap subset of TraceQL (`{a=b && c!=d}` with `=`/`!=`) per
@@ -73,6 +75,28 @@ fn parse_selector(traceql: &str) -> Result<Vec<(String, String, String)>, String
     Ok(out)
 }
 
+/// OTLP `SpanKind` enum string for a stored kind int (proto-JSON form Grafana
+/// decodes for the trace waterfall).
+fn span_kind_str(kind: i32) -> &'static str {
+    match kind {
+        1 => "SPAN_KIND_INTERNAL",
+        2 => "SPAN_KIND_SERVER",
+        3 => "SPAN_KIND_CLIENT",
+        4 => "SPAN_KIND_PRODUCER",
+        5 => "SPAN_KIND_CONSUMER",
+        _ => "SPAN_KIND_UNSPECIFIED",
+    }
+}
+
+/// OTLP `StatusCode` enum string for a stored status_code int.
+fn status_code_str(code: i32) -> &'static str {
+    match code {
+        1 => "STATUS_CODE_OK",
+        2 => "STATUS_CODE_ERROR",
+        _ => "STATUS_CODE_UNSET",
+    }
+}
+
 /// Convert a span's stored `attributes` JSON object to the OTLP KeyValue array
 /// Tempo/Grafana expect: `[{"key":"http.method","value":{"stringValue":"GET"}}]`.
 /// Keys stay raw OTLP (TraceQL uses dotted names, unlike the Prometheus surface).
@@ -133,17 +157,24 @@ pub fn translate_search(
 }
 
 /// Validate a hex trace-id and render the `WHERE trace_id = X'..'` lookup SQL.
+/// Tempo strips leading zeros from trace ids (so a search hit may be <32 hex
+/// chars); left-pad back to 32 rather than rejecting odd-length, else Grafana's
+/// "open trace from search" link breaks for any id with a leading zero.
 pub fn trace_by_id_sql(trace_id_hex: &str) -> Result<String, String> {
-    let hex = trace_id_hex.trim().to_lowercase();
-    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err("trace id must be an even-length hex string".to_string());
+    let mut hex = trace_id_hex.trim().to_lowercase();
+    if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("trace id must be a hex string of at most 32 chars".to_string());
     }
-    // FixedSizeBinary needs an explicit cast from the binary literal.
+    if hex.len() < 32 {
+        hex = format!("{hex:0>32}"); // zero-pad to the full 16-byte id
+    }
+    // Span ids/parents and the trace id as base64 (OTLP proto-JSON wire form);
+    // kind / status_code / scope_name for the OTLP span shape.
     Ok(format!(
-        "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
+        "SELECT encode(trace_id, 'base64') AS trace_b64, encode(span_id, 'base64') AS span_b64, \
          service_name, name, start_time_unix_nano, duration_nanos, status_code, \
-         attributes, resource_attributes \
+         attributes, resource_attributes, encode(parent_span_id, 'base64') AS parent_b64, \
+         kind, scope_name \
          FROM traces WHERE trace_id = arrow_cast(X'{hex}', 'FixedSizeBinary(16)') \
          ORDER BY start_time_unix_nano"
     ))
@@ -379,46 +410,58 @@ pub async fn handle_trace_by_id(
     let batches = engine.sql(&sql).await?;
 
     let mut spans: Vec<Value> = Vec::new();
-    let mut resource_attrs: Value = json!([]);
+    let mut resource_attrs: Vec<Value> = Vec::new();
+    let mut scope_name = String::new();
     for batch in &batches {
-        let trace_hex = batch.column(0).as_string::<i32>();
-        let span_hex = batch.column(1).as_string::<i32>();
+        let trace_b64 = batch.column(0).as_string::<i32>();
+        let span_b64 = batch.column(1).as_string::<i32>();
         let name_arr = cast(batch.column(3), &DataType::Utf8)?;
         let name = name_arr.as_string::<i32>();
         let start = cast(batch.column(4), &DataType::Int64)?;
         let start = start.as_primitive::<Int64Type>();
         let dur = cast(batch.column(5), &DataType::Int64)?;
         let dur = dur.as_primitive::<Int64Type>();
+        let status = cast(batch.column(6), &DataType::Int32)?;
+        let status = status.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
         let attrs = batch.column(7).as_string::<i32>();
         let res_attrs = batch.column(8).as_string::<i32>();
+        let parent_b64 = batch.column(9).as_string::<i32>();
+        let kind = cast(batch.column(10), &DataType::Int32)?;
+        let kind = kind.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
+        let scope = batch.column(11).as_string::<i32>();
         for i in 0..batch.num_rows() {
             let start_ns = if start.is_null(i) { 0 } else { start.value(i) };
             let dur_ns = if dur.is_null(i) { 0 } else { dur.value(i) };
-            let attributes: Value = if attrs.is_null(i) {
-                json!({})
-            } else {
-                serde_json::from_str(attrs.value(i)).unwrap_or(json!({}))
-            };
-            if !res_attrs.is_null(i)
-                && let Ok(v) = serde_json::from_str::<Value>(res_attrs.value(i))
-            {
-                resource_attrs = v;
+            // OTLP KeyValue-array attributes (not the raw JSON object).
+            let attributes = if attrs.is_null(i) { Vec::new() } else { otlp_attributes(attrs.value(i)) };
+            if resource_attrs.is_empty() && !res_attrs.is_null(i) {
+                resource_attrs = otlp_attributes(res_attrs.value(i));
             }
-            spans.push(json!({
-                "traceId": if trace_hex.is_null(i) { "" } else { trace_hex.value(i) },
-                "spanId": if span_hex.is_null(i) { "" } else { span_hex.value(i) },
+            if scope_name.is_empty() && !scope.is_null(i) {
+                scope_name = scope.value(i).to_string();
+            }
+            let mut span = json!({
+                "traceId": if trace_b64.is_null(i) { "" } else { trace_b64.value(i) },
+                "spanId": if span_b64.is_null(i) { "" } else { span_b64.value(i) },
                 "name": if name.is_null(i) { "" } else { name.value(i) },
+                "kind": span_kind_str(if kind.is_null(i) { 0 } else { kind.value(i) }),
                 "startTimeUnixNano": start_ns.to_string(),
                 "endTimeUnixNano": (start_ns + dur_ns).to_string(),
                 "attributes": attributes,
-            }));
+                "status": { "code": status_code_str(if status.is_null(i) { 0 } else { status.value(i) }) },
+            });
+            // parentSpanId only when present (root spans have none).
+            if !parent_b64.is_null(i) && !parent_b64.value(i).is_empty() {
+                span["parentSpanId"] = json!(parent_b64.value(i));
+            }
+            spans.push(span);
         }
     }
     Ok(json!({
         "trace": {
             "resourceSpans": [{
                 "resource": { "attributes": resource_attrs },
-                "scopeSpans": [{ "scope": {}, "spans": spans }],
+                "scopeSpans": [{ "scope": { "name": scope_name }, "spans": spans }],
             }],
         }
     }))
@@ -550,9 +593,17 @@ mod tests {
             "binary literal missing; sql: {sql}"
         );
         assert!(sql.contains("FixedSizeBinary(16)"), "sql: {sql}");
-        // odd-length / non-hex is rejected
+        // base64-encoded ids for the OTLP proto-JSON span shape (C-T2)
+        assert!(sql.contains("encode(trace_id, 'base64')"), "sql: {sql}");
+        assert!(sql.contains("encode(parent_span_id, 'base64')"), "sql: {sql}");
+        // C-T1: Tempo strips leading zeros; a short/odd id is zero-padded to 32,
+        // not rejected (else open-trace-from-search breaks).
+        let padded = trace_by_id_sql("133ff683fa8f734deec615053457a59").unwrap(); // 31 chars
+        assert!(padded.contains("X'0133ff683fa8f734deec615053457a59'"), "zero-padded: {padded}");
+        assert!(trace_by_id_sql("abc").is_ok(), "odd-length id is padded, not rejected");
+        // non-hex / too-long still rejected
         assert!(trace_by_id_sql("xyz").is_err());
-        assert!(trace_by_id_sql("abc").is_err());
+        assert!(trace_by_id_sql(&"a".repeat(33)).is_err());
     }
 
     #[test]
@@ -748,12 +799,26 @@ mod tests {
             .await
             .unwrap();
         let spans = &v["trace"]["resourceSpans"][0]["scopeSpans"][0]["spans"];
-        assert_eq!(
-            spans.as_array().unwrap().len(),
-            2,
-            "both spans returned: {v}"
+        let arr = spans.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "both spans returned: {v}");
+        let s = &arr[0];
+        // C-T2 OTLP proto-JSON span shape: base64 ids (not hex), KeyValue-array
+        // attributes, kind + status enum strings.
+        assert_ne!(s["spanId"], "aaaaaaaaaaaaaaaa", "spanId must be base64, not hex: {s}");
+        assert!(s["attributes"].is_array(), "attributes is a KeyValue array: {s}");
+        assert!(
+            serde_json::to_string(&s["attributes"])
+                .unwrap()
+                .contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#),
+            "attrs: {s}"
         );
-        assert_eq!(spans[0]["spanId"], "aaaaaaaaaaaaaaaa");
+        assert!(s["kind"].as_str().unwrap().starts_with("SPAN_KIND"), "kind enum: {s}");
+        assert!(
+            s["status"]["code"].as_str().unwrap().starts_with("STATUS_CODE"),
+            "status enum: {s}"
+        );
+        // resource attributes also a KeyValue array
+        assert!(v["trace"]["resourceSpans"][0]["resource"]["attributes"].is_array(), "{v}");
     }
 
     #[tokio::test]
