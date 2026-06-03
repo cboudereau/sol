@@ -12,14 +12,14 @@
 //! are bounded-window (≤30d) and skip them.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
 
-use super::compaction::{read_batches, write_with_provenance};
+use super::compaction::{read_batches, resolve_files, write_with_provenance};
 
 const M5_NS: i64 = 300_000_000_000;
 const H1_NS: i64 = 3_600_000_000_000;
@@ -111,17 +111,43 @@ pub async fn rollup_batches(
     Ok(df.collect().await?)
 }
 
-/// Generate a rollup file for a metric partition dir: downsample its raw
-/// samples to `tier` and write `rollup-<tier>.parquet` (level 2, resolution =
-/// tier). Returns the row count written, or `None` if there is nothing to roll.
-pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Option<usize>> {
-    let mut batches = Vec::new();
-    for entry in fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-        if name.ends_with(".parquet") && !name.starts_with("rollup-") && !name.starts_with("compacted-") {
-            batches.extend(read_batches(&path)?);
+/// Whether `out` already reflects `sources` — true when the rollup file exists
+/// and is at least as new as every source. Lets a sealed partition (whose data
+/// never changes) be rolled up once and skipped thereafter. Uses mtime, like
+/// the compactor's GC; a re-seal that rewrites the daily bumps its mtime and
+/// invalidates the rollup.
+fn rollup_is_current(out: &Path, sources: &[PathBuf]) -> crate::Result<bool> {
+    let Ok(out_meta) = fs::metadata(out) else {
+        return Ok(false); // no rollup yet
+    };
+    let out_mtime = out_meta.modified()?;
+    for src in sources {
+        if fs::metadata(src)?.modified()? > out_mtime {
+            return Ok(false); // a source changed since the rollup was written
         }
+    }
+    Ok(true)
+}
+
+/// Generate a rollup file for a metric partition dir: downsample the partition's
+/// **surviving** samples (compacted + non-superseded raw, via [`resolve_files`])
+/// to `tier` and write `rollup-<tier>.parquet` (level 2, resolution = tier).
+/// Reading the survivors (not raw-only) means the rollup is independent of the
+/// raw retention/GC lifecycle — it can always be (re)built from the compacted
+/// daily. Returns the row count written, `None` if there is nothing to roll or
+/// the existing rollup is already current.
+pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Option<usize>> {
+    let sources = resolve_files(dir)?; // compacted + non-superseded raw; rollups excluded
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    let out = dir.join(format!("rollup-{}.parquet", tier.label()));
+    if rollup_is_current(&out, &sources)? {
+        return Ok(None); // sealed-day data unchanged — skip the rewrite
+    }
+    let mut batches = Vec::new();
+    for path in &sources {
+        batches.extend(read_batches(path)?);
     }
     if batches.is_empty() {
         return Ok(None);
@@ -132,7 +158,6 @@ pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Opti
     }
     let rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
     let schema = rolled[0].schema();
-    let out = dir.join(format!("rollup-{}.parquet", tier.label()));
     write_with_provenance(&out, schema, &rolled, 2, "", tier.label())?;
     super::telemetry::record_compaction(0, 1, rows as u64, std::time::Duration::from_secs(0));
     Ok(Some(rows))
@@ -249,6 +274,58 @@ mod tests {
         let q_rollup = super::super::prometheus::histogram_quantile(0.95, &counts, &bounds).unwrap();
         let q_raw = super::super::prometheus::histogram_quantile(0.95, &expected, &bounds).unwrap();
         assert!((q_rollup - q_raw).abs() < 1e-9, "quantile preserved");
+    }
+
+    #[tokio::test]
+    async fn test_rollup_reads_compacted_when_raw_gone() {
+        // B4: after GC reclaims raw, the day's data lives only in the compacted
+        // daily. generate_rollup must still build the tier from it (raw-only
+        // would find nothing and silently produce no rollup).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        fs::create_dir_all(&dir).unwrap();
+        let b = batch(&[0, 120_000_000_000], &[1.0, 2.0], &["[]", "[]"]);
+        // Only a compacted daily on disk (raw already deleted); it supersedes the
+        // raw names, which no longer exist.
+        write_with_provenance(
+            &dir.join("compacted-2026-05-30.parquet"),
+            counter_schema(),
+            &[b],
+            2,
+            "08-00-00.parquet,08-02-00.parquet",
+            "raw",
+        )
+        .unwrap();
+
+        let rows = generate_rollup(&dir, RollupTier::H1).await.unwrap();
+        assert_eq!(rows, Some(1), "rollup built from the compacted daily, raw absent");
+        assert!(dir.join("rollup-1h.parquet").exists());
+    }
+
+    #[tokio::test]
+    async fn test_rollup_skips_when_current() {
+        // B4b: a sealed partition is rolled up once; a second pass with no source
+        // change is a no-op (the rollup is newer than its source).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        fs::create_dir_all(&dir).unwrap();
+        write_with_provenance(
+            &dir.join("compacted-2026-05-30.parquet"),
+            counter_schema(),
+            &[batch(&[0, 120_000_000_000], &[1.0, 2.0], &["[]", "[]"])],
+            2,
+            "08-00-00.parquet",
+            "raw",
+        )
+        .unwrap();
+
+        assert_eq!(generate_rollup(&dir, RollupTier::H1).await.unwrap(), Some(1), "first build");
+        assert_eq!(
+            generate_rollup(&dir, RollupTier::H1).await.unwrap(),
+            None,
+            "second pass skipped — source unchanged"
+        );
+        assert!(dir.join("rollup-1h.parquet").exists(), "rollup retained");
     }
 
     #[tokio::test]
