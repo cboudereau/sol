@@ -36,6 +36,10 @@ const SUPERSEDES_KEY: &str = "sol.compaction.supersedes";
 const RESOLUTION_KEY: &str = "sol.compaction.resolution";
 /// Compacted-file name prefix.
 const COMPACTED_PREFIX: &str = "compacted-";
+/// Prefix of downsampled rollup-tier files. These back the separate
+/// `metrics_5m/1h/1d` tables and are NOT part of the lossless union, so they
+/// are excluded from [`resolve_files`] (and never fed into a seal merge).
+const ROLLUP_PREFIX: &str = "rollup-";
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(msg.into())
@@ -167,32 +171,53 @@ impl Compactor {
         date: NaiveDate,
     ) -> crate::Result<Option<(usize, usize)>> {
         let daily = format!("{COMPACTED_PREFIX}{date}.parquet");
-        // Everything the querier currently reads, except an already-final daily
-        // file — i.e. leftover raw + hourly level-1 files.
-        let mut inputs: Vec<PathBuf> = resolve_files(dir)?
-            .into_iter()
-            .filter(|p| p.file_name().and_then(|s| s.to_str()) != Some(daily.as_str()))
-            .collect();
-        if inputs.is_empty() {
-            return Ok(None); // only the daily file survives — idempotent
+        // Data to carry forward, each datum exactly once: the surviving files
+        // (`resolve_files` excludes superseded inputs and rollup tiers). This
+        // INCLUDES any existing daily file, so a re-seal triggered by a
+        // late-arriving raw preserves the daily's data instead of overwriting it.
+        let read: Vec<PathBuf> = resolve_files(dir)?;
+        // Idempotent: if the only survivor is the daily itself, it already
+        // covers the partition (superseded raw may still be on disk awaiting gc,
+        // but `resolve_files` excludes them) — re-sealing would churn the mtime.
+        let has_new = read.iter().any(|p| p.file_name().and_then(|s| s.to_str()) != Some(daily.as_str()));
+        if !has_new {
+            return Ok(None);
         }
-        inputs.sort();
-        let rows = self.merge_inputs(dir, &inputs, &daily, 2).await?;
-        Ok(rows.map(|r| (inputs.len(), r)))
+        // Supersede *every* physical raw/hourly file (not just those merged this
+        // pass): the new daily carries the old daily's data forward, so it fully
+        // covers the partition. Next `resolve_files` returns only the daily, and
+        // gc can reclaim every raw input.
+        let mut supersede: Vec<String> = Vec::new();
+        for entry in fs::read_dir(dir)?.flatten() {
+            let Some(name) = entry.path().file_name().and_then(|s| s.to_str()).map(String::from)
+            else {
+                continue;
+            };
+            if name.ends_with(".parquet") && name != daily && !name.starts_with(ROLLUP_PREFIX) {
+                supersede.push(name);
+            }
+        }
+        supersede.sort();
+        let rows = self.merge_inputs(dir, &read, &supersede, &daily, 2).await?;
+        Ok(rows.map(|r| (supersede.len(), r)))
     }
 
-    /// Sort-merge `inputs` into `dir/out_name` at compaction `level`, recording
-    /// the inputs in the `supersedes` footer. Returns rows written, or `None`
-    /// when the inputs hold no rows. Atomic (staging → rename).
+    /// Sort-merge `read` into `dir/out_name` at compaction `level`, recording
+    /// `supersede` in the `supersedes` footer. `read` is the set of files whose
+    /// data to carry forward (each datum once); `supersede` is the set of files
+    /// the output replaces (which may differ — a re-seal reads the prior daily
+    /// for its data but supersedes the raw inputs, not itself). Returns rows
+    /// written, or `None` when `read` holds no rows. Atomic (staging → rename).
     async fn merge_inputs(
         &self,
         dir: &Path,
-        inputs: &[PathBuf],
+        read: &[PathBuf],
+        supersede: &[String],
         out_name: &str,
         level: i32,
     ) -> crate::Result<Option<usize>> {
         let mut batches: Vec<RecordBatch> = Vec::new();
-        for path in inputs {
+        for path in read {
             batches.extend(read_batches(path)?);
         }
         if batches.is_empty() {
@@ -212,11 +237,7 @@ impl Compactor {
         let sorted = df.collect().await?;
         let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 
-        let input_names: Vec<String> = inputs
-            .iter()
-            .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
-            .collect();
-        write_with_provenance(&dir.join(out_name), schema, &sorted, level, &input_names.join(","), "raw")?;
+        write_with_provenance(&dir.join(out_name), schema, &sorted, level, &supersede.join(","), "raw")?;
         Ok(Some(rows))
     }
 
@@ -268,7 +289,12 @@ impl Compactor {
                 }
                 inputs.sort();
                 let out = format!("{COMPACTED_PREFIX}h{hour:02}-{date}.parquet");
-                if let Some(rows) = self.merge_inputs(&dir, &inputs, &out, 1).await? {
+                // Hourly merge supersedes exactly the raw files it absorbs.
+                let names: Vec<String> = inputs
+                    .iter()
+                    .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
+                    .collect();
+                if let Some(rows) = self.merge_inputs(&dir, &inputs, &names, &out, 1).await? {
                     report.partitions_sealed += 1;
                     report.files_input += inputs.len();
                     report.files_output += 1;
@@ -516,8 +542,8 @@ pub fn resolve_files(dir: &Path) -> crate::Result<Vec<PathBuf>> {
     for entry in fs::read_dir(dir)?.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-        if !name.ends_with(".parquet") {
-            continue; // skip staging *.tmp and anything else
+        if !name.ends_with(".parquet") || name.starts_with(ROLLUP_PREFIX) {
+            continue; // skip staging *.tmp, and rollup tiers (separate tables)
         }
         // Drop any superseded file regardless of level — with leveled
         // compaction a daily file supersedes the hourly files, which in turn
@@ -811,6 +837,59 @@ mod tests {
         let batches = read_batches(&dir.join("compacted-2026-06-02.parquet")).unwrap();
         let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total, 4, "no data lost across the level chain");
+    }
+
+    #[tokio::test]
+    async fn test_seal_idempotent_with_rollups_present_and_lossless_on_late_raw() {
+        // Regression: rollup tiers live in the metric partition dir. They must
+        // not be swept into the daily seal (which caused perpetual re-seal +
+        // mtime churn for metrics, so gc never reclaimed raw). And a late raw
+        // arriving after a seal must be absorbed without losing the daily's
+        // existing data.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        let date = NaiveDate::from_ymd_opt(2026, 5, 30).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        write_raw(&dir, "08-00-00.parquet", &["a"], &[10], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["b"], &[20], &[2]);
+        // A rollup tier file sits in the same dir.
+        write_raw(&dir, "rollup-1d.parquet", &["roll"], &[15], &[99]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+
+        // First seal: merges the two raw, supersedes them, ignores the rollup.
+        assert!(c.seal_signal("metrics", today).await.unwrap().partitions_sealed >= 1);
+        let daily = dir.join("compacted-2026-05-30.parquet");
+        assert_eq!(read_batches(&daily).unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        // resolve_files excludes the rollup and the superseded raw → only daily.
+        assert_eq!(
+            resolve_files(&dir).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>(),
+            vec!["compacted-2026-05-30.parquet".to_string()],
+            "rollup excluded, raw superseded"
+        );
+
+        // Second seal with no new data is a true no-op (the churn bug).
+        assert_eq!(
+            c.seal_partition(&dir, date).await.unwrap(),
+            None,
+            "idempotent: no re-seal when only the daily + rollup remain"
+        );
+
+        // A late raw appears post-seal: re-seal must keep the daily's 2 rows AND
+        // absorb the new one (3 total), not overwrite to just the late row.
+        write_raw(&dir, "09-00-00.parquet", &["c"], &[30], &[3]);
+        assert!(c.seal_partition(&dir, date).await.unwrap().is_some(), "late raw triggers re-seal");
+        assert_eq!(
+            read_batches(&daily).unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(),
+            3,
+            "daily carries prior data forward + absorbs the late raw (no loss)"
+        );
+
+        // Aged GC now reclaims every raw input; rollup and daily remain.
+        let later = chrono::Utc::now() + ChronoDuration::seconds(120);
+        c.gc_superseded("metrics", later).unwrap();
+        assert_eq!(count_parquet(&dir, false), 1, "only the rollup remains as non-compacted");
+        assert!(dir.join("rollup-1d.parquet").exists(), "rollup untouched by gc");
+        assert_eq!(resolve_files(&dir).unwrap().len(), 1, "querier reads just the daily");
     }
 
     #[tokio::test]
