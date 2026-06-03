@@ -14,8 +14,14 @@ The authoritative, machine-readable boundary is [`REUSE.toml`](../REUSE.toml)
 | Bucket | License | Where |
 |--------|---------|-------|
 | Sol-original backend & OTLP code | **AGPL-3.0-only** | the 45 files listed below |
+| Sol-original docs (ADRs, designs, plans, architecture) | **AGPL-3.0-only** | `docs/{adrs,designs,workspace,otlp-as-core-protocol-plan}/**`, `docs/DEV_ENVIRONMENT.md`, `docs/LICENSE-BOUNDARY.md` |
 | Vendored OpenTelemetry protobufs | **Apache-2.0** | `lib/otel-proto-types/src/proto/**` |
-| Everything else (Vector-derived) | **MPL-2.0** | the rest of the tree |
+| Everything else (Vector-derived) | **MPL-2.0** | the rest of the tree (incl. Vector's own `docs/ARCHITECTURE.md`, `docs/specs/**`, `docs/tutorials/**`, …) |
+
+> Docs note: AGPL is a software license but is a valid copyright license for any
+> work, so it keeps Sol's IP under one rule. If you want a documentation-native
+> non-commercial license for the prose instead, **CC-BY-NC-4.0** is the usual
+> choice — say the word and I'll switch the docs block.
 
 ## Why a git diff is NOT the boundary
 
@@ -46,7 +52,11 @@ lib/codecs, lib/opentelemetry-proto, lib/loki-logproto, ...      → MPL-2.0
 lib/otel-proto-types/            NEW crate
   ├─ src/proto/**                vendored OpenTelemetry protos    → Apache-2.0
   └─ src/lib.rs, build.rs        Sol wrapper                      → MPL-2.0 *
-demo/, .claude/, .devcontainer/  Sol-authored tooling/docs        → MPL-2.0 (fallback)
+docs/{adrs,designs,workspace,        Sol-original documentation     → AGPL-3.0-only
+  otlp-as-core-protocol-plan}/
+docs/ARCHITECTURE.md, specs/,        Vector-inherited docs          → MPL-2.0
+  tutorials/, README.md, ...
+demo/, .claude/, .devcontainer/  Sol-authored tooling             → MPL-2.0 (fallback)
 src/query/, src/vrl_migrate/, src/transforms/{servicegraph,
   span_metrics,tail_sampling}/, src/sinks/opentelemetry/{grpc,
   http,load_balancing}.rs, src/sources/source_otel.rs            → AGPL-3.0-only

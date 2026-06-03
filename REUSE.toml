@@ -51,3 +51,19 @@ path = [
 precedence = "override"
 SPDX-FileCopyrightText = "2025 Clément Boudereau"
 SPDX-License-Identifier = "AGPL-3.0-only"
+
+# 4) Sol-original documentation — architecture, ADRs, designs, design plans.
+#    These are new dirs that did not exist in Vector (Vector's own docs —
+#    ARCHITECTURE.md, specs/, tutorials/, etc. — stay MPL-2.0 via the fallback).
+[[annotations]]
+path = [
+  "docs/adrs/**",
+  "docs/designs/**",
+  "docs/workspace/**",
+  "docs/otlp-as-core-protocol-plan/**",
+  "docs/DEV_ENVIRONMENT.md",
+  "docs/LICENSE-BOUNDARY.md",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Clément Boudereau"
+SPDX-License-Identifier = "AGPL-3.0-only"

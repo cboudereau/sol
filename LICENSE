@@ -5,7 +5,8 @@ Sol is **dual-licensed**. Which license applies depends on the file:
 | Code | License | Full text |
 |------|---------|-----------|
 | **Sol-original code** — every file carrying the SPDX tag `AGPL-3.0-only` (notably the query backend in `src/query/**`) | GNU Affero General Public License v3.0 | [LICENSE-AGPL-3.0](LICENSE-AGPL-3.0) |
-| **Everything else** — code derived from the Vector project (Copyright Datadog, Inc.) | Mozilla Public License 2.0 | [LICENSE-MPL-2.0](LICENSE-MPL-2.0) |
+| **Sol-original docs** — ADRs, designs, plans (`docs/adrs/**`, `docs/designs/**`, `docs/workspace/**`, `docs/otlp-as-core-protocol-plan/**`) | GNU Affero General Public License v3.0 | [LICENSE-AGPL-3.0](LICENSE-AGPL-3.0) |
+| **Everything else** — code/docs derived from the Vector project (Copyright Datadog, Inc.) | Mozilla Public License 2.0 | [LICENSE-MPL-2.0](LICENSE-MPL-2.0) |
 
 ## How to tell which license covers a file
 
