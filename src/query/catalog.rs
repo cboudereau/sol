@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Parquet table catalog + DataFusion query engine (task 2).
 //!
 //! Registers one DataFusion table per signal directory written by the file sink

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Metric rollup tiers / downsampling (task 12).
 //!
 //! The compactor pre-aggregates the metrics cold tail into coarser resolutions

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Query-frontend: time-range splitting + merge + per-shard immutable cache (task 11).
 //!
 //! Long metric ranges are split into per-day shards aligned to UTC midnight

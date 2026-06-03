@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Query-side OTLP→Prometheus attribute lookup (`prom_attr`).
 //!
 //! Sol stores attributes with their raw OTLP keys (dotted, e.g. `http.route`,

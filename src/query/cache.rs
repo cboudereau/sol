@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Query result cache (task 8).
 //!
 //! A [`QueryCache`] trait with an in-memory `moka` default ([caching ADR](../../../docs/workspace/parquet-backend/adrs/query-caching-strategy.md)):

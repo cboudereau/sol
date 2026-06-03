@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Querier-side telemetry (task 9).
 //!
 //! Emits the `query_*` and `objectstore_*` metric catalog from

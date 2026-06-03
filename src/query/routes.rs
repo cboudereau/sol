@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! HTTP routing for the query backend (warp filters).
 //!
 //! Shared across the Grafana APIs — task 3 mounts Loki `query_range`; tasks

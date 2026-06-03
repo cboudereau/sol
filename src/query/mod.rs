@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Sol query backend — serves Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
 //!
 //! Built incrementally per `docs/workspace/parquet-backend/TASKS.md`.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! PromQL → SQL (instant queries) + Prometheus API response types (task 4).
 //!
 //! Parses PromQL with the `promql-parser` crate and translates instant vector

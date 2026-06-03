@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025 Clément Boudereau
 //! Standalone sealed-day compactor (task 10).
 //!
 //! A `Parquet → compacted Parquet` component (singleton role) that merges the
