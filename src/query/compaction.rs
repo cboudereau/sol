@@ -490,7 +490,17 @@ pub(crate) fn write_with_provenance(
     ));
     {
         let file = fs::File::create(&staging)?;
-        let mut writer = ArrowWriter::try_new(file, schema, None)?;
+        // Compaction is background (not latency-sensitive) and its output is read
+        // repeatedly, so compress with ZSTD at a high level. The default
+        // `WriterProperties` is UNCOMPRESSED — merging zstd raw files into an
+        // uncompressed file *grew* on-disk size (a 107 MB compacted log file
+        // 7z'd to 8 MB before this fix).
+        let props = datafusion::parquet::file::properties::WriterProperties::builder()
+            .set_compression(datafusion::parquet::basic::Compression::ZSTD(
+                datafusion::parquet::basic::ZstdLevel::try_new(9).map_err(|e| err(e.to_string()))?,
+            ))
+            .build();
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
         for batch in batches {
             writer.write(batch)?;
         }
@@ -690,6 +700,15 @@ mod tests {
         assert_eq!(
             supersedes,
             vec!["a.parquet".to_string(), "b.parquet".to_string()]
+        );
+        // Compacted output must be ZSTD, not the default UNCOMPRESSED (else
+        // compaction grows on-disk size vs the zstd raw inputs).
+        let f = fs::File::open(&compacted).unwrap();
+        let md = ParquetRecordBatchReaderBuilder::try_new(f).unwrap().metadata().clone();
+        let codec = md.row_group(0).column(0).compression();
+        assert!(
+            matches!(codec, datafusion::parquet::basic::Compression::ZSTD(_)),
+            "compacted output must be ZSTD, got {codec:?}"
         );
     }
 
