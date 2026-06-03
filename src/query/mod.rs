@@ -55,6 +55,8 @@ impl Server {
             let cfg = compaction::CompactorConfig {
                 grace_days: opts.compaction.grace_days,
                 retention_days: opts.compaction.retention_days,
+                intraday: opts.compaction.intraday,
+                hour_grace_secs: opts.compaction.hour_grace_secs,
             };
             let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
             let mut tick =
@@ -67,8 +69,8 @@ impl Server {
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        let today = chrono::Utc::now().date_naive();
-                        match compactor.run_once(today, opts.compaction.rollups).await {
+                        let now = chrono::Utc::now();
+                        match compactor.run_once(now, opts.compaction.rollups).await {
                             Ok(report) => debug!(
                                 message = "Sol compactor pass complete.",
                                 partitions_sealed = report.partitions_sealed,

@@ -14,12 +14,13 @@
 //!   and skips superseded inputs, so a datum is read exactly once even while
 //!   superseded inputs still exist — deleting them is pure GC.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::parquet::arrow::ArrowWriter;
@@ -47,11 +48,15 @@ pub struct CompactorConfig {
     pub grace_days: i64,
     /// Partitions older than this are deleted by retention GC.
     pub retention_days: i64,
+    /// Compact completed hours within the active day (leveled compaction).
+    pub intraday: bool,
+    /// Grace before a completed hour is compacted, for late-arriving data.
+    pub hour_grace_secs: i64,
 }
 
 impl Default for CompactorConfig {
     fn default() -> Self {
-        Self { grace_days: 1, retention_days: 30 }
+        Self { grace_days: 1, retention_days: 30, intraday: true, hour_grace_secs: 600 }
     }
 }
 
@@ -139,34 +144,42 @@ impl Compactor {
         Ok(report)
     }
 
-    /// Compact one partition dir. Returns `(inputs_merged, rows)` or `None` if
-    /// there is nothing new to do (idempotent re-runs).
+    /// Day-seal one partition into a single level-2 file. Merges every
+    /// surviving file the querier would read (leftover raw plus the hourly
+    /// level-1 files from intra-day compaction), superseding them all. Returns
+    /// `(inputs_merged, rows)` or `None` when already sealed (idempotent).
     async fn seal_partition(
         &self,
         dir: &Path,
         date: NaiveDate,
     ) -> crate::Result<Option<(usize, usize)>> {
-        // Raw inputs not already superseded by an existing compacted file.
-        let superseded = superseded_inputs(dir)?;
-        let mut raw_inputs: Vec<PathBuf> = Vec::new();
-        for entry in fs::read_dir(dir)? .flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-            if name.ends_with(".parquet")
-                && !name.starts_with(COMPACTED_PREFIX)
-                && !superseded.contains(name)
-            {
-                raw_inputs.push(path);
-            }
+        let daily = format!("{COMPACTED_PREFIX}{date}.parquet");
+        // Everything the querier currently reads, except an already-final daily
+        // file — i.e. leftover raw + hourly level-1 files.
+        let mut inputs: Vec<PathBuf> = resolve_files(dir)?
+            .into_iter()
+            .filter(|p| p.file_name().and_then(|s| s.to_str()) != Some(daily.as_str()))
+            .collect();
+        if inputs.is_empty() {
+            return Ok(None); // only the daily file survives — idempotent
         }
-        if raw_inputs.is_empty() {
-            return Ok(None); // already compacted — idempotent
-        }
-        raw_inputs.sort();
+        inputs.sort();
+        let rows = self.merge_inputs(dir, &inputs, &daily, 2).await?;
+        Ok(rows.map(|r| (inputs.len(), r)))
+    }
 
-        // Read + sort-merge all raw inputs.
+    /// Sort-merge `inputs` into `dir/out_name` at compaction `level`, recording
+    /// the inputs in the `supersedes` footer. Returns rows written, or `None`
+    /// when the inputs hold no rows. Atomic (staging → rename).
+    async fn merge_inputs(
+        &self,
+        dir: &Path,
+        inputs: &[PathBuf],
+        out_name: &str,
+        level: i32,
+    ) -> crate::Result<Option<usize>> {
         let mut batches: Vec<RecordBatch> = Vec::new();
-        for path in &raw_inputs {
+        for path in inputs {
             batches.extend(read_batches(path)?);
         }
         if batches.is_empty() {
@@ -182,20 +195,83 @@ impl Compactor {
         let ctx = SessionContext::new();
         let mem = MemTable::try_new(Arc::clone(&schema), vec![batches])?;
         ctx.register_table("t", Arc::new(mem))?;
-        let df = ctx
-            .sql(&format!("SELECT * FROM t ORDER BY service_name, {time_col}"))
-            .await?;
+        let df = ctx.sql(&format!("SELECT * FROM t ORDER BY service_name, {time_col}")).await?;
         let sorted = df.collect().await?;
         let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 
-        // Write to a staging file, then atomically rename into place.
-        let input_names: Vec<String> = raw_inputs
+        let input_names: Vec<String> = inputs
             .iter()
             .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
             .collect();
-        let final_path = dir.join(format!("{COMPACTED_PREFIX}{date}.parquet"));
-        write_with_provenance(&final_path, schema, &sorted, 1, &input_names.join(","), "raw")?;
-        Ok(Some((raw_inputs.len(), rows)))
+        write_with_provenance(&dir.join(out_name), schema, &sorted, level, &input_names.join(","), "raw")?;
+        Ok(Some(rows))
+    }
+
+    /// Intra-day compaction: within the active (current-day) partition, merge
+    /// each *completed* hour's raw files into one level-1 file, leaving the
+    /// in-progress hour raw. An hour `H` is eligible once
+    /// `now > end(H) + hour_grace_secs` (late-data watermark). Bounds the active
+    /// day's file count so queriers open few files. No-op when `intraday` is off.
+    pub async fn compact_active_day(
+        &self,
+        signal: &str,
+        now: DateTime<Utc>,
+    ) -> crate::Result<CompactionReport> {
+        let mut report = CompactionReport::default();
+        if !self.config.intraday {
+            return Ok(report);
+        }
+        let start = Instant::now();
+        let today = now.date_naive();
+        let now_ns = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
+        let grace_ns = self.config.hour_grace_secs.saturating_mul(1_000_000_000);
+
+        for (date, dir) in self.partition_dirs(signal) {
+            if date != today {
+                continue; // sealed/past days are handled by seal_signal
+            }
+            let superseded = superseded_inputs(&dir)?;
+            // Group the not-yet-compacted raw files by their hour-of-day.
+            let mut by_hour: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
+            for entry in fs::read_dir(&dir)?.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                if !name.ends_with(".parquet") || name.starts_with(COMPACTED_PREFIX) {
+                    continue;
+                }
+                if superseded.contains(name) {
+                    continue;
+                }
+                if let Some(hour) = parse_hour(name) {
+                    by_hour.entry(hour).or_default().push(path);
+                }
+            }
+
+            for (hour, mut inputs) in by_hour {
+                // Only a fully-elapsed hour past the watermark; a lone file
+                // gains nothing from a rewrite (the day-seal sweeps it up).
+                if now_ns < hour_end_ns(date, hour) + grace_ns || inputs.len() < 2 {
+                    continue;
+                }
+                inputs.sort();
+                let out = format!("{COMPACTED_PREFIX}h{hour:02}-{date}.parquet");
+                if let Some(rows) = self.merge_inputs(&dir, &inputs, &out, 1).await? {
+                    report.partitions_sealed += 1;
+                    report.files_input += inputs.len();
+                    report.files_output += 1;
+                    report.rows += rows;
+                }
+            }
+        }
+        if report.files_output > 0 {
+            super::telemetry::record_compaction(
+                report.files_input as u64,
+                report.files_output as u64,
+                report.rows as u64,
+                start.elapsed(),
+            );
+        }
+        Ok(report)
     }
 
     /// Delete partitions older than the retention policy. Returns files deleted.
@@ -223,16 +299,23 @@ impl Compactor {
     /// is the current UTC date. This is the body the compactor daemon loops.
     pub async fn run_once(
         &self,
-        today: NaiveDate,
+        now: DateTime<Utc>,
         rollups: bool,
     ) -> crate::Result<CompactionReport> {
+        let today = now.date_naive();
         let mut report = CompactionReport::default();
         for signal in ["logs", "traces", "metrics"] {
-            let r = self.seal_signal(signal, today).await?;
-            report.partitions_sealed += r.partitions_sealed;
-            report.files_input += r.files_input;
-            report.files_output += r.files_output;
-            report.rows += r.rows;
+            // Intra-day hourly compaction of the active day, then seal the
+            // sealed days into a single daily file (leveled compaction).
+            for r in [
+                self.compact_active_day(signal, now).await?,
+                self.seal_signal(signal, today).await?,
+            ] {
+                report.partitions_sealed += r.partitions_sealed;
+                report.files_input += r.files_input;
+                report.files_output += r.files_output;
+                report.rows += r.rows;
+            }
         }
         if rollups {
             // Pre-aggregate sealed metric partitions into resolution tiers.
@@ -251,6 +334,22 @@ impl Compactor {
         super::telemetry::set_compactor_lag(0.0); // caught up after a full pass
         Ok(report)
     }
+}
+
+/// Parse the hour-of-day from a raw filename `HH-MM-SS.parquet`. Returns `None`
+/// for any name that doesn't start with a two-digit hour < 24.
+fn parse_hour(name: &str) -> Option<u32> {
+    let hour: u32 = name.split('-').next()?.parse().ok()?;
+    (hour < 24).then_some(hour)
+}
+
+/// Nanoseconds at the *end* of hour `hour` on `date` (UTC) — i.e. the start of
+/// the next hour. Used for the intra-day compaction watermark.
+fn hour_end_ns(date: NaiveDate, hour: u32) -> i64 {
+    date.and_hms_opt(hour, 0, 0)
+        .map(|dt| dt + ChronoDuration::hours(1))
+        .and_then(|dt| dt.and_utc().timestamp_nanos_opt())
+        .unwrap_or(i64::MAX)
 }
 
 /// Atomically write `batches` to `path` with compaction footer provenance:
@@ -350,7 +449,10 @@ pub fn resolve_files(dir: &Path) -> crate::Result<Vec<PathBuf>> {
         if !name.ends_with(".parquet") {
             continue; // skip staging *.tmp and anything else
         }
-        if name.starts_with(COMPACTED_PREFIX) || !superseded.contains(name) {
+        // Drop any superseded file regardless of level — with leveled
+        // compaction a daily file supersedes the hourly files, which in turn
+        // supersede the raw inputs, so supersession must be transitive.
+        if !superseded.contains(name) {
             files.push(path);
         }
     }
@@ -416,7 +518,7 @@ mod tests {
         write_raw(&sealed, "b.parquet", &["s"], &[1], &[1]);
         write_raw(&sealed, "c.parquet", &["s"], &[2], &[2]);
 
-        let c = Compactor::new(root, CompactorConfig { grace_days: 1, retention_days: 30 });
+        let c = Compactor::new(root, CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
         let report = c.seal_signal("metrics", today).await.unwrap();
         assert_eq!(report.partitions_sealed, 1, "only the sealed partition");
         assert_eq!(count_parquet(&active, true), 0, "active day not compacted");
@@ -434,7 +536,7 @@ mod tests {
 
         let compacted = dir.join("compacted-2026-05-30.parquet");
         let (level, supersedes) = read_provenance(&compacted).unwrap();
-        assert_eq!(level, 1);
+        assert_eq!(level, 2, "day-seal is the level-2 tier");
         assert_eq!(supersedes, vec!["a.parquet".to_string(), "b.parquet".to_string()]);
     }
 
@@ -501,7 +603,7 @@ mod tests {
         let recent = tmp.path().join("metrics").join("dt=2026-05-30");
         write_raw(&old, "a.parquet", &["s"], &[1], &[1]);
         write_raw(&recent, "b.parquet", &["s"], &[1], &[1]);
-        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30 });
+        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
         let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let deleted = c.gc_retention("metrics", today).unwrap();
         assert_eq!(deleted, 1, "only the >30d partition deleted");
@@ -550,14 +652,108 @@ mod tests {
             w.close().unwrap();
         }
 
-        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30 });
+        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
         let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
-        let report = c.run_once(today, true).await.unwrap();
+        let now = today.and_hms_opt(12, 0, 0).unwrap().and_utc();
+        let report = c.run_once(now, true).await.unwrap();
 
         assert!(report.partitions_sealed >= 2, "logs + metrics sealed: {report:?}");
         assert!(logs.join("compacted-2026-05-30.parquet").exists(), "logs compacted");
         assert!(metrics.join("compacted-2026-05-30.parquet").exists(), "metrics compacted");
         // rollup tiers generated for the metric partition (14b nested dir reached)
         assert!(metrics.join("rollup-1h.parquet").exists(), "1h rollup generated");
+    }
+
+    #[tokio::test]
+    async fn test_intraday_compacts_completed_hours_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        // hour 08: two completed raw files; hour 10: the in-progress hour.
+        write_raw(&dir, "08-00-00.parquet", &["s"], &[1], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
+        write_raw(&dir, "10-00-00.parquet", &["s"], &[3], &[3]);
+        write_raw(&dir, "10-30-00.parquet", &["s"], &[4], &[4]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        // now = 10:30 same day: hour 08 is past the watermark, hour 10 is live.
+        let now = date.and_hms_opt(10, 30, 0).unwrap().and_utc();
+        let report = c.compact_active_day("metrics", now).await.unwrap();
+
+        assert_eq!(report.files_output, 1, "only the completed hour compacted");
+        assert!(dir.join("compacted-h08-2026-06-02.parquet").exists());
+        let names: Vec<String> = resolve_files(&dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into())
+            .collect();
+        assert!(names.contains(&"compacted-h08-2026-06-02.parquet".to_string()), "{names:?}");
+        assert!(names.contains(&"10-00-00.parquet".to_string()), "current hour raw kept: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("08-")), "hour-08 raw superseded: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn test_intraday_respects_watermark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("logs").join("dt=2026-06-02");
+        write_raw(&dir, "09-00-00.parquet", &["s"], &[1], &[1]);
+        write_raw(&dir, "09-30-00.parquet", &["s"], &[2], &[2]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        // 10:05 — hour 09 ended only 5 min ago (< 10-min grace): not yet.
+        let early = date.and_hms_opt(10, 5, 0).unwrap().and_utc();
+        assert_eq!(c.compact_active_day("logs", early).await.unwrap().files_output, 0);
+        // 10:11 — past the watermark: eligible.
+        let late = date.and_hms_opt(10, 11, 0).unwrap().and_utc();
+        assert_eq!(c.compact_active_day("logs", late).await.unwrap().files_output, 1);
+    }
+
+    #[tokio::test]
+    async fn test_day_seal_merges_hourly_into_single_daily() {
+        // Leveled chain raw -> hourly (L1) -> daily (L2); querier sees only L2.
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_raw(&dir, "08-00-00.parquet", &["b"], &[10], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["a"], &[20], &[2]);
+        write_raw(&dir, "09-00-00.parquet", &["a"], &[30], &[3]);
+        write_raw(&dir, "09-30-00.parquet", &["c"], &[40], &[4]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+
+        let now = date.and_hms_opt(12, 0, 0).unwrap().and_utc();
+        c.compact_active_day("metrics", now).await.unwrap();
+        assert_eq!(count_parquet(&dir, true), 2, "two hourly level-1 files");
+
+        // Next day the partition seals: hourly files merge into one daily file.
+        let next_day = NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
+        c.seal_signal("metrics", next_day).await.unwrap();
+        let names: Vec<String> = resolve_files(&dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["compacted-2026-06-02.parquet".to_string()],
+            "transitive supersession: only the daily survives"
+        );
+        let (level, _) = read_provenance(&dir.join("compacted-2026-06-02.parquet")).unwrap();
+        assert_eq!(level, 2);
+        let batches = read_batches(&dir.join("compacted-2026-06-02.parquet")).unwrap();
+        let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(total, 4, "no data lost across the level chain");
+    }
+
+    #[tokio::test]
+    async fn test_intraday_disabled_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_raw(&dir, "08-00-00.parquet", &["s"], &[1], &[1]);
+        write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
+        let c =
+            Compactor::new(tmp.path(), CompactorConfig { intraday: false, ..Default::default() });
+        let now = date.and_hms_opt(12, 0, 0).unwrap().and_utc();
+        assert_eq!(c.compact_active_day("metrics", now).await.unwrap().files_output, 0);
+        assert_eq!(count_parquet(&dir, true), 0, "intraday off: nothing compacted");
     }
 }

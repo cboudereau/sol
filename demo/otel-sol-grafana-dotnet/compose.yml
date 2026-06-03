@@ -185,6 +185,12 @@ services:
     volumes:
       - ./sol/sol-query.yaml:/etc/sol/sol-query.yaml:ro
       - parquet-data:/data/parquet:ro
+    # DataFusion scans open many Parquet files at once; the default 1024 soft
+    # limit (EMFILE in the accept loop) is far too low for thousands of files.
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     networks:
       - bridge
     depends_on:
@@ -199,6 +205,11 @@ services:
     volumes:
       - ./sol/sol-compactor.yaml:/etc/sol/sol-compactor.yaml:ro
       - parquet-data:/data/parquet:rw
+    # Sort-merge compaction opens every input file in a partition at once.
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     networks:
       - bridge
     depends_on:

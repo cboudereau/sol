@@ -72,6 +72,14 @@ pub struct CompactionConfig {
 
     /// Whether to generate metric rollup tiers (5m / 1h / 1d).
     pub rollups: bool,
+
+    /// Whether to compact completed hours within the active (unsealed) day, so
+    /// the current day never accumulates thousands of small raw files.
+    pub intraday: bool,
+
+    /// Grace before a completed hour is compacted, for late-arriving data. An
+    /// hour H is compacted once `now > end(H) + this`.
+    pub hour_grace_secs: i64,
 }
 
 /// Where the query backend discovers Parquet files written by the codec.
@@ -149,6 +157,8 @@ impl Default for CompactionConfig {
             grace_days: 1,       // seal everything before today
             retention_days: 30,
             rollups: true,
+            intraday: true,
+            hour_grace_secs: 600, // 10 min for late-arriving data
         }
     }
 }

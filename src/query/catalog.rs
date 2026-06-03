@@ -210,7 +210,11 @@ impl ParquetCatalog {
                     .iter()
                     .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
                     .collect::<Result<Vec<_>, _>>()?;
-                let options = ListingOptions::new(Arc::new(ParquetFormat::default()));
+                // We pass the schema explicitly, so don't let DataFusion open
+                // every file's footer for stats at plan time — with thousands
+                // of files that exhausts the fd limit (EMFILE).
+                let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
+                    .with_collect_stat(false);
                 let config = ListingTableConfig::new_with_multi_paths(paths)
                     .with_listing_options(options)
                     .with_schema(schema);
@@ -233,7 +237,8 @@ impl ParquetCatalog {
                 .iter()
                 .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
                 .collect::<Result<Vec<_>, _>>()?;
-            let options = ListingOptions::new(Arc::new(ParquetFormat::default()));
+            let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
+                .with_collect_stat(false);
             let config = ListingTableConfig::new_with_multi_paths(paths)
                 .with_listing_options(options)
                 .with_schema(Arc::clone(&metric_schema));

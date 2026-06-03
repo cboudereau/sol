@@ -12,10 +12,12 @@ query:
   storage:
     path: "/data/parquet"
   compaction:
-    interval_secs: 300 # run a seal -> rollup -> GC pass every 5 minutes
-    grace_days: 1 # never touch the active (current) day
+    interval_secs: 300 # run an intraday -> seal -> rollup -> GC pass every 5 min
+    grace_days: 1 # active day is hourly-compacted, then sealed into one file
     retention_days: 30
     rollups: true
+    intraday: true # compact completed hours of the active day (bounds open files)
+    hour_grace_secs: 600 # wait 10 min past an hour's end for late data
 
 sources:
   self_metrics:
