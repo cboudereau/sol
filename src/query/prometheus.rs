@@ -112,7 +112,7 @@ fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String
     }
     preds.push(format!("CAST(time_unix_nano AS BIGINT) <= {time_ns}"));
     Ok(format!(
-        "SELECT name, service_name, attributes, \
+        "SELECT prom_metric_name(name, unit, is_monotonic) AS prom_name, name, service_name, attributes, \
          {value_expr} AS v, time_unix_nano, \
          row_number() OVER (PARTITION BY name, attributes ORDER BY time_unix_nano DESC) AS rn \
          FROM metrics WHERE {}",
@@ -122,7 +122,7 @@ fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String
 
 fn latest_selected(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
     Ok(format!(
-        "SELECT name, service_name, attributes, v, time_unix_nano FROM ({}) WHERE rn = 1",
+        "SELECT prom_name, service_name, attributes, v, time_unix_nano FROM ({}) WHERE rn = 1",
         latest_per_series(vs, time_ns)?
     ))
 }
@@ -302,6 +302,71 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(e)
 }
 
+/// Per-batch accessor that turns a metrics result row into Prometheus labels
+/// (C-P1): promoted string columns become labels, `prom_name` → the normalized
+/// `__name__`, and the `attributes` JSON column is exploded into normalized
+/// per-attribute labels. Built once per batch; `labels(i)` yields one row's set.
+/// (Grouped queries project their `by(…)` labels as columns and carry no
+/// `attributes`/`prom_name`, so they're handled by the same path unchanged.)
+struct LabelCols {
+    promoted: Vec<(String, datafusion::arrow::array::ArrayRef)>,
+    attrs: Option<datafusion::arrow::array::ArrayRef>,
+}
+
+impl LabelCols {
+    fn build(batch: &datafusion::arrow::record_batch::RecordBatch) -> crate::Result<Self> {
+        use datafusion::arrow::compute::cast;
+        use datafusion::arrow::datatypes::DataType;
+        // value / internal / raw-name columns are not labels.
+        const SKIP: [&str; 4] = ["v", "time_unix_nano", "rn", "name"];
+        let schema = batch.schema();
+        let mut promoted = Vec::new();
+        let mut attrs = None;
+        for (i, f) in schema.fields().iter().enumerate() {
+            let n = f.name().as_str();
+            if n == "attributes" {
+                attrs = Some(cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?);
+                continue;
+            }
+            if SKIP.contains(&n) {
+                continue;
+            }
+            let key = if n == "prom_name" { "__name__".to_string() } else { n.to_string() };
+            let arr = cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
+            promoted.push((key, arr));
+        }
+        Ok(Self { promoted, attrs })
+    }
+
+    fn labels(&self, i: usize) -> BTreeMap<String, String> {
+        use datafusion::arrow::array::{Array, AsArray};
+        let mut m = BTreeMap::new();
+        for (key, arr) in &self.promoted {
+            let a = arr.as_string::<i32>();
+            if !a.is_null(i) {
+                m.insert(key.clone(), a.value(i).to_string());
+            }
+        }
+        if let Some(arr) = &self.attrs {
+            let a = arr.as_string::<i32>();
+            if !a.is_null(i)
+                && let Ok(serde_json::Value::Object(map)) =
+                    serde_json::from_str::<serde_json::Value>(a.value(i))
+            {
+                for (k, v) in map {
+                    let val = match v {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    // Promoted columns win over attributes on a key collision.
+                    m.entry(super::udf::normalize(&k)).or_insert(val);
+                }
+            }
+        }
+        m
+    }
+}
+
 /// Run an instant PromQL query and build a `resultType=vector` response.
 ///
 /// The sample timestamp returned is the evaluation time (`time_ns`), per the
@@ -327,45 +392,19 @@ pub async fn handle_instant(
     #[allow(clippy::cast_precision_loss)]
     let time_s = time_ns as f64 / 1_000_000_000.0;
 
-    // Columns that are not labels: the value, the raw JSON blob, internal cols.
-    const NON_LABEL: [&str; 3] = ["v", "attributes", "time_unix_nano"];
-
     let mut samples: Vec<(BTreeMap<String, String>, f64, f64)> = Vec::new();
     for batch in &batches {
         let schema = batch.schema();
         let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
         let v = cast(batch.column(v_idx), &DataType::Float64)?;
         let v = v.as_primitive::<Float64Type>();
-
-        // Pre-cast label columns to Utf8 so we can read any string-ish type.
-        let labels: Vec<(String, _)> = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| !NON_LABEL.contains(&f.name().as_str()))
-            .map(|(i, f)| {
-                let key = if f.name() == "name" {
-                    "__name__".to_string()
-                } else {
-                    f.name().clone()
-                };
-                (key, cast(batch.column(i), &DataType::Utf8))
-            })
-            .collect();
+        let cols = LabelCols::build(batch)?;
 
         for i in 0..batch.num_rows() {
             if v.is_null(i) {
                 continue;
             }
-            let mut metric = BTreeMap::new();
-            for (key, arr) in &labels {
-                let arr = arr.as_ref().map_err(|e| to_err(e.to_string()))?;
-                let arr = arr.as_string::<i32>();
-                if !arr.is_null(i) {
-                    metric.insert(key.clone(), arr.value(i).to_string());
-                }
-            }
-            samples.push((metric, time_s, v.value(i)));
+            samples.push((cols.labels(i), time_s, v.value(i)));
         }
     }
     Ok(PromResponse::vector(samples))
@@ -495,7 +534,8 @@ fn metric_base(
         "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
     ));
     Ok(format!(
-        "SELECT name, service_name, attributes, time_unix_nano, \
+        "SELECT prom_metric_name(name, unit, is_monotonic) AS prom_name, name, \
+         service_name, attributes, time_unix_nano, \
          {value_expr} AS v FROM {table} WHERE {}",
         preds.join(" AND ")
     ))
@@ -744,8 +784,6 @@ async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Resu
 
     let batches = engine.sql(sql).await?;
 
-    const NON_LABEL: [&str; 3] = ["v", "attributes", "time_unix_nano"];
-
     // Group points by their (ordered) label set; BTreeMap key keeps it stable.
     let mut series: RangeSeries = BTreeMap::new();
     for batch in &batches {
@@ -758,34 +796,13 @@ async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Resu
             .map_err(|e| to_err(e.to_string()))?;
         let t = cast(batch.column(t_idx), &DataType::Int64)?;
         let t = t.as_primitive::<Int64Type>();
-
-        let labels: Vec<(String, _)> = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| !NON_LABEL.contains(&f.name().as_str()))
-            .map(|(i, f)| {
-                let key = if f.name() == "name" {
-                    "__name__".to_string()
-                } else {
-                    f.name().clone()
-                };
-                (key, cast(batch.column(i), &DataType::Utf8))
-            })
-            .collect();
+        let cols = LabelCols::build(batch)?;
 
         for i in 0..batch.num_rows() {
             if v.is_null(i) || t.is_null(i) {
                 continue;
             }
-            let mut metric = BTreeMap::new();
-            for (key, arr) in &labels {
-                let arr = arr.as_ref().map_err(|e| to_err(e.to_string()))?;
-                let arr = arr.as_string::<i32>();
-                if !arr.is_null(i) {
-                    metric.insert(key.clone(), arr.value(i).to_string());
-                }
-            }
+            let metric = cols.labels(i);
             #[allow(clippy::cast_precision_loss)]
             let ts_s = t.value(i) as f64 / 1_000_000_000.0;
             let key = format!("{metric:?}");
@@ -1691,6 +1708,74 @@ mod tests {
             s.values,
             vec![(2.0, "20".to_string()), (3.0, "30".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn test_instant_normalizes_name_and_explodes_attributes() {
+        // C-P1: a bare instant selector must return the normalized __name__ and
+        // explode the attributes JSON into per-label series (not collapse them).
+        use crate::config::query::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        // Two series of the same OTLP metric, differing only by status_code.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client", "client"])),
+                Arc::new(StringArray::from(vec!["http.server.requests", "http.server.requests"])),
+                Arc::new(StringArray::from(vec![Some("By"), Some("By")])),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64, 1_000_000_000])
+                        .with_timezone("UTC"),
+                ),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"http.response.status_code":"200","http.route":"/user"}"#),
+                    Some(r#"{"http.response.status_code":"500","http.route":"/user"}"#),
+                ])),
+                Arc::new(Float64Array::from(vec![3.0, 1.0])),
+                Arc::new(datafusion::arrow::array::BooleanArray::from(vec![Some(false), Some(false)])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let opts = QuerierOptions {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..QuerierOptions::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+
+        let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000).await.unwrap();
+        // Two distinct series (200 vs 500) — not collapsed into one.
+        assert_eq!(resp.data.result.len(), 2, "attributes exploded → 2 series: {:?}", resp.data.result);
+        for s in &resp.data.result {
+            // normalized __name__ (dots→_, unit suffix), not the raw dotted name
+            assert_eq!(s.metric["__name__"], "http_server_requests_bytes", "metric: {:?}", s.metric);
+            assert_eq!(s.metric["service_name"], "client");
+            assert_eq!(s.metric["http_route"], "/user");
+            assert!(s.metric.contains_key("http_response_status_code"), "status label: {:?}", s.metric);
+        }
     }
 
     #[tokio::test]

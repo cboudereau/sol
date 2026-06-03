@@ -20,7 +20,7 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 
 | Endpoint | Verdict | Sev | Finding / fix |
 |---|---|---|---|
-| `query` (instant) | ⬜ | HIGH | **C-P1** (instant/range still open) `__name__` is the raw dotted OTLP name, not normalized; and the `attributes` JSON blob is dropped (`NON_LABEL`) so per-attribute labels aren't exploded → bare instant/range selectors collapse distinct series. (Dashboards use `sum by(…)` so are unaffected; Explore/metric-browser diverge.) Fix: emit `prom_metric_name(...)` for `__name__` and explode `attributes` in the shared `handle_instant`/`handle_range` label projection (window-function SQL — do as a focused change). |
+| `query` (instant) | ✅ | HIGH | **C-P1** FIXED — a shared `LabelCols` helper now maps `prom_name` → normalized `__name__` and explodes the `attributes` JSON into normalized per-attribute labels, in both the instant and range builders. Bare selectors no longer collapse distinct series. (Grouped `sum by(…)` queries carry no `attributes`/`prom_name` column, so they're unchanged.) |
 | `series` | ✅ | HIGH | **C-P2** FIXED — `series_sql(match[])` now applies the selector's name+label predicates and emits the normalized `__name__`. (`series` was the C-P1 name/label fix's clean, window-free home.) |
 | `query_range` | ⬜ | MED | **C-P3** samples are raw point timestamps, not resampled to the `step` grid (Mimir returns one step-aligned point per bucket). Grafana mostly tolerates it; can distort graphs / shared tooltips. Fix: bucket/resample to `step`. |
 | `metadata` | ✅ | MED | **C-P4** FIXED — `/api/v1/metadata` returns `{status:"success",data:{}}` (valid empty metadata; no more 404). Per-metric type/unit population is a future enhancement. |
