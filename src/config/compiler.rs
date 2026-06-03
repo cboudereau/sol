@@ -45,7 +45,9 @@ pub fn compile(mut builder: ConfigBuilder) -> Result<(Config, Vec<String>), Vec<
         #[cfg(feature = "api")]
         api,
         #[cfg(feature = "query-backend")]
-        query,
+        querier,
+        #[cfg(feature = "query-backend")]
+        compactor,
         schema,
         healthchecks,
         enrichment_tables,
@@ -133,7 +135,9 @@ pub fn compile(mut builder: ConfigBuilder) -> Result<(Config, Vec<String>), Vec<
             #[cfg(feature = "api")]
             api,
             #[cfg(feature = "query-backend")]
-            query,
+            querier,
+            #[cfg(feature = "query-backend")]
+            compactor,
             schema,
             healthchecks,
             enrichment_tables,

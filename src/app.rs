@@ -49,7 +49,9 @@ pub struct ApplicationConfig {
     #[cfg(feature = "api")]
     pub api: config::api::Options,
     #[cfg(feature = "query-backend")]
-    pub query: config::query::Options,
+    pub querier: Option<config::query::QuerierOptions>,
+    #[cfg(feature = "query-backend")]
+    pub compactor: Option<config::query::CompactorOptions>,
     pub extra_context: ExtraContext,
 }
 
@@ -101,7 +103,9 @@ impl ApplicationConfig {
         #[cfg(feature = "api")]
         let api = config.api;
         #[cfg(feature = "query-backend")]
-        let query = config.query.clone();
+        let querier = config.querier.clone();
+        #[cfg(feature = "query-backend")]
+        let compactor = config.compactor.clone();
 
         let (topology, graceful_crash_receiver) =
             RunningTopology::start_init_validated(config, extra_context.clone())
@@ -116,7 +120,9 @@ impl ApplicationConfig {
             #[cfg(feature = "api")]
             api,
             #[cfg(feature = "query-backend")]
-            query,
+            querier,
+            #[cfg(feature = "query-backend")]
+            compactor,
             extra_context,
         })
     }
@@ -172,24 +178,36 @@ impl ApplicationConfig {
         }
     }
 
-    /// Configure the query backend server, if enabled. Mirrors [`Self::setup_api`].
+    /// Start the query-backend components present in config: a `querier:` HTTP
+    /// server and/or a `compactor:` loop. Mirrors [`Self::setup_api`].
     #[cfg(feature = "query-backend")]
-    pub fn setup_query(&self, handle: &Handle) -> Option<crate::query::Server> {
-        if self.query.enabled {
-            match crate::query::Server::start(&self.query, handle) {
+    pub fn setup_query(&self, handle: &Handle) -> Vec<crate::query::Server> {
+        let mut servers = Vec::new();
+        if let Some(querier) = &self.querier {
+            match crate::query::Server::start_querier(querier, handle) {
                 Ok(server) => {
-                    info!(message = "Sol query backend started.", address = %self.query.address);
-                    Some(server)
+                    info!(message = "Sol querier started.", address = %querier.address);
+                    servers.push(server);
                 }
                 Err(error) => {
                     let error = error.to_string();
-                    error!(message = "Sol query backend failed to start.", %error);
-                    None
+                    error!(message = "Sol querier failed to start.", %error);
                 }
             }
-        } else {
-            None
         }
+        if let Some(compactor) = &self.compactor {
+            match crate::query::Server::start_compactor(compactor, handle) {
+                Ok(server) => {
+                    info!(message = "Sol compactor started.");
+                    servers.push(server);
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    error!(message = "Sol compactor failed to start.", %error);
+                }
+            }
+        }
+        servers
     }
 }
 
@@ -286,7 +304,7 @@ impl Application {
             #[cfg(feature = "api")]
             api_server: config.setup_api(handle),
             #[cfg(feature = "query-backend")]
-            query_server: config.setup_query(handle),
+            query_servers: config.setup_query(handle),
             topology: config.topology,
             config_paths: config.config_paths.clone(),
             require_healthy: root_opts.require_healthy,

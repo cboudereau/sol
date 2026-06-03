@@ -25,9 +25,9 @@ mod udf;
 pub mod tempo;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
-use crate::config::query::{Options, QueryRole};
+use crate::config::query::{CompactorOptions, QuerierOptions};
 
-/// Handle to the running Sol query backend.
+/// Handle to a running Sol query-backend component (querier or compactor).
 ///
 /// Gracefully shuts down when dropped — the `oneshot` sender closing ends the
 /// server task. Mirrors [`crate::api::Server`].
@@ -36,43 +36,34 @@ pub struct Server {
 }
 
 impl Server {
-    /// Start the query backend in the configured role: a read-only HTTP querier
-    /// or the singleton compactor loop. Gracefully shuts down when dropped.
-    pub fn start(opts: &Options, handle: &Handle) -> crate::Result<Self> {
-        match opts.role {
-            QueryRole::Querier => Self::start_querier(opts, handle),
-            QueryRole::Compactor => Self::start_compactor(opts, handle),
-        }
-    }
-
-    /// Spawn the periodic compactor loop (no HTTP): seal → rollup → GC every
-    /// `compaction.interval_secs`, starting immediately.
-    fn start_compactor(opts: &Options, handle: &Handle) -> crate::Result<Self> {
+    /// Spawn the periodic compactor loop (no HTTP): intraday → seal → rollup →
+    /// GC every `interval_secs`, starting immediately.
+    pub fn start_compactor(opts: &CompactorOptions, handle: &Handle) -> crate::Result<Self> {
         let (_shutdown, rx) = oneshot::channel::<()>();
         let _guard = handle.enter();
         let opts = opts.clone();
         handle.spawn(async move {
             let cfg = compaction::CompactorConfig {
-                grace_days: opts.compaction.grace_days,
-                retention_days: opts.compaction.retention_days,
-                intraday: opts.compaction.intraday,
-                hour_grace_secs: opts.compaction.hour_grace_secs,
-                delete_superseded: opts.compaction.delete_superseded,
-                delete_grace_secs: opts.compaction.delete_grace_secs,
+                grace_days: opts.grace_days,
+                retention_days: opts.retention_days,
+                intraday: opts.intraday,
+                hour_grace_secs: opts.hour_grace_secs,
+                delete_superseded: opts.delete_superseded,
+                delete_grace_secs: opts.delete_grace_secs,
             };
             let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
             let mut tick =
-                tokio::time::interval(Duration::from_secs(opts.compaction.interval_secs.max(1)));
+                tokio::time::interval(Duration::from_secs(opts.interval_secs.max(1)));
             let shutdown = async {
                 rx.await.ok();
             };
             tokio::pin!(shutdown);
-            debug!(message = "Sol compactor started.", interval = opts.compaction.interval_secs);
+            debug!(message = "Sol compactor started.", interval = opts.interval_secs);
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
                         let now = chrono::Utc::now();
-                        match compactor.run_once(now, opts.compaction.rollups).await {
+                        match compactor.run_once(now, opts.rollups).await {
                             Ok(report) => debug!(
                                 message = "Sol compactor pass complete.",
                                 partitions_sealed = report.partitions_sealed,
@@ -97,7 +88,7 @@ impl Server {
     /// mounts the warp routes ([`routes::make_routes`]), serves over a manual
     /// hyper accept loop (mirroring [`crate::api::Server`]), and periodically
     /// refreshes the catalog. Gracefully shuts down when dropped.
-    fn start_querier(opts: &Options, handle: &Handle) -> crate::Result<Self> {
+    pub fn start_querier(opts: &QuerierOptions, handle: &Handle) -> crate::Result<Self> {
         let (_shutdown, rx) = oneshot::channel::<()>();
         let _guard = handle.enter();
         let addr = opts.address;

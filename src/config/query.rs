@@ -1,23 +1,28 @@
-//! Query backend configuration — the top-level `query:` block.
+//! Query-backend configuration — the top-level `querier:` and `compactor:`
+//! blocks.
 //!
-//! Serves Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
-//! Mirrors [`super::api::Options`] / [`super::HealthcheckOptions`]; gated behind
-//! the `query-backend` feature. See `docs/workspace/parquet-backend/`.
+//! The query backend serves Prometheus/Tempo/Loki + SQL APIs over Parquet via
+//! DataFusion. It runs as one of two components, selected by *which section is
+//! present* (no `role` switch):
+//!
+//! - [`QuerierOptions`] (`querier:`) — the stateless read server (HTTP APIs).
+//! - [`CompactorOptions`] (`compactor:`) — the singleton seal → rollup →
+//!   retention loop. No HTTP server.
+//!
+//! An instance may configure either or both. Gated behind the `query-backend`
+//! feature. See `docs/workspace/parquet-backend/`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use sol_lib::configurable::configurable_component;
 
-/// Query backend options.
-#[configurable_component(global_option("query"))]
+/// Querier options (`querier:`) — the read-only HTTP query server.
+#[configurable_component(global_option("querier"))]
 #[derive(Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
-pub struct Options {
-    /// Whether the query backend is enabled.
-    pub enabled: bool,
-
-    /// Network address the query backend binds to.
+pub struct QuerierOptions {
+    /// Network address the querier binds to.
     #[configurable(metadata(docs::examples = "0.0.0.0:9009"))]
     pub address: SocketAddr,
 
@@ -32,39 +37,22 @@ pub struct Options {
 
     /// Per-signal query guardrails (max range, max bytes scanned, max concurrency).
     pub guardrails: GuardrailsConfig,
-
-    /// Which role this instance runs: stateless `querier` (HTTP APIs) or the
-    /// singleton `compactor` (seal → rollup → retention loop). See the
-    /// deployment-roles ADR.
-    pub role: QueryRole,
-
-    /// Compactor settings (used when `role = compactor`).
-    pub compaction: CompactionConfig,
 }
 
-/// The deployment role an instance runs.
-#[configurable_component]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryRole {
-    /// Stateless read-only querier serving the HTTP APIs (default).
-    #[default]
-    Querier,
-    /// Singleton compactor: periodically seals sealed-day partitions, generates
-    /// metric rollups, and runs retention GC. No HTTP server.
-    Compactor,
-}
-
-/// Compactor loop settings (NFR5/NFR6; FR6/FR7).
-#[configurable_component]
-#[derive(Clone, Copy, Debug)]
+/// Compactor options (`compactor:`) — the singleton seal → rollup → retention
+/// loop (NFR5/NFR6; FR6/FR7). No HTTP server.
+#[configurable_component(global_option("compactor"))]
+#[derive(Clone, Debug)]
 #[serde(default, deny_unknown_fields)]
-pub struct CompactionConfig {
-    /// How often (seconds) the compactor runs a seal → rollup → GC pass.
+pub struct CompactorOptions {
+    /// Parquet storage root the compactor reads and writes (read-write).
+    pub storage: StorageConfig,
+
+    /// How often (seconds) the compactor runs an intraday → seal → rollup → GC pass.
     pub interval_secs: u64,
 
     /// A partition is sealable once it is at least this many days old (the
-    /// active day is never compacted).
+    /// active day is hourly-compacted instead).
     pub grace_days: i64,
 
     /// Partitions older than this are deleted by retention GC.
@@ -141,28 +129,27 @@ pub struct GuardrailsConfig {
     pub max_concurrent_queries: u64,
 }
 
-impl_generate_config_from_default!(Options);
+impl_generate_config_from_default!(QuerierOptions);
+impl_generate_config_from_default!(CompactorOptions);
 
 const DAY: u64 = 86_400;
 
-impl Default for Options {
+impl Default for QuerierOptions {
     fn default() -> Self {
         Self {
-            enabled: false,
             address: SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 9009),
             storage: StorageConfig::default(),
             cache: CacheConfig::default(),
             refresh_interval_secs: 15,
             guardrails: GuardrailsConfig::default(),
-            role: QueryRole::default(),
-            compaction: CompactionConfig::default(),
         }
     }
 }
 
-impl Default for CompactionConfig {
+impl Default for CompactorOptions {
     fn default() -> Self {
         Self {
+            storage: StorageConfig::default(),
             interval_secs: 3600, // hourly
             grace_days: 1,       // seal everything before today
             retention_days: 30,
@@ -211,19 +198,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_query_options_deserializes_from_yaml() {
+    fn test_querier_options_deserializes_from_yaml() {
         let yaml = r#"
 address: "0.0.0.0:9009"
 storage:
   path: "/data/parquet"
 "#;
-        let opts: Options = serde_yaml::from_str(yaml).expect("query options should parse");
+        let opts: QuerierOptions = serde_yaml::from_str(yaml).expect("querier options should parse");
         assert_eq!(opts.address.port(), 9009);
         assert_eq!(opts.storage.path, PathBuf::from("/data/parquet"));
-        // Unspecified fields fall back to defaults.
-        assert!(!opts.enabled);
         assert_eq!(opts.refresh_interval_secs, 15);
-        assert_eq!(opts.cache.max_bytes, 256 * 1024 * 1024);
-        assert_eq!(opts.guardrails.metrics_max_range_secs, 395 * DAY);
+    }
+
+    #[test]
+    fn test_compactor_options_deserializes_from_yaml() {
+        let yaml = r#"
+storage:
+  path: "/data/parquet"
+interval_secs: 300
+intraday: true
+"#;
+        let opts: CompactorOptions =
+            serde_yaml::from_str(yaml).expect("compactor options should parse");
+        assert_eq!(opts.storage.path, PathBuf::from("/data/parquet"));
+        assert_eq!(opts.interval_secs, 300);
+        assert!(opts.intraday);
+        assert!(opts.delete_superseded, "default carried");
     }
 }

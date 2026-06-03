@@ -6,9 +6,9 @@
 # to Mimir as service.name = sol/query, so the `SOL Query Backend` dashboard's
 # instance template variable resolves.
 
-# Embedded read-side query server (query-backend feature).
-query:
-  enabled: true
+# Read-side query server (query-backend feature). Presence of `querier:`
+# starts the HTTP query component (no `role` switch).
+querier:
   address: "0.0.0.0:9009"
   storage:
     path: "/data/parquet"

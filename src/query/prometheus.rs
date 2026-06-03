@@ -1355,7 +1355,7 @@ mod tests {
 
     // A 3-sample counter fixture (http_total, service=client) at t=1s,2s,3s.
     async fn counter_engine() -> crate::query::QueryEngine {
-        use crate::config::query::{Options, StorageConfig};
+        use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -1395,9 +1395,9 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: tmp.path().into(), url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
     }
@@ -1434,7 +1434,7 @@ mod tests {
     async fn test_topk_returns_top_n_series_with_all_points() {
         // topk must keep the top-N *series* (all their points + labels), not N
         // scattered rows. Two series (sc=a high, sc=b low); topk(1) → sc=a only.
-        use crate::config::query::{Options, StorageConfig};
+        use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -1485,9 +1485,9 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: tmp.path().into(), url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
         let resp =
@@ -1517,7 +1517,7 @@ mod tests {
     async fn test_histogram_quantile_range_from_otlp_arrays() {
         // #4: the dashboard's `histogram_quantile(φ, sum(rate(<base>_bucket[d])) by (le))`
         // is served from the native OTLP array histogram (no classic _bucket series).
-        use crate::config::query::{Options, StorageConfig};
+        use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -1560,9 +1560,9 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: tmp.path().into(), url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
         // base `_bucket` query (normalized name http_server_request_duration_seconds)
@@ -1589,7 +1589,7 @@ mod tests {
     async fn test_bucket_heatmap_explodes_le_series() {
         // #4 heatmap: sum(rate(<base>_bucket[d])) by (le) → per-le cumulative
         // bucket rate series, exploded from the OTLP arrays.
-        use crate::config::query::{Options, StorageConfig};
+        use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -1639,9 +1639,9 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: tmp.path().into(), url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
         let resp = handle_range(

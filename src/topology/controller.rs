@@ -41,7 +41,7 @@ pub struct TopologyController {
     #[cfg(feature = "api")]
     pub api_server: Option<api::Server>,
     #[cfg(feature = "query-backend")]
-    pub query_server: Option<crate::query::Server>,
+    pub query_servers: Vec<crate::query::Server>,
     pub extra_context: ExtraContext,
 }
 

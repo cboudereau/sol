@@ -89,7 +89,7 @@ pub async fn handle_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::query::{GuardrailsConfig, Options, StorageConfig};
+    use crate::config::query::{GuardrailsConfig, QuerierOptions, StorageConfig};
     use datafusion::arrow::array::{FixedSizeBinaryArray, Int64Array, StringArray, TimestampNanosecondArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -173,10 +173,10 @@ mod tests {
         .unwrap();
         write(&root.join("metrics").join("dt=2026-06-01"), metric_schema, metric_batch);
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: root.into(), url: None },
             guardrails: GuardrailsConfig { max_bytes_scanned: max_scan_bytes, ..Default::default() },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         (crate::query::QueryEngine::new(&opts).await.unwrap(), tmp)
     }

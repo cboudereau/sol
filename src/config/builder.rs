@@ -29,7 +29,12 @@ pub struct ConfigBuilder {
     #[cfg(feature = "query-backend")]
     #[configurable(derived)]
     #[serde(default)]
-    pub query: query::Options,
+    pub querier: Option<query::QuerierOptions>,
+
+    #[cfg(feature = "query-backend")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub compactor: Option<query::CompactorOptions>,
 
     #[configurable(derived)]
     #[configurable(metadata(docs::hidden))]
@@ -90,7 +95,9 @@ impl From<Config> for ConfigBuilder {
             #[cfg(feature = "api")]
             api,
             #[cfg(feature = "query-backend")]
-            query,
+            querier,
+            #[cfg(feature = "query-backend")]
+            compactor,
             schema,
             healthchecks,
             enrichment_tables,
@@ -124,7 +131,9 @@ impl From<Config> for ConfigBuilder {
             #[cfg(feature = "api")]
             api,
             #[cfg(feature = "query-backend")]
-            query,
+            querier,
+            #[cfg(feature = "query-backend")]
+            compactor,
             schema,
             healthchecks,
             enrichment_tables,
@@ -224,11 +233,16 @@ impl ConfigBuilder {
             errors.push(error);
         }
 
-        // Query backend has no field-level merge; later config wins (last-writer).
-        // Assumption (within constitution): a single `query:` block per deployment.
+        // Query backend has no field-level merge; later config wins (last-writer),
+        // but a later file that omits a section must not clear an earlier one.
         #[cfg(feature = "query-backend")]
         {
-            self.query = with.query;
+            if with.querier.is_some() {
+                self.querier = with.querier;
+            }
+            if with.compactor.is_some() {
+                self.compactor = with.compactor;
+            }
         }
 
         self.provider = with.provider;

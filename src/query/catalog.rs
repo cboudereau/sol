@@ -20,7 +20,7 @@ use datafusion::datasource::listing::{
 use datafusion::execution::context::SessionContext;
 use datafusion::prelude::SessionConfig;
 
-use crate::config::query::Options;
+use crate::config::query::QuerierOptions;
 
 /// A logical table registered in the query engine, backed by one signal directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,7 +330,7 @@ pub struct QueryEngine {
 impl QueryEngine {
     /// Build the engine from config: register the signal catalog in a DataFusion
     /// `SessionContext` with a bounded worker pool (NFR5).
-    pub async fn new(opts: &Options) -> crate::Result<Self> {
+    pub async fn new(opts: &QuerierOptions) -> crate::Result<Self> {
         let parallelism = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -410,10 +410,10 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::parquet::arrow::ArrowWriter;
 
-    fn engine_opts(root: PathBuf) -> Options {
-        Options {
+    fn engine_opts(root: PathBuf) -> QuerierOptions {
+        QuerierOptions {
             storage: crate::config::query::StorageConfig { path: root, url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         }
     }
 

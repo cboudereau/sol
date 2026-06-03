@@ -151,7 +151,9 @@ pub struct Config {
     #[cfg(feature = "api")]
     pub api: api::Options,
     #[cfg(feature = "query-backend")]
-    pub query: query::Options,
+    pub querier: Option<query::QuerierOptions>,
+    #[cfg(feature = "query-backend")]
+    pub compactor: Option<query::CompactorOptions>,
     pub schema: schema::Options,
     pub global: GlobalOptions,
     pub healthchecks: HealthcheckOptions,

@@ -267,9 +267,7 @@ Snapshot the Parquet and point a local `sol-query` at it:
 ```bash
 docker compose cp duckdb:/data/parquet ./parquet-snapshot
 cat > sol-query-local.yaml <<'EOF'
-query:
-  enabled: true
-  role: querier
+querier:
   address: "127.0.0.1:9009"
   storage: { path: "./parquet-snapshot" }
 EOF

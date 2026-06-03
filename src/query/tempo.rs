@@ -546,7 +546,7 @@ mod tests {
 
     // --- end-to-end over a 2-span trace fixture ---
     async fn trace_engine() -> crate::query::QueryEngine {
-        use crate::config::query::{Options, StorageConfig};
+        use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{
             FixedSizeBinaryArray, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
         };
@@ -624,9 +624,9 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
 
-        let opts = Options {
+        let opts = QuerierOptions {
             storage: StorageConfig { path: tmp.path().into(), url: None },
-            ..Options::default()
+            ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
     }
