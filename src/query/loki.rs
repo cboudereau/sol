@@ -234,6 +234,86 @@ pub async fn handle_label_values(
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
 
+/// Whether a LogQL query is a **metric** query (volume / aggregation) rather
+/// than a plain `{...}` log-stream selector. Grafana's "Logs volume" panel
+/// issues `sum by (level) (count_over_time({sel}[range]))`, which must produce
+/// a Prometheus-style matrix, not a `streams` result.
+pub fn is_metric_query(logql: &str) -> bool {
+    !logql.trim_start().starts_with('{')
+}
+
+/// SQL for a log-volume query: count logs per `(detected_level, time-bucket of
+/// step_ns)` over the inner `{selector}`. Grafana renders the per-level volume
+/// bars from the resulting matrix. We always group by `detected_level` (the
+/// Loki volume default), regardless of the query's `by(...)`.
+fn volume_sql(logql: &str, start_ns: i64, end_ns: i64, step_ns: i64) -> Result<String, String> {
+    let open = logql.find('{').ok_or("log volume query must contain a {...} selector")?;
+    let close = logql[open..].find('}').ok_or("unterminated {...} selector")? + open;
+    let selector = &logql[open..=close];
+    let mut preds: Vec<String> = parse_selector(selector)?
+        .into_iter()
+        .map(|(k, op, v)| label_pred(&k, &op, &v))
+        .collect::<Result<_, _>>()?;
+    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    let step = step_ns.max(1);
+    // detected_level via the same severity ranges as `detected_level()`.
+    let level = "CASE \
+        WHEN severity_number BETWEEN 1 AND 4 THEN 'trace' \
+        WHEN severity_number BETWEEN 5 AND 8 THEN 'debug' \
+        WHEN severity_number BETWEEN 9 AND 12 THEN 'info' \
+        WHEN severity_number BETWEEN 13 AND 16 THEN 'warn' \
+        WHEN severity_number BETWEEN 17 AND 20 THEN 'error' \
+        WHEN severity_number BETWEEN 21 AND 24 THEN 'fatal' ELSE 'unknown' END";
+    Ok(format!(
+        "SELECT {level} AS lvl, (CAST(time_unix_nano AS BIGINT) / {step}) * {step} AS bkt, \
+         count(*) AS c FROM logs WHERE {} GROUP BY lvl, bkt ORDER BY bkt",
+        preds.join(" AND ")
+    ))
+}
+
+/// Run a log-volume metric query and build a Prometheus-style `matrix` response
+/// (one series per `detected_level`). This is what Grafana's "Logs volume"
+/// panel consumes; a plain log query goes through [`handle_query_range`].
+pub async fn handle_volume(
+    engine: &super::QueryEngine,
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+    step_ns: i64,
+) -> crate::Result<serde_json::Value> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::datatypes::Int64Type;
+
+    let sql = volume_sql(query, start_ns, end_ns, step_ns)
+        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
+    let batches = engine.sql(&sql).await?;
+
+    let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for batch in &batches {
+        let lvl = batch.column(0).as_string::<i32>();
+        let bkt = batch.column(1).as_primitive::<Int64Type>();
+        let c = batch.column(2).as_primitive::<Int64Type>();
+        for i in 0..batch.num_rows() {
+            let level =
+                if lvl.is_null(i) { "unknown".to_string() } else { lvl.value(i).to_string() };
+            #[allow(clippy::cast_precision_loss)] // ns→s for the matrix timestamp
+            let ts = bkt.value(i) as f64 / 1e9;
+            series
+                .entry(level)
+                .or_default()
+                .push(serde_json::json!([ts, c.value(i).to_string()]));
+        }
+    }
+    let result: Vec<serde_json::Value> = series
+        .into_iter()
+        .map(|(lvl, values)| serde_json::json!({ "metric": { "detected_level": lvl }, "values": values }))
+        .collect();
+    Ok(serde_json::json!({
+        "status": "success",
+        "data": { "resultType": "matrix", "result": result }
+    }))
+}
+
 // --- Loki query_range response (resultType=streams) ---
 
 /// Loki `query_range` response envelope.
@@ -393,6 +473,30 @@ mod tests {
     fn test_logql_escapes_quotes() {
         let sql = translate_query_range(r#"{service_name="a'b"}"#, 0, 1, 1, true).unwrap();
         assert!(sql.contains("service_name = 'a''b'"), "sql: {sql}");
+    }
+
+    #[test]
+    fn test_is_metric_query_detects_volume() {
+        assert!(is_metric_query(
+            r#"sum by (detected_level) (count_over_time({service_name="client"}[1m]))"#
+        ));
+        assert!(!is_metric_query(r#"{service_name="client"} |= "x""#));
+    }
+
+    #[test]
+    fn test_volume_sql_buckets_by_step_and_level() {
+        let sql = volume_sql(
+            r#"sum by (detected_level) (count_over_time({service_name="client"}[1m]))"#,
+            0,
+            1_000_000_000_000,
+            60_000_000_000,
+        )
+        .unwrap();
+        assert!(sql.contains("service_name = 'client'"), "selector filter: {sql}");
+        assert!(sql.contains("count(*) AS c"), "{sql}");
+        assert!(sql.contains("GROUP BY lvl, bkt"), "{sql}");
+        assert!(sql.contains("/ 60000000000) * 60000000000"), "step bucketing: {sql}");
+        assert!(sql.contains("'info'") && sql.contains("'error'"), "level CASE: {sql}");
     }
 
     #[test]

@@ -25,6 +25,7 @@ struct LokiQueryParams {
     end: Option<String>,
     limit: Option<u32>,
     direction: Option<String>,
+    step: Option<String>,
 }
 
 fn parse_ns(s: &Option<String>, default: i64) -> i64 {
@@ -33,16 +34,42 @@ fn parse_ns(s: &Option<String>, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+/// Parse a Loki `step` (seconds, possibly with a trailing duration unit Grafana
+/// may send) to nanoseconds; fall back to ~1/100 of the range (min 1s).
+fn loki_step_ns(step: &Option<String>, start: i64, end: i64) -> i64 {
+    let parsed = step.as_ref().and_then(|s| {
+        let digits: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        digits.parse::<f64>().ok()
+    });
+    if let Some(secs) = parsed.filter(|s| *s > 0.0) {
+        #[allow(clippy::cast_possible_truncation)]
+        let ns = (secs * 1e9) as i64;
+        return ns.max(1_000_000_000);
+    }
+    ((end - start) / 100).max(1_000_000_000)
+}
+
 async fn loki_query_range(
     params: LokiQueryParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
     let start = parse_ns(&params.start, 0);
     let end = parse_ns(&params.end, i64::MAX);
-    let limit = params.limit.unwrap_or(100);
-    let forward = params.direction.as_deref() == Some("forward");
-    match loki::handle_query_range(&engine, &params.query, start, end, limit, forward).await {
-        Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
+    // Metric (volume / aggregation) queries → matrix; plain selectors → streams.
+    let result = if loki::is_metric_query(&params.query) {
+        let step = loki_step_ns(&params.step, start, end);
+        loki::handle_volume(&engine, &params.query, start, end, step)
+            .await
+            .map(|v| warp::reply::json(&v).into_response())
+    } else {
+        let limit = params.limit.unwrap_or(100);
+        let forward = params.direction.as_deref() == Some("forward");
+        loki::handle_query_range(&engine, &params.query, start, end, limit, forward)
+            .await
+            .map(|resp| warp::reply::json(&resp).into_response())
+    };
+    match result {
+        Ok(resp) => Ok(resp),
         Err(error) => {
             let body = serde_json::json!({"status": "error", "error": error.to_string()});
             Ok(warp::reply::with_status(

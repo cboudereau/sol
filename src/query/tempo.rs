@@ -189,7 +189,7 @@ pub struct TempoSearchMetrics {
 }
 
 /// A span set on a search hit — the matched spans Grafana renders as table rows.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoSpanSet {
     /// Matched spans.
     pub spans: Vec<TempoSpan>,
@@ -198,7 +198,7 @@ pub struct TempoSpanSet {
 }
 
 /// One matched span in a search hit.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoSpan {
     /// Hex span id.
     #[serde(rename = "spanID")]
@@ -235,6 +235,12 @@ pub struct TempoTrace {
     /// from these; an absent `spanSet` makes the frame undefined.
     #[serde(rename = "spanSet")]
     pub span_set: TempoSpanSet,
+    /// Same span set as a one-element array. Tempo's API exposes both the
+    /// deprecated singular `spanSet` and the current plural `spanSets`; Grafana
+    /// 13's Tempo datasource reads `spanSets[0]`, so omitting it crashes the
+    /// Search view (`Cannot read properties of undefined (reading '0')`).
+    #[serde(rename = "spanSets")]
+    pub span_sets: Vec<TempoSpanSet>,
 }
 
 /// Run a TraceQL search and group matching spans into trace hits.
@@ -338,16 +344,17 @@ pub async fn handle_search(
 
     let traces: Vec<TempoTrace> = traces
         .into_iter()
-        .map(|(id, acc)| TempoTrace {
-            trace_id: id,
-            root_service_name: acc.service,
-            root_trace_name: acc.name,
-            start_time_unix_nano: acc.start_ns.to_string(),
-            duration_ms: acc.duration_ns / 1_000_000,
-            span_set: TempoSpanSet {
-                matched: acc.spans.len(),
-                spans: acc.spans,
-            },
+        .map(|(id, acc)| {
+            let span_set = TempoSpanSet { matched: acc.spans.len(), spans: acc.spans };
+            TempoTrace {
+                trace_id: id,
+                root_service_name: acc.service,
+                root_trace_name: acc.name,
+                start_time_unix_nano: acc.start_ns.to_string(),
+                duration_ms: acc.duration_ns / 1_000_000,
+                span_sets: vec![span_set.clone()],
+                span_set,
+            }
         })
         .collect();
     let metrics = TempoSearchMetrics {
@@ -575,6 +582,7 @@ mod tests {
                     }],
                     matched: 1,
                 },
+                span_sets: Vec::new(),
             }],
             metrics: TempoSearchMetrics {
                 inspected_traces: 1,
@@ -716,6 +724,10 @@ mod tests {
             "root span chosen by null parent"
         );
         assert_eq!(t.duration_ms, 42);
+        // Both the deprecated singular `spanSet` and the plural `spanSets`
+        // (which Grafana 13 reads as spanSets[0]) must be populated.
+        assert_eq!(t.span_sets.len(), 1, "spanSets present for Grafana 13");
+        assert_eq!(t.span_sets[0].matched, t.span_set.matched);
         // spanSet carries both spans, with their attributes as OTLP KeyValue
         assert_eq!(t.span_set.matched, 2, "both spans in the span set");
         let j = serde_json::to_string(&t.span_set).unwrap();
