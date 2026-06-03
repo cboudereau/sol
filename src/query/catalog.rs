@@ -35,7 +35,8 @@ pub enum SignalTable {
 
 impl SignalTable {
     /// All signal tables registered by the catalog.
-    pub const ALL: [SignalTable; 3] = [SignalTable::Logs, SignalTable::Traces, SignalTable::Metrics];
+    pub const ALL: [SignalTable; 3] =
+        [SignalTable::Logs, SignalTable::Traces, SignalTable::Metrics];
 
     /// SQL table name.
     pub fn table_name(self) -> &'static str {
@@ -199,7 +200,11 @@ impl ParquetCatalog {
             // This finds files at any partition depth — `logs/dt=…/` and (task 14b)
             // `metrics/<subtype>/dt=…/` — and skips raw inputs already superseded by a
             // compacted file, so the querier never double-counts (compaction ADR).
-            let files = if dir.is_dir() { resolve_signal_files(&dir)? } else { Vec::new() };
+            let files = if dir.is_dir() {
+                resolve_signal_files(&dir)?
+            } else {
+                Vec::new()
+            };
             if files.is_empty() {
                 // Absent/empty → empty table with the declared schema
                 // (one empty partition; MemTable requires ≥1 partition).
@@ -237,12 +242,15 @@ impl ParquetCatalog {
                 .iter()
                 .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
                 .collect::<Result<Vec<_>, _>>()?;
-            let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
-                .with_collect_stat(false);
+            let options =
+                ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
             let config = ListingTableConfig::new_with_multi_paths(paths)
                 .with_listing_options(options)
                 .with_schema(Arc::clone(&metric_schema));
-            ctx.register_table(format!("metrics_{tier}"), Arc::new(ListingTable::try_new(config)?))?;
+            ctx.register_table(
+                format!("metrics_{tier}"),
+                Arc::new(ListingTable::try_new(config)?),
+            )?;
         }
         Ok(())
     }
@@ -270,7 +278,9 @@ fn rollup_tier_files(metrics_root: &std::path::Path, tier: &str) -> Vec<PathBuf>
     let mut out = Vec::new();
     let mut stack = vec![metrics_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -293,7 +303,9 @@ fn resolve_signal_files(root: &std::path::Path) -> crate::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut has_parquet = false;
         for entry in entries.flatten() {
             let path = entry.path();
@@ -305,7 +317,10 @@ fn resolve_signal_files(root: &std::path::Path) -> crate::Result<Vec<PathBuf>> {
         }
         if has_parquet {
             for file in super::compaction::resolve_files(&dir)? {
-                let name = file.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+                let name = file
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default();
                 if !name.starts_with("rollup-") {
                     out.push(file);
                 }
@@ -439,7 +454,10 @@ mod tests {
 
     fn engine_opts(root: PathBuf) -> QuerierOptions {
         QuerierOptions {
-            storage: crate::config::query::StorageConfig { path: root, url: None },
+            storage: crate::config::query::StorageConfig {
+                path: root,
+                url: None,
+            },
             ..QuerierOptions::default()
         }
     }
@@ -478,7 +496,11 @@ mod tests {
     }
 
     fn write_min_log_parquet(path: &std::path::Path, rows: usize) {
-        let schema = Arc::new(Schema::new(vec![Field::new("service_name", DataType::Utf8, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service_name",
+            DataType::Utf8,
+            false,
+        )]));
         let vals: Vec<&str> = std::iter::repeat_n("svc", rows).collect();
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(StringArray::from(vals))]).unwrap();
@@ -563,7 +585,11 @@ mod tests {
         // narrow per-subtype files (adapter fills the missing columns).
         let tmp = tempfile::tempdir().unwrap();
         for subtype in ["gauge", "sum", "histogram"] {
-            let dir = tmp.path().join("metrics").join(subtype).join("dt=2026-06-01");
+            let dir = tmp
+                .path()
+                .join("metrics")
+                .join(subtype)
+                .join("dt=2026-06-01");
             std::fs::create_dir_all(&dir).unwrap();
             write_min_log_parquet(&dir.join("f.parquet"), 2); // 2 rows each
         }
@@ -579,7 +605,11 @@ mod tests {
         // task 12/D: rollup-<tier>.parquet files back per-tier tables, excluded
         // from the main `metrics` union (no double count) but queryable directly.
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("metrics").join("gauge").join("dt=2026-06-01");
+        let dir = tmp
+            .path()
+            .join("metrics")
+            .join("gauge")
+            .join("dt=2026-06-01");
         std::fs::create_dir_all(&dir).unwrap();
         write_min_log_parquet(&dir.join("m.parquet"), 2); // raw, 2 rows
         write_min_log_parquet(&dir.join("rollup-1h.parquet"), 1); // 1h rollup, 1 row
@@ -590,7 +620,10 @@ mod tests {
         assert_eq!(count(&engine, "metrics").await, 2);
         // the 1h tier table is registered over the rollup file
         assert!(engine.has_table("metrics_1h"));
-        assert!(!engine.has_table("metrics_5m"), "absent tier not registered");
+        assert!(
+            !engine.has_table("metrics_5m"),
+            "absent tier not registered"
+        );
         assert_eq!(count(&engine, "metrics_1h").await, 1);
     }
 
@@ -605,7 +638,11 @@ mod tests {
         write_min_log_parquet(&dir.join("raw-a.parquet"), 2); // raw input, 2 rows
 
         // compacted file (3 rows) declaring it supersedes raw-a.parquet
-        let schema = Arc::new(Schema::new(vec![Field::new("service_name", DataType::Utf8, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service_name",
+            DataType::Utf8,
+            false,
+        )]));
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(StringArray::from(vec!["svc", "svc", "svc"]))],

@@ -15,14 +15,14 @@ mod cache;
 mod catalog;
 pub mod compaction;
 pub mod frontend;
-pub mod rollup;
-pub mod sql;
 pub mod loki;
 pub mod prometheus;
+pub mod rollup;
 mod routes;
+pub mod sql;
 pub mod telemetry;
-mod udf;
 pub mod tempo;
+mod udf;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::{CompactorOptions, QuerierOptions};
@@ -52,13 +52,15 @@ impl Server {
                 delete_grace_secs: opts.delete_grace_secs,
             };
             let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
-            let mut tick =
-                tokio::time::interval(Duration::from_secs(opts.interval_secs.max(1)));
+            let mut tick = tokio::time::interval(Duration::from_secs(opts.interval_secs.max(1)));
             let shutdown = async {
                 rx.await.ok();
             };
             tokio::pin!(shutdown);
-            debug!(message = "Sol compactor started.", interval = opts.interval_secs);
+            debug!(
+                message = "Sol compactor started.",
+                interval = opts.interval_secs
+            );
             loop {
                 tokio::select! {
                     _ = tick.tick() => {

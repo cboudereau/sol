@@ -204,7 +204,8 @@ address: "0.0.0.0:9009"
 storage:
   path: "/data/parquet"
 "#;
-        let opts: QuerierOptions = serde_yaml::from_str(yaml).expect("querier options should parse");
+        let opts: QuerierOptions =
+            serde_yaml::from_str(yaml).expect("querier options should parse");
         assert_eq!(opts.address.port(), 9009);
         assert_eq!(opts.storage.path, PathBuf::from("/data/parquet"));
         assert_eq!(opts.refresh_interval_secs, 15);

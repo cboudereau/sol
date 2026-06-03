@@ -31,8 +31,6 @@ use crate::{
 };
 
 pub mod api;
-#[cfg(feature = "query-backend")]
-pub mod query;
 mod builder;
 mod cmd;
 mod compiler;
@@ -43,6 +41,8 @@ pub mod format;
 mod graph;
 pub mod loading;
 pub mod provider;
+#[cfg(feature = "query-backend")]
+pub mod query;
 pub mod schema;
 mod secret;
 mod sink;

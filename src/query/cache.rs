@@ -138,7 +138,11 @@ mod tests {
         };
         let _ = run();
         let _ = run();
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "second identical query must hit cache");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "second identical query must hit cache"
+        );
     }
 
     #[test]
@@ -169,6 +173,9 @@ mod tests {
             cache.insert(CacheKey::for_sql(&format!("q{i}")), Arc::new(Vec::new()));
         }
         cache.inner.run_pending_tasks();
-        assert!(cache.inner.entry_count() <= 2, "capacity bound enforced (eviction)");
+        assert!(
+            cache.inner.entry_count() <= 2,
+            "capacity bound enforced (eviction)"
+        );
     }
 }

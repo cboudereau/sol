@@ -185,11 +185,17 @@ mod tests {
     #[test]
     fn test_missing_tier_falls_back_to_raw() {
         // fine step: no tier resolution ≤ 1m → Raw
-        assert_eq!(select_tier(60_000_000_000, &RollupTier::all()), RollupTier::Raw);
+        assert_eq!(
+            select_tier(60_000_000_000, &RollupTier::all()),
+            RollupTier::Raw
+        );
         // tier absent entirely → Raw
         assert_eq!(select_tier(H1_NS, &[]), RollupTier::Raw);
         // only M5 available, 1m step → M5 too coarse → Raw
-        assert_eq!(select_tier(60_000_000_000, &[RollupTier::M5]), RollupTier::Raw);
+        assert_eq!(
+            select_tier(60_000_000_000, &[RollupTier::M5]),
+            RollupTier::Raw
+        );
         assert!(is_rollup_eligible("metrics") && !is_rollup_eligible("logs"));
     }
 
@@ -227,19 +233,31 @@ mod tests {
     #[tokio::test]
     async fn test_rate_over_rollup_matches_raw() {
         // monotonic counter, several samples per 5m bucket
-        let times = [0i64, 60_000_000_000, 120_000_000_000, 300_000_000_000, 360_000_000_000, 600_000_000_000];
+        let times = [
+            0i64,
+            60_000_000_000,
+            120_000_000_000,
+            300_000_000_000,
+            360_000_000_000,
+            600_000_000_000,
+        ];
         let vals = [0.0, 2.0, 4.0, 10.0, 12.0, 20.0];
         let raw = batch(&times, &vals, &["[]"; 6]);
         let rolled = rollup_batches(vec![raw.clone()], M5_NS).await.unwrap();
 
         // rollup reduces 6 raw samples to 3 (one per 5m bucket)
         let rolled_rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
-        assert!(rolled_rows < 6 && rolled_rows >= 1, "downsampled to {rolled_rows} rows");
+        assert!(
+            rolled_rows < 6 && rolled_rows >= 1,
+            "downsampled to {rolled_rows} rows"
+        );
 
         let rate = |bs: &[RecordBatch]| {
             let mut pts: Vec<(i64, f64)> = Vec::new();
             for b in bs {
-                let t = b.column(3).as_primitive::<datafusion::arrow::datatypes::TimestampNanosecondType>();
+                let t = b
+                    .column(3)
+                    .as_primitive::<datafusion::arrow::datatypes::TimestampNanosecondType>();
                 let v = b.column(4).as_primitive::<Float64Type>();
                 for i in 0..b.num_rows() {
                     pts.push((t.value(i), v.value(i)));
@@ -252,7 +270,10 @@ mod tests {
         };
         let raw_rate = rate(&[raw]);
         let rollup_rate = rate(&rolled);
-        assert!((raw_rate - rollup_rate).abs() < 1e-6, "raw {raw_rate} vs rollup {rollup_rate}");
+        assert!(
+            (raw_rate - rollup_rate).abs() < 1e-6,
+            "raw {raw_rate} vs rollup {rollup_rate}"
+        );
     }
 
     #[tokio::test]
@@ -269,9 +290,13 @@ mod tests {
         let bc = rolled[0].column(5).as_string::<i32>();
         let counts: Vec<f64> = serde_json::from_str(bc.value(0)).unwrap();
         let expected: Vec<f64> = serde_json::from_str(late).unwrap();
-        assert_eq!(counts, expected, "rollup keeps the last snapshot's bucket counts");
+        assert_eq!(
+            counts, expected,
+            "rollup keeps the last snapshot's bucket counts"
+        );
 
-        let q_rollup = super::super::prometheus::histogram_quantile(0.95, &counts, &bounds).unwrap();
+        let q_rollup =
+            super::super::prometheus::histogram_quantile(0.95, &counts, &bounds).unwrap();
         let q_raw = super::super::prometheus::histogram_quantile(0.95, &expected, &bounds).unwrap();
         assert!((q_rollup - q_raw).abs() < 1e-9, "quantile preserved");
     }
@@ -298,7 +323,11 @@ mod tests {
         .unwrap();
 
         let rows = generate_rollup(&dir, RollupTier::H1).await.unwrap();
-        assert_eq!(rows, Some(1), "rollup built from the compacted daily, raw absent");
+        assert_eq!(
+            rows,
+            Some(1),
+            "rollup built from the compacted daily, raw absent"
+        );
         assert!(dir.join("rollup-1h.parquet").exists());
     }
 
@@ -319,7 +348,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(generate_rollup(&dir, RollupTier::H1).await.unwrap(), Some(1), "first build");
+        assert_eq!(
+            generate_rollup(&dir, RollupTier::H1).await.unwrap(),
+            Some(1),
+            "first build"
+        );
         assert_eq!(
             generate_rollup(&dir, RollupTier::H1).await.unwrap(),
             None,
@@ -336,7 +369,8 @@ mod tests {
         // write a raw file
         let b = batch(&[0, 60_000_000_000], &[1.0, 2.0], &["[]", "[]"]);
         let f = fs::File::create(dir.join("raw.parquet")).unwrap();
-        let mut w = datafusion::parquet::arrow::ArrowWriter::try_new(f, counter_schema(), None).unwrap();
+        let mut w =
+            datafusion::parquet::arrow::ArrowWriter::try_new(f, counter_schema(), None).unwrap();
         w.write(&b).unwrap();
         w.close().unwrap();
 
@@ -344,7 +378,10 @@ mod tests {
         assert!(is_rollup_eligible("metrics"));
         let rows = generate_rollup(&dir, RollupTier::H1).await.unwrap();
         assert!(rows.is_some(), "rollup generated");
-        assert!(dir.join("rollup-1h.parquet").exists(), "rollup file written");
+        assert!(
+            dir.join("rollup-1h.parquet").exists(),
+            "rollup file written"
+        );
         // logs are not eligible — the caller skips
         assert!(!is_rollup_eligible("logs"));
     }

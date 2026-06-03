@@ -56,7 +56,9 @@ fn parse_selector(traceql: &str) -> Result<Vec<(String, String, String)>, String
         } else if let Some(i) = part.find('=') {
             (&part[..i], "=", &part[i + 1..])
         } else {
-            return Err(format!("unsupported TraceQL matcher: {part} (only = / != in v1)"));
+            return Err(format!(
+                "unsupported TraceQL matcher: {part} (only = / != in v1)"
+            ));
         };
         // Strip the quotes, then unescape Go-style escapes (`\\` -> `\`) —
         // TraceQL string literals are escaped on the wire like LogQL/PromQL.
@@ -104,7 +106,12 @@ fn matcher_sql(key: &str, op: &str, val: &str) -> String {
 
 /// Translate a TraceQL search query into SQL over the `traces` table. Returns
 /// one row per matching span (the handler groups by trace).
-pub fn translate_search(traceql: &str, start_ns: i64, end_ns: i64, limit: u32) -> Result<String, String> {
+pub fn translate_search(
+    traceql: &str,
+    start_ns: i64,
+    end_ns: i64,
+    limit: u32,
+) -> Result<String, String> {
     let mut preds: Vec<String> = Vec::new();
     let traceql = traceql.trim();
     // An empty `{}` selector matches everything (time-bounded).
@@ -113,7 +120,9 @@ pub fn translate_search(traceql: &str, start_ns: i64, end_ns: i64, limit: u32) -
             preds.push(matcher_sql(&k, &op, &v));
         }
     }
-    preds.push(format!("CAST(start_time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    preds.push(format!(
+        "CAST(start_time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
+    ));
     Ok(format!(
         "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
          service_name, name, start_time_unix_nano, duration_nanos, parent_span_id, attributes \
@@ -126,7 +135,8 @@ pub fn translate_search(traceql: &str, start_ns: i64, end_ns: i64, limit: u32) -
 /// Validate a hex trace-id and render the `WHERE trace_id = X'..'` lookup SQL.
 pub fn trace_by_id_sql(trace_id_hex: &str) -> Result<String, String> {
     let hex = trace_id_hex.trim().to_lowercase();
-    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return Err("trace id must be an even-length hex string".to_string());
     }
     // FixedSizeBinary needs an explicit cast from the binary literal.
@@ -142,7 +152,9 @@ pub fn trace_by_id_sql(trace_id_hex: &str) -> Result<String, String> {
 /// `SELECT DISTINCT` SQL for `tag/:tag/values`.
 pub fn tag_values_sql(tag: &str) -> String {
     let lhs = traceql_lhs(tag);
-    format!("SELECT DISTINCT CAST({lhs} AS VARCHAR) AS v FROM traces WHERE {lhs} IS NOT NULL ORDER BY v")
+    format!(
+        "SELECT DISTINCT CAST({lhs} AS VARCHAR) AS v FROM traces WHERE {lhs} IS NOT NULL ORDER BY v"
+    )
 }
 
 /// The intrinsic tag names always available (attribute-key discovery over JSON
@@ -274,16 +286,32 @@ pub async fn handle_search(
             }
             inspected += 1;
             let id = hex.value(i).to_string();
-            let service = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
-            let span_name = if name.is_null(i) { String::new() } else { name.value(i).to_string() };
+            let service = if svc.is_null(i) {
+                String::new()
+            } else {
+                svc.value(i).to_string()
+            };
+            let span_name = if name.is_null(i) {
+                String::new()
+            } else {
+                name.value(i).to_string()
+            };
             let start_ns = if start.is_null(i) { 0 } else { start.value(i) };
             let duration_ns = if dur.is_null(i) { 0 } else { dur.value(i) };
             let is_root = parent.is_null(i);
             let span = TempoSpan {
-                span_id: if span_hex.is_null(i) { String::new() } else { span_hex.value(i).to_string() },
+                span_id: if span_hex.is_null(i) {
+                    String::new()
+                } else {
+                    span_hex.value(i).to_string()
+                },
                 start_time_unix_nano: start_ns.to_string(),
                 duration_nanos: duration_ns.to_string(),
-                attributes: if attrs.is_null(i) { Vec::new() } else { otlp_attributes(attrs.value(i)) },
+                attributes: if attrs.is_null(i) {
+                    Vec::new()
+                } else {
+                    otlp_attributes(attrs.value(i))
+                },
             };
 
             let entry = traces.entry(id).or_insert_with(|| Acc {
@@ -316,7 +344,10 @@ pub async fn handle_search(
             root_trace_name: acc.name,
             start_time_unix_nano: acc.start_ns.to_string(),
             duration_ms: acc.duration_ns / 1_000_000,
-            span_set: TempoSpanSet { matched: acc.spans.len(), spans: acc.spans },
+            span_set: TempoSpanSet {
+                matched: acc.spans.len(),
+                spans: acc.spans,
+            },
         })
         .collect();
     let metrics = TempoSearchMetrics {
@@ -415,10 +446,7 @@ pub async fn handle_tags_flat(engine: &super::QueryEngine) -> crate::Result<Valu
 }
 
 /// Run `tag/:tag/values` and build the typed `{tagValues:[…]}` response.
-pub async fn handle_tag_values(
-    engine: &super::QueryEngine,
-    tag: &str,
-) -> crate::Result<Value> {
+pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate::Result<Value> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
@@ -443,9 +471,13 @@ mod tests {
 
     #[test]
     fn test_traceql_top_level_columns() {
-        let sql =
-            translate_search(r#"{resource.service.name="client" && name="GET /x"}"#, 0, 100, 20)
-                .unwrap();
+        let sql = translate_search(
+            r#"{resource.service.name="client" && name="GET /x"}"#,
+            0,
+            100,
+            20,
+        )
+        .unwrap();
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
         assert!(sql.contains("name = 'GET /x'"), "sql: {sql}");
         assert!(sql.contains("encode(trace_id, 'hex')"), "sql: {sql}");
@@ -462,8 +494,14 @@ mod tests {
     #[test]
     fn test_traceql_span_attr_json_extract() {
         let sql = translate_search(r#"{span.http.method="GET" && .code!="0"}"#, 0, 1, 5).unwrap();
-        assert!(sql.contains("json_get_str(attributes, 'http.method') = 'GET'"), "sql: {sql}");
-        assert!(sql.contains("json_get_str(attributes, 'code') <> '0'"), "sql: {sql}");
+        assert!(
+            sql.contains("json_get_str(attributes, 'http.method') = 'GET'"),
+            "sql: {sql}"
+        );
+        assert!(
+            sql.contains("json_get_str(attributes, 'code') <> '0'"),
+            "sql: {sql}"
+        );
     }
 
     #[tokio::test]
@@ -486,8 +524,12 @@ mod tests {
         assert!(tags_of("intrinsic").contains(&"name".to_string()));
 
         let flat = handle_tags_flat(&engine).await.unwrap();
-        let names: Vec<&str> =
-            flat["tagNames"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        let names: Vec<&str> = flat["tagNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
         for expected in ["name", "http.method", "db.system", "host"] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }
@@ -510,7 +552,9 @@ mod tests {
     fn test_tag_values_distinct() {
         assert!(tag_values_sql("name").contains("SELECT DISTINCT"));
         assert!(tag_values_sql("name").contains("FROM traces"));
-        assert!(tag_values_sql("span.http.method").contains("json_get_str(attributes, 'http.method')"));
+        assert!(
+            tag_values_sql("span.http.method").contains("json_get_str(attributes, 'http.method')")
+        );
     }
 
     #[test]
@@ -532,14 +576,24 @@ mod tests {
                     matched: 1,
                 },
             }],
-            metrics: TempoSearchMetrics { inspected_traces: 1, completed_jobs: 1, total_jobs: 1 },
+            metrics: TempoSearchMetrics {
+                inspected_traces: 1,
+                completed_jobs: 1,
+                total_jobs: 1,
+            },
         };
         let j = serde_json::to_string(&resp).unwrap();
-        assert!(j.contains(r#""traceID":"3bc59070ba6c121cad3d88a3f889b303""#), "json: {j}");
+        assert!(
+            j.contains(r#""traceID":"3bc59070ba6c121cad3d88a3f889b303""#),
+            "json: {j}"
+        );
         assert!(j.contains(r#""rootServiceName":"client""#), "json: {j}");
         assert!(j.contains(r#""durationMs":42"#), "json: {j}");
         // spanSet present (Grafana's TraceQL table needs it) + metrics envelope
-        assert!(j.contains(r#""spanSet":{"spans":[{"spanID":"abc""#), "json: {j}");
+        assert!(
+            j.contains(r#""spanSet":{"spans":[{"spanID":"abc""#),
+            "json: {j}"
+        );
         assert!(j.contains(r#""matched":1"#), "json: {j}");
         assert!(j.contains(r#""inspectedTraces":1"#), "json: {j}");
     }
@@ -557,7 +611,10 @@ mod tests {
 
         // local hex decode (the `hex` crate is feature-gated off here).
         fn hx(s: &str) -> Vec<u8> {
-            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
         }
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
@@ -594,7 +651,8 @@ mod tests {
                 ),
                 Arc::new(Int64Array::from(vec![42_000_000i64, 5_000_000])),
                 Arc::new(
-                    FixedSizeBinaryArray::try_from_iter(vec![tid.clone(), tid].into_iter()).unwrap(),
+                    FixedSizeBinaryArray::try_from_iter(vec![tid.clone(), tid].into_iter())
+                        .unwrap(),
                 ),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(
@@ -614,7 +672,10 @@ mod tests {
                     Some(r#"{"http.method":"GET"}"#),
                     Some(r#"{"db.system":"pg"}"#),
                 ])),
-                Arc::new(StringArray::from(vec![Some(r#"{"host":"a"}"#), Some(r#"{"host":"a"}"#)])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"host":"a"}"#),
+                    Some(r#"{"host":"a"}"#),
+                ])),
                 Arc::new(Int32Array::from(vec![Some(0), Some(0)])),
             ],
         )
@@ -625,7 +686,10 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
@@ -634,28 +698,49 @@ mod tests {
     #[tokio::test]
     async fn test_search_groups_spans_into_traces() {
         let engine = trace_engine().await;
-        let resp = handle_search(&engine, r#"{resource.service.name="client"}"#, 0, 10_000_000_000, 20)
-            .await
-            .unwrap();
+        let resp = handle_search(
+            &engine,
+            r#"{resource.service.name="client"}"#,
+            0,
+            10_000_000_000,
+            20,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.traces.len(), 1, "two spans → one trace");
         let t = &resp.traces[0];
         assert_eq!(t.trace_id, "3bc59070ba6c121cad3d88a3f889b303");
         assert_eq!(t.root_service_name, "client");
-        assert_eq!(t.root_trace_name, "GET /randomuser", "root span chosen by null parent");
+        assert_eq!(
+            t.root_trace_name, "GET /randomuser",
+            "root span chosen by null parent"
+        );
         assert_eq!(t.duration_ms, 42);
         // spanSet carries both spans, with their attributes as OTLP KeyValue
         assert_eq!(t.span_set.matched, 2, "both spans in the span set");
         let j = serde_json::to_string(&t.span_set).unwrap();
-        assert!(j.contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#), "json: {j}");
-        assert!(j.contains(r#"{"key":"db.system","value":{"stringValue":"pg"}}"#), "json: {j}");
+        assert!(
+            j.contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#),
+            "json: {j}"
+        );
+        assert!(
+            j.contains(r#"{"key":"db.system","value":{"stringValue":"pg"}}"#),
+            "json: {j}"
+        );
     }
 
     #[tokio::test]
     async fn test_trace_by_id_binary_lookup_executes() {
         let engine = trace_engine().await;
-        let v = handle_trace_by_id(&engine, "3bc59070ba6c121cad3d88a3f889b303").await.unwrap();
+        let v = handle_trace_by_id(&engine, "3bc59070ba6c121cad3d88a3f889b303")
+            .await
+            .unwrap();
         let spans = &v["trace"]["resourceSpans"][0]["scopeSpans"][0]["spans"];
-        assert_eq!(spans.as_array().unwrap().len(), 2, "both spans returned: {v}");
+        assert_eq!(
+            spans.as_array().unwrap().len(),
+            2,
+            "both spans returned: {v}"
+        );
         assert_eq!(spans[0]["spanId"], "aaaaaaaaaaaaaaaa");
     }
 
@@ -663,7 +748,12 @@ mod tests {
     async fn test_tag_values_executes() {
         let engine = trace_engine().await;
         let v = handle_tag_values(&engine, "name").await.unwrap();
-        let vals: Vec<&str> = v["tagValues"].as_array().unwrap().iter().map(|x| x["value"].as_str().unwrap()).collect();
+        let vals: Vec<&str> = v["tagValues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["value"].as_str().unwrap())
+            .collect();
         assert!(vals.contains(&"GET /randomuser"), "values: {vals:?}");
         assert!(vals.contains(&"db.query"), "values: {vals:?}");
     }

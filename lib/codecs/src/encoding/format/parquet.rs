@@ -1834,7 +1834,11 @@ struct NumberDpRow<'a> {
 fn sort_dp_rows<R>(rows: &mut [R], key: impl Fn(&R) -> (&OtelMetric, u64)) {
     rows.sort_by_cached_key(|r| {
         let (metric, time_unix_nano) = key(r);
-        (extract_service_name(metric.resource_attrs()), metric.name().to_string(), time_unix_nano)
+        (
+            extract_service_name(metric.resource_attrs()),
+            metric.name().to_string(),
+            time_unix_nano,
+        )
     });
 }
 

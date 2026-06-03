@@ -122,7 +122,11 @@ mod tests {
         assert_eq!(shards.len(), 3, "{shards:?}");
         assert_eq!(shards[0].start_ns, start, "first clamps to query start");
         assert_eq!(shards[0].end_ns, D0 + DAY_NS, "first ends at midnight");
-        assert_eq!(shards[1].start_ns, D0 + DAY_NS, "middle aligned to midnight");
+        assert_eq!(
+            shards[1].start_ns,
+            D0 + DAY_NS,
+            "middle aligned to midnight"
+        );
         assert_eq!(shards[1].end_ns, D0 + 2 * DAY_NS);
         assert_eq!(shards[2].end_ns, end, "last clamps to query end");
         // every inner boundary is a midnight multiple
@@ -157,7 +161,10 @@ mod tests {
         let s1 = vec![0.0, 12.0, 18.0, 20.0, 10.0, 5.0];
         let s2 = vec![0.0, 8.0, 12.0, 10.0, 5.0, 0.0];
         let merged = merge_histogram_quantile(0.95, &[s1, s2], &bounds).unwrap();
-        assert!((merged - unsplit).abs() < 1e-9, "merged {merged} vs unsplit {unsplit}");
+        assert!(
+            (merged - unsplit).abs() < 1e-9,
+            "merged {merged} vs unsplit {unsplit}"
+        );
     }
 
     #[test]
@@ -198,12 +205,18 @@ mod tests {
         // re-query with end advanced further into the live day
         run(D0, D0 + 2 * DAY_NS + 3 * DAY_NS / 4, &mut cache);
         let second = computed.load(Ordering::SeqCst);
-        assert_eq!(second, 1, "only the live shard recomputed; historical cached");
+        assert_eq!(
+            second, 1,
+            "only the live shard recomputed; historical cached"
+        );
     }
 
     #[test]
     fn test_short_query_not_split() {
-        assert!(!should_split(D0, D0 + DAY_NS / 2), "sub-day query bypasses splitting");
+        assert!(
+            !should_split(D0, D0 + DAY_NS / 2),
+            "sub-day query bypasses splitting"
+        );
         assert!(should_split(D0, D0 + 3 * DAY_NS), "multi-day query splits");
     }
 

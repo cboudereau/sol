@@ -28,7 +28,9 @@ struct LokiQueryParams {
 }
 
 fn parse_ns(s: &Option<String>, default: i64) -> i64 {
-    s.as_ref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(default)
+    s.as_ref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(default)
 }
 
 async fn loki_query_range(
@@ -74,8 +76,11 @@ fn parse_time_ns(s: &Option<String>) -> i64 {
 
 fn error_response(error: impl std::fmt::Display) -> warp::reply::Response {
     let body = serde_json::json!({"status": "error", "error": error.to_string()});
-    warp::reply::with_status(warp::reply::json(&body), warp::http::StatusCode::BAD_REQUEST)
-        .into_response()
+    warp::reply::with_status(
+        warp::reply::json(&body),
+        warp::http::StatusCode::BAD_REQUEST,
+    )
+    .into_response()
 }
 
 async fn prom_instant(
@@ -115,7 +120,10 @@ async fn prom_range(
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
     // start defaults to 0 (not "now"), end to now/latest.
-    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
+    let start_ns = params
+        .start
+        .as_ref()
+        .map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
     let step_ns = parse_step_ns(&params.step);
     match prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns).await {
@@ -193,7 +201,10 @@ async fn tempo_search(
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
     // Tempo `start`/`end` are unix seconds; default to all-time.
-    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
+    let start_ns = params
+        .start
+        .as_ref()
+        .map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
     let traceql = params.q.unwrap_or_else(|| "{}".to_string());
     let limit = params.limit.unwrap_or(20);
@@ -287,9 +298,11 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and_then(prom_labels);
 
     // Grafana probes rules on datasource load; no rule storage -> empty groups.
-    let prom_rules = warp::path!("prometheus" / "api" / "v1" / "rules").and(warp::get()).map(|| {
-        warp::reply::json(&serde_json::json!({ "status": "success", "data": { "groups": [] } }))
-    });
+    let prom_rules = warp::path!("prometheus" / "api" / "v1" / "rules")
+        .and(warp::get())
+        .map(|| {
+            warp::reply::json(&serde_json::json!({ "status": "success", "data": { "groups": [] } }))
+        });
 
     let prom_series = warp::path!("prometheus" / "api" / "v1" / "series")
         .and(warp::get().or(warp::post()).unify())
@@ -328,10 +341,11 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_tags_flat);
-    let tempo_tag_values_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tag" / String / "values")
-        .and(warp::get())
-        .and(with_engine(Arc::clone(&engine)))
-        .and_then(tempo_tag_values);
+    let tempo_tag_values_v2 =
+        warp::path!("tempo" / "api" / "v2" / "search" / "tag" / String / "values")
+            .and(warp::get())
+            .and(with_engine(Arc::clone(&engine)))
+            .and_then(tempo_tag_values);
     let tempo_tag_values_v1 = warp::path!("tempo" / "api" / "search" / "tag" / String / "values")
         .and(warp::get())
         .and(with_engine(Arc::clone(&engine)))
@@ -344,7 +358,9 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(with_engine(engine))
         .and_then(sql_query);
     // Tempo data-source health probe.
-    let tempo_echo = warp::path!("tempo" / "api" / "echo").and(warp::get()).map(|| "echo");
+    let tempo_echo = warp::path!("tempo" / "api" / "echo")
+        .and(warp::get())
+        .map(|| "echo");
 
     // Discovery probe so Grafana data sources "Save & Test" passes.
     let ready = warp::path!("ready")
@@ -409,7 +425,10 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         Arc::new(QueryEngine::new(&opts).await.unwrap())
@@ -432,7 +451,11 @@ mod tests {
     #[tokio::test]
     async fn test_ready_probe() {
         let routes = make_routes(fixture_engine().await);
-        let resp = warp::test::request().method("GET").path("/ready").reply(&routes).await;
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/ready")
+            .reply(&routes)
+            .await;
         assert_eq!(resp.status(), 200);
     }
 }

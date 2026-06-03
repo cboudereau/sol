@@ -20,7 +20,15 @@ use datafusion::logical_expr::{ColumnarValue, ScalarUDF, Volatility, create_udf}
 /// normalization Mimir applies on ingest). Shared with the label-discovery
 /// endpoints (`/labels`), which surface stored keys under their normalized name.
 pub(super) fn normalize(key: &str) -> String {
-    key.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Look up `prom_name` in a JSON attributes object by normalized key.
@@ -107,8 +115,16 @@ fn unit_suffix(unit: &str) -> Option<&'static str> {
 /// (`[^A-Za-z0-9_:]`→`_`), append the unit suffix, then `_total` for monotonic
 /// counters — matching `-distributor.otel-metric-suffixes-enabled`.
 fn prom_metric_name(name: &str, unit: &str, is_monotonic: bool) -> String {
-    let mut out: String =
-        name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == ':' { c } else { '_' }).collect();
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == ':' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     if let Some(suffix) = unit_suffix(unit)
         && !out.ends_with(suffix)
     {
@@ -128,7 +144,9 @@ pub fn prom_metric_name_udf() -> ScalarUDF {
         let names = arrays[0]
             .as_any()
             .downcast_ref::<StringArray>()
-            .ok_or_else(|| datafusion::error::DataFusionError::Execution("name must be Utf8".into()))?;
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Execution("name must be Utf8".into())
+            })?;
         let units = arrays[1].as_any().downcast_ref::<StringArray>();
         let monotonic = arrays[2].as_any().downcast_ref::<BooleanArray>();
         let out: StringArray = (0..names.len())
@@ -136,9 +154,12 @@ pub fn prom_metric_name_udf() -> ScalarUDF {
                 if names.is_null(i) {
                     return None;
                 }
-                let unit = units.and_then(|u| (!u.is_null(i)).then(|| u.value(i))).unwrap_or("");
-                let mono =
-                    monotonic.and_then(|m| (!m.is_null(i)).then(|| m.value(i))).unwrap_or(false);
+                let unit = units
+                    .and_then(|u| (!u.is_null(i)).then(|| u.value(i)))
+                    .unwrap_or("");
+                let mono = monotonic
+                    .and_then(|m| (!m.is_null(i)).then(|| m.value(i)))
+                    .unwrap_or(false);
                 Some(prom_metric_name(names.value(i), unit, mono))
             })
             .collect();
@@ -160,13 +181,25 @@ mod tests {
     #[test]
     fn test_prom_metric_name_normalization() {
         // gauge with bytes unit
-        assert_eq!(prom_metric_name("process.memory.usage", "By", false), "process_memory_usage_bytes");
+        assert_eq!(
+            prom_metric_name("process.memory.usage", "By", false),
+            "process_memory_usage_bytes"
+        );
         // monotonic counter with time unit → _seconds_total
-        assert_eq!(prom_metric_name("process.cpu.time", "s", true), "process_cpu_time_seconds_total");
+        assert_eq!(
+            prom_metric_name("process.cpu.time", "s", true),
+            "process_cpu_time_seconds_total"
+        );
         // counter, annotation unit → just _total
-        assert_eq!(prom_metric_name("dotnet.exceptions", "{exception}", true), "dotnet_exceptions_total");
+        assert_eq!(
+            prom_metric_name("dotnet.exceptions", "{exception}", true),
+            "dotnet_exceptions_total"
+        );
         // gauge, dimensionless → name only
-        assert_eq!(prom_metric_name("process.thread.count", "1", false), "process_thread_count");
+        assert_eq!(
+            prom_metric_name("process.thread.count", "1", false),
+            "process_thread_count"
+        );
         // histogram base (no _total; _bucket/_count/_sum added by the histogram path)
         assert_eq!(
             prom_metric_name("http.server.request.duration", "s", false),
@@ -177,7 +210,10 @@ mod tests {
     #[test]
     fn test_normalize_otlp_to_prometheus() {
         assert_eq!(normalize("http.route"), "http_route");
-        assert_eq!(normalize("deployment.environment"), "deployment_environment");
+        assert_eq!(
+            normalize("deployment.environment"),
+            "deployment_environment"
+        );
         assert_eq!(normalize("already_ok"), "already_ok");
         assert_eq!(normalize("url.scheme"), "url_scheme");
     }
@@ -186,7 +222,10 @@ mod tests {
     fn test_lookup_by_normalized_key() {
         let json = r#"{"http.route":"/x","deployment.environment":"dev","n":5}"#;
         assert_eq!(lookup(json, "http_route").as_deref(), Some("/x"));
-        assert_eq!(lookup(json, "deployment_environment").as_deref(), Some("dev"));
+        assert_eq!(
+            lookup(json, "deployment_environment").as_deref(),
+            Some("dev")
+        );
         assert_eq!(lookup(json, "n").as_deref(), Some("5"));
         assert_eq!(lookup(json, "absent"), None);
         assert_eq!(lookup("not json", "x"), None);

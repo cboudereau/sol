@@ -35,7 +35,9 @@ fn estimate_scan_bytes(root: &Path, sql: &str) -> u64 {
 
 fn dir_parquet_bytes(dir: &Path) -> u64 {
     let mut total = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -55,8 +57,10 @@ fn batches_to_json(
     batches: &[datafusion::arrow::record_batch::RecordBatch],
 ) -> crate::Result<Value> {
     use datafusion::arrow::json::ArrayWriter;
-    let count: usize =
-        batches.iter().map(datafusion::arrow::record_batch::RecordBatch::num_rows).sum();
+    let count: usize = batches
+        .iter()
+        .map(datafusion::arrow::record_batch::RecordBatch::num_rows)
+        .sum();
     let mut buf = Vec::new();
     {
         let mut writer = ArrayWriter::new(&mut buf);
@@ -92,14 +96,19 @@ pub async fn handle_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result
 mod tests {
     use super::*;
     use crate::config::query::{GuardrailsConfig, QuerierOptions, StorageConfig};
-    use datafusion::arrow::array::{FixedSizeBinaryArray, Int64Array, StringArray, TimestampNanosecondArray};
+    use datafusion::arrow::array::{
+        FixedSizeBinaryArray, Int64Array, StringArray, TimestampNanosecondArray,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::parquet::arrow::ArrowWriter;
     use std::sync::Arc;
 
     fn hx(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     fn write(dir: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {
@@ -119,7 +128,11 @@ mod tests {
         // logs
         let log_schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
-            Field::new("time_unix_nano", DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())), false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
             Field::new("body", DataType::Utf8, true),
             Field::new("trace_id", DataType::FixedSizeBinary(16), true),
         ]));
@@ -127,18 +140,30 @@ mod tests {
             log_schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
-                Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC")),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
+                ),
                 Arc::new(StringArray::from(vec!["hello"])),
-                Arc::new(FixedSizeBinaryArray::try_from_iter(vec![tid.clone()].into_iter()).unwrap()),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(vec![tid.clone()].into_iter()).unwrap(),
+                ),
             ],
         )
         .unwrap();
-        write(&root.join("logs").join("dt=2026-06-01"), log_schema, log_batch);
+        write(
+            &root.join("logs").join("dt=2026-06-01"),
+            log_schema,
+            log_batch,
+        );
 
         // traces
         let trace_schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
-            Field::new("start_time_unix_nano", DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())), false),
+            Field::new(
+                "start_time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
             Field::new("trace_id", DataType::FixedSizeBinary(16), false),
             Field::new("name", DataType::Utf8, false),
             Field::new("duration_nanos", DataType::Int64, false),
@@ -147,20 +172,30 @@ mod tests {
             trace_schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
-                Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC")),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
+                ),
                 Arc::new(FixedSizeBinaryArray::try_from_iter(vec![tid].into_iter()).unwrap()),
                 Arc::new(StringArray::from(vec!["GET /x"])),
                 Arc::new(Int64Array::from(vec![42_000_000i64])),
             ],
         )
         .unwrap();
-        write(&root.join("traces").join("dt=2026-06-01"), trace_schema, trace_batch);
+        write(
+            &root.join("traces").join("dt=2026-06-01"),
+            trace_schema,
+            trace_batch,
+        );
 
         // metrics
         let metric_schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
-            Field::new("time_unix_nano", DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())), false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
             Field::new("double_value", DataType::Float64, true),
         ]));
         let metric_batch = RecordBatch::try_new(
@@ -168,16 +203,28 @@ mod tests {
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(StringArray::from(vec!["cpu"])),
-                Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC")),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
+                ),
                 Arc::new(datafusion::arrow::array::Float64Array::from(vec![0.5])),
             ],
         )
         .unwrap();
-        write(&root.join("metrics").join("dt=2026-06-01"), metric_schema, metric_batch);
+        write(
+            &root.join("metrics").join("dt=2026-06-01"),
+            metric_schema,
+            metric_batch,
+        );
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: root.into(), url: None },
-            guardrails: GuardrailsConfig { max_bytes_scanned: max_scan_bytes, ..Default::default() },
+            storage: StorageConfig {
+                path: root.into(),
+                url: None,
+            },
+            guardrails: GuardrailsConfig {
+                max_bytes_scanned: max_scan_bytes,
+                ..Default::default()
+            },
             ..QuerierOptions::default()
         };
         (crate::query::QueryEngine::new(&opts).await.unwrap(), tmp)
@@ -187,7 +234,9 @@ mod tests {
     async fn test_sql_select_over_each_signal_table() {
         let (engine, _tmp) = tri_engine(u64::MAX).await;
         for table in ["logs", "traces", "metrics"] {
-            let v = handle_sql(&engine, &format!("SELECT count(*) AS n FROM {table}")).await.unwrap();
+            let v = handle_sql(&engine, &format!("SELECT count(*) AS n FROM {table}"))
+                .await
+                .unwrap();
             assert_eq!(v["count"], 1, "one count row for {table}: {v}");
             assert_eq!(v["rows"][0]["n"], 1, "one row in {table}: {v}");
         }
@@ -249,13 +298,19 @@ mod tests {
         }
         // a read-only SELECT still works
         assert!(handle_sql(&engine, "SELECT 1 AS one").await.is_ok());
-        assert!(handle_sql(&engine, "SELECT count(*) FROM logs").await.is_ok());
+        assert!(
+            handle_sql(&engine, "SELECT count(*) FROM logs")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn test_sql_result_json_consumable_by_grafana() {
         let (engine, _tmp) = tri_engine(u64::MAX).await;
-        let v = handle_sql(&engine, "SELECT service_name, body FROM logs").await.unwrap();
+        let v = handle_sql(&engine, "SELECT service_name, body FROM logs")
+            .await
+            .unwrap();
         // array of row objects with the selected columns
         let rows = v["rows"].as_array().expect("rows is an array");
         assert_eq!(rows.len(), 1);

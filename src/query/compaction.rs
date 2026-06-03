@@ -99,7 +99,10 @@ pub struct Compactor {
 impl Compactor {
     /// Create a compactor for `root` with the given policy.
     pub fn new(root: impl Into<PathBuf>, config: CompactorConfig) -> Self {
-        Self { root: root.into(), config }
+        Self {
+            root: root.into(),
+            config,
+        }
     }
 
     /// `dt=YYYY-MM-DD` partition dirs for a signal, with parsed dates.
@@ -110,13 +113,17 @@ impl Compactor {
         let mut out = Vec::new();
         let mut stack = vec![self.root.join(signal)];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !path.is_dir() {
                     continue;
                 }
-                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
                 if let Some(date_str) = name.strip_prefix("dt=")
                     && let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
                 {
@@ -179,7 +186,9 @@ impl Compactor {
         // Idempotent: if the only survivor is the daily itself, it already
         // covers the partition (superseded raw may still be on disk awaiting gc,
         // but `resolve_files` excludes them) — re-sealing would churn the mtime.
-        let has_new = read.iter().any(|p| p.file_name().and_then(|s| s.to_str()) != Some(daily.as_str()));
+        let has_new = read
+            .iter()
+            .any(|p| p.file_name().and_then(|s| s.to_str()) != Some(daily.as_str()));
         if !has_new {
             return Ok(None);
         }
@@ -189,7 +198,11 @@ impl Compactor {
         // gc can reclaim every raw input.
         let mut supersede: Vec<String> = Vec::new();
         for entry in fs::read_dir(dir)?.flatten() {
-            let Some(name) = entry.path().file_name().and_then(|s| s.to_str()).map(String::from)
+            let Some(name) = entry
+                .path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(String::from)
             else {
                 continue;
             };
@@ -233,11 +246,22 @@ impl Compactor {
         let ctx = SessionContext::new();
         let mem = MemTable::try_new(Arc::clone(&schema), vec![batches])?;
         ctx.register_table("t", Arc::new(mem))?;
-        let df = ctx.sql(&format!("SELECT * FROM t ORDER BY service_name, {time_col}")).await?;
+        let df = ctx
+            .sql(&format!(
+                "SELECT * FROM t ORDER BY service_name, {time_col}"
+            ))
+            .await?;
         let sorted = df.collect().await?;
         let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 
-        write_with_provenance(&dir.join(out_name), schema, &sorted, level, &supersede.join(","), "raw")?;
+        write_with_provenance(
+            &dir.join(out_name),
+            schema,
+            &sorted,
+            level,
+            &supersede.join(","),
+            "raw",
+        )?;
         Ok(Some(rows))
     }
 
@@ -269,7 +293,9 @@ impl Compactor {
             let mut by_hour: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
             for entry in fs::read_dir(&dir)?.flatten() {
                 let path = entry.path();
-                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
                 if !name.ends_with(".parquet") || name.starts_with(COMPACTED_PREFIX) {
                     continue;
                 }
@@ -335,7 +361,9 @@ impl Compactor {
             let mut to_delete: std::collections::HashSet<String> = std::collections::HashSet::new();
             for entry in fs::read_dir(&dir)?.flatten() {
                 let path = entry.path();
-                let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
                 if !name.starts_with(COMPACTED_PREFIX) || !name.ends_with(".parquet") {
                     continue;
                 }
@@ -454,7 +482,9 @@ pub(crate) fn write_with_provenance(
 ) -> crate::Result<()> {
     let staging = path.with_file_name(format!(
         ".{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("compacted.parquet")
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("compacted.parquet")
     ));
     {
         let file = fs::File::create(&staging)?;
@@ -504,11 +534,20 @@ fn read_provenance(path: &Path) -> crate::Result<(i32, Vec<String>)> {
     if let Some(kvs) = builder.metadata().file_metadata().key_value_metadata() {
         for kv in kvs {
             match kv.key.as_str() {
-                LEVEL_KEY => level = kv.value.as_deref().and_then(|v| v.parse().ok()).unwrap_or(0),
+                LEVEL_KEY => {
+                    level = kv
+                        .value
+                        .as_deref()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0)
+                }
                 SUPERSEDES_KEY => {
                     if let Some(v) = &kv.value {
-                        supersedes =
-                            v.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+                        supersedes = v
+                            .split(',')
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .collect();
                     }
                 }
                 _ => {}
@@ -523,7 +562,9 @@ fn superseded_inputs(dir: &Path) -> crate::Result<std::collections::HashSet<Stri
     let mut set = std::collections::HashSet::new();
     for entry in fs::read_dir(dir)?.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
         if name.starts_with(COMPACTED_PREFIX) && name.ends_with(".parquet") {
             let (_, supersedes) = read_provenance(&path)?;
             set.extend(supersedes);
@@ -541,7 +582,9 @@ pub fn resolve_files(dir: &Path) -> crate::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir)?.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
         if !name.ends_with(".parquet") || name.starts_with(ROLLUP_PREFIX) {
             continue; // skip staging *.tmp, and rollup tiers (separate tables)
         }
@@ -614,7 +657,14 @@ mod tests {
         write_raw(&sealed, "b.parquet", &["s"], &[1], &[1]);
         write_raw(&sealed, "c.parquet", &["s"], &[2], &[2]);
 
-        let c = Compactor::new(root, CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
+        let c = Compactor::new(
+            root,
+            CompactorConfig {
+                grace_days: 1,
+                retention_days: 30,
+                ..Default::default()
+            },
+        );
         let report = c.seal_signal("metrics", today).await.unwrap();
         assert_eq!(report.partitions_sealed, 1, "only the sealed partition");
         assert_eq!(count_parquet(&active, true), 0, "active day not compacted");
@@ -628,12 +678,17 @@ mod tests {
         write_raw(&dir, "a.parquet", &["s"], &[1], &[1]);
         write_raw(&dir, "b.parquet", &["s"], &[2], &[2]);
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
-        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()).await.unwrap();
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
 
         let compacted = dir.join("compacted-2026-05-30.parquet");
         let (level, supersedes) = read_provenance(&compacted).unwrap();
         assert_eq!(level, 2, "day-seal is the level-2 tier");
-        assert_eq!(supersedes, vec!["a.parquet".to_string(), "b.parquet".to_string()]);
+        assert_eq!(
+            supersedes,
+            vec!["a.parquet".to_string(), "b.parquet".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -643,13 +698,21 @@ mod tests {
         write_raw(&dir, "a.parquet", &["s"], &[1], &[1]);
         write_raw(&dir, "b.parquet", &["s"], &[2], &[2]);
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
-        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()).await.unwrap();
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
 
         // Raw inputs still on disk, but resolve_files returns only the compacted.
         let resolved = resolve_files(&dir).unwrap();
-        let names: Vec<String> =
-            resolved.iter().map(|p| p.file_name().unwrap().to_string_lossy().into()).collect();
-        assert_eq!(names, vec!["compacted-2026-05-30.parquet".to_string()], "raw inputs skipped");
+        let names: Vec<String> = resolved
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["compacted-2026-05-30.parquet".to_string()],
+            "raw inputs skipped"
+        );
     }
 
     #[tokio::test]
@@ -659,7 +722,9 @@ mod tests {
         let dir = tmp.path().join("metrics").join("dt=2026-05-30");
         write_raw(&dir, "a.parquet", &["s"], &[1], &[1]);
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
-        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()).await.unwrap();
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
         let has_tmp = fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -682,14 +747,26 @@ mod tests {
         // 3 raw + 1 compacted on disk; querier sees only the 1 compacted.
         assert_eq!(resolve_files(&dir).unwrap().len(), 1, "merged to one file");
         let batches = read_batches(&dir.join("compacted-2026-05-30.parquet")).unwrap();
-        let svc = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let svc = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         let services: Vec<&str> = (0..svc.len()).map(|i| svc.value(i)).collect();
-        assert_eq!(services, vec!["a", "a", "b"], "globally sorted by service_name");
+        assert_eq!(
+            services,
+            vec!["a", "a", "b"],
+            "globally sorted by service_name"
+        );
 
         // second run is a no-op (idempotent): inputs already superseded.
         let report2 = c.seal_signal("metrics", today).await.unwrap();
         assert_eq!(report2.partitions_sealed, 0, "idempotent re-run");
-        assert_eq!(count_parquet(&dir, true), 1, "still exactly one compacted file");
+        assert_eq!(
+            count_parquet(&dir, true),
+            1,
+            "still exactly one compacted file"
+        );
     }
 
     #[tokio::test]
@@ -699,7 +776,14 @@ mod tests {
         let recent = tmp.path().join("metrics").join("dt=2026-05-30");
         write_raw(&old, "a.parquet", &["s"], &[1], &[1]);
         write_raw(&recent, "b.parquet", &["s"], &[1], &[1]);
-        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
+        let c = Compactor::new(
+            tmp.path(),
+            CompactorConfig {
+                grace_days: 1,
+                retention_days: 30,
+                ..Default::default()
+            },
+        );
         let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let deleted = c.gc_retention("metrics", today).unwrap();
         assert_eq!(deleted, 1, "only the >30d partition deleted");
@@ -712,7 +796,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // sealed-day raw across signals; metrics nested under a subtype dir (14b).
         let logs = tmp.path().join("logs").join("dt=2026-05-30");
-        let metrics = tmp.path().join("metrics").join("gauge").join("dt=2026-05-30");
+        let metrics = tmp
+            .path()
+            .join("metrics")
+            .join("gauge")
+            .join("dt=2026-05-30");
         write_raw(&logs, "a.parquet", &["s"], &[1], &[1]);
         // metrics fixture needs name + attributes (the rollup group-by key).
         {
@@ -748,16 +836,35 @@ mod tests {
             w.close().unwrap();
         }
 
-        let c = Compactor::new(tmp.path(), CompactorConfig { grace_days: 1, retention_days: 30, ..Default::default() });
+        let c = Compactor::new(
+            tmp.path(),
+            CompactorConfig {
+                grace_days: 1,
+                retention_days: 30,
+                ..Default::default()
+            },
+        );
         let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
         let now = today.and_hms_opt(12, 0, 0).unwrap().and_utc();
         let report = c.run_once(now, true).await.unwrap();
 
-        assert!(report.partitions_sealed >= 2, "logs + metrics sealed: {report:?}");
-        assert!(logs.join("compacted-2026-05-30.parquet").exists(), "logs compacted");
-        assert!(metrics.join("compacted-2026-05-30.parquet").exists(), "metrics compacted");
+        assert!(
+            report.partitions_sealed >= 2,
+            "logs + metrics sealed: {report:?}"
+        );
+        assert!(
+            logs.join("compacted-2026-05-30.parquet").exists(),
+            "logs compacted"
+        );
+        assert!(
+            metrics.join("compacted-2026-05-30.parquet").exists(),
+            "metrics compacted"
+        );
         // rollup tiers generated for the metric partition (14b nested dir reached)
-        assert!(metrics.join("rollup-1h.parquet").exists(), "1h rollup generated");
+        assert!(
+            metrics.join("rollup-1h.parquet").exists(),
+            "1h rollup generated"
+        );
     }
 
     #[tokio::test]
@@ -782,9 +889,18 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into())
             .collect();
-        assert!(names.contains(&"compacted-h08-2026-06-02.parquet".to_string()), "{names:?}");
-        assert!(names.contains(&"10-00-00.parquet".to_string()), "current hour raw kept: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("08-")), "hour-08 raw superseded: {names:?}");
+        assert!(
+            names.contains(&"compacted-h08-2026-06-02.parquet".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"10-00-00.parquet".to_string()),
+            "current hour raw kept: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("08-")),
+            "hour-08 raw superseded: {names:?}"
+        );
     }
 
     #[tokio::test]
@@ -797,10 +913,22 @@ mod tests {
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
         // 10:05 — hour 09 ended only 5 min ago (< 10-min grace): not yet.
         let early = date.and_hms_opt(10, 5, 0).unwrap().and_utc();
-        assert_eq!(c.compact_active_day("logs", early).await.unwrap().files_output, 0);
+        assert_eq!(
+            c.compact_active_day("logs", early)
+                .await
+                .unwrap()
+                .files_output,
+            0
+        );
         // 10:11 — past the watermark: eligible.
         let late = date.and_hms_opt(10, 11, 0).unwrap().and_utc();
-        assert_eq!(c.compact_active_day("logs", late).await.unwrap().files_output, 1);
+        assert_eq!(
+            c.compact_active_day("logs", late)
+                .await
+                .unwrap()
+                .files_output,
+            1
+        );
     }
 
     #[tokio::test]
@@ -857,12 +985,29 @@ mod tests {
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
 
         // First seal: merges the two raw, supersedes them, ignores the rollup.
-        assert!(c.seal_signal("metrics", today).await.unwrap().partitions_sealed >= 1);
+        assert!(
+            c.seal_signal("metrics", today)
+                .await
+                .unwrap()
+                .partitions_sealed
+                >= 1
+        );
         let daily = dir.join("compacted-2026-05-30.parquet");
-        assert_eq!(read_batches(&daily).unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            read_batches(&daily)
+                .unwrap()
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            2
+        );
         // resolve_files excludes the rollup and the superseded raw → only daily.
         assert_eq!(
-            resolve_files(&dir).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>(),
+            resolve_files(&dir)
+                .unwrap()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
             vec!["compacted-2026-05-30.parquet".to_string()],
             "rollup excluded, raw superseded"
         );
@@ -877,9 +1022,16 @@ mod tests {
         // A late raw appears post-seal: re-seal must keep the daily's 2 rows AND
         // absorb the new one (3 total), not overwrite to just the late row.
         write_raw(&dir, "09-00-00.parquet", &["c"], &[30], &[3]);
-        assert!(c.seal_partition(&dir, date).await.unwrap().is_some(), "late raw triggers re-seal");
+        assert!(
+            c.seal_partition(&dir, date).await.unwrap().is_some(),
+            "late raw triggers re-seal"
+        );
         assert_eq!(
-            read_batches(&daily).unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(),
+            read_batches(&daily)
+                .unwrap()
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
             3,
             "daily carries prior data forward + absorbs the late raw (no loss)"
         );
@@ -887,9 +1039,20 @@ mod tests {
         // Aged GC now reclaims every raw input; rollup and daily remain.
         let later = chrono::Utc::now() + ChronoDuration::seconds(120);
         c.gc_superseded("metrics", later).unwrap();
-        assert_eq!(count_parquet(&dir, false), 1, "only the rollup remains as non-compacted");
-        assert!(dir.join("rollup-1d.parquet").exists(), "rollup untouched by gc");
-        assert_eq!(resolve_files(&dir).unwrap().len(), 1, "querier reads just the daily");
+        assert_eq!(
+            count_parquet(&dir, false),
+            1,
+            "only the rollup remains as non-compacted"
+        );
+        assert!(
+            dir.join("rollup-1d.parquet").exists(),
+            "rollup untouched by gc"
+        );
+        assert_eq!(
+            resolve_files(&dir).unwrap().len(),
+            1,
+            "querier reads just the daily"
+        );
     }
 
     #[tokio::test]
@@ -903,7 +1066,11 @@ mod tests {
         c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
             .await
             .unwrap();
-        assert_eq!(count_parquet(&dir, false), 2, "raw inputs still on disk after merge");
+        assert_eq!(
+            count_parquet(&dir, false),
+            2,
+            "raw inputs still on disk after merge"
+        );
 
         // Within the delete grace (file just written): nothing removed.
         let deleted = c.gc_superseded("metrics", chrono::Utc::now()).unwrap();
@@ -932,7 +1099,9 @@ mod tests {
         c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
             .await
             .unwrap();
-        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 3).unwrap()).await.unwrap();
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 3).unwrap())
+            .await
+            .unwrap();
 
         let later = chrono::Utc::now() + ChronoDuration::seconds(120);
         c.gc_superseded("metrics", later).unwrap();
@@ -958,13 +1127,20 @@ mod tests {
         write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
         let c = Compactor::new(
             tmp.path(),
-            CompactorConfig { delete_superseded: false, ..Default::default() },
+            CompactorConfig {
+                delete_superseded: false,
+                ..Default::default()
+            },
         );
         c.compact_active_day("metrics", date.and_hms_opt(10, 0, 0).unwrap().and_utc())
             .await
             .unwrap();
         let later = chrono::Utc::now() + ChronoDuration::seconds(120);
-        assert_eq!(c.gc_superseded("metrics", later).unwrap(), 0, "deletion disabled");
+        assert_eq!(
+            c.gc_superseded("metrics", later).unwrap(),
+            0,
+            "deletion disabled"
+        );
         assert_eq!(count_parquet(&dir, false), 2, "raw inputs retained");
     }
 
@@ -975,10 +1151,25 @@ mod tests {
         let dir = tmp.path().join("metrics").join("dt=2026-06-02");
         write_raw(&dir, "08-00-00.parquet", &["s"], &[1], &[1]);
         write_raw(&dir, "08-30-00.parquet", &["s"], &[2], &[2]);
-        let c =
-            Compactor::new(tmp.path(), CompactorConfig { intraday: false, ..Default::default() });
+        let c = Compactor::new(
+            tmp.path(),
+            CompactorConfig {
+                intraday: false,
+                ..Default::default()
+            },
+        );
         let now = date.and_hms_opt(12, 0, 0).unwrap().and_utc();
-        assert_eq!(c.compact_active_day("metrics", now).await.unwrap().files_output, 0);
-        assert_eq!(count_parquet(&dir, true), 0, "intraday off: nothing compacted");
+        assert_eq!(
+            c.compact_active_day("metrics", now)
+                .await
+                .unwrap()
+                .files_output,
+            0
+        );
+        assert_eq!(
+            count_parquet(&dir, true),
+            0,
+            "intraday off: nothing compacted"
+        );
     }
 }

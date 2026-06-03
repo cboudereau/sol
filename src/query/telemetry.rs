@@ -31,14 +31,12 @@ pub fn record_request(
 ) {
     let api = api.to_string();
     let signal = signal.to_string();
-    counter!("query_requests_total", "api" => api.clone(), "signal" => signal.clone())
-        .increment(1);
+    counter!("query_requests_total", "api" => api.clone(), "signal" => signal.clone()).increment(1);
     histogram!("query_request_duration_seconds", "api" => api.clone(), "signal" => signal.clone())
         .record(duration.as_secs_f64());
     histogram!("query_bytes_scanned", "api" => api.clone(), "signal" => signal.clone())
         .record(bytes_scanned as f64);
-    histogram!("query_files_opened", "api" => api, "signal" => signal)
-        .record(files_opened as f64);
+    histogram!("query_files_opened", "api" => api, "signal" => signal).record(files_opened as f64);
 }
 
 /// Record a cache lookup outcome (`result=hit|miss`).
@@ -122,15 +120,24 @@ mod tests {
     use metrics_util::debugging::DebuggingRecorder;
 
     fn has_metric(
-        snapshot: &[(metrics_util::CompositeKey, Option<metrics::Unit>, Option<metrics::SharedString>, metrics_util::debugging::DebugValue)],
+        snapshot: &[(
+            metrics_util::CompositeKey,
+            Option<metrics::Unit>,
+            Option<metrics::SharedString>,
+            metrics_util::debugging::DebugValue,
+        )],
         kind: MetricKind,
         name: &str,
     ) -> Option<Vec<(String, String)>> {
-        snapshot.iter().find(|(k, _, _, _)| k.kind() == kind && k.key().name() == name).map(
-            |(k, _, _, _)| {
-                k.key().labels().map(|l| (l.key().to_string(), l.value().to_string())).collect()
-            },
-        )
+        snapshot
+            .iter()
+            .find(|(k, _, _, _)| k.kind() == kind && k.key().name() == name)
+            .map(|(k, _, _, _)| {
+                k.key()
+                    .labels()
+                    .map(|l| (l.key().to_string(), l.value().to_string()))
+                    .collect()
+            })
     }
 
     #[test]
@@ -143,8 +150,14 @@ mod tests {
         let s = snap.snapshot().into_vec();
         let labels = has_metric(&s, MetricKind::Histogram, "query_request_duration_seconds")
             .expect("duration histogram emitted");
-        assert!(labels.contains(&("api".to_string(), "prometheus".to_string())), "labels: {labels:?}");
-        assert!(labels.contains(&("signal".to_string(), "metrics".to_string())), "labels: {labels:?}");
+        assert!(
+            labels.contains(&("api".to_string(), "prometheus".to_string())),
+            "labels: {labels:?}"
+        );
+        assert!(
+            labels.contains(&("signal".to_string(), "metrics".to_string())),
+            "labels: {labels:?}"
+        );
         assert!(has_metric(&s, MetricKind::Histogram, "query_bytes_scanned").is_some());
         assert!(has_metric(&s, MetricKind::Histogram, "query_files_opened").is_some());
         assert!(has_metric(&s, MetricKind::Counter, "query_requests_total").is_some());
@@ -163,13 +176,17 @@ mod tests {
         let hits = s.iter().filter(|(k, _, _, _)| {
             k.kind() == MetricKind::Counter
                 && k.key().name() == "query_cache_requests_total"
-                && k.key().labels().any(|l| l.key() == "result" && l.value() == "hit")
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "result" && l.value() == "hit")
         });
         assert_eq!(hits.count(), 1, "hit counter emitted");
         let misses = s.iter().filter(|(k, _, _, _)| {
             k.kind() == MetricKind::Counter
                 && k.key().name() == "query_cache_requests_total"
-                && k.key().labels().any(|l| l.key() == "result" && l.value() == "miss")
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "result" && l.value() == "miss")
         });
         assert_eq!(misses.count(), 1, "miss counter emitted");
     }
@@ -188,8 +205,12 @@ mod tests {
         );
         assert!(has_metric(&s, MetricKind::Counter, "objectstore_requests_total").is_some());
         assert!(
-            has_metric(&s, MetricKind::Histogram, "objectstore_request_duration_seconds")
-                .is_some()
+            has_metric(
+                &s,
+                MetricKind::Histogram,
+                "objectstore_request_duration_seconds"
+            )
+            .is_some()
         );
     }
 
@@ -201,7 +222,10 @@ mod tests {
         let s = snap.snapshot().into_vec();
         let labels = has_metric(&s, MetricKind::Counter, "query_rejected_total")
             .expect("guardrail reject counter emitted");
-        assert!(labels.contains(&("reason".to_string(), "range".to_string())), "labels: {labels:?}");
+        assert!(
+            labels.contains(&("reason".to_string(), "range".to_string())),
+            "labels: {labels:?}"
+        );
     }
 
     #[test]
@@ -212,7 +236,13 @@ mod tests {
         let s = snap.snapshot().into_vec();
         let labels = has_metric(&s, MetricKind::Counter, "query_unsupported_total")
             .expect("unsupported construct counter emitted");
-        assert!(labels.contains(&("lang".to_string(), "promql".to_string())), "labels: {labels:?}");
-        assert!(labels.contains(&("construct".to_string(), "subquery".to_string())), "labels: {labels:?}");
+        assert!(
+            labels.contains(&("lang".to_string(), "promql".to_string())),
+            "labels: {labels:?}"
+        );
+        assert!(
+            labels.contains(&("construct".to_string(), "subquery".to_string())),
+            "labels: {labels:?}"
+        );
     }
 }
