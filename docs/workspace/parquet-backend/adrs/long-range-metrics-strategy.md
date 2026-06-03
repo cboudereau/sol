@@ -46,3 +46,18 @@ These are complementary, not alternatives — the decision is to use all three f
 - Raw real-time computation remains the correctness baseline and the fallback when a rollup tier is missing or the range is recent.
 - This applies to metrics only. Traces/logs are registered as day-partitioned tables **without splitting/rollups** ("plain" = no long-range machinery; they are still subject to the same `resolve_files` footer-supersession resolution post-compaction, [compaction-consistency](./compaction-consistency.md)).
 - Freshness unchanged: the in-progress shard reads finalized Parquet at the flush/refresh interval; hot data stays a [non-goal](../DESIGN.md#non-goals).
+
+## Implementation note (reconciliation with what shipped)
+
+- Rollups are generated from the **compacted survivors** (`resolve_files`: the
+  L2 daily + any non-superseded raw), **not** raw-only. This decouples rollup
+  from the raw-retention/GC lifecycle — once superseded raw is reclaimed, a tier
+  is still (re)buildable from the daily. (An earlier raw-only implementation went
+  stale once GC deleted the raw.)
+- Rollup is **single-pass and idempotent**: one `rollup-<tier>.parquet` per tier
+  per sealed partition, rewritten only when the source daily is newer. It is
+  **not** leveled/multi-pass — file count per tier is bounded by `retention_days`,
+  so there is no small-file accumulation to compact.
+- Rollups are **excluded** from `resolve_files` (the lossless union) and back
+  separate `metrics_5m/1h/1d` tables; the querier routes a coarse-`step` range to
+  the coarsest tier ≤ `step`, else raw.

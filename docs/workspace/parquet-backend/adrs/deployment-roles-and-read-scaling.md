@@ -35,3 +35,14 @@ Default deployment is **all roles in one process** (single-node): per-process LR
 - The compactor needs single-owner guarantees (run exactly one; in multi-node, a lease/leader or a dedicated deployment). Out of scope to build leader-election now, but the role boundary must exist so it can be added.
 - The result cache is behind the [QueryCache trait](./query-caching-strategy.md): per-process LRU for single-node, shared (Redis/object-store) when a query-frontend is present.
 - Single-node simplicity (the "one binary" story) is preserved; horizontal scale is available when needed. Ballista-style single-query distribution remains out of scope.
+
+## Implementation note (reconciliation with what shipped)
+
+"Same binary selected by config" landed as **presence-based config sections**,
+not a `role:` field: a process runs a **querier** if `querier:` is present and a
+**compactor** if `compactor:` is present (it may run both). There is no role
+enum — invalid combinations (a compactor with a query cache, a querier with a
+retention policy) are unrepresentable because each section only carries its own
+fields. The query-frontend is not yet a separately-deployable section (its
+splitting/merge logic lives in the querier path). Config changes to either
+section currently require a process restart (reload only re-applies `api:`).

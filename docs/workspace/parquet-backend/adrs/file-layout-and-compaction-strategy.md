@@ -48,3 +48,26 @@ Retention pruning (delete files past a configured age) runs in the same backgrou
 - **Freshness unchanged**: compaction operates only on finalized files; the flush + refresh interval still defines freshness (hot data remains a [non-goal](../DESIGN.md#non-goals)).
 - **Coupling**: sort order is a contract between the write side (codec/sink) and read side. If the sink cannot sort cheaply, compaction still produces sorted output, so pruning benefits are recovered after the first compaction pass even on unsorted input.
 - This ADR makes compaction part of the read-backend workspace's scope (FR7). It is sequenced **after** the read path works (so its benefit can be measured), and **before** FR6 pre-computation (which is only justified if compaction + caching still miss NFR6).
+
+## Implementation note (reconciliation with what shipped)
+
+The "lightweight compaction" of Decision §2 landed as **time-tiered leveled
+compaction**, not the count-triggered "merge when >N files" sketch:
+
+- **Levels** L0 raw → **L1 hourly** → **L2 daily**, recorded in the footer
+  `level`/`supersedes`; `resolve_files` dedups transitively. See [FR7](../DESIGN.md#fr7)
+  and the [signal lifecycle](../DESIGN.md#signal-lifecycle) sequence diagram.
+- **Intra-day** compaction was added because leaving the **active day** fully raw
+  (the original sealed-day-only design) let it accumulate thousands of files and
+  exhaust the querier's **file descriptors** (EMFILE). Each *completed* hour of
+  the active day is merged into one L1 file (`hour_grace_secs` watermark for late
+  data); the in-progress hour stays raw. The querier also registers
+  `ListingTable`s with `collect_stat(false)` so it doesn't open every footer at
+  plan time.
+- **Disk reclaim** is **deferred GC**: superseded inputs are deleted once their
+  superseder is older than `delete_grace_secs` (> querier `refresh_interval_secs`,
+  so no live registration still points at them), reclaiming disk intra-day rather
+  than only at retention. Writes are crash-safe (stage → fsync → rename → dir
+  fsync). This realises the "then deletes the superseded inputs" clause safely.
+- **Config**: knobs are `compactor.{intraday, grace_days, hour_grace_secs,
+  delete_superseded, delete_grace_secs, retention_days, rollups, interval_secs}`.

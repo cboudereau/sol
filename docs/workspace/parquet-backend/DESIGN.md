@@ -227,7 +227,9 @@ Cache expensive query results to handle dashboard refresh patterns:
 
 Because metrics are queried over **13 months by default (2 years opt-in)** ([NFR7](#nfr7)), raw-resolution scans over the long tail are infeasible even with time-splitting. Serve metrics from **resolution tiers**, the query-frontend ([FR8](#fr8)) picking the tier from `(range, step)`:
 - **Recent** (configurable, e.g. last N days): full-resolution raw Parquet — the correctness baseline computed in real time.
-- **Cold tail**: pre-aggregated rollups (e.g. 5m → 1h → 1d), produced by the compaction role ([FR7](#fr7)) as separate Parquet metric rows.
+- **Cold tail**: pre-aggregated rollups (5m / 1h / 1d), produced by the compactor ([FR7](#fr7)) as separate `rollup-<tier>.parquet` files (separate `metrics_5m/1h/1d` tables, **excluded** from the lossless union). A rollup keeps the **last sample per (series, time-bucket)** — preserving real `bucket_counts` / counter values so `histogram_quantile` / `rate` stay correct after downsampling.
+  - **Built from the compacted survivors**, not raw: `generate_rollup` reads `resolve_files` (the compacted daily + any non-superseded raw), so a tier is always (re)buildable from the daily and is **independent of raw GC** — raw can be reclaimed without losing the ability to roll up.
+  - **Sealed-day only** (never the active day) and **idempotent**: one file per tier per partition, overwritten only when the source (the daily) is newer than the existing rollup. Rollup is *not* leveled/multi-pass — file count is bounded by `retention_days`.
 - Rollups must preserve correctness for the dominant functions: store histogram **bucket counts** (not pre-computed quantiles) so `histogram_quantile` stays accurate after merge; store counter values so `rate` is recomputable across the coarser step.
 - Fall back to real-time raw computation when a rollup tier is absent.
 
@@ -238,10 +240,16 @@ Because metrics are queried over **13 months by default (2 years opt-in)** ([NFR
 Bound the small-files problem (the dominant cost driver per the InfluxDB comparison) so NFR5/NFR6 hold. Two parts — a cheap write-side hint and a separate compaction component:
 
 - **Gateway hint (cheap, recommended, not sufficient):** the file sink writes under per-signal (and per-metric-subtype) directories with a time-partitioned path (`…/logs/dt=YYYY-MM-DD/*.parquet`, `…/metrics/gauge/dt=…/`, etc.) and sorts within each batch. Today the sink writes flat `…/logs/%Y-%m-%d-%H-%M-%S.parquet` per signal dir (metric subtypes share `metrics/`); the `dt=` + per-subtype layout is the proposed hint. This gives immediate day-level path pruning, but it does **not** merge the many small per-flush files, build rollups, or globally sort — so it cannot replace compaction. The gateway stays low-latency otherwise (small writes unchanged).
-- **Compactor component (required):** a standalone **Parquet-in → compacted-Parquet-out** component — DataFusion sort-merge, sharing the querier's schemas/catalog — running as the **singleton** compactor role ([NFR8](#nfr8)). It merges small files into few large globally-sorted files, builds metric **rollup tiers** ([FR6](#fr6)), and prunes per the configured retention policy. **Not** a distributed compactor/catalog/GC service.
-- **Sealed-day cadence:** the compactor only processes **sealed** partitions — days (or hours) older than `now − grace`. The **current** day is left as raw small files and scanned directly. One date boundary governs compaction, the immutable-cache line ([FR8](#fr8)), and tier selection.
-- **Consistency without a catalog:** the compacted output records, in its **Parquet footer key-value metadata**, a `level` and the inputs it **supersedes** (written atomically at file close). Queriers resolve by level and skip superseded inputs; coverage references input *provenance*, not an event-time range, so late data stays orthogonal. Deleting superseded inputs is GC, not correctness. See [compaction-consistency ADR](./adrs/compaction-consistency.md).
-- Compaction is configurable and can be disabled (write-heavy / low-query deployments).
+- **Compactor component (required):** a standalone **Parquet-in → compacted-Parquet-out** component — DataFusion sort-merge, sharing the querier's schemas/catalog — running as the **singleton** compactor (config `compactor:`, [NFR8](#nfr8)). It merges small files into few large globally-sorted files, builds metric **rollup tiers** ([FR6](#fr6)), and prunes per the configured retention policy. **Not** a distributed compactor/catalog/GC service.
+- **Leveled compaction (level 0 → 1 → 2).** Files carry a footer `level` and the input filenames they **supersede**:
+  - **L0 — raw**: gateway-written, one small file per flush (`<signal>/dt=YYYY-MM-DD/HH-MM-SS.parquet`; metrics also nested `metrics/<subtype>/dt=…/`).
+  - **L1 — hourly (intra-day)**: each **completed hour** of the **active** day is merged into one file (`compacted-hHH-<date>.parquet`), once `now > end(hour) + hour_grace_secs` (default 10 min, for late arrivals). The in-progress hour is left raw. This bounds the *active* day's open-file count — the original design left the active day fully raw, which let it grow to thousands of files and exhaust the querier's file descriptors.
+  - **L2 — daily (seal)**: a **sealed** day (older than `grace_days`, default 1) is merged into one `compacted-<date>.parquet` from its surviving L1 + leftover L0. The seal carries the prior daily's data forward, so it is lossless and idempotent even when a late raw arrives after sealing.
+- **Supersession is transitive:** L2 supersedes L1 supersedes L0. `resolve_files` returns the surviving set (drop any file named in a superseding file's `supersedes`, regardless of level; rollups excluded), so a querier reads each datum exactly once.
+- **Disk reclaim (deferred GC):** once a superseding compacted file is older than `delete_grace_secs` (default 60 s, **must exceed the querier `refresh_interval_secs`** so no querier still references the inputs in a registered table), the superseded inputs are **deleted** — reclaiming disk/inodes intra-day, not only at retention. POSIX unlink-while-open keeps in-flight scans safe. Reclaiming superseded inputs is GC, not correctness.
+- **Crash safety:** each compacted file is staged to a hidden `.tmp`, **fsync'd**, renamed, then the directory is fsync'd — so a deletion never outlives a non-durable merge. Footer metadata is written before close, in the same fsync.
+- **Consistency without a catalog:** all of the above lives in **Parquet footer key-value metadata** (`level`, `supersedes`), not an external catalog. Coverage references input *provenance*, not an event-time range, so late data stays orthogonal. See [compaction-consistency ADR](./adrs/compaction-consistency.md).
+- Compaction is configurable (`compactor.intraday`, `grace_days`, `hour_grace_secs`, `delete_superseded`, `delete_grace_secs`, `retention_days`, `rollups`) and the whole component is disabled by simply omitting the `compactor:` section (write-heavy / low-query deployments).
 
 ### <a id="fr8"></a>FR8 — Time-range query splitting (query-frontend)
 
@@ -337,7 +345,7 @@ The read path scales **out**, not just up. Because state lives in shared object 
 - **Query-frontend** (optional) — time-range splitting ([FR8](#fr8)) + a **shared** result cache (Redis/object-store) across queriers; this is the multi-node form of [FR5](#fr5).
 - **Compactor** — **singleton**; the only writer of compacted/rollup files ([FR7](#fr7)). Must not be replicated.
 
-Single-node "all roles in one process" remains the default (per-process LRU cache, in-process compactor). Each role is the same binary with different config, so a deployment starts single-node and scales out without a rewrite. Resource isolation between ingestion and query uses the dual-runtime split (pipeline runtime > query runtime; ingestion never starves).
+Single-node "all components in one process" remains the default (per-process LRU cache, in-process compactor). Each component is the same binary, selected by **which config section is present** (`querier:` / `compactor:` — no `role:` field; a process may run both), so a deployment starts single-node and scales out without a rewrite. Resource isolation between ingestion and query uses the dual-runtime split (pipeline runtime > query runtime; ingestion never starves).
 
 ### <a id="nfr9"></a>NFR9 — Query guardrails (max range + max bytes scanned)
 
@@ -387,7 +395,7 @@ Local-filesystem deployments are not subject to these limits (sub-ms opens, no p
 
 ### Architecture — tiers (agent/client side vs backend side)
 
-The system splits into a **write/ingest tier** (agent → gateway, unchanged from the demo) and a **read/backend tier** (compactor + querier + query-frontend). **Object storage is the only contact point** between them — the lakehouse storage/compute boundary. Every box is the same Sol binary in a different role.
+The system splits into a **write/ingest tier** (agent → gateway, unchanged from the demo) and a **read/backend tier** (compactor + querier + query-frontend). **Object storage is the only contact point** between them — the lakehouse storage/compute boundary. Every box is the same Sol binary; the component a process runs is selected by **which config section is present** — `querier:` and/or `compactor:` (there is no `role:` field; presence enables the component, and a process may run both).
 
 ```mermaid
 flowchart TB
@@ -400,11 +408,11 @@ flowchart TB
         app --> coll --> lb --> gw
     end
 
-    store[("Object storage / FS<br/>Parquet, dt=YYYY-MM-DD/<br/>raw + compacted + rollups<br/>footer: level, supersedes")]
+    store[("Object storage / FS<br/>Parquet, dt=YYYY-MM-DD/<br/>L0 raw · L1 hourly · L2 daily · rollups<br/>footer: level, supersedes")]
 
     subgraph BACKEND["BACKEND SIDE — query & compaction"]
         direction TB
-        comp["Compactor — singleton role<br/>Parquet → compacted Parquet<br/>seal past days, merge+sort<br/>rollups 5m/1h/1d<br/>footer provenance, retention GC"]
+        comp["Compactor — singleton (compactor:)<br/>L0→L1 hourly (active day) · L1+L0→L2 daily (seal)<br/>rollups 5m/1h/1d from compacted survivors<br/>footer provenance · deferred GC of superseded · retention"]
         subgraph QR["Querier — stateless, scales out"]
             direction TB
             api["PromQL / TraceQL / LogQL HTTP APIs"]
@@ -437,9 +445,77 @@ flowchart TB
 | Agent / client | collector → loadbalancer → **gateway** (OTLP in, transforms, file sink → Parquet) | streaming buffers | by throughput | existing demo + [parquet-multisignal](../../designs/20260527_parquet-multisignal.md); this workspace only adds the `dt=` path hint ([FR7](#fr7)) |
 | Backend — **querier** | API translation + DataFusion over shared storage; `resolve_files` honours footer provenance | **stateless** | **horizontal** ([NFR8](#nfr8)) | [FR1](#fr1)–[FR4](#fr4), tasks 1–9 |
 | Backend — **query-frontend** | time-split + merge + shared result cache | cache only | horizontal | [FR8](#fr8), task 11 |
-| Backend — **compactor** | seal/merge, rollups, footer provenance, retention GC | owns compacted files | **singleton** | [FR6](#fr6)/[FR7](#fr7), tasks 10, 12 |
+| Backend — **compactor** | leveled compaction (hourly→daily), rollups, footer provenance, deferred GC + retention | owns compacted files | **singleton** | [FR6](#fr6)/[FR7](#fr7), tasks 10, 12 |
 
-Single-node default = all backend roles in one process (querier in-process, in-process compactor, per-process cache); the same binary splits into roles to scale out without a rewrite.
+Single-node default = all backend components in one process (querier in-process, in-process compactor, per-process cache); the same binary splits into separately-deployed components — by presence of the `querier:` / `compactor:` config sections — to scale out without a rewrite.
+
+### <a id="signal-lifecycle"></a>Signal lifecycle (ingest → compaction → query)
+
+A datum's path from flush to query, and how the compactor's leveled tiers,
+rollups, and GC interleave with reads. The compactor runs one pass every
+`compactor.interval_secs`; each pass does **intraday → seal → rollup → GC** in
+that order (the order matters — see below).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GW as Gateway (file sink)
+    participant FS as Storage (Parquet, dt=…/)
+    participant CO as Compactor (singleton)
+    participant QR as Querier (stateless)
+    participant GF as Grafana
+
+    Note over GW,FS: Ingest — one small L0 file per flush (~30s)
+    GW->>FS: write L0 raw  SIG/dt=DAY/HH-MM-SS.parquet
+
+    loop every compactor.interval_secs  (intraday → seal → rollup → GC)
+        Note over CO,FS: 1. Intraday — active day, completed hours only
+        CO->>FS: read L0 of hour H  (now > end(H)+hour_grace_secs)
+        CO->>FS: write L1  compacted-hHH-DAY.parquet  (supersedes those L0)
+
+        Note over CO,FS: 2. Seal — sealed day (older than grace_days)
+        CO->>FS: read survivors (L1 + leftover L0) via resolve_files
+        CO->>FS: write L2  compacted-DAY.parquet  (supersedes them; lossless, idempotent)
+
+        Note over CO,FS: 3. Rollup — metrics only, sealed day, from compacted survivors
+        CO->>FS: read resolve_files survivors (the L2 daily)
+        CO->>FS: write rollup-5m/1h/1d.parquet  (skip if newer than source)
+
+        Note over CO,FS: 4. GC — reclaim what is safely superseded
+        CO->>FS: delete inputs whose superseder is older than delete_grace_secs
+        CO->>FS: delete partitions older than retention_days
+    end
+
+    Note over QR,FS: Query — read each datum once
+    GF->>QR: PromQL / TraceQL / LogQL / SQL
+    QR->>FS: resolve_files(dir) → surviving files only (skip superseded, exclude rollups)
+    Note right of QR: coarse step → route to rollup tier (metrics_5m/1h/1d)
+    FS-->>QR: pruned column/row-group scan (DataFusion)
+    QR-->>GF: Grafana-shaped JSON
+```
+
+**Why the pass order is intraday → seal → rollup → GC.** Rollup reads the
+compacted survivors, so it must run *after* seal (the daily exists) and *before*
+GC in the same pass is irrelevant to it (it no longer needs raw) — but GC must
+run last so a querier that re-registered before the superseding file appeared
+has a full `refresh_interval` to drop the inputs first. `delete_grace_secs`
+enforces that window.
+
+**Compaction vs rollup — two different mechanisms in the same dir:**
+
+| | Compaction (`compacted-*`) | Rollup (`rollup-*`) |
+|---|---|---|
+| Operation | **lossless** sort-merge (L0→L1→L2) | **lossy** downsample (last sample per bucket) |
+| Goal | fewer files → fewer fds, faster scans | fewer rows → cheap long-range queries |
+| Signals | logs, traces, metrics | **metrics only** |
+| Provenance | `level` + `supersedes`; transitively deduped by `resolve_files` | none — **excluded** from `resolve_files` (separate tier tables) |
+| File count | many → few, GC deletes superseded inputs | one per tier per sealed day (bounded by retention) |
+| Lifecycle | active day hourly-compacted, sealed day → one daily | built once per sealed day from the daily, idempotent |
+
+Net effect on the demo: the active day stays at ~tens of files (current hour raw
++ completed-hour L1) instead of thousands; sealed days collapse to one L2 +
+three rollup tiers; superseded inputs are reclaimed within `delete_grace_secs`
+rather than lingering until retention.
 
 ### Query translation layer
 
