@@ -55,6 +55,7 @@ async fn loki_query_range(
     params: LokiQueryParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
+    let t = std::time::Instant::now();
     let start = parse_ns(&params.start, 0);
     let end = parse_ns(&params.end, i64::MAX);
     // Metric (volume / aggregation) queries → matrix; plain selectors → streams.
@@ -70,6 +71,7 @@ async fn loki_query_range(
             .await
             .map(|resp| warp::reply::json(&resp).into_response())
     };
+    rec("loki", "logs", t);
     match result {
         Ok(resp) => Ok(resp),
         Err(error) => {
@@ -103,6 +105,14 @@ fn parse_time_ns(s: &Option<String>) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// Record a served query for the self-monitoring dashboard (NFR6): request
+/// count + duration, labelled by `api`/`signal`. Scan bytes/files instrumentation
+/// is deferred (passed 0); the latency/throughput panels + the dashboard's
+/// `instance` variable (keyed on `sol_query_requests_total`) need this called.
+fn rec(api: &str, signal: &str, t: std::time::Instant) {
+    super::telemetry::record_request(api, signal, t.elapsed(), 0, 0);
+}
+
 fn error_response(error: impl std::fmt::Display) -> warp::reply::Response {
     let body = serde_json::json!({"status": "error", "error": error.to_string()});
     warp::reply::with_status(
@@ -116,8 +126,11 @@ async fn prom_instant(
     params: PromInstantParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
+    let t = std::time::Instant::now();
     let time_ns = parse_time_ns(&params.time);
-    match prometheus::handle_instant(&engine, &params.query, time_ns).await {
+    let r = prometheus::handle_instant(&engine, &params.query, time_ns).await;
+    rec("prometheus", "metrics", t);
+    match r {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -148,6 +161,7 @@ async fn prom_range(
     params: PromRangeParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
+    let t = std::time::Instant::now();
     // start defaults to 0 (not "now"), end to now/latest.
     let start_ns = params
         .start
@@ -155,7 +169,9 @@ async fn prom_range(
         .map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
     let step_ns = parse_step_ns(&params.step);
-    match prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns).await {
+    let r = prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns).await;
+    rec("prometheus", "metrics", t);
+    match r {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -246,7 +262,10 @@ async fn tempo_search(
     let end_ns = parse_time_ns(&params.end);
     let traceql = params.q.unwrap_or_else(|| "{}".to_string());
     let limit = params.limit.unwrap_or(20);
-    match tempo::handle_search(&engine, &traceql, start_ns, end_ns, limit).await {
+    let t = std::time::Instant::now();
+    let r = tempo::handle_search(&engine, &traceql, start_ns, end_ns, limit).await;
+    rec("tempo", "traces", t);
+    match r {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -256,7 +275,10 @@ async fn tempo_trace_by_id(
     id: String,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    match tempo::handle_trace_by_id(&engine, &id).await {
+    let t = std::time::Instant::now();
+    let r = tempo::handle_trace_by_id(&engine, &id).await;
+    rec("tempo", "traces", t);
+    match r {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -282,7 +304,10 @@ async fn sql_query(
     body: SqlBody,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    match sql::handle_sql(&engine, &body.sql).await {
+    let t = std::time::Instant::now();
+    let r = sql::handle_sql(&engine, &body.sql).await;
+    rec("sql", "sql", t);
+    match r {
         Ok(value) => Ok(warp::reply::json(&value).into_response()),
         Err(error) => {
             let msg = error.to_string();
