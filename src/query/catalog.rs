@@ -392,6 +392,33 @@ impl QueryEngine {
         Ok(batches)
     }
 
+    /// Run **untrusted** user SQL (the cross-signal `/api/v1/sql` endpoint).
+    /// Unlike [`Self::sql`] (used only for internally-built, trusted queries),
+    /// this rejects DDL, DML, and non-query statements via DataFusion
+    /// `SQLOptions`, so a client cannot `COPY … TO`, `CREATE EXTERNAL TABLE …
+    /// LOCATION` (arbitrary file write/read), or mutate the catalog — only
+    /// read-only `SELECT`s over the registered tables are allowed (NFR9).
+    pub async fn sql_user(
+        &self,
+        query: &str,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use super::cache::{CacheKey, QueryCache};
+        let key = CacheKey::for_sql(query);
+        if let Some(hit) = self.cache.get(&key) {
+            super::telemetry::record_cache(true);
+            return Ok((*hit).clone());
+        }
+        super::telemetry::record_cache(false);
+        let options = datafusion::execution::context::SQLOptions::new()
+            .with_allow_ddl(false)
+            .with_allow_dml(false)
+            .with_allow_statements(false);
+        let df = self.ctx.sql_with_options(query, options).await?;
+        let batches = df.collect().await?;
+        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        Ok(batches)
+    }
+
     /// Re-list storage for newly written files (called periodically by the
     /// server). Invalidates the query cache so freshly discovered data is
     /// visible immediately rather than after the TTL.

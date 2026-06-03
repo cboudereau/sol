@@ -82,7 +82,9 @@ pub async fn handle_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result
             engine.max_scan_bytes()
         )));
     }
-    let batches = engine.sql(sql).await?;
+    // Untrusted input: the restricted path rejects DDL/DML/statements, so a
+    // client cannot read/write arbitrary files or mutate the catalog (NFR9).
+    let batches = engine.sql_user(sql).await?;
     batches_to_json(&batches)
 }
 
@@ -229,6 +231,25 @@ mod tests {
         let e = res.unwrap_err().to_string();
         assert!(e.starts_with("guardrail:"), "clear guardrail error: {e}");
         assert!(e.contains("scan"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn test_sql_endpoint_rejects_ddl_dml_and_statements() {
+        // NFR9 / B1: the untrusted endpoint must not allow arbitrary file
+        // read/write or catalog mutation — only read-only SELECTs.
+        let (engine, _tmp) = tri_engine(u64::MAX).await;
+        for q in [
+            "CREATE EXTERNAL TABLE evil STORED AS PARQUET LOCATION '/etc/hostname'",
+            "COPY (SELECT * FROM logs) TO '/tmp/exfil.csv'",
+            "DROP TABLE logs",
+            "CREATE VIEW v AS SELECT * FROM logs",
+            "INSERT INTO logs VALUES ('x')",
+        ] {
+            assert!(handle_sql(&engine, q).await.is_err(), "must reject: {q}");
+        }
+        // a read-only SELECT still works
+        assert!(handle_sql(&engine, "SELECT 1 AS one").await.is_ok());
+        assert!(handle_sql(&engine, "SELECT count(*) FROM logs").await.is_ok());
     }
 
     #[tokio::test]

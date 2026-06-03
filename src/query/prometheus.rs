@@ -340,7 +340,14 @@ pub(super) async fn distinct_json_keys(
     table: &str,
     column: &str,
 ) -> crate::Result<std::collections::BTreeSet<String>> {
-    let sql = format!("SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL");
+    // Cap the distinct blobs scanned: label/tag discovery is bounded by
+    // label-set cardinality, but a high-cardinality attribute (e.g. a per-request
+    // id embedded in the JSON) would otherwise make this an unbounded scan +
+    // parse. 10k distinct blobs is far more label sets than any real schema.
+    const MAX_DISTINCT_BLOBS: usize = 10_000;
+    let sql = format!(
+        "SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL LIMIT {MAX_DISTINCT_BLOBS}"
+    );
     let mut keys = std::collections::BTreeSet::new();
     for blob in string_column(engine, &sql).await? {
         if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&blob) {
