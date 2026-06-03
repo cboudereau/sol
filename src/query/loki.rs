@@ -81,8 +81,11 @@ fn label_pred(key: &str, op: &str, value: &str) -> Result<String, String> {
         "=" => format!("{lhs} = '{v}'"),
         "!=" if value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
         "!=" => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
-        "=~" => format!("regexp_like(COALESCE({lhs}, ''), '{v}')"),
-        "!~" => format!("NOT regexp_like(COALESCE({lhs}, ''), '{v}')"),
+        // LogQL anchors label-matcher regexes (`^(?:RE)$`), unlike DataFusion's
+        // substring regexp_like. (Line filters `|~`/`!~` below stay unanchored —
+        // those are substring matches in LogQL.)
+        "=~" => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
+        "!~" => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
         other => return Err(format!("unsupported label matcher op: {other}")),
     })
 }
@@ -154,10 +157,16 @@ fn parse_line_filters(pipeline: &str) -> Result<Vec<(String, String)>, String> {
             Some(q @ ('"' | '`')) => q,
             _ => return Err("line filter value must be quoted".to_string()),
         };
-        let end = rest[1..].find(quote).ok_or("unterminated line filter string")?;
+        let end = rest[1..]
+            .find(quote)
+            .ok_or("unterminated line filter string")?;
         let raw = &rest[1..=end];
         // Double-quoted filter values carry Go-style escapes; backticks are raw.
-        let val = if quote == '"' { unescape_dquoted(raw) } else { raw.to_string() };
+        let val = if quote == '"' {
+            unescape_dquoted(raw)
+        } else {
+            raw.to_string()
+        };
         if !val.is_empty() {
             out.push((op.to_string(), val));
         }
@@ -309,9 +318,17 @@ pub async fn handle_query_range(
         let body = batch.column(2).as_string::<i32>();
         let sev = batch.column(3).as_primitive::<Int32Type>();
         for i in 0..batch.num_rows() {
-            let service = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
+            let service = if svc.is_null(i) {
+                String::new()
+            } else {
+                svc.value(i).to_string()
+            };
             let nanos = if ts.is_null(i) { 0 } else { ts.value(i) };
-            let line = if body.is_null(i) { String::new() } else { body.value(i).to_string() };
+            let line = if body.is_null(i) {
+                String::new()
+            } else {
+                body.value(i).to_string()
+            };
             let level = detected_level(if sev.is_null(i) { 0 } else { sev.value(i) });
             rows.push((service, level, nanos, line));
         }
@@ -335,7 +352,7 @@ mod tests {
         .unwrap();
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
         assert!(
-            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '1\.0\.0')"#),
+            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '^(?:1\.0\.0)$')"#),
             "sql: {sql}"
         );
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) BETWEEN 100 AND 200"));
@@ -359,7 +376,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '1\.0\.0')"#),
+            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '^(?:1\.0\.0)$')"#),
             "double-backslash regex must unescape to single backslash: {sql}"
         );
     }
@@ -390,7 +407,10 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(!sql.contains("body LIKE"), "empty filter adds no body predicate: {sql}");
+        assert!(
+            !sql.contains("body LIKE"),
+            "empty filter adds no body predicate: {sql}"
+        );
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
         // normalized attribute label
         assert!(
@@ -402,8 +422,18 @@ mod tests {
     #[test]
     fn test_loki_query_range_response_shape() {
         let resp = LokiResponse::streams([
-            ("client".to_string(), "info", 1700000000000000000, "hello".to_string()),
-            ("client".to_string(), "info", 1700000000000000001, "world".to_string()),
+            (
+                "client".to_string(),
+                "info",
+                1700000000000000000,
+                "hello".to_string(),
+            ),
+            (
+                "client".to_string(),
+                "info",
+                1700000000000000001,
+                "world".to_string(),
+            ),
         ]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"streams""#), "json: {json}");
@@ -411,7 +441,10 @@ mod tests {
             json.contains(r#""stream":{"detected_level":"info","service_name":"client"}"#),
             "json: {json}"
         );
-        assert!(json.contains(r#"["1700000000000000000","hello"]"#), "json: {json}");
+        assert!(
+            json.contains(r#"["1700000000000000000","hello"]"#),
+            "json: {json}"
+        );
     }
 
     #[test]
@@ -491,15 +524,24 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
 
-        let resp =
-            handle_query_range(&engine, r#"{service_name="client"} |= "hello""#, 0, 1000, 100, false)
-                .await
-                .unwrap();
+        let resp = handle_query_range(
+            &engine,
+            r#"{service_name="client"} |= "hello""#,
+            0,
+            1000,
+            100,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.data.result_type, "streams");
         assert_eq!(resp.data.result.len(), 1, "one stream (client)");
         let s = &resp.data.result[0];
@@ -513,10 +555,13 @@ mod tests {
     #[test]
     fn test_loki_label_values_sql() {
         assert!(
-            label_values_sql("service_name").contains("SELECT DISTINCT service_name AS v FROM logs"),
+            label_values_sql("service_name")
+                .contains("SELECT DISTINCT service_name AS v FROM logs"),
         );
-        assert!(label_values_sql("deployment_environment")
-            .contains("prom_attr(resource_attributes, 'deployment_environment')"));
+        assert!(
+            label_values_sql("deployment_environment")
+                .contains("prom_attr(resource_attributes, 'deployment_environment')")
+        );
     }
 
     #[tokio::test]
@@ -559,22 +604,34 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
 
         // Label names: promoted column + normalized resource-attribute keys.
         let labels = handle_labels(&engine).await.unwrap();
-        let names: Vec<&str> =
-            labels["data"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        let names: Vec<&str> = labels["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
         for expected in ["service_name", "deployment_environment", "service_version"] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }
 
         // Label values resolve through the normalized attribute lookup.
-        let values = handle_label_values(&engine, "deployment_environment").await.unwrap();
-        assert_eq!(values["data"].as_array().unwrap(), &[serde_json::json!("dev")]);
+        let values = handle_label_values(&engine, "deployment_environment")
+            .await
+            .unwrap();
+        assert_eq!(
+            values["data"].as_array().unwrap(),
+            &[serde_json::json!("dev")]
+        );
     }
 
     #[test]
@@ -584,6 +641,9 @@ mod tests {
         let back: LokiResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.status, "success");
         assert_eq!(back.data.result_type, "streams");
-        assert_eq!(back.data.result[0].values[0], ["1".to_string(), "x".to_string()]);
+        assert_eq!(
+            back.data.result[0].values[0],
+            ["1".to_string(), "x".to_string()]
+        );
     }
 }

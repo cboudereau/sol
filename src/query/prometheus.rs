@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use promql_parser::label::{MatchOp, Matcher};
-use promql_parser::parser::{self, AggregateExpr, Call, Expr, LabelModifier, VectorSelector, token};
+use promql_parser::parser::{
+    self, AggregateExpr, Call, Expr, LabelModifier, VectorSelector, token,
+};
 use serde::{Deserialize, Serialize};
 
 fn esc(v: &str) -> String {
@@ -29,7 +31,9 @@ fn label_lhs(key: &str) -> String {
 }
 
 fn sql_ident(key: &str) -> String {
-    key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+    key.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// Resolve a metric selector to `(value_expr, name_predicate)`, synthesizing the
@@ -38,7 +42,10 @@ fn sql_ident(key: &str) -> String {
 /// guarded to histogram rows), anything else → the gauge/counter value. The
 /// name predicate also matches a real metric named exactly `<name>`.
 fn metric_value_and_match(name: &str) -> (String, String) {
-    let exact = format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name));
+    let exact = format!(
+        "prom_metric_name(name, unit, is_monotonic) = '{}'",
+        esc(name)
+    );
     let hist = |base: &str| {
         format!(
             "prom_metric_name(name, unit, is_monotonic) = '{}' AND bucket_counts IS NOT NULL",
@@ -47,13 +54,20 @@ fn metric_value_and_match(name: &str) -> (String, String) {
     };
     if let Some(base) = name.strip_suffix("_count") {
         (
-            "COALESCE(double_value, CAST(int_value AS DOUBLE), CAST(\"count\" AS DOUBLE))".to_string(),
+            "COALESCE(double_value, CAST(int_value AS DOUBLE), CAST(\"count\" AS DOUBLE))"
+                .to_string(),
             format!("({exact} OR ({}))", hist(base)),
         )
     } else if let Some(base) = name.strip_suffix("_sum") {
-        ("COALESCE(double_value, \"sum\")".to_string(), format!("({exact} OR ({}))", hist(base)))
+        (
+            "COALESCE(double_value, \"sum\")".to_string(),
+            format!("({exact} OR ({}))", hist(base)),
+        )
     } else {
-        ("COALESCE(double_value, CAST(int_value AS DOUBLE))".to_string(), exact)
+        (
+            "COALESCE(double_value, CAST(int_value AS DOUBLE))".to_string(),
+            exact,
+        )
     }
 }
 
@@ -72,15 +86,21 @@ fn matcher_pred(m: &Matcher) -> Option<String> {
         MatchOp::Equal => format!("{lhs} = '{v}'"),
         MatchOp::NotEqual if m.value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
         MatchOp::NotEqual => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
-        MatchOp::Re(_) => format!("regexp_like(COALESCE({lhs}, ''), '{v}')"),
-        MatchOp::NotRe(_) => format!("NOT regexp_like(COALESCE({lhs}, ''), '{v}')"),
+        // Prometheus fully anchors regex matchers (`^(?:RE)$`); DataFusion
+        // regexp_like is unanchored (substring), so anchor explicitly or
+        // `pod=~"web"` would wrongly match `web-1`.
+        MatchOp::Re(_) => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
+        MatchOp::NotRe(_) => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
     })
 }
 
 /// Subquery selecting, per series, the latest sample at/before `time_ns`
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
-    let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or("metric selector requires a name")?;
     let (value_expr, name_pred) = metric_value_and_match(name);
     let mut preds = vec![name_pred];
     for m in &vs.matchers.matchers {
@@ -123,7 +143,11 @@ fn lower_aggregate(agg: &AggregateExpr, time_ns: i64) -> Result<String, String> 
             Expr::VectorSelector(vs) => vs,
             _ => return Err("aggregate inner must be a vector selector (instant)".to_string()),
         },
-        _ => return Err("aggregate inner must be a vector selector (rate etc. is task 5)".to_string()),
+        _ => {
+            return Err(
+                "aggregate inner must be a vector selector (rate etc. is task 5)".to_string(),
+            );
+        }
     };
     let op = agg_name(agg.op)?;
     let by = match &agg.modifier {
@@ -137,8 +161,10 @@ fn lower_aggregate(agg: &AggregateExpr, time_ns: i64) -> Result<String, String> 
     if by.is_empty() {
         return Ok(format!("SELECT {op}(v) AS v FROM ({inner})"));
     }
-    let select_cols: Vec<String> =
-        by.iter().map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k))).collect();
+    let select_cols: Vec<String> = by
+        .iter()
+        .map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k)))
+        .collect();
     let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
     Ok(format!(
         "SELECT {}, {}(v) AS v FROM ({}) GROUP BY {}",
@@ -159,9 +185,10 @@ fn lower(expr: &Expr, time_ns: i64) -> Result<String, String> {
         Expr::VectorSelector(vs) => latest_selected(vs, time_ns),
         Expr::Paren(p) => lower(&p.expr, time_ns),
         Expr::Aggregate(agg) => lower_aggregate(agg, time_ns),
-        Expr::Call(_) => {
-            Err("unsupported PromQL function for instant query (range functions are task 5)".to_string())
-        }
+        Expr::Call(_) => Err(
+            "unsupported PromQL function for instant query (range functions are task 5)"
+                .to_string(),
+        ),
         Expr::MatrixSelector(_) | Expr::Subquery(_) => {
             Err("range/subquery selectors require query_range (task 5)".to_string())
         }
@@ -229,11 +256,17 @@ impl PromResponse {
     pub fn vector(samples: impl IntoIterator<Item = (BTreeMap<String, String>, f64, f64)>) -> Self {
         let result = samples
             .into_iter()
-            .map(|(metric, ts, v)| PromSample { metric, value: (ts, v.to_string()) })
+            .map(|(metric, ts, v)| PromSample {
+                metric,
+                value: (ts, v.to_string()),
+            })
             .collect();
         PromResponse {
             status: "success".to_string(),
-            data: PromData { result_type: "vector".to_string(), result },
+            data: PromData {
+                result_type: "vector".to_string(),
+                result,
+            },
         }
     }
 }
@@ -286,7 +319,11 @@ pub async fn handle_instant(
             .enumerate()
             .filter(|(_, f)| !NON_LABEL.contains(&f.name().as_str()))
             .map(|(i, f)| {
-                let key = if f.name() == "name" { "__name__".to_string() } else { f.name().clone() };
+                let key = if f.name() == "name" {
+                    "__name__".to_string()
+                } else {
+                    f.name().clone()
+                };
                 (key, cast(batch.column(i), &DataType::Utf8))
             })
             .collect();
@@ -408,8 +445,16 @@ pub async fn handle_series(engine: &super::QueryEngine) -> crate::Result<serde_j
 
 /// Base per-sample selection over `metrics` for a range query: exposes the
 /// grouping columns plus a numeric `v` (gauge/counter value) and the time.
-fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
-    let name = vs.name.as_deref().ok_or("metric selector requires a name")?;
+fn metric_base(
+    vs: &VectorSelector,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> Result<String, String> {
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or("metric selector requires a name")?;
     let (value_expr, name_pred) = metric_value_and_match(name);
     let mut preds = vec![name_pred];
     for m in &vs.matchers.matchers {
@@ -417,7 +462,9 @@ fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> 
             preds.push(p);
         }
     }
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    preds.push(format!(
+        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
+    ));
     Ok(format!(
         "SELECT name, service_name, attributes, time_unix_nano, \
          {value_expr} AS v FROM {table} WHERE {}",
@@ -428,7 +475,12 @@ fn metric_base(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> 
 /// `rate(m[d])` — per-sample delta via `LAG` over the series window. Counter
 /// resets (`v < prev_v`) use the current value as the delta (simplified, per
 /// the PromQL ADR). The range `[d]` bounds the outer time filter only.
-fn rate_sql(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
+fn rate_sql(
+    vs: &VectorSelector,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> Result<String, String> {
     let base = metric_base(vs, start_ns, end_ns, table)?;
     Ok(format!(
         "WITH ordered AS (SELECT name, service_name, attributes, time_unix_nano, v, \
@@ -437,7 +489,8 @@ fn rate_sql(vs: &VectorSelector, start_ns: i64, end_ns: i64, table: &str) -> Res
          SELECT service_name, attributes, time_unix_nano, \
          CASE WHEN v >= prev_v THEN (v - prev_v) ELSE v END \
          / ((CAST(time_unix_nano AS BIGINT) - prev_t) / 1e9) AS v \
-         FROM ordered WHERE prev_t IS NOT NULL"
+         FROM ordered WHERE prev_t IS NOT NULL \
+         AND CAST(time_unix_nano AS BIGINT) <> prev_t"
     ))
 }
 
@@ -463,7 +516,12 @@ fn over_time_sql(
 fn lower_call(c: &Call, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
     let (vs, range) = match c.args.args.first().map(|b| b.as_ref()) {
         Some(Expr::MatrixSelector(ms)) => (&ms.vs, ms.range),
-        _ => return Err(format!("{}() expects a range-vector argument like m[5m]", c.func.name)),
+        _ => {
+            return Err(format!(
+                "{}() expects a range-vector argument like m[5m]",
+                c.func.name
+            ));
+        }
     };
     match c.func.name {
         "rate" | "irate" | "increase" => rate_sql(vs, start_ns, end_ns, table),
@@ -478,7 +536,16 @@ fn lower_call(c: &Call, start_ns: i64, end_ns: i64, table: &str) -> Result<Strin
 
 fn as_count(expr: &Expr) -> Result<i64, String> {
     match expr {
+        // Prometheus requires an integer scalar here; reject non-integral or
+        // out-of-range values rather than silently truncating (e.g. topk(2.9,…)
+        // → 2, or 1e30 → i64::MAX).
         Expr::NumberLiteral(n) => {
+            if !n.val.is_finite() || n.val.fract() != 0.0 || n.val.abs() >= 9.007e15 {
+                return Err(format!(
+                    "topk/bottomk count must be an integer, got {}",
+                    n.val
+                ));
+            }
             #[allow(clippy::cast_possible_truncation)]
             Ok(n.val as i64)
         }
@@ -494,10 +561,20 @@ fn lower_range_aggregate(
 ) -> Result<String, String> {
     // topk/bottomk: order the inner series by value and limit.
     if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK {
-        let n = as_count(agg.param.as_deref().ok_or("topk/bottomk requires a count")?)?;
+        let n = as_count(
+            agg.param
+                .as_deref()
+                .ok_or("topk/bottomk requires a count")?,
+        )?;
         let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
-        let dir = if agg.op.id() == token::T_TOPK { "DESC" } else { "ASC" };
-        return Ok(format!("SELECT * FROM ({inner}) ORDER BY v {dir} LIMIT {n}"));
+        let dir = if agg.op.id() == token::T_TOPK {
+            "DESC"
+        } else {
+            "ASC"
+        };
+        return Ok(format!(
+            "SELECT * FROM ({inner}) ORDER BY v {dir} LIMIT {n}"
+        ));
     }
     // sum/max/min/avg/count [by (...)] over a range expression.
     let op = agg_name(agg.op)?;
@@ -514,8 +591,10 @@ fn lower_range_aggregate(
             "SELECT time_unix_nano, {op}(v) AS v FROM ({inner}) GROUP BY time_unix_nano"
         ));
     }
-    let select_cols: Vec<String> =
-        by.iter().map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k))).collect();
+    let select_cols: Vec<String> = by
+        .iter()
+        .map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k)))
+        .collect();
     let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
     Ok(format!(
         "SELECT {}, time_unix_nano, {}(v) AS v FROM ({}) GROUP BY {}, time_unix_nano",
@@ -596,12 +675,18 @@ impl PromMatrixResponse {
             .into_iter()
             .map(|(metric, points)| PromRange {
                 metric,
-                values: points.into_iter().map(|(t, v)| (t, v.to_string())).collect(),
+                values: points
+                    .into_iter()
+                    .map(|(t, v)| (t, v.to_string()))
+                    .collect(),
             })
             .collect();
         PromMatrixResponse {
             status: "success".to_string(),
-            data: PromMatrixData { result_type: "matrix".to_string(), result },
+            data: PromMatrixData {
+                result_type: "matrix".to_string(),
+                result,
+            },
         }
     }
 }
@@ -639,7 +724,9 @@ async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Resu
         let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
         let v = cast(batch.column(v_idx), &DataType::Float64)?;
         let v = v.as_primitive::<Float64Type>();
-        let t_idx = schema.index_of("time_unix_nano").map_err(|e| to_err(e.to_string()))?;
+        let t_idx = schema
+            .index_of("time_unix_nano")
+            .map_err(|e| to_err(e.to_string()))?;
         let t = cast(batch.column(t_idx), &DataType::Int64)?;
         let t = t.as_primitive::<Int64Type>();
 
@@ -649,7 +736,11 @@ async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Resu
             .enumerate()
             .filter(|(_, f)| !NON_LABEL.contains(&f.name().as_str()))
             .map(|(i, f)| {
-                let key = if f.name() == "name" { "__name__".to_string() } else { f.name().clone() };
+                let key = if f.name() == "name" {
+                    "__name__".to_string()
+                } else {
+                    f.name().clone()
+                };
                 (key, cast(batch.column(i), &DataType::Utf8))
             })
             .collect();
@@ -669,7 +760,11 @@ async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Resu
             #[allow(clippy::cast_precision_loss)]
             let ts_s = t.value(i) as f64 / 1_000_000_000.0;
             let key = format!("{metric:?}");
-            series.entry(key).or_insert_with(|| (metric, Vec::new())).1.push((ts_s, v.value(i)));
+            series
+                .entry(key)
+                .or_insert_with(|| (metric, Vec::new()))
+                .1
+                .push((ts_s, v.value(i)));
         }
     }
     Ok(series)
@@ -722,9 +817,7 @@ fn find_hist_base(expr: &Expr) -> Option<(&VectorSelector, Vec<String>)> {
 fn detect_hist_quantile(expr: &Expr) -> Option<HistSpec> {
     match expr {
         Expr::Paren(p) => detect_hist_quantile(&p.expr),
-        Expr::Aggregate(agg)
-            if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK =>
-        {
+        Expr::Aggregate(agg) if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK => {
             let n = as_count(agg.param.as_deref()?).ok()?;
             let mut spec = detect_hist_quantile(agg.expr.as_ref())?;
             spec.topk = Some((n, agg.op.id() == token::T_TOPK));
@@ -739,8 +832,19 @@ fn detect_hist_quantile(expr: &Expr) -> Option<HistSpec> {
             let (vs, group_by) = find_hist_base(inner)?;
             let name = vs.name.as_deref()?;
             let base = name.strip_suffix("_bucket").unwrap_or(name).to_string();
-            let preds = vs.matchers.matchers.iter().filter_map(matcher_pred).collect();
-            Some(HistSpec { phi, base, preds, group_by, topk: None })
+            let preds = vs
+                .matchers
+                .matchers
+                .iter()
+                .filter_map(matcher_pred)
+                .collect();
+            Some(HistSpec {
+                phi,
+                base,
+                preds,
+                group_by,
+                topk: None,
+            })
         }
         _ => None,
     }
@@ -759,10 +863,14 @@ async fn handle_hist_quantile_range(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    let mut preds =
-        vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(&spec.base))];
+    let mut preds = vec![format!(
+        "prom_metric_name(name, unit, is_monotonic) = '{}'",
+        esc(&spec.base)
+    )];
     preds.extend(spec.preds.iter().cloned());
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
+    preds.push(format!(
+        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
+    ));
     let group_cols: String = spec
         .group_by
         .iter()
@@ -806,9 +914,13 @@ async fn handle_hist_quantile_range(
                 }
             }
             let key = format!("{metric:?}");
-            let entry =
-                groups.entry(key).or_insert_with(|| (metric, BTreeMap::new(), bounds.clone()));
-            let acc = entry.1.entry(t.value(i)).or_insert_with(|| vec![0.0; counts.len()]);
+            let entry = groups
+                .entry(key)
+                .or_insert_with(|| (metric, BTreeMap::new(), bounds.clone()));
+            let acc = entry
+                .1
+                .entry(t.value(i))
+                .or_insert_with(|| vec![0.0; counts.len()]);
             if acc.len() < counts.len() {
                 acc.resize(counts.len(), 0.0);
             }
@@ -882,9 +994,18 @@ fn detect_bucket_heatmap(expr: &Expr) -> Option<BucketSpec> {
     let (vs, _) = find_hist_base(agg.expr.as_ref())?;
     let name = vs.name.as_deref()?;
     let base = name.strip_suffix("_bucket")?.to_string(); // only `_bucket` selectors
-    let preds = vs.matchers.matchers.iter().filter_map(matcher_pred).collect();
+    let preds = vs
+        .matchers
+        .matchers
+        .iter()
+        .filter_map(matcher_pred)
+        .collect();
     let group_by: Vec<String> = by.into_iter().filter(|l| l != "le").collect();
-    Some(BucketSpec { base, preds, group_by })
+    Some(BucketSpec {
+        base,
+        preds,
+        group_by,
+    })
 }
 
 /// Serve a `_bucket`-by-`le` heatmap from OTLP array histograms: explode each
@@ -902,13 +1023,21 @@ async fn handle_bucket_heatmap(
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
     let mut preds = vec![
-        format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(&spec.base)),
+        format!(
+            "prom_metric_name(name, unit, is_monotonic) = '{}'",
+            esc(&spec.base)
+        ),
         "bucket_counts IS NOT NULL".to_string(),
     ];
     preds.extend(spec.preds.iter().cloned());
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
-    let group_cols: String =
-        spec.group_by.iter().map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g))).collect();
+    preds.push(format!(
+        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
+    ));
+    let group_cols: String = spec
+        .group_by
+        .iter()
+        .map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g)))
+        .collect();
     let sql = format!(
         "SELECT time_unix_nano, bucket_counts, explicit_bounds{group_cols} FROM metrics WHERE {}",
         preds.join(" AND ")
@@ -951,11 +1080,15 @@ async fn handle_bucket_heatmap(
             let mut cum = 0.0;
             for (idx, c) in counts.iter().enumerate() {
                 cum += c;
-                let le = bounds.get(idx).map_or_else(|| "+Inf".to_string(), |b| format!("{b}"));
+                let le = bounds
+                    .get(idx)
+                    .map_or_else(|| "+Inf".to_string(), |b| format!("{b}"));
                 let mut metric = base_metric.clone();
                 metric.insert("le".to_string(), le);
                 let key = format!("{metric:?}");
-                let entry = series.entry(key).or_insert_with(|| (metric, BTreeMap::new()));
+                let entry = series
+                    .entry(key)
+                    .or_insert_with(|| (metric, BTreeMap::new()));
                 *entry.1.entry(t.value(i)).or_insert(0.0) += cum;
             }
         }
@@ -1035,10 +1168,14 @@ pub async fn handle_range(
     // A top-level topk/bottomk: select top-N *series* in Rust; translate the
     // inner AST node directly (no Display round-trip).
     let mut topk: Option<(i64, bool)> = None;
-    let inner_expr: Option<&Expr> = parsed.as_ref().and_then(topk_parts).map(|(n, is_topk, inner)| {
-        topk = Some((n, is_topk));
-        inner
-    });
+    let inner_expr: Option<&Expr> =
+        parsed
+            .as_ref()
+            .and_then(topk_parts)
+            .map(|(n, is_topk, inner)| {
+                topk = Some((n, is_topk));
+                inner
+            });
 
     let table = select_range_table(engine, step_ns);
     let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
@@ -1063,7 +1200,11 @@ pub async fn handle_range(
             None => range_series(engine, query, s, e, &table).await?,
         };
         for (key, (metric, points)) in part {
-            merged.entry(key).or_insert_with(|| (metric, Vec::new())).1.extend(points);
+            merged
+                .entry(key)
+                .or_insert_with(|| (metric, Vec::new()))
+                .1
+                .extend(points);
         }
     }
 
@@ -1082,8 +1223,12 @@ pub async fn handle_range(
         let score = |p: &[(f64, f64)]| p.iter().map(|x| x.1).fold(f64::MIN, f64::max);
         series.sort_by(|a, b| {
             let (sa, sb) = (score(&a.1), score(&b.1));
-            if is_topk { sb.partial_cmp(&sa) } else { sa.partial_cmp(&sb) }
-                .unwrap_or(std::cmp::Ordering::Equal)
+            if is_topk {
+                sb.partial_cmp(&sa)
+            } else {
+                sa.partial_cmp(&sb)
+            }
+            .unwrap_or(std::cmp::Ordering::Equal)
         });
         series.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
     }
@@ -1174,8 +1319,14 @@ async fn handle_histogram(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let name = vs.name.as_deref().ok_or_else(|| to_err("histogram selector requires a name".into()))?;
-    let mut preds = vec![format!("prom_metric_name(name, unit, is_monotonic) = '{}'", esc(name))];
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or_else(|| to_err("histogram selector requires a name".into()))?;
+    let mut preds = vec![format!(
+        "prom_metric_name(name, unit, is_monotonic) = '{}'",
+        esc(name)
+    )];
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_pred(m) {
             preds.push(p);
@@ -1228,7 +1379,10 @@ mod tests {
         // `__name__` lists normalized metric names plus the synthetic
         // histogram series; other labels keep the plain DISTINCT path.
         let sql = label_values_sql("__name__");
-        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic)"), "sql: {sql}");
+        assert!(
+            sql.contains("prom_metric_name(name, unit, is_monotonic)"),
+            "sql: {sql}"
+        );
         for suffix in ["'_bucket'", "'_count'", "'_sum'"] {
             assert!(sql.contains(suffix), "missing {suffix}: {sql}");
         }
@@ -1244,18 +1398,28 @@ mod tests {
     #[test]
     fn test_promql_instant_selector_to_sql() {
         let sql = translate_instant(r#"node_memory_total_bytes{host="h1"}"#, 1000).unwrap();
-        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'node_memory_total_bytes'"), "sql: {sql}");
-        assert!(sql.contains("prom_attr(attributes, 'host') = 'h1'"), "sql: {sql}");
+        assert!(
+            sql.contains("prom_metric_name(name, unit, is_monotonic) = 'node_memory_total_bytes'"),
+            "sql: {sql}"
+        );
+        assert!(
+            sql.contains("prom_attr(attributes, 'host') = 'h1'"),
+            "sql: {sql}"
+        );
         assert!(sql.contains("CAST(time_unix_nano AS BIGINT) <= 1000"));
         assert!(sql.contains("WHERE rn = 1"));
     }
 
     #[test]
     fn test_promql_sum_by_label_groups_on_json_extract() {
-        let sql = translate_instant(r#"sum by (le) (http_bucket{service_name="client"})"#, 5).unwrap();
+        let sql =
+            translate_instant(r#"sum by (le) (http_bucket{service_name="client"})"#, 5).unwrap();
         assert!(sql.contains("sum(v) AS v"), "sql: {sql}");
         assert!(sql.contains("prom_attr(attributes, 'le')"), "sql: {sql}");
-        assert!(sql.contains("GROUP BY prom_attr(attributes, 'le')"), "sql: {sql}");
+        assert!(
+            sql.contains("GROUP BY prom_attr(attributes, 'le')"),
+            "sql: {sql}"
+        );
         assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
     }
 
@@ -1284,7 +1448,10 @@ mod tests {
         let resp = PromResponse::vector([(m, 1700000000.0, 42.0)]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"vector""#), "json: {json}");
-        assert!(json.contains(r#""value":[1700000000.0,"42"]"#), "json: {json}");
+        assert!(
+            json.contains(r#""value":[1700000000.0,"42"]"#),
+            "json: {json}"
+        );
     }
 
     #[test]
@@ -1296,7 +1463,10 @@ mod tests {
             "sql: {sql}"
         );
         assert!(sql.contains("WHERE prev_t IS NOT NULL"), "sql: {sql}");
-        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "sql: {sql}");
+        assert!(
+            sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"),
+            "sql: {sql}"
+        );
     }
 
     #[test]
@@ -1328,24 +1498,71 @@ mod tests {
     }
 
     #[test]
+    fn test_regex_matcher_is_anchored() {
+        // H1: Prometheus fully anchors `=~`/`!~`; unanchored would match substrings.
+        let sql = translate_instant(r#"http_total{pod=~"web"}"#, 1000).unwrap();
+        assert!(
+            sql.contains("regexp_like(COALESCE(prom_attr(attributes, 'pod'), ''), '^(?:web)$')"),
+            "regex matcher must be anchored: {sql}"
+        );
+        let neg = translate_instant(r#"http_total{pod!~"web"}"#, 1000).unwrap();
+        assert!(
+            neg.contains(
+                "NOT regexp_like(COALESCE(prom_attr(attributes, 'pod'), ''), '^(?:web)$')"
+            ),
+            "{neg}"
+        );
+    }
+
+    #[test]
+    fn test_rate_drops_duplicate_timestamps() {
+        // M2: equal consecutive timestamps would divide by zero (inf/NaN).
+        let sql = translate_range("rate(http_total[1m])", 0, 100).unwrap();
+        assert!(
+            sql.contains("CAST(time_unix_nano AS BIGINT) <> prev_t"),
+            "rate must skip zero-dt pairs: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_topk_rejects_non_integer_count() {
+        // L2: Prometheus errors on a non-integer count; we must too (not truncate).
+        assert!(translate_range("topk(2.9, rate(http_total[1m]))", 0, 100).is_err());
+        assert!(translate_range("topk(1e30, rate(http_total[1m]))", 0, 100).is_err());
+        // an integer count still works
+        assert!(translate_range("topk(3, rate(http_total[1m]))", 0, 100).is_ok());
+    }
+
+    #[test]
     fn test_max_over_time_window() {
         let sql = translate_range("max_over_time(cpu_usage[5m])", 0, 100).unwrap();
         assert!(sql.contains("MAX(v) OVER"), "sql: {sql}");
-        assert!(sql.contains("RANGE BETWEEN 300000000000 PRECEDING AND CURRENT ROW"), "sql: {sql}");
+        assert!(
+            sql.contains("RANGE BETWEEN 300000000000 PRECEDING AND CURRENT ROW"),
+            "sql: {sql}"
+        );
     }
 
     #[test]
     fn test_sum_by_over_rate_groups_on_label() {
-        let sql =
-            translate_range("sum by (service_name) (rate(http_total[1m]))", 0, 100).unwrap();
+        let sql = translate_range("sum by (service_name) (rate(http_total[1m]))", 0, 100).unwrap();
         assert!(sql.contains("sum(v) AS v"), "sql: {sql}");
-        assert!(sql.contains("GROUP BY service_name, time_unix_nano"), "sql: {sql}");
-        assert!(sql.contains("LAG(v) OVER w"), "inner rate missing; sql: {sql}");
+        assert!(
+            sql.contains("GROUP BY service_name, time_unix_nano"),
+            "sql: {sql}"
+        );
+        assert!(
+            sql.contains("LAG(v) OVER w"),
+            "inner rate missing; sql: {sql}"
+        );
     }
 
     #[test]
     fn test_range_unsupported_returns_error() {
-        assert!(translate_range("http_total", 0, 1).is_err(), "instant selector is not a range query");
+        assert!(
+            translate_range("http_total", 0, 1).is_err(),
+            "instant selector is not a range query"
+        );
         assert!(translate_range("predict_linear(x[1h], 60)", 0, 1).is_err());
         assert!(translate_range("{{bad", 0, 1).is_err());
     }
@@ -1354,10 +1571,14 @@ mod tests {
     fn test_prom_matrix_response_shape() {
         let mut m = BTreeMap::new();
         m.insert("service_name".to_string(), "client".to_string());
-        let resp = PromMatrixResponse::matrix([(m, vec![(1700000000.0, 1.5), (1700000060.0, 2.0)])]);
+        let resp =
+            PromMatrixResponse::matrix([(m, vec![(1700000000.0, 1.5), (1700000060.0, 2.0)])]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"matrix""#), "json: {json}");
-        assert!(json.contains(r#""values":[[1700000000.0,"1.5"],[1700000060.0,"2"]]"#), "json: {json}");
+        assert!(
+            json.contains(r#""values":[[1700000000.0,"1.5"],[1700000060.0,"2"]]"#),
+            "json: {json}"
+        );
     }
 
     // A 3-sample counter fixture (http_total, service=client) at t=1s,2s,3s.
@@ -1387,10 +1608,18 @@ mod tests {
             schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client", "client"])),
-                Arc::new(StringArray::from(vec!["http_total", "http_total", "http_total"])),
+                Arc::new(StringArray::from(vec![
+                    "http_total",
+                    "http_total",
+                    "http_total",
+                ])),
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000, 3_000_000_000])
-                        .with_timezone("UTC"),
+                    TimestampNanosecondArray::from(vec![
+                        1_000_000_000i64,
+                        2_000_000_000,
+                        3_000_000_000,
+                    ])
+                    .with_timezone("UTC"),
                 ),
                 Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
@@ -1403,7 +1632,10 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
@@ -1412,13 +1644,18 @@ mod tests {
     #[tokio::test]
     async fn test_rate_executes_and_computes_values() {
         let engine = counter_engine().await;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0).await.unwrap();
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0)
+            .await
+            .unwrap();
         assert_eq!(resp.data.result_type, "matrix");
         assert_eq!(resp.data.result.len(), 1, "one series");
         let s = &resp.data.result[0];
         assert_eq!(s.metric["service_name"], "client");
         // first sample has no predecessor → dropped; rate at 2s,3s = 20,30 per sec.
-        assert_eq!(s.values, vec![(2.0, "20".to_string()), (3.0, "30".to_string())]);
+        assert_eq!(
+            s.values,
+            vec![(2.0, "20".to_string()), (3.0, "30".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1428,7 +1665,9 @@ mod tests {
         // must equal the unsplit rate (split/merge preserves results — FR8).
         let engine = counter_engine().await;
         let two_days = 2 * 86_400_000_000_000i64;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days, 0).await.unwrap();
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days, 0)
+            .await
+            .unwrap();
         assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
         assert_eq!(
             resp.data.result[0].values,
@@ -1493,16 +1732,29 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
-        let resp =
-            handle_range(&engine, "topk(1, sum by (sc) (rate(reqs[5m])))", 0, 10_000_000_000, 0)
-                .await
-                .unwrap();
+        let resp = handle_range(
+            &engine,
+            "topk(1, sum by (sc) (rate(reqs[5m])))",
+            0,
+            10_000_000_000,
+            0,
+        )
+        .await
+        .unwrap();
         // exactly the one top series (sc=a), with its point(s) — not 1 scattered row
-        assert_eq!(resp.data.result.len(), 1, "top-1 series only: {:?}", resp.data.result);
+        assert_eq!(
+            resp.data.result.len(),
+            1,
+            "top-1 series only: {:?}",
+            resp.data.result
+        );
         assert_eq!(resp.data.result[0].metric["sc"], "a", "the higher series");
         assert_eq!(resp.data.result[0].values, vec![(2.0, "20".to_string())]);
     }
@@ -1510,13 +1762,24 @@ mod tests {
     #[tokio::test]
     async fn test_max_over_time_executes_with_range_frame() {
         let engine = counter_engine().await;
-        let resp =
-            handle_range(&engine, "max_over_time(http_total[5m])", 0, 10_000_000_000, 0).await.unwrap();
+        let resp = handle_range(
+            &engine,
+            "max_over_time(http_total[5m])",
+            0,
+            10_000_000_000,
+            0,
+        )
+        .await
+        .unwrap();
         let s = &resp.data.result[0];
         // sliding max up to each point: 10, 30, 60.
         assert_eq!(
             s.values,
-            vec![(1.0, "10".to_string()), (2.0, "30".to_string()), (3.0, "60".to_string())]
+            vec![
+                (1.0, "10".to_string()),
+                (2.0, "30".to_string()),
+                (3.0, "60".to_string())
+            ]
         );
     }
 
@@ -1532,7 +1795,11 @@ mod tests {
         use std::sync::Arc;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let dir = tmp.path().join("metrics").join("histogram").join("dt=2026-06-01");
+        let dir = tmp
+            .path()
+            .join("metrics")
+            .join("histogram")
+            .join("dt=2026-06-01");
         std::fs::create_dir_all(&dir).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
@@ -1555,7 +1822,9 @@ mod tests {
                 Arc::new(StringArray::from(vec!["http.server.request.duration"])),
                 Arc::new(StringArray::from(vec![Some("s")])),
                 Arc::new(BooleanArray::from(vec![Some(false)])),
-                Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC")),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
+                ),
                 Arc::new(StringArray::from(vec![Some("{}")])),
                 Arc::new(StringArray::from(vec![Some("[0,20,30,30,15,5]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
@@ -1568,7 +1837,10 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
@@ -1583,7 +1855,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp.data.result_type, "matrix");
-        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        assert_eq!(
+            resp.data.result.len(),
+            1,
+            "one series: {:?}",
+            resp.data.result
+        );
         let v = &resp.data.result[0].values;
         assert_eq!(v.len(), 1, "one point: {v:?}");
         assert!(
@@ -1604,7 +1881,11 @@ mod tests {
         use std::sync::Arc;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let dir = tmp.path().join("metrics").join("histogram").join("dt=2026-06-01");
+        let dir = tmp
+            .path()
+            .join("metrics")
+            .join("histogram")
+            .join("dt=2026-06-01");
         std::fs::create_dir_all(&dir).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
@@ -1647,7 +1928,10 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
@@ -1661,16 +1945,29 @@ mod tests {
         .await
         .unwrap();
         // three le buckets: 10, 20, +Inf
-        assert_eq!(resp.data.result.len(), 3, "le series: {:?}", resp.data.result);
+        assert_eq!(
+            resp.data.result.len(),
+            3,
+            "le series: {:?}",
+            resp.data.result
+        );
         let by_le: std::collections::BTreeMap<String, f64> = resp
             .data
             .result
             .iter()
-            .map(|r| (r.metric["le"].clone(), r.values.last().unwrap().1.parse().unwrap()))
+            .map(|r| {
+                (
+                    r.metric["le"].clone(),
+                    r.values.last().unwrap().1.parse().unwrap(),
+                )
+            })
             .collect();
         // cumulative: le=10 stays 0 → rate 0; le=20: (4-2)/1s=2; le=+Inf: (10-5)/1s=5
         assert!((by_le["20"] - 2.0).abs() < 1e-9, "le=20 rate: {by_le:?}");
-        assert!((by_le["+Inf"] - 5.0).abs() < 1e-9, "le=+Inf rate: {by_le:?}");
+        assert!(
+            (by_le["+Inf"] - 5.0).abs() < 1e-9,
+            "le=+Inf rate: {by_le:?}"
+        );
     }
 
     #[test]
@@ -1687,18 +1984,26 @@ mod tests {
     #[test]
     fn test_histogram_quantile_handles_empty_buckets() {
         // all-zero counts → no observations → None, no panic / div-by-zero.
-        assert_eq!(histogram_quantile(0.95, &[0.0, 0.0, 0.0], &[1.0, 2.0]), None);
+        assert_eq!(
+            histogram_quantile(0.95, &[0.0, 0.0, 0.0], &[1.0, 2.0]),
+            None
+        );
         // no buckets at all.
         assert_eq!(histogram_quantile(0.95, &[], &[]), None);
         // everything in the +Inf overflow bucket → last finite bound, no panic.
-        let v = histogram_quantile(0.95, &[0.0, 0.0, 0.0, 0.0, 0.0, 100.0], &[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let v = histogram_quantile(
+            0.95,
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 100.0],
+            &[10.0, 20.0, 30.0, 40.0, 50.0],
+        );
         assert_eq!(v, Some(50.0));
     }
 
     #[test]
     fn test_histogram_quantile_parses_query() {
-        let expr = parser::parse(r#"histogram_quantile(0.95, http_req_duration{service_name="client"})"#)
-            .unwrap();
+        let expr =
+            parser::parse(r#"histogram_quantile(0.95, http_req_duration{service_name="client"})"#)
+                .unwrap();
         let (phi, vs) = histogram_quantile_parts(&expr).expect("recognised as histogram_quantile");
         assert!((phi - 0.95).abs() < 1e-9);
         assert_eq!(vs.name.as_deref(), Some("http_req_duration"));
