@@ -557,6 +557,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 - [PromQL parsing strategy](./adrs/promql-parsing-strategy.md)
 - [Query caching strategy](./adrs/query-caching-strategy.md)
 - [JSON attribute extraction](./adrs/json-attribute-extraction.md) — `datafusion-functions-json` extension over a hand-rolled UDF; attribute-promotion / Variant as the deferred SOTA (rabbit hole #4)
+- [Grafana datasource API conformance](./adrs/grafana-datasource-api-conformance.md) — what response contract Sol targets (no single OpenAPI; Mimir OpenAPI + Tempo `tempopb` + Grafana `pkg/tsdb`/datasource source), validated by paired-diff against the real backends ([NFR2](#nfr2))
 
 **Analysis artifacts (Phase 4a gate, before implementation):**
 - [COMPLEXITY.md](./COMPLEXITY.md) — cost/complexity model (logs/metrics/traces) at demo / midpoint / ceiling vs AWS pricing; validates compaction/rollups/splitting and the beat-Loki / parity-Tempo / lose-to-Mimir-on-storage verdicts.

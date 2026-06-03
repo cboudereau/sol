@@ -32,8 +32,8 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 | Endpoint | Verdict | Sev | Finding / fix |
 |---|---|---|---|
 | `api/search` `spanSets` | ✅ | HIGH | Fixed at HEAD (`11c64a8c6`) — plural `spanSets` added. Redeploy. |
-| `api/v2/traces/:id` (id format) | ⬜ | HIGH | **C-T1** Tempo strips leading zeros from trace IDs (returns e.g. a 31-char id); Sol rejects odd-length with 400, so Grafana's "open trace from search" link breaks for any id with a leading zero. Fix: left-pad the path id to 32 hex before decoding instead of rejecting. `src/query/tempo.rs trace_by_id_sql`. |
-| `api/v2/traces/:id` (span JSON) | ⬜ | HIGH | **C-T2** trace-by-id spans aren't OTLP proto-JSON: `attributes` is a flat object (not `[{key,value:{stringValue\|intValue}}]`), `traceId`/`spanId` are hex (not base64), and `kind`/`status`/`scope.name` are missing → Grafana's trace waterfall can't deserialize. Fix: serialize spans as OTLP proto-JSON (KeyValue-array attrs, base64 ids, kind/status/scope). |
+| `api/v2/traces/:id` (id format) | ✅ | HIGH | **C-T1** FIXED — `trace_by_id_sql` zero-pads the id to 32 hex (Tempo strips leading zeros) instead of rejecting odd-length. |
+| `api/v2/traces/:id` (span JSON) | ✅ | HIGH | **C-T2** FIXED — trace-by-id spans now OTLP proto-JSON: base64 `traceId`/`spanId`/`parentSpanId`, KeyValue-array `attributes` (span + resource), `kind`/`status.code` enum strings, `scope.name`. |
 | `api/search` `serviceStats` | ⬜ | MED | **C-T3** real Tempo includes `serviceStats{spanCount,errorCount}` per service (drives Search row counts); Sol omits. |
 | `api/v2/search/tags` | 🟡 | LOW | **C-T4** Sol omits the `event` scope and the top-level `metrics` object (cosmetic; autocomplete of event-scoped tags absent). |
 | `api/v2/search/tag/:t/values`, `api/search/tags`, `api/echo` | 🟡 | — | Conform (Sol is more lenient on bare `service.name` than Tempo). |
