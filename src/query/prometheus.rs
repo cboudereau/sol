@@ -247,6 +247,47 @@ pub fn series_sql(matcher: Option<&str>) -> Result<String, String> {
     ))
 }
 
+/// Serialize a unix-seconds timestamp as an integer JSON number when it has no
+/// fractional part (Mimir/Prometheus emit integer seconds), else as a float
+/// (C-P5). The field deserializes back into `f64` either way.
+fn ts_number(ts: f64) -> serde_json::Value {
+    if ts.fract() == 0.0 && ts.abs() < 9.007e15 {
+        #[allow(clippy::cast_possible_truncation)]
+        let secs = ts as i64;
+        serde_json::Value::Number(secs.into())
+    } else {
+        serde_json::Number::from_f64(ts)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// A `(ts, value)` sample serialized as the Prometheus `[ts, "v"]` array, with an
+/// integer timestamp when whole.
+struct Sample<'a>(&'a (f64, String));
+impl Serialize for Sample<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut t = s.serialize_tuple(2)?;
+        t.serialize_element(&ts_number(self.0.0))?;
+        t.serialize_element(&self.0.1)?;
+        t.end()
+    }
+}
+
+fn ser_pair<S: serde::Serializer>(v: &(f64, String), s: S) -> Result<S::Ok, S::Error> {
+    Sample(v).serialize(s)
+}
+
+fn ser_pairs<S: serde::Serializer>(v: &[(f64, String)], s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(v.len()))?;
+    for p in v {
+        seq.serialize_element(&Sample(p))?;
+    }
+    seq.end()
+}
+
 // --- Prometheus API response (resultType=vector) ---
 
 /// Prometheus query response envelope.
@@ -273,7 +314,8 @@ pub struct PromData {
 pub struct PromSample {
     /// Series label set.
     pub metric: BTreeMap<String, String>,
-    /// `[unix-seconds (float), stringified value]`.
+    /// `[unix-seconds, stringified value]` — integer seconds when whole.
+    #[serde(serialize_with = "ser_pair")]
     pub value: (f64, String),
 }
 
@@ -719,6 +761,7 @@ pub struct PromRange {
     /// Series label set.
     pub metric: BTreeMap<String, String>,
     /// `[unix-seconds, stringified value]` pairs, ascending by time.
+    #[serde(serialize_with = "ser_pairs")]
     pub values: Vec<(f64, String)>,
 }
 
@@ -1257,7 +1300,54 @@ pub async fn handle_range(
         });
         series.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
     }
+
+    // C-P3: resample each series onto the `step` grid (one point per bucket, like
+    // Mimir) by carrying the last sample forward within the staleness window.
+    // Gated on a sane step count so a tiny/garbage step can't explode the grid.
+    if step_ns > 0 && (end_ns - start_ns) / step_ns <= MAX_GRID_POINTS {
+        let staleness = step_ns.max(STALENESS_NS);
+        for (_metric, points) in &mut series {
+            *points = resample_to_grid(points, start_ns, end_ns, step_ns, staleness);
+        }
+    }
     Ok(PromMatrixResponse::matrix(series))
+}
+
+/// Max grid points to resample to (C-P3 guard against a pathological tiny step).
+const MAX_GRID_POINTS: i64 = 100_000;
+/// Prometheus default lookback delta: carry a sample forward up to 5 minutes.
+const STALENESS_NS: i64 = 300_000_000_000;
+
+/// Resample time-ordered `(secs, value)` points onto the `[start, end]` grid at
+/// `step_ns`, emitting one point per grid timestamp that has a sample at or
+/// before it within `staleness_ns` (last-value-carry-forward).
+#[allow(clippy::cast_precision_loss)] // ns→s; sub-ms precision irrelevant for the grid
+fn resample_to_grid(
+    points: &[(f64, f64)],
+    start_ns: i64,
+    end_ns: i64,
+    step_ns: i64,
+    staleness_ns: i64,
+) -> Vec<(f64, f64)> {
+    let stale_s = staleness_ns as f64 / 1e9;
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    let mut last: Option<(f64, f64)> = None;
+    let mut g = start_ns;
+    while g <= end_ns {
+        let gt = g as f64 / 1e9;
+        while idx < points.len() && points[idx].0 <= gt + 1e-9 {
+            last = Some(points[idx]);
+            idx += 1;
+        }
+        if let Some((lt, lv)) = last
+            && gt - lt <= stale_s + 1e-9
+        {
+            out.push((gt, lv));
+        }
+        g += step_ns;
+    }
+    out
 }
 
 // --- histogram_quantile (OTLP explicit-bounds histograms, Rust-native) ---
@@ -1942,8 +2032,8 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"vector""#), "json: {json}");
         assert!(
-            json.contains(r#""value":[1700000000.0,"42"]"#),
-            "json: {json}"
+            json.contains(r#""value":[1700000000,"42"]"#),
+            "integer seconds (Mimir parity): {json}"
         );
     }
 
@@ -2067,8 +2157,8 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""resultType":"matrix""#), "json: {json}");
         assert!(
-            json.contains(r#""values":[[1700000000.0,"1.5"],[1700000060.0,"2"]]"#),
-            "json: {json}"
+            json.contains(r#""values":[[1700000000,"1.5"],[1700000060,"2"]]"#),
+            "integer seconds (Mimir parity): {json}"
         );
     }
 
@@ -2720,5 +2810,55 @@ mod tests {
         assert_eq!(some.data.result[0].value.1, "60", "kept value is the LHS sample");
         let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000).await.unwrap();
         assert_eq!(b.data.result[0].value.1, "0", "bool comparison → 0/1");
+    }
+
+    // --- C-P3 step-alignment ---
+
+    #[test]
+    fn test_resample_to_grid_carries_forward() {
+        // samples at 1s,2s,3s → grid 0..5s @1s: 0 dropped (no prior sample),
+        // 4s/5s carry the last value forward (within staleness).
+        let pts = [(1.0, 10.0), (2.0, 30.0), (3.0, 60.0)];
+        let out = resample_to_grid(&pts, 0, 5_000_000_000, 1_000_000_000, STALENESS_NS);
+        assert_eq!(
+            out,
+            vec![(1.0, 10.0), (2.0, 30.0), (3.0, 60.0), (4.0, 60.0), (5.0, 60.0)]
+        );
+    }
+
+    #[test]
+    fn test_resample_drops_stale_points() {
+        // a single sample at 1s, short staleness → only grid points within the
+        // window carry it; later grid points go stale and are dropped.
+        let pts = [(1.0, 7.0)];
+        let out = resample_to_grid(&pts, 0, 5_000_000_000, 1_000_000_000, 1_500_000_000);
+        // 1s (exact), 2s (Δ=1s ≤ 1.5s) kept; 3s (Δ=2s) onward dropped.
+        assert_eq!(out, vec![(1.0, 7.0), (2.0, 7.0)]);
+    }
+
+    #[tokio::test]
+    async fn test_range_step_aligns_to_grid() {
+        let engine = counter_engine().await;
+        let resp = handle_range(
+            &engine,
+            r#"http_total{service_name="client"}"#,
+            0,
+            5_000_000_000,
+            1_000_000_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.data.result.len(), 1);
+        // grid-aligned, one point per step, last value carried forward.
+        assert_eq!(
+            resp.data.result[0].values,
+            vec![
+                (1.0, "10".to_string()),
+                (2.0, "30".to_string()),
+                (3.0, "60".to_string()),
+                (4.0, "60".to_string()),
+                (5.0, "60".to_string()),
+            ]
+        );
     }
 }
