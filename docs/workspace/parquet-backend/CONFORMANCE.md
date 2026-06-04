@@ -22,10 +22,11 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 |---|---|---|---|
 | `query` (instant) | ✅ | HIGH | **C-P1** FIXED — a shared `LabelCols` helper now maps `prom_name` → normalized `__name__` and explodes the `attributes` JSON into normalized per-attribute labels, in both the instant and range builders. Bare selectors no longer collapse distinct series. (Grouped `sum by(…)` queries carry no `attributes`/`prom_name` column, so they're unchanged.) |
 | `series` | ✅ | HIGH | **C-P2** FIXED — `series_sql(match[])` now applies the selector's name+label predicates and emits the normalized `__name__`. (`series` was the C-P1 name/label fix's clean, window-free home.) |
-| `query_range` | ⬜ | MED | **C-P3** samples are raw point timestamps, not resampled to the `step` grid (Mimir returns one step-aligned point per bucket). Grafana mostly tolerates it; can distort graphs / shared tooltips. Fix: bucket/resample to `step`. |
+| binary / unary ops | ✅ | HIGH | **C-Pbin** FIXED — PromQL binary (`a/b`, `1-x`, `x>0`, `atan2`, comparisons w/ `bool`) and unary minus now evaluate via Rust-side vector matching (on/ignoring, group_left/right; scalar∘vector and one/many-to-one), for both instant and range. Unblocks Node Exporter ratio panels that previously errored ("binary operators not yet supported"). |
+| `query_range` (step align) | ✅ | MED | **C-P3** FIXED — range series are resampled onto the `step` grid (one point per bucket, last-value-carry-forward within a 5-min staleness window), like Mimir. Guarded against pathological tiny steps (≤100k grid points). `step=0` keeps raw sample timestamps. |
 | `metadata` | ✅ | MED | **C-P4** FIXED — `/api/v1/metadata` returns `{status:"success",data:{}}` (valid empty metadata; no more 404). Per-metric type/unit population is a future enhancement. |
 | `labels`, `label/__name__/values` | 🟡 | LOW | Conform. Note: `__name__/values` returns **normalized** names while `query`/`series` return **dotted** — internal inconsistency (fold into C-P1). |
-| ts encoding | ⬜ | LOW | **C-P5** sample ts emitted as float (`1780498584.0`) vs Mimir integer seconds. Spec is a number; Grafana tolerates. |
+| ts encoding | ✅ | LOW | **C-P5** FIXED — sample timestamps now serialize as integer seconds when whole (`1780498584`), matching Mimir; fractional seconds still emit a float. |
 
 ## Tempo (`/tempo/*`)
 
@@ -35,7 +36,7 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 | `api/v2/traces/:id` (id format) | ✅ | HIGH | **C-T1** FIXED — `trace_by_id_sql` zero-pads the id to 32 hex (Tempo strips leading zeros) instead of rejecting odd-length. |
 | `api/v2/traces/:id` (span JSON) | ✅ | HIGH | **C-T2** FIXED — trace-by-id spans now OTLP proto-JSON: base64 `traceId`/`spanId`/`parentSpanId`, KeyValue-array `attributes` (span + resource), `kind`/`status.code` enum strings, `scope.name`. |
 | `api/search` `serviceStats` | ✅ | MED | **C-T3** FIXED — search hits now carry `serviceStats{spanCount,errorCount}` per service (Grafana 13's results table reads `trace.serviceStats`). Also fixed: `limit` is now applied to the trace count (Sol returned every matched trace, e.g. 341 for `limit=20`). |
-| `api/v2/search/tags` | 🟡 | LOW | **C-T4** Sol omits the `event` scope and the top-level `metrics` object (cosmetic; autocomplete of event-scoped tags absent). |
+| `api/v2/search/tags` | ✅ | LOW | **C-T4** FIXED — tags response now carries an (empty) `event` scope and a top-level `metrics` object, matching Tempo's shape. (Sol stores span events in the `events` JSON column, not a separately-indexed scope, so `event` tags are empty.) |
 | `api/v2/search/tag/:t/values`, `api/search/tags`, `api/echo` | 🟡 | — | Conform (Sol is more lenient on bare `service.name` than Tempo). |
 
 ## Loki (`/loki/*`)
@@ -43,19 +44,28 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 | Endpoint | Verdict | Sev | Finding / fix |
 |---|---|---|---|
 | `query_range` (volume metric) | ✅ | HIGH | Fixed at HEAD (`11c64a8c6`) — metric LogQL → `matrix`. Redeploy. (The demo's Grafana sends the volume query to `query_range`, confirmed by the original "must start with `{...}`" error — not `index/volume`.) |
-| `index/volume[_range]` | ⬜ | MED | **C-L1** Sol 404s; real Loki serves them. *Newer* Grafana Loki datasources may call `index/volume` for the volume panel; the demo's version uses `query_range` (now handled), so this is a forward-compat gap, not a current break. Fix: implement `index/volume` returning a vector of byte volumes. |
-| `series` | ⬜ | MED | **C-L2** Sol 404s `/loki/api/v1/series`; Grafana uses it for label/series browsing. Fix: implement returning `{status,data:[{labelset}]}`. |
-| `index/stats` | ⬜ | LOW | **C-L3** Sol 404s; Loki returns a flat `{streams,chunks,bytes,entries}` (NOT `{status,data}`-wrapped) for the Explore query-size hint. |
+| `index/volume[_range]` | ✅ | MED | **C-L1** FIXED — `index/volume` returns a `vector` of per-`service_name` byte volumes (octet length of `body`); `index/volume_range` returns a `matrix` bucketed by `step`. |
+| `series` | ✅ | MED | **C-L2** FIXED — `/loki/api/v1/series` returns `{status,data:[{labelset}]}` (distinct `service_name` + exploded, normalized resource attributes), honoring `match[]`. |
+| `index/stats` | ✅ | LOW | **C-L3** FIXED — `/loki/api/v1/index/stats` returns the flat `{streams,chunks,bytes,entries}` hint (NOT `{status,data}`-wrapped); `chunks` is 0 (Sol has no chunk concept). |
 | `query_range` (streams) | 🟡 | LOW | Conforms. Note: Sol's `stream` carries only `{detected_level,service_name}`; real Loki promotes the full OTLP attribute set (`trace_id`, `severity_text`, `host_name`, …) and includes `data.stats`. Optional: promote more labels + add `stats`. |
 | `labels`, `label/:n/values` | 🟡 | — | Conform. |
 
 ## Priorities
 
-After **redeploying HEAD** (clears the two ✅), the remaining real gaps, worst first:
-1. **C-T2** trace-by-id OTLP span JSON (breaks the trace waterfall view).
-2. **C-T1** trace-by-id zero-padded ids (breaks open-trace-from-search).
-3. **C-P1 / C-P2** Prometheus dotted `__name__` + unexploded attribute labels + `series` ignoring `match[]` (breaks Explore/metric-browser; dashboards OK).
-4. **C-P3** step resampling · **C-T3** serviceStats · **C-L2** Loki series · **C-P4** metadata.
-5. Low: C-P5, C-T4, C-L1, C-L3, stream-label richness.
+All catalogued findings are now ✅ fixed at HEAD (pending a redeploy to verify
+live). Remaining work is not a conformance gap but depth:
+- **PromQL coverage** — `sum(a/b)` (aggregation over a binary expression),
+  `without(...)` aggregation, and set operators (`and`/`or`/`unless`) are still
+  unsupported (clear errors, no panic). The common ratio shape `sum(a)/sum(b)`
+  works. C-P3 resampling uses last-value-carry-forward (a close approximation of
+  Prometheus per-step evaluation), not a true per-step re-evaluation.
+- **Stream-label richness** — Loki `streams` still carries only
+  `{detected_level, service_name}`; promoting the full OTLP attribute set + a
+  `data.stats` block remains optional.
+- **Per-metric metadata** — `/api/v1/metadata` is a valid empty object; per-metric
+  type/unit population is a future enhancement.
 
-Common root causes worth fixing centrally: (a) one place that maps a metric to its Prometheus `__name__` + explodes `attributes` into labels (fixes C-P1/C-P2 and the C-P "labels" inconsistency); (b) an OTLP proto-JSON span serializer shared by trace-by-id (C-T2).
+Common root causes already fixed centrally: (a) `LabelCols` maps a metric to its
+Prometheus `__name__` + explodes `attributes` into labels (C-P1/C-P2); (b) a
+shared OTLP proto-JSON span serializer for trace-by-id (C-T2); (c) a Rust-side
+vector-matching evaluator for binary/unary operators (C-Pbin).
