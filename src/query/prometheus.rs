@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use promql_parser::label::{MatchOp, Matcher};
 use promql_parser::parser::{
-    self, AggregateExpr, Call, Expr, LabelModifier, VectorSelector, token,
+    self, AggregateExpr, BinModifier, Call, Expr, LabelModifier, VectorMatchCardinality,
+    VectorSelector, token,
 };
 use serde::{Deserialize, Serialize};
 
@@ -376,37 +377,18 @@ pub async fn handle_instant(
     query: &str,
     time_ns: i64,
 ) -> crate::Result<PromResponse> {
-    use datafusion::arrow::array::{Array, AsArray};
-    use datafusion::arrow::compute::cast;
-    use datafusion::arrow::datatypes::{DataType, Float64Type};
-
-    // histogram_quantile is computed Rust-native from OTLP bucket arrays.
+    // histogram_quantile, binary/unary operators and aggregates are all handled
+    // by the recursive evaluator; leaves fall through to SQL.
     let expr = parser::parse(query).map_err(to_err)?;
-    if let Some((phi, vs)) = histogram_quantile_parts(&expr) {
-        return handle_histogram(engine, phi, vs, time_ns).await;
-    }
-
-    let sql = translate_instant(query, time_ns).map_err(to_err)?;
-    let batches = engine.sql(&sql).await?;
     // ns→seconds for the Prometheus sample timestamp; sub-ms precision is irrelevant here.
     #[allow(clippy::cast_precision_loss)]
     let time_s = time_ns as f64 / 1_000_000_000.0;
 
-    let mut samples: Vec<(BTreeMap<String, String>, f64, f64)> = Vec::new();
-    for batch in &batches {
-        let schema = batch.schema();
-        let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
-        let v = cast(batch.column(v_idx), &DataType::Float64)?;
-        let v = v.as_primitive::<Float64Type>();
-        let cols = LabelCols::build(batch)?;
-
-        for i in 0..batch.num_rows() {
-            if v.is_null(i) {
-                continue;
-            }
-            samples.push((cols.labels(i), time_s, v.value(i)));
-        }
-    }
+    let samples: Vec<(BTreeMap<String, String>, f64, f64)> =
+        match eval_instant(engine, &expr, time_ns).await? {
+            InstantVal::Scalar(s) => vec![(BTreeMap::new(), time_s, s)],
+            InstantVal::Vector(v) => v.into_iter().map(|(m, x)| (m, time_s, x)).collect(),
+        };
     Ok(PromResponse::vector(samples))
 }
 
@@ -767,19 +749,6 @@ impl PromMatrixResponse {
 
 /// A grouped range result: label-set debug key → (label set, time-ordered points).
 type RangeSeries = BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)>;
-
-/// Run a range PromQL query over a single `[start_ns, end_ns)` window and group
-/// the rows into per-series point lists.
-async fn range_series(
-    engine: &super::QueryEngine,
-    query: &str,
-    start_ns: i64,
-    end_ns: i64,
-    table: &str,
-) -> crate::Result<RangeSeries> {
-    let sql = translate_range_on(query, start_ns, end_ns, table).map_err(to_err)?;
-    range_series_sql(engine, &sql).await
-}
 
 /// Group the rows of an already-built range SQL into per-series point lists.
 async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result<RangeSeries> {
@@ -1204,29 +1173,26 @@ pub async fn handle_range(
     end_ns: i64,
     step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
-    let parsed = parser::parse(query).ok();
+    let parsed = parser::parse(query).map_err(to_err)?;
     // Classic-histogram queries are computed from OTLP array buckets:
     // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
-    if let Some(expr) = &parsed {
-        if let Some(spec) = detect_hist_quantile(expr) {
-            return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
-        }
-        if let Some(spec) = detect_bucket_heatmap(expr) {
-            return handle_bucket_heatmap(engine, &spec, start_ns, end_ns).await;
-        }
+    if let Some(spec) = detect_hist_quantile(&parsed) {
+        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
+    }
+    if let Some(spec) = detect_bucket_heatmap(&parsed) {
+        return handle_bucket_heatmap(engine, &spec, start_ns, end_ns).await;
     }
 
-    // A top-level topk/bottomk: select top-N *series* in Rust; translate the
-    // inner AST node directly (no Display round-trip).
+    // A top-level topk/bottomk: keep the top-N *series* after merge; evaluate the
+    // inner AST node directly.
     let mut topk: Option<(i64, bool)> = None;
-    let inner_expr: Option<&Expr> =
-        parsed
-            .as_ref()
-            .and_then(topk_parts)
-            .map(|(n, is_topk, inner)| {
-                topk = Some((n, is_topk));
-                inner
-            });
+    let eval_expr: &Expr = match topk_parts(&parsed) {
+        Some((n, is_topk, inner)) => {
+            topk = Some((n, is_topk));
+            inner
+        }
+        None => &parsed,
+    };
 
     let table = select_range_table(engine, step_ns);
     let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
@@ -1243,19 +1209,27 @@ pub async fn handle_range(
 
     let mut merged: RangeSeries = BTreeMap::new();
     for (s, e) in windows {
-        let part = match inner_expr {
-            Some(inner) => {
-                let sql = lower_range(inner, s, e, &table).map_err(to_err)?;
-                range_series_sql(engine, &sql).await?
+        match eval_range_window(engine, eval_expr, s, e, &table).await? {
+            RangeVal::Vector(part) => {
+                for (key, (metric, points)) in part {
+                    merged
+                        .entry(key)
+                        .or_insert_with(|| (metric, Vec::new()))
+                        .1
+                        .extend(points);
+                }
             }
-            None => range_series(engine, query, s, e, &table).await?,
-        };
-        for (key, (metric, points)) in part {
-            merged
-                .entry(key)
-                .or_insert_with(|| (metric, Vec::new()))
-                .1
-                .extend(points);
+            RangeVal::Scalar(sc) => {
+                // A pure scalar range query (e.g. `1`): one empty-label series,
+                // constant across the window boundaries.
+                #[allow(clippy::cast_precision_loss)]
+                let (ts0, ts1) = (s as f64 / 1e9, e as f64 / 1e9);
+                let entry = merged
+                    .entry("{}".to_string())
+                    .or_insert_with(|| (BTreeMap::new(), Vec::new()));
+                entry.1.push((ts0, sc));
+                entry.1.push((ts1, sc));
+            }
         }
     }
 
@@ -1419,6 +1393,468 @@ async fn handle_histogram(
         }
     }
     Ok(PromResponse::vector(samples))
+}
+
+// === Binary & unary operators — Rust-side vector matching ===
+//
+// PromQL binary ops (`a / b`, `1 - x`, `x > 0`, …) require evaluating each
+// operand to a set of series and combining them by matching label sets — not
+// expressible as one SQL statement. We evaluate operands through the same leaf
+// machinery (selectors, rate, aggregates, histogram_quantile) and combine in
+// Rust, honoring `on(…)`/`ignoring(…)` and `group_left`/`group_right`. Node
+// Exporter ratio panels (`avail / size`, `100 - idle%`) depend on this.
+
+/// A range expression evaluates to either an instant scalar (constant over the
+/// range) or a vector of per-series point lists.
+enum RangeVal {
+    Scalar(f64),
+    Vector(RangeSeries),
+}
+
+/// An instant expression evaluates to a scalar or a vector of `(labels, value)`.
+enum InstantVal {
+    Scalar(f64),
+    Vector(Vec<(BTreeMap<String, String>, f64)>),
+}
+
+/// Vector-matching key derivation: `on(set)` matches on exactly those labels;
+/// `ignoring(set)` (and the default) matches on all labels except `__name__`
+/// and the ignored set.
+enum MatchKind {
+    On(Vec<String>),
+    Ignoring(Vec<String>),
+}
+
+impl MatchKind {
+    fn from(modifier: &Option<BinModifier>) -> Self {
+        match modifier.as_ref().and_then(|m| m.matching.as_ref()) {
+            Some(LabelModifier::Include(l)) => MatchKind::On(l.labels.clone()),
+            Some(LabelModifier::Exclude(l)) => MatchKind::Ignoring(l.labels.clone()),
+            None => MatchKind::Ignoring(Vec::new()),
+        }
+    }
+    /// Whether label `k` participates in matching / appears in the result.
+    fn keeps(&self, k: &str) -> bool {
+        match self {
+            MatchKind::On(set) => set.iter().any(|s| s == k),
+            MatchKind::Ignoring(set) => k != "__name__" && !set.iter().any(|s| s == k),
+        }
+    }
+    /// Stable key over the labels two series must share to match.
+    fn key(&self, labels: &BTreeMap<String, String>) -> String {
+        let mut kv: Vec<(&str, &str)> = labels
+            .iter()
+            .filter(|(k, _)| self.keeps(k))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        kv.sort_unstable();
+        format!("{kv:?}")
+    }
+    /// Labels carried by the result series (from the result-bearing operand).
+    fn result_labels(&self, labels: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        labels
+            .iter()
+            .filter(|(k, _)| self.keeps(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+/// Group cardinality + labels copied from the "one" side (`group_left(…)` /
+/// `group_right(…)`).
+enum Card {
+    OneToOne,
+    ManyToOne(Vec<String>),
+    OneToMany(Vec<String>),
+}
+
+fn cardinality(modifier: &Option<BinModifier>) -> Result<Card, String> {
+    Ok(match modifier.as_ref().map(|m| &m.card) {
+        None | Some(VectorMatchCardinality::OneToOne) => Card::OneToOne,
+        Some(VectorMatchCardinality::ManyToOne(l)) => Card::ManyToOne(l.labels.clone()),
+        Some(VectorMatchCardinality::OneToMany(l)) => Card::OneToMany(l.labels.clone()),
+        Some(VectorMatchCardinality::ManyToMany) => {
+            return Err("set operators (and/or/unless) not supported (v1)".to_string());
+        }
+    })
+}
+
+/// Apply a scalar PromQL binary op. For filtering comparisons (no `bool`), emit
+/// `keep_val` (the vector operand's value) when the predicate holds, else `None`
+/// (the sample is dropped). With `bool`, comparisons emit `1`/`0`.
+fn apply_binop(op: token::TokenType, l: f64, r: f64, return_bool: bool, keep_val: f64) -> Option<f64> {
+    let cmp = |t: bool| {
+        if return_bool {
+            Some(if t { 1.0 } else { 0.0 })
+        } else if t {
+            Some(keep_val)
+        } else {
+            None
+        }
+    };
+    match op.id() {
+        token::T_ADD => Some(l + r),
+        token::T_SUB => Some(l - r),
+        token::T_MUL => Some(l * r),
+        token::T_DIV => Some(l / r),
+        token::T_MOD => Some(l % r),
+        token::T_POW => Some(l.powf(r)),
+        token::T_ATAN2 => Some(l.atan2(r)),
+        token::T_EQLC => cmp((l - r).abs() < f64::EPSILON),
+        token::T_NEQ => cmp((l - r).abs() >= f64::EPSILON),
+        token::T_GTR => cmp(l > r),
+        token::T_LSS => cmp(l < r),
+        token::T_GTE => cmp(l >= r),
+        token::T_LTE => cmp(l <= r),
+        _ => None,
+    }
+}
+
+fn return_bool(modifier: &Option<BinModifier>) -> bool {
+    modifier.as_ref().is_some_and(|m| m.return_bool)
+}
+
+fn drop_name(mut m: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    m.remove("__name__");
+    m
+}
+
+/// Convert a built matrix response (histogram/bucket fast paths) back into the
+/// internal per-series point map so it can feed a binary operand.
+fn matrix_to_series(resp: PromMatrixResponse) -> RangeSeries {
+    let mut out: RangeSeries = BTreeMap::new();
+    for r in resp.data.result {
+        let pts: Vec<(f64, f64)> = r
+            .values
+            .iter()
+            .filter_map(|(t, v)| v.parse::<f64>().ok().map(|x| (*t, x)))
+            .collect();
+        out.insert(format!("{:?}", r.metric), (r.metric, pts));
+    }
+    out
+}
+
+/// Keep the top/bottom-N series by peak value (used for `topk` nested inside a
+/// larger expression; the top-level case is handled in [`handle_range`]).
+fn topk_series(series: RangeSeries, n: i64, is_topk: bool) -> RangeSeries {
+    let mut v: Vec<(String, (BTreeMap<String, String>, Vec<(f64, f64)>))> =
+        series.into_iter().collect();
+    let score = |p: &[(f64, f64)]| p.iter().map(|x| x.1).fold(f64::MIN, f64::max);
+    v.sort_by(|a, b| {
+        let (sa, sb) = (score(&a.1.1), score(&b.1.1));
+        if is_topk {
+            sb.partial_cmp(&sa)
+        } else {
+            sa.partial_cmp(&sb)
+        }
+        .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    v.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
+    v.into_iter().collect()
+}
+
+fn scalar_op_scalar(op: token::TokenType, a: f64, b: f64) -> f64 {
+    // Scalar/scalar comparisons require `bool` in PromQL; we always yield 0/1.
+    apply_binop(op, a, b, true, a).unwrap_or(f64::NAN)
+}
+
+/// `scalar ∘ vector` / `vector ∘ scalar` over a range. Result keeps the vector's
+/// labels minus `__name__`.
+fn scalar_vector_range(
+    op: token::TokenType,
+    scalar: f64,
+    scalar_left: bool,
+    vec: RangeSeries,
+    rb: bool,
+) -> RangeSeries {
+    let mut out: RangeSeries = BTreeMap::new();
+    for (_k, (labels, points)) in vec {
+        let labels = drop_name(labels);
+        let mut pts = Vec::new();
+        for (t, v) in points {
+            let (l, r) = if scalar_left { (scalar, v) } else { (v, scalar) };
+            if let Some(res) = apply_binop(op, l, r, rb, v) {
+                pts.push((t, res));
+            }
+        }
+        if !pts.is_empty() {
+            out.insert(format!("{labels:?}"), (labels, pts));
+        }
+    }
+    out
+}
+
+/// `vector ∘ vector` over a range: match series by label key, then combine
+/// points that share a timestamp.
+fn vector_vector_range(
+    op: token::TokenType,
+    lhs: RangeSeries,
+    rhs: RangeSeries,
+    modifier: &Option<BinModifier>,
+    rb: bool,
+) -> Result<RangeSeries, String> {
+    let kind = MatchKind::from(modifier);
+    let card = cardinality(modifier)?;
+    let group_right = matches!(card, Card::OneToMany(_));
+    let extra: Vec<String> = match &card {
+        Card::ManyToOne(e) | Card::OneToMany(e) => e.clone(),
+        Card::OneToOne => Vec::new(),
+    };
+    let (many, one) = if group_right { (rhs, lhs) } else { (lhs, rhs) };
+    // Index the "one" side by match key (first wins on ambiguity).
+    let mut one_idx: BTreeMap<String, &(BTreeMap<String, String>, Vec<(f64, f64)>)> =
+        BTreeMap::new();
+    for entry in one.values() {
+        one_idx.entry(kind.key(&entry.0)).or_insert(entry);
+    }
+    let mut out: RangeSeries = BTreeMap::new();
+    for (mlabels, mpoints) in many.values() {
+        let Some((olabels, opoints)) = one_idx.get(&kind.key(mlabels)).copied() else {
+            continue;
+        };
+        let mut rl = kind.result_labels(mlabels);
+        for e in &extra {
+            if let Some(v) = olabels.get(e) {
+                rl.insert(e.clone(), v.clone());
+            }
+        }
+        let omap: std::collections::HashMap<u64, f64> =
+            opoints.iter().map(|(t, v)| (t.to_bits(), *v)).collect();
+        let mut pts = Vec::new();
+        for (t, mv) in mpoints {
+            if let Some(&ov) = omap.get(&t.to_bits()) {
+                let (l, r) = if group_right { (ov, *mv) } else { (*mv, ov) };
+                if let Some(res) = apply_binop(op, l, r, rb, l) {
+                    pts.push((*t, res));
+                }
+            }
+        }
+        if !pts.is_empty() {
+            out.insert(format!("{rl:?}"), (rl, pts));
+        }
+    }
+    Ok(out)
+}
+
+fn combine_range(
+    op: token::TokenType,
+    lhs: RangeVal,
+    rhs: RangeVal,
+    modifier: &Option<BinModifier>,
+) -> Result<RangeVal, String> {
+    let rb = return_bool(modifier);
+    Ok(match (lhs, rhs) {
+        (RangeVal::Scalar(a), RangeVal::Scalar(b)) => RangeVal::Scalar(scalar_op_scalar(op, a, b)),
+        (RangeVal::Scalar(a), RangeVal::Vector(v)) => {
+            RangeVal::Vector(scalar_vector_range(op, a, true, v, rb))
+        }
+        (RangeVal::Vector(v), RangeVal::Scalar(b)) => {
+            RangeVal::Vector(scalar_vector_range(op, b, false, v, rb))
+        }
+        (RangeVal::Vector(l), RangeVal::Vector(r)) => {
+            RangeVal::Vector(vector_vector_range(op, l, r, modifier, rb)?)
+        }
+    })
+}
+
+/// Evaluate a range sub-expression over one `[s, e]` window against `table`.
+async fn eval_range_window(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    s: i64,
+    e: i64,
+    table: &str,
+) -> crate::Result<RangeVal> {
+    match expr {
+        Expr::NumberLiteral(n) => Ok(RangeVal::Scalar(n.val)),
+        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table)).await,
+        Expr::Unary(u) => {
+            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table)).await?;
+            Ok(match v {
+                RangeVal::Scalar(x) => RangeVal::Scalar(-x),
+                RangeVal::Vector(mut m) => {
+                    for (_labels, pts) in m.values_mut() {
+                        for p in pts.iter_mut() {
+                            p.1 = -p.1;
+                        }
+                    }
+                    RangeVal::Vector(m)
+                }
+            })
+        }
+        Expr::Binary(b) => {
+            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table)).await?;
+            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table)).await?;
+            combine_range(b.op, l, r, &b.modifier).map_err(to_err)
+        }
+        _ => {
+            if let Some(spec) = detect_hist_quantile(expr) {
+                let resp = handle_hist_quantile_range(engine, &spec, s, e).await?;
+                Ok(RangeVal::Vector(matrix_to_series(resp)))
+            } else if let Some(spec) = detect_bucket_heatmap(expr) {
+                let resp = handle_bucket_heatmap(engine, &spec, s, e).await?;
+                Ok(RangeVal::Vector(matrix_to_series(resp)))
+            } else if let Some((n, is_topk, inner)) = topk_parts(expr) {
+                let v = Box::pin(eval_range_window(engine, inner, s, e, table)).await?;
+                Ok(match v {
+                    RangeVal::Scalar(x) => RangeVal::Scalar(x),
+                    RangeVal::Vector(m) => RangeVal::Vector(topk_series(m, n, is_topk)),
+                })
+            } else {
+                let sql = lower_range(expr, s, e, table).map_err(to_err)?;
+                Ok(RangeVal::Vector(range_series_sql(engine, &sql).await?))
+            }
+        }
+    }
+}
+
+/// Run a single-`v`/`time_unix_nano` SQL and group rows into instant samples
+/// (latest value per series via [`LabelCols`]).
+async fn instant_vector_from_sql(
+    engine: &super::QueryEngine,
+    sql: &str,
+) -> crate::Result<Vec<(BTreeMap<String, String>, f64)>> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::{DataType, Float64Type};
+
+    let batches = engine.sql(sql).await?;
+    let mut out = Vec::new();
+    for batch in &batches {
+        let schema = batch.schema();
+        let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
+        let v = cast(batch.column(v_idx), &DataType::Float64)?;
+        let v = v.as_primitive::<Float64Type>();
+        let cols = LabelCols::build(batch)?;
+        for i in 0..batch.num_rows() {
+            if v.is_null(i) {
+                continue;
+            }
+            out.push((cols.labels(i), v.value(i)));
+        }
+    }
+    Ok(out)
+}
+
+fn scalar_vector_instant(
+    op: token::TokenType,
+    scalar: f64,
+    scalar_left: bool,
+    vec: Vec<(BTreeMap<String, String>, f64)>,
+    rb: bool,
+) -> Vec<(BTreeMap<String, String>, f64)> {
+    vec.into_iter()
+        .filter_map(|(labels, v)| {
+            let (l, r) = if scalar_left { (scalar, v) } else { (v, scalar) };
+            apply_binop(op, l, r, rb, v).map(|res| (drop_name(labels), res))
+        })
+        .collect()
+}
+
+fn vector_vector_instant(
+    op: token::TokenType,
+    lhs: Vec<(BTreeMap<String, String>, f64)>,
+    rhs: Vec<(BTreeMap<String, String>, f64)>,
+    modifier: &Option<BinModifier>,
+    rb: bool,
+) -> Result<Vec<(BTreeMap<String, String>, f64)>, String> {
+    let kind = MatchKind::from(modifier);
+    let card = cardinality(modifier)?;
+    let group_right = matches!(card, Card::OneToMany(_));
+    let extra: Vec<String> = match &card {
+        Card::ManyToOne(e) | Card::OneToMany(e) => e.clone(),
+        Card::OneToOne => Vec::new(),
+    };
+    let (many, one) = if group_right { (rhs, lhs) } else { (lhs, rhs) };
+    let mut one_idx: BTreeMap<String, (&BTreeMap<String, String>, f64)> = BTreeMap::new();
+    for (labels, val) in &one {
+        one_idx.entry(kind.key(labels)).or_insert((labels, *val));
+    }
+    let mut out = Vec::new();
+    for (mlabels, mval) in &many {
+        let Some((olabels, oval)) = one_idx.get(&kind.key(mlabels)) else {
+            continue;
+        };
+        let (l, r) = if group_right { (*oval, *mval) } else { (*mval, *oval) };
+        let Some(res) = apply_binop(op, l, r, rb, l) else {
+            continue;
+        };
+        let mut rl = kind.result_labels(mlabels);
+        for e in &extra {
+            if let Some(v) = olabels.get(e) {
+                rl.insert(e.clone(), v.clone());
+            }
+        }
+        out.push((rl, res));
+    }
+    Ok(out)
+}
+
+fn combine_instant(
+    op: token::TokenType,
+    lhs: InstantVal,
+    rhs: InstantVal,
+    modifier: &Option<BinModifier>,
+) -> Result<InstantVal, String> {
+    let rb = return_bool(modifier);
+    Ok(match (lhs, rhs) {
+        (InstantVal::Scalar(a), InstantVal::Scalar(b)) => {
+            InstantVal::Scalar(scalar_op_scalar(op, a, b))
+        }
+        (InstantVal::Scalar(a), InstantVal::Vector(v)) => {
+            InstantVal::Vector(scalar_vector_instant(op, a, true, v, rb))
+        }
+        (InstantVal::Vector(v), InstantVal::Scalar(b)) => {
+            InstantVal::Vector(scalar_vector_instant(op, b, false, v, rb))
+        }
+        (InstantVal::Vector(l), InstantVal::Vector(r)) => {
+            InstantVal::Vector(vector_vector_instant(op, l, r, modifier, rb)?)
+        }
+    })
+}
+
+/// Evaluate an instant sub-expression at `time_ns`.
+async fn eval_instant(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    time_ns: i64,
+) -> crate::Result<InstantVal> {
+    match expr {
+        Expr::NumberLiteral(n) => Ok(InstantVal::Scalar(n.val)),
+        Expr::Paren(p) => Box::pin(eval_instant(engine, &p.expr, time_ns)).await,
+        Expr::Unary(u) => {
+            let v = Box::pin(eval_instant(engine, &u.expr, time_ns)).await?;
+            Ok(match v {
+                InstantVal::Scalar(x) => InstantVal::Scalar(-x),
+                InstantVal::Vector(mut m) => {
+                    for s in &mut m {
+                        s.1 = -s.1;
+                    }
+                    InstantVal::Vector(m)
+                }
+            })
+        }
+        Expr::Binary(b) => {
+            let l = Box::pin(eval_instant(engine, &b.lhs, time_ns)).await?;
+            let r = Box::pin(eval_instant(engine, &b.rhs, time_ns)).await?;
+            combine_instant(b.op, l, r, &b.modifier).map_err(to_err)
+        }
+        _ => {
+            if let Some((phi, vs)) = histogram_quantile_parts(expr) {
+                let resp = handle_histogram(engine, phi, vs, time_ns).await?;
+                let v = resp
+                    .data
+                    .result
+                    .into_iter()
+                    .map(|s| (s.metric, s.value.1.parse::<f64>().unwrap_or(f64::NAN)))
+                    .collect();
+                Ok(InstantVal::Vector(v))
+            } else {
+                let sql = lower(expr, time_ns).map_err(to_err)?;
+                Ok(InstantVal::Vector(instant_vector_from_sql(engine, &sql).await?))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2159,5 +2595,130 @@ mod tests {
         assert_eq!(vs.name.as_deref(), Some("http_req_duration"));
         // a non-histogram query is not misclassified
         assert!(histogram_quantile_parts(&parser::parse("rate(x[1m])").unwrap()).is_none());
+    }
+
+    // --- binary / unary operators ---
+
+    fn binop_of(q: &str) -> (token::TokenType, Option<BinModifier>) {
+        match parser::parse(q).unwrap() {
+            Expr::Binary(b) => (b.op, b.modifier),
+            other => panic!("not a binary expr: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_binop_arithmetic_and_comparison() {
+        let (add, _) = binop_of("a + b");
+        assert_eq!(apply_binop(add, 2.0, 3.0, false, 0.0), Some(5.0));
+        let (gt, _) = binop_of("a > b");
+        // filtering comparison keeps the operand value when true, drops when false
+        assert_eq!(apply_binop(gt, 10.0, 5.0, false, 10.0), Some(10.0));
+        assert_eq!(apply_binop(gt, 3.0, 5.0, false, 3.0), None);
+        // `bool` modifier → 0/1 instead of filtering
+        assert_eq!(apply_binop(gt, 3.0, 5.0, true, 3.0), Some(0.0));
+        assert_eq!(apply_binop(gt, 9.0, 5.0, true, 9.0), Some(1.0));
+    }
+
+    #[test]
+    fn test_vector_vector_instant_matches_and_drops_name() {
+        let (op, modifier) = binop_of("a / b");
+        let mk = |name: &str, svc: &str, code: &str| {
+            let mut m = BTreeMap::new();
+            m.insert("__name__".to_string(), name.to_string());
+            m.insert("service_name".to_string(), svc.to_string());
+            m.insert("code".to_string(), code.to_string());
+            m
+        };
+        // default matching is on all labels except __name__: {service_name,code}.
+        let out = vector_vector_instant(
+            op,
+            vec![(mk("a", "x", "200"), 10.0), (mk("a", "x", "500"), 4.0)],
+            vec![(mk("b", "x", "200"), 2.0), (mk("b", "x", "500"), 4.0)],
+            &modifier,
+            false,
+        )
+        .unwrap();
+        let by: BTreeMap<String, f64> = out
+            .iter()
+            .map(|(m, v)| (m["code"].clone(), *v))
+            .collect();
+        assert_eq!(by["200"], 5.0);
+        assert_eq!(by["500"], 1.0);
+        assert!(out.iter().all(|(m, _)| !m.contains_key("__name__")), "drops __name__");
+    }
+
+    #[test]
+    fn test_ignoring_matches_across_extra_label() {
+        // `a / ignoring(code) b` matches a{code=…} against b with no code label.
+        let (op, modifier) = binop_of("a / ignoring(code) b");
+        let mut a = BTreeMap::new();
+        a.insert("__name__".to_string(), "a".to_string());
+        a.insert("service_name".to_string(), "x".to_string());
+        a.insert("code".to_string(), "200".to_string());
+        let mut b = BTreeMap::new();
+        b.insert("__name__".to_string(), "b".to_string());
+        b.insert("service_name".to_string(), "x".to_string());
+        let out = vector_vector_instant(op, vec![(a, 9.0)], vec![(b, 3.0)], &modifier, false).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, 3.0);
+        // `ignoring(code)` drops code from the result too.
+        assert!(!out[0].0.contains_key("code"), "result: {:?}", out[0].0);
+        assert_eq!(out[0].0["service_name"], "x");
+    }
+
+    #[tokio::test]
+    async fn test_range_scalar_division() {
+        let engine = counter_engine().await;
+        let resp = handle_range(
+            &engine,
+            r#"http_total{service_name="client"} / 10"#,
+            0,
+            10_000_000_000,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "{:?}", resp.data.result);
+        assert_eq!(
+            resp.data.result[0].values,
+            vec![(1.0, "1".to_string()), (2.0, "3".to_string()), (3.0, "6".to_string())]
+        );
+        assert!(
+            !resp.data.result[0].metric.contains_key("__name__"),
+            "binary op drops __name__: {:?}",
+            resp.data.result[0].metric
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instant_scalar_mul_and_unary_minus() {
+        let engine = counter_engine().await;
+        let resp = handle_instant(&engine, "http_total * 2", 3_000_000_000).await.unwrap();
+        assert_eq!(resp.data.result.len(), 1);
+        assert_eq!(resp.data.result[0].value.1, "120");
+        let neg = handle_instant(&engine, "- http_total", 3_000_000_000).await.unwrap();
+        assert_eq!(neg.data.result[0].value.1, "-60");
+    }
+
+    #[tokio::test]
+    async fn test_instant_vector_vector_self_ratio() {
+        let engine = counter_engine().await;
+        let resp = handle_instant(&engine, "http_total / http_total", 3_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1);
+        assert_eq!(resp.data.result[0].value.1, "1");
+        assert!(!resp.data.result[0].metric.contains_key("__name__"));
+    }
+
+    #[tokio::test]
+    async fn test_instant_comparison_filters_and_bool() {
+        let engine = counter_engine().await;
+        let none = handle_instant(&engine, "http_total > 100", 3_000_000_000).await.unwrap();
+        assert!(none.data.result.is_empty(), "60 > 100 is false → filtered out");
+        let some = handle_instant(&engine, "http_total > 50", 3_000_000_000).await.unwrap();
+        assert_eq!(some.data.result[0].value.1, "60", "kept value is the LHS sample");
+        let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000).await.unwrap();
+        assert_eq!(b.data.result[0].value.1, "0", "bool comparison → 0/1");
     }
 }
