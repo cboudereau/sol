@@ -149,7 +149,8 @@ pub fn translate_search(
     ));
     Ok(format!(
         "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
-         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id, attributes \
+         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id, attributes, \
+         status_code \
          FROM traces WHERE {} ORDER BY start_time_unix_nano DESC LIMIT {}",
         preds.join(" AND "),
         limit.saturating_mul(64) // headroom: several spans per trace
@@ -272,6 +273,22 @@ pub struct TempoTrace {
     /// Search view (`Cannot read properties of undefined (reading '0')`).
     #[serde(rename = "spanSets")]
     pub span_sets: Vec<TempoSpanSet>,
+    /// Per-service span / error counts for the trace — Grafana's Search results
+    /// table reads `trace.serviceStats`. Tempo always includes it; omitting it
+    /// leaves the column undefined.
+    #[serde(rename = "serviceStats")]
+    pub service_stats: std::collections::BTreeMap<String, ServiceStat>,
+}
+
+/// One service's span / error counts within a trace (`serviceStats` value).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServiceStat {
+    /// Number of spans for this service in the trace.
+    #[serde(rename = "spanCount")]
+    pub span_count: u64,
+    /// Number of error-status spans (status_code == ERROR) for this service.
+    #[serde(rename = "errorCount")]
+    pub error_count: u64,
 }
 
 /// Run a TraceQL search and group matching spans into trace hits.
@@ -298,6 +315,7 @@ pub async fn handle_search(
         duration_ns: i64,
         has_root: bool,
         spans: Vec<TempoSpan>,
+        service_stats: std::collections::BTreeMap<String, ServiceStat>,
     }
     let mut traces: std::collections::BTreeMap<String, Acc> = std::collections::BTreeMap::new();
     let mut inspected: u64 = 0;
@@ -317,6 +335,8 @@ pub async fn handle_search(
         let parent = batch.column(6);
         let attrs = cast(batch.column(7), &DataType::Utf8)?;
         let attrs = attrs.as_string::<i32>();
+        let status = cast(batch.column(8), &DataType::Int32)?;
+        let status = status.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
         for i in 0..batch.num_rows() {
             if hex.is_null(i) {
                 continue;
@@ -358,7 +378,14 @@ pub async fn handle_search(
                 duration_ns,
                 has_root: false,
                 spans: Vec::new(),
+                service_stats: std::collections::BTreeMap::new(),
             });
+            // Per-service span/error counts (status_code 2 == ERROR).
+            let stat = entry.service_stats.entry(service.clone()).or_default();
+            stat.span_count += 1;
+            if !status.is_null(i) && status.value(i) == 2 {
+                stat.error_count += 1;
+            }
             entry.spans.push(span);
             // Prefer the root span's fields; else the earliest-starting span.
             if !entry.has_root && (is_root || start_ns < entry.start_ns) {
@@ -373,7 +400,12 @@ pub async fn handle_search(
         }
     }
 
-    let traces: Vec<TempoTrace> = traces
+    // Most-recent-first, capped at the requested `limit` (Tempo returns the
+    // first N traces; without this Sol returned every matched trace).
+    let mut ordered: Vec<(String, Acc)> = traces.into_iter().collect();
+    ordered.sort_by(|a, b| b.1.start_ns.cmp(&a.1.start_ns));
+    ordered.truncate(limit as usize);
+    let traces: Vec<TempoTrace> = ordered
         .into_iter()
         .map(|(id, acc)| {
             let span_set = TempoSpanSet { matched: acc.spans.len(), spans: acc.spans };
@@ -385,6 +417,7 @@ pub async fn handle_search(
                 duration_ms: acc.duration_ns / 1_000_000,
                 span_sets: vec![span_set.clone()],
                 span_set,
+                service_stats: acc.service_stats,
             }
         })
         .collect();
@@ -634,6 +667,7 @@ mod tests {
                     matched: 1,
                 },
                 span_sets: Vec::new(),
+                service_stats: std::collections::BTreeMap::new(),
             }],
             metrics: TempoSearchMetrics {
                 inspected_traces: 1,
@@ -778,6 +812,9 @@ mod tests {
         // Both the deprecated singular `spanSet` and the plural `spanSets`
         // (which Grafana 13 reads as spanSets[0]) must be populated.
         assert_eq!(t.span_sets.len(), 1, "spanSets present for Grafana 13");
+        // serviceStats per service (Grafana reads trace.serviceStats).
+        assert_eq!(t.service_stats["client"].span_count, 2, "stats: {:?}", t.service_stats);
+        assert_eq!(t.service_stats["client"].error_count, 0);
         assert_eq!(t.span_sets[0].matched, t.span_set.matched);
         // spanSet carries both spans, with their attributes as OTLP KeyValue
         assert_eq!(t.span_set.matched, 2, "both spans in the span set");

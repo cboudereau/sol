@@ -34,7 +34,7 @@ Status: ⬜ open · ✅ fixed-at-HEAD (redeploy) · 🟡 conforms-with-note.
 | `api/search` `spanSets` | ✅ | HIGH | Fixed at HEAD (`11c64a8c6`) — plural `spanSets` added. Redeploy. |
 | `api/v2/traces/:id` (id format) | ✅ | HIGH | **C-T1** FIXED — `trace_by_id_sql` zero-pads the id to 32 hex (Tempo strips leading zeros) instead of rejecting odd-length. |
 | `api/v2/traces/:id` (span JSON) | ✅ | HIGH | **C-T2** FIXED — trace-by-id spans now OTLP proto-JSON: base64 `traceId`/`spanId`/`parentSpanId`, KeyValue-array `attributes` (span + resource), `kind`/`status.code` enum strings, `scope.name`. |
-| `api/search` `serviceStats` | ⬜ | MED | **C-T3** real Tempo includes `serviceStats{spanCount,errorCount}` per service (drives Search row counts); Sol omits. |
+| `api/search` `serviceStats` | ✅ | MED | **C-T3** FIXED — search hits now carry `serviceStats{spanCount,errorCount}` per service (Grafana 13's results table reads `trace.serviceStats`). Also fixed: `limit` is now applied to the trace count (Sol returned every matched trace, e.g. 341 for `limit=20`). |
 | `api/v2/search/tags` | 🟡 | LOW | **C-T4** Sol omits the `event` scope and the top-level `metrics` object (cosmetic; autocomplete of event-scoped tags absent). |
 | `api/v2/search/tag/:t/values`, `api/search/tags`, `api/echo` | 🟡 | — | Conform (Sol is more lenient on bare `service.name` than Tempo). |
 
