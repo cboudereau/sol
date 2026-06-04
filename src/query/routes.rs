@@ -227,6 +227,79 @@ async fn loki_label_values(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LokiSeriesParams {
+    #[serde(rename = "match[]", default)]
+    matcher: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+}
+
+async fn loki_series(
+    params: LokiSeriesParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    let start = parse_ns(&params.start, 0);
+    let end = parse_ns(&params.end, i64::MAX);
+    match loki::handle_series(&engine, params.matcher.as_deref(), start, end).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LokiIndexParams {
+    query: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    step: Option<String>,
+}
+
+async fn loki_index_stats(
+    params: LokiIndexParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    let start = parse_ns(&params.start, 0);
+    let end = parse_ns(&params.end, i64::MAX);
+    let query = params.query.unwrap_or_else(|| "{}".to_string());
+    match loki::handle_index_stats(&engine, &query, start, end).await {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn loki_index_volume_impl(
+    params: LokiIndexParams,
+    engine: Arc<QueryEngine>,
+    range: bool,
+) -> Result<warp::reply::Response, Infallible> {
+    let t = std::time::Instant::now();
+    let start = parse_ns(&params.start, 0);
+    let end = parse_ns(&params.end, i64::MAX);
+    let step = loki_step_ns(&params.step, start, end);
+    let query = params.query.unwrap_or_else(|| "{}".to_string());
+    let r = loki::handle_index_volume(&engine, &query, start, end, step, range).await;
+    rec("loki", "logs", t);
+    match r {
+        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+        Err(error) => Ok(error_response(error)),
+    }
+}
+
+async fn loki_index_volume(
+    params: LokiIndexParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    loki_index_volume_impl(params, engine, false).await
+}
+
+async fn loki_index_volume_range(
+    params: LokiIndexParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    loki_index_volume_impl(params, engine, true).await
+}
+
 async fn tempo_tags(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
     match tempo::handle_tags(&engine).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
@@ -394,6 +467,33 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and(with_engine(Arc::clone(&engine)))
         .and_then(loki_label_values);
 
+    // Loki series (C-L2) — match[] from query string (GET) or form body (POST).
+    let loki_series_params = warp::get()
+        .and(warp::query::<LokiSeriesParams>())
+        .or(warp::post().and(warp::body::form::<LokiSeriesParams>()))
+        .unify();
+    let loki_series = warp::path!("loki" / "api" / "v1" / "series")
+        .and(loki_series_params)
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_series);
+
+    // Loki index endpoints (C-L1 volume, C-L3 stats).
+    let loki_index_stats = warp::path!("loki" / "api" / "v1" / "index" / "stats")
+        .and(warp::get())
+        .and(warp::query::<LokiIndexParams>())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_index_stats);
+    let loki_index_volume = warp::path!("loki" / "api" / "v1" / "index" / "volume")
+        .and(warp::get())
+        .and(warp::query::<LokiIndexParams>())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_index_volume);
+    let loki_index_volume_range = warp::path!("loki" / "api" / "v1" / "index" / "volume_range")
+        .and(warp::get())
+        .and(warp::query::<LokiIndexParams>())
+        .and(with_engine(Arc::clone(&engine)))
+        .and_then(loki_index_volume_range);
+
     // Tempo: TraceQL search, trace-by-id, tag discovery.
     let tempo_search = warp::path!("tempo" / "api" / "search")
         .and(warp::get())
@@ -444,6 +544,10 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
 
     loki.or(loki_labels)
         .or(loki_label_values)
+        .or(loki_series)
+        .or(loki_index_stats)
+        .or(loki_index_volume_range)
+        .or(loki_index_volume)
         .or(prom_query)
         .or(prom_range)
         .or(prom_label_values)
@@ -522,6 +626,35 @@ mod tests {
         let body = String::from_utf8(resp.body().to_vec()).unwrap();
         assert!(body.contains(r#""resultType":"streams""#), "body: {body}");
         assert!(body.contains("hello world"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_loki_series_route() {
+        let routes = make_routes(fixture_engine().await);
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/loki/api/v1/series?match%5B%5D=%7Bservice_name%3D%22client%22%7D&start=0&end=1000")
+            .reply(&routes)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert!(body.contains(r#""status":"success""#), "body: {body}");
+        assert!(body.contains("client"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_loki_index_stats_route_is_flat() {
+        let routes = make_routes(fixture_engine().await);
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/loki/api/v1/index/stats?query=%7B%7D&start=0&end=1000")
+            .reply(&routes)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        // flat shape: top-level entries/streams/bytes, no status wrapper.
+        assert!(body.contains(r#""entries":1"#), "body: {body}");
+        assert!(!body.contains("status"), "flat, not wrapped: {body}");
     }
 
     #[tokio::test]

@@ -316,6 +316,183 @@ pub async fn handle_volume(
     }))
 }
 
+fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::<dyn std::error::Error + Send + Sync>::from(e)
+}
+
+/// WHERE predicates from an optional LogQL `{selector}` (the part before any
+/// pipeline) plus the time range. Shared by `series` / `index` endpoints.
+fn selector_preds(query: &str, start_ns: i64, end_ns: i64) -> Result<Vec<String>, String> {
+    let mut preds: Vec<String> = Vec::new();
+    let q = query.trim();
+    if let Some(open) = q.find('{') {
+        let close = q[open..].find('}').ok_or("unterminated {...} selector")? + open;
+        for (k, op, v) in parse_selector(&q[open..=close])? {
+            preds.push(label_pred(&k, &op, &v)?);
+        }
+    }
+    preds.push(format!(
+        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
+    ));
+    Ok(preds)
+}
+
+/// Explode a `resource_attributes` JSON blob into normalized labels, merged into
+/// `m` (existing keys win).
+fn merge_attrs(m: &mut BTreeMap<String, String>, json: &str) {
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) {
+        for (k, v) in map {
+            let val = match v {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            m.entry(super::udf::normalize(&k)).or_insert(val);
+        }
+    }
+}
+
+/// Loki `series` (C-L2): the distinct stream label sets — `service_name` plus
+/// the exploded, normalized resource attributes — matching an optional `match[]`
+/// selector. Grafana uses this for the label/series browser.
+pub async fn handle_series(
+    engine: &super::QueryEngine,
+    matcher: Option<&str>,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<serde_json::Value> {
+    use datafusion::arrow::array::{Array, AsArray};
+
+    let preds = selector_preds(matcher.unwrap_or("{}"), start_ns, end_ns).map_err(to_err)?;
+    let sql = format!(
+        "SELECT DISTINCT service_name, resource_attributes FROM logs WHERE {}",
+        preds.join(" AND ")
+    );
+    let batches = engine.sql(&sql).await?;
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut data: Vec<BTreeMap<String, String>> = Vec::new();
+    for batch in &batches {
+        let svc = batch.column(0).as_string::<i32>();
+        let ra = batch.column(1).as_string::<i32>();
+        for i in 0..batch.num_rows() {
+            let mut m = BTreeMap::new();
+            if !svc.is_null(i) {
+                m.insert("service_name".to_string(), svc.value(i).to_string());
+            }
+            if !ra.is_null(i) {
+                merge_attrs(&mut m, ra.value(i));
+            }
+            if seen.insert(format!("{m:?}")) {
+                data.push(m);
+            }
+        }
+    }
+    Ok(serde_json::json!({ "status": "success", "data": data }))
+}
+
+/// Loki `index/stats` (C-L3): a flat query-size hint (NOT `{status,data}`-wrapped)
+/// — `streams`/`chunks`/`bytes`/`entries` over the matched range. Sol has no chunk
+/// concept, so `chunks` is 0.
+pub async fn handle_index_stats(
+    engine: &super::QueryEngine,
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<serde_json::Value> {
+    use datafusion::arrow::array::AsArray;
+    use datafusion::arrow::datatypes::Int64Type;
+
+    let preds = selector_preds(query, start_ns, end_ns).map_err(to_err)?;
+    let sql = format!(
+        "SELECT count(DISTINCT service_name) AS streams, count(*) AS entries, \
+         COALESCE(sum(octet_length(body)), 0) AS bytes FROM logs WHERE {}",
+        preds.join(" AND ")
+    );
+    let batches = engine.sql(&sql).await?;
+    let (mut streams, mut entries, mut bytes) = (0i64, 0i64, 0i64);
+    if let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) {
+        streams = batch.column(0).as_primitive::<Int64Type>().value(0);
+        entries = batch.column(1).as_primitive::<Int64Type>().value(0);
+        bytes = batch.column(2).as_primitive::<Int64Type>().value(0);
+    }
+    Ok(serde_json::json!({
+        "streams": streams, "chunks": 0, "bytes": bytes, "entries": entries
+    }))
+}
+
+/// Loki `index/volume[_range]` (C-L1): byte volume per `service_name`. `range`
+/// emits a Prometheus `matrix` bucketed by `step_ns`; otherwise a `vector` with
+/// the total at `end_ns`. (Newer Grafana Loki datasources call this for the log
+/// volume panel; the demo's version uses `query_range`, already handled.)
+pub async fn handle_index_volume(
+    engine: &super::QueryEngine,
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+    step_ns: i64,
+    range: bool,
+) -> crate::Result<serde_json::Value> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::datatypes::Int64Type;
+
+    let preds = selector_preds(query, start_ns, end_ns).map_err(to_err)?;
+    #[allow(clippy::cast_precision_loss)] // ns→s for the matrix/vector timestamp
+    let end_s = end_ns as f64 / 1e9;
+    if range {
+        let step = step_ns.max(1);
+        let sql = format!(
+            "SELECT service_name AS svc, (CAST(time_unix_nano AS BIGINT) / {step}) * {step} AS bkt, \
+             COALESCE(sum(octet_length(body)), 0) AS b FROM logs WHERE {} GROUP BY svc, bkt ORDER BY bkt",
+            preds.join(" AND ")
+        );
+        let batches = engine.sql(&sql).await?;
+        let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+        for batch in &batches {
+            let svc = batch.column(0).as_string::<i32>();
+            let bkt = batch.column(1).as_primitive::<Int64Type>();
+            let b = batch.column(2).as_primitive::<Int64Type>();
+            for i in 0..batch.num_rows() {
+                let s = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
+                #[allow(clippy::cast_precision_loss)]
+                let ts = bkt.value(i) as f64 / 1e9;
+                series
+                    .entry(s)
+                    .or_default()
+                    .push(serde_json::json!([ts, b.value(i).to_string()]));
+            }
+        }
+        let result: Vec<serde_json::Value> = series
+            .into_iter()
+            .map(|(s, values)| serde_json::json!({ "metric": { "service_name": s }, "values": values }))
+            .collect();
+        return Ok(serde_json::json!({
+            "status": "success",
+            "data": { "resultType": "matrix", "result": result }
+        }));
+    }
+    let sql = format!(
+        "SELECT service_name AS svc, COALESCE(sum(octet_length(body)), 0) AS b \
+         FROM logs WHERE {} GROUP BY svc",
+        preds.join(" AND ")
+    );
+    let batches = engine.sql(&sql).await?;
+    let mut result: Vec<serde_json::Value> = Vec::new();
+    for batch in &batches {
+        let svc = batch.column(0).as_string::<i32>();
+        let b = batch.column(1).as_primitive::<Int64Type>();
+        for i in 0..batch.num_rows() {
+            let s = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
+            result.push(serde_json::json!({
+                "metric": { "service_name": s },
+                "value": [end_s, b.value(i).to_string()]
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "status": "success",
+        "data": { "resultType": "vector", "result": result }
+    }))
+}
+
 // --- Loki query_range response (resultType=streams) ---
 
 /// Loki `query_range` response envelope.
@@ -738,6 +915,89 @@ mod tests {
             values["data"].as_array().unwrap(),
             &[serde_json::json!("dev")]
         );
+    }
+
+    async fn logs_engine_with_attrs() -> crate::query::QueryEngine {
+        use crate::config::query::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("logs").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                true,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client", "client"])),
+                Arc::new(TimestampNanosecondArray::from(vec![10i64, 20]).with_timezone("UTC")),
+                Arc::new(StringArray::from(vec!["hello", "world"])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"deployment.environment":"dev"}"#),
+                    Some(r#"{"deployment.environment":"dev"}"#),
+                ])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let opts = QuerierOptions {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..QuerierOptions::default()
+        };
+        crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_loki_series_returns_label_sets() {
+        let engine = logs_engine_with_attrs().await;
+        let resp = handle_series(&engine, Some(r#"{service_name="client"}"#), 0, 1000)
+            .await
+            .unwrap();
+        let data = resp["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1, "one distinct stream: {data:?}");
+        assert_eq!(data[0]["service_name"], "client");
+        // resource attributes exploded + normalized
+        assert_eq!(data[0]["deployment_environment"], "dev");
+    }
+
+    #[tokio::test]
+    async fn test_loki_index_stats_flat_shape() {
+        let engine = logs_engine_with_attrs().await;
+        let stats = handle_index_stats(&engine, "{}", 0, 1000).await.unwrap();
+        // flat object, NOT {status,data}-wrapped (Loki's contract).
+        assert!(stats.get("status").is_none(), "must be flat: {stats}");
+        assert_eq!(stats["entries"], 2);
+        assert_eq!(stats["streams"], 1);
+        assert_eq!(stats["chunks"], 0);
+        assert_eq!(stats["bytes"], 10, "octet_length('hello')+('world') = 10");
+    }
+
+    #[tokio::test]
+    async fn test_loki_index_volume_vector() {
+        let engine = logs_engine_with_attrs().await;
+        let vol = handle_index_volume(&engine, "{}", 0, 1000, 60_000_000_000, false)
+            .await
+            .unwrap();
+        assert_eq!(vol["data"]["resultType"], "vector");
+        let result = vol["data"]["result"].as_array().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["metric"]["service_name"], "client");
+        assert_eq!(result[0]["value"][1], "10");
     }
 
     #[test]
