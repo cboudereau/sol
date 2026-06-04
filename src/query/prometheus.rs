@@ -679,9 +679,14 @@ fn lower_range(expr: &Expr, start_ns: i64, end_ns: i64, table: &str) -> Result<S
         Expr::Call(c) => lower_call(c, start_ns, end_ns, table),
         Expr::Paren(p) => lower_range(&p.expr, start_ns, end_ns, table),
         Expr::Aggregate(agg) => lower_range_aggregate(agg, start_ns, end_ns, table),
-        Expr::VectorSelector(_) => Err(
-            "range query needs a function over a range vector, e.g. rate(m[5m]) (v1)".to_string(),
-        ),
+        // A bare instant-vector selector in query_range (e.g. Grafana Explore):
+        // Prometheus step-evaluates it, returning the series' raw samples over
+        // the range as a matrix. Emit the time-ordered base samples; the handler
+        // groups them per series (LabelCols → normalized __name__ + labels).
+        Expr::VectorSelector(vs) => Ok(format!(
+            "SELECT * FROM ({}) ORDER BY time_unix_nano",
+            metric_base(vs, start_ns, end_ns, table)?
+        )),
         Expr::Binary(_) | Expr::Unary(_) => {
             Err("binary/unary operators not yet supported for query_range (v1)".to_string())
         }
@@ -1611,10 +1616,8 @@ mod tests {
 
     #[test]
     fn test_range_unsupported_returns_error() {
-        assert!(
-            translate_range("http_total", 0, 1).is_err(),
-            "instant selector is not a range query"
-        );
+        // A bare selector IS valid in query_range now (raw samples → matrix).
+        assert!(translate_range("http_total", 0, 1).is_ok());
         assert!(translate_range("predict_linear(x[1h], 60)", 0, 1).is_err());
         assert!(translate_range("{{bad", 0, 1).is_err());
     }
@@ -1691,6 +1694,33 @@ mod tests {
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[test]
+    fn test_bare_selector_range_is_accepted() {
+        // Grafana Explore sends a bare selector to query_range; it must translate
+        // (raw samples over the range), not error.
+        let sql = translate_range(r#"http_total{service_name="client"}"#, 0, 100).unwrap();
+        assert!(sql.contains("ORDER BY time_unix_nano"), "sql: {sql}");
+        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "sql: {sql}");
+    }
+
+    #[tokio::test]
+    async fn test_bare_selector_range_returns_raw_matrix() {
+        let engine = counter_engine().await;
+        let resp =
+            handle_range(&engine, r#"http_total{service_name="client"}"#, 0, 10_000_000_000, 0)
+                .await
+                .unwrap();
+        assert_eq!(resp.data.result_type, "matrix");
+        assert_eq!(resp.data.result.len(), 1, "one series");
+        let s = &resp.data.result[0];
+        assert_eq!(s.metric["__name__"], "http_total", "normalized name: {:?}", s.metric);
+        assert_eq!(
+            s.values,
+            vec![(1.0, "10".to_string()), (2.0, "30".to_string()), (3.0, "60".to_string())],
+            "raw samples over the range"
+        );
     }
 
     #[tokio::test]
