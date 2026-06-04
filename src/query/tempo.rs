@@ -512,7 +512,13 @@ pub async fn handle_tags(engine: &super::QueryEngine) -> crate::Result<Value> {
             { "name": "intrinsic", "tags": intrinsic_tags() },
             { "name": "resource", "tags": resource.into_iter().collect::<Vec<_>>() },
             { "name": "span", "tags": span.into_iter().collect::<Vec<_>>() },
-        ]
+            // Sol stores span events in the `events` JSON column, not as a
+            // separately-indexed scope; expose an empty `event` scope so Grafana's
+            // tag-scope selector matches Tempo's shape (C-T4).
+            { "name": "event", "tags": [] },
+        ],
+        // Tempo emits a per-request `metrics` object alongside the scopes.
+        "metrics": {}
     }))
 }
 
@@ -605,6 +611,9 @@ mod tests {
         assert!(span.contains(&"db.system".to_string()), "span: {span:?}");
         assert!(tags_of("resource").contains(&"host".to_string()));
         assert!(tags_of("intrinsic").contains(&"name".to_string()));
+        // C-T4: event scope present (empty) + top-level metrics object.
+        assert!(scopes.iter().any(|s| s["name"] == "event"), "event scope: {scopes:?}");
+        assert!(v["metrics"].is_object(), "metrics object: {v}");
 
         let flat = handle_tags_flat(&engine).await.unwrap();
         let names: Vec<&str> = flat["tagNames"]
