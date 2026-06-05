@@ -40,39 +40,128 @@ fn traceql_lhs(key: &str) -> String {
     }
 }
 
-/// Parse a `{ a="x" && b!="y" }` selector into `(key, op, value)` matchers.
-fn parse_selector(traceql: &str) -> Result<Vec<(String, String, String)>, String> {
-    let inner = traceql
-        .trim()
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .ok_or("TraceQL must be a `{ ... }` selector")?;
-    let mut out = Vec::new();
-    for part in inner.split("&&") {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let (key, op, val) = if let Some(i) = part.find("!=") {
-            (&part[..i], "!=", &part[i + 2..])
-        } else if let Some(i) = part.find('=') {
-            (&part[..i], "=", &part[i + 1..])
-        } else {
-            return Err(format!(
-                "unsupported TraceQL matcher: {part} (only = / != in v1)"
-            ));
-        };
-        // Strip the quotes, then unescape Go-style escapes (`\\` -> `\`) —
-        // TraceQL string literals are escaped on the wire like LogQL/PromQL.
-        let val = val.trim();
-        let val = if let Some(inner) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-            super::loki::unescape_dquoted(inner)
-        } else {
-            val.trim_matches('"').to_string()
-        };
-        out.push((key.trim().to_string(), op.to_string(), val));
+use super::traceql::ast as tast;
+
+/// Reconstruct the TraceQL field key (the string form [`traceql_lhs`] consumes)
+/// from a parsed field. `event`/`instrumentation`/`link`/`parent` scopes are
+/// parsed but not lowered (their attributes aren't stored as queryable columns).
+fn field_key(f: &tast::Field) -> Result<String, String> {
+    use tast::{AttrScope, Field};
+    match f {
+        Field::Intrinsic(s) => Ok(s.clone()),
+        Field::Attr { scope, path } => match scope {
+            AttrScope::Unscoped => Ok(format!(".{path}")),
+            AttrScope::Span => Ok(format!("span.{path}")),
+            AttrScope::Resource => Ok(format!("resource.{path}")),
+            other => Err(format!("{other:?} scope is not yet supported in lowering")),
+        },
+        _ => Err("expected a field reference on the left of a comparison".to_string()),
     }
-    Ok(out)
+}
+
+/// Format an `f64` literal without a trailing `.0` for whole numbers.
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 9e15 {
+        #[allow(clippy::cast_possible_truncation)]
+        let i = n as i64;
+        i.to_string()
+    } else {
+        n.to_string()
+    }
+}
+
+/// The literal text of a value field (for the RHS of a comparison).
+fn lit_str(f: &tast::Field) -> Result<String, String> {
+    use tast::Field;
+    match f {
+        Field::Str(s) => Ok(s.clone()),
+        Field::Num(n) => Ok(fmt_num(*n)),
+        Field::Bool(b) => Ok(b.to_string()),
+        Field::Duration(d) => Ok(d.clone()),
+        _ => Err("expected a literal on the right of a comparison".to_string()),
+    }
+}
+
+/// Parse a duration literal (e.g. `1.5s`, `200ms`) to nanoseconds.
+fn duration_nanos(raw: &str) -> Option<i64> {
+    let split = raw.find(|c: char| c.is_ascii_alphabetic())?;
+    let (num, unit) = raw.split_at(split);
+    let v: f64 = num.parse().ok()?;
+    let mult = match unit {
+        "ns" => 1.0,
+        "us" => 1e3,
+        "ms" => 1e6,
+        "s" => 1e9,
+        "m" => 6e10,
+        "h" => 3.6e12,
+        _ => return None,
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    Some((v * mult) as i64)
+}
+
+/// Lower a single field comparison to a SQL boolean expression.
+fn lower_cmp(lhs: &tast::Field, op: &tast::FieldOp, rhs: &tast::Field) -> Result<String, String> {
+    use tast::{Field, FieldOp};
+    let col = traceql_lhs(&field_key(lhs)?);
+    match op {
+        FieldOp::Eq => Ok(format!("{col} = '{}'", esc(&lit_str(rhs)?))),
+        FieldOp::Neq => Ok(format!("{col} <> '{}'", esc(&lit_str(rhs)?))),
+        FieldOp::Re => Ok(format!("regexp_like(COALESCE({col}, ''), '^(?:{})$')", esc(&lit_str(rhs)?))),
+        FieldOp::Nre => Ok(format!("NOT regexp_like(COALESCE({col}, ''), '^(?:{})$')", esc(&lit_str(rhs)?))),
+        FieldOp::Gt | FieldOp::Gte | FieldOp::Lt | FieldOp::Lte => {
+            let opsql = match op {
+                FieldOp::Gt => ">",
+                FieldOp::Gte => ">=",
+                FieldOp::Lt => "<",
+                FieldOp::Lte => "<=",
+                _ => unreachable!(),
+            };
+            let rhs_num = match rhs {
+                Field::Duration(d) => {
+                    duration_nanos(d).ok_or_else(|| format!("invalid duration: {d}"))?.to_string()
+                }
+                Field::Num(n) => fmt_num(*n),
+                _ => return Err("numeric comparison requires a number/duration literal".to_string()),
+            };
+            // Promoted numeric intrinsics compare directly; JSON/text columns cast.
+            let numeric_intrinsic = matches!(
+                lhs,
+                Field::Intrinsic(s) if s == "duration" || s == "status" || s == "kind"
+            );
+            if numeric_intrinsic {
+                Ok(format!("{col} {opsql} {rhs_num}"))
+            } else {
+                Ok(format!("CAST({col} AS DOUBLE) {opsql} {rhs_num}"))
+            }
+        }
+    }
+}
+
+/// Lower a field expression to a single SQL boolean (parenthesised for `&&`/`||`).
+fn lower_field_expr(fe: &tast::FieldExpr) -> Result<String, String> {
+    use tast::FieldExpr;
+    match fe {
+        FieldExpr::Cmp { lhs, op, rhs } => lower_cmp(lhs, op, rhs),
+        FieldExpr::And(a, b) => Ok(format!("({} AND {})", lower_field_expr(a)?, lower_field_expr(b)?)),
+        FieldExpr::Or(a, b) => Ok(format!("({} OR {})", lower_field_expr(a)?, lower_field_expr(b)?)),
+        // A bare field is an existence check.
+        FieldExpr::Field(f) => Ok(format!("{} IS NOT NULL", traceql_lhs(&field_key(f)?))),
+    }
+}
+
+/// Flatten a field expression's top-level `&&` chain into separate WHERE
+/// conjuncts (so the emitted SQL matches the previous ad-hoc translator — FR5).
+fn collect_preds(fe: &tast::FieldExpr, out: &mut Vec<String>) -> Result<(), String> {
+    use tast::FieldExpr;
+    match fe {
+        FieldExpr::And(a, b) => {
+            collect_preds(a, out)?;
+            collect_preds(b, out)?;
+        }
+        other => out.push(lower_field_expr(other)?),
+    }
+    Ok(())
 }
 
 /// OTLP `SpanKind` enum string for a stored kind int (proto-JSON form Grafana
@@ -120,16 +209,11 @@ fn otlp_attributes(json: &str) -> Vec<Value> {
         .collect()
 }
 
-fn matcher_sql(key: &str, op: &str, val: &str) -> String {
-    let lhs = traceql_lhs(key);
-    match op {
-        "!=" => format!("{lhs} <> '{}'", esc(val)),
-        _ => format!("{lhs} = '{}'", esc(val)),
-    }
-}
-
 /// Translate a TraceQL search query into SQL over the `traces` table. Returns
-/// one row per matching span (the handler groups by trace).
+/// one row per matching span (the handler groups by trace). Parses with the
+/// grammar parser ([`super::traceql`]) and lowers the supported subset; spanset
+/// operators between sets (`&& || >> <<`) and unsupported scopes return a clear
+/// error rather than wrong SQL (FR4).
 pub fn translate_search(
     traceql: &str,
     start_ns: i64,
@@ -137,11 +221,15 @@ pub fn translate_search(
     limit: u32,
 ) -> Result<String, String> {
     let mut preds: Vec<String> = Vec::new();
-    let traceql = traceql.trim();
-    // An empty `{}` selector matches everything (time-bounded).
-    if traceql != "{}" && !traceql.is_empty() {
-        for (k, op, v) in parse_selector(traceql)? {
-            preds.push(matcher_sql(&k, &op, &v));
+    match super::traceql::parse(traceql).map_err(|e| e.to_string())? {
+        // `{}` matches everything (time-bounded).
+        tast::SpansetExpr::Filter(None) => {}
+        tast::SpansetExpr::Filter(Some(fe)) => collect_preds(&fe, &mut preds)?,
+        tast::SpansetExpr::Op { .. } => {
+            return Err(
+                "spanset operators (&& || >> <<) between sets are not yet supported in search"
+                    .to_string(),
+            );
         }
     }
     preds.push(format!(
@@ -591,6 +679,36 @@ mod tests {
             sql.contains("json_get_str(attributes, 'code') <> '0'"),
             "sql: {sql}"
         );
+    }
+
+    #[test]
+    fn test_traceql_comparison_and_regex_and_or() {
+        // Numeric duration comparison → duration_nanos in nanoseconds.
+        let s = translate_search(r#"{ duration > 1.5s }"#, 0, 1, 5).unwrap();
+        assert!(s.contains("duration_nanos > 1500000000"), "sql: {s}");
+        // Regex on an intrinsic, anchored.
+        let r = translate_search(r#"{ name =~ "GET.*" }"#, 0, 1, 5).unwrap();
+        assert!(r.contains("regexp_like(COALESCE(name, ''), '^(?:GET.*)$')"), "sql: {r}");
+        // `||` inside a set → a single parenthesised OR predicate.
+        let o = translate_search(r#"{ name="a" || name="b" }"#, 0, 1, 5).unwrap();
+        assert!(o.contains("(name = 'a' OR name = 'b')"), "sql: {o}");
+        // numeric attribute comparison casts the JSON text to double.
+        let n = translate_search(r#"{ span.http.status_code >= 500 }"#, 0, 1, 5).unwrap();
+        assert!(
+            n.contains("CAST(json_get_str(attributes, 'http.status_code') AS DOUBLE) >= 500"),
+            "sql: {n}"
+        );
+    }
+
+    #[test]
+    fn test_traceql_unsupported_lowering_errors() {
+        // Spanset structural operators between sets are not lowered.
+        assert!(translate_search(r#"{ name="a" } >> { name="b" }"#, 0, 1, 5).is_err());
+        // event/parent scopes are parsed but not lowered.
+        assert!(translate_search(r#"{ event.exception="x" }"#, 0, 1, 5).is_err());
+        // `{}` still matches all (time-bounded), no selector predicate.
+        let empty = translate_search("{}", 0, 1, 5).unwrap();
+        assert!(empty.contains("start_time_unix_nano"), "sql: {empty}");
     }
 
     #[tokio::test]

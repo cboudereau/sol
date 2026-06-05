@@ -127,6 +127,19 @@ fn build_query_parsers() {
         .unwrap()
         .build()
         .unwrap();
+
+    println!("cargo:rerun-if-changed=src/query/traceql/traceql.l");
+    println!("cargo:rerun-if-changed=src/query/traceql/traceql.y");
+    CTLexerBuilder::new()
+        .lrpar_config(|ctp| {
+            ctp.yacckind(YaccKind::Grmtools)
+                .grammar_in_src_dir("query/traceql/traceql.y")
+                .unwrap()
+        })
+        .lexer_in_src_dir("query/traceql/traceql.l")
+        .unwrap()
+        .build()
+        .unwrap();
 }
 
 fn main() {

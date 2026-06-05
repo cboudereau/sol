@@ -136,6 +136,15 @@ parsed but return a clear "not yet supported" error (Task 6 widens lowering).
 | `\| unwrap` (metric over a label value) | ❌ | 🅿 | 🅛 | unwrap a numeric label into `v` |
 
 ### TraceQL
+**Status (Sessions 3–4 shipped):** grammar parser covers spanset filters `{ … }`
+combined by `&& || >> <<`, with field expressions (comparisons `= != =~ !~ > >= < <=`,
+`&&`/`||`, parens, scoped attributes, intrinsics, literals incl. bool/number/
+duration). Pipeline/aggregate/metrics **parsing** is deferred (a later slice).
+Lowering is wired into `translate_search` at parity and widened: single-spanset
+`&&`/`||`/comparisons/regex over intrinsics + span/resource attrs lower; spanset
+structural operators (`>> <<`), multi-set combinators, and `event/instrumentation/
+link/parent` scopes return a clear "not yet supported" error.
+
 | Feature | now | parse | lower | Notes / blocker |
 |---|:--:|:--:|:--:|---|
 | `{ a = b }`, `{ a != b }` | ✅ | 🅿 | 🅛 | parity |

@@ -25,6 +25,7 @@ mod routes;
 pub mod sql;
 pub mod telemetry;
 pub mod tempo;
+pub mod traceql;
 mod udf;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
