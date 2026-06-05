@@ -213,6 +213,39 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_never_panics_on_adversarial_input() {
+        // NFR3: no input — valid, invalid, truncated, or adversarial — may panic.
+        // Each must return Ok or Err, never unwind.
+        let inputs = [
+            "",
+            "{",
+            "}",
+            "{}{}",
+            "{a=}",
+            "{=\"b\"}",
+            "{a=\"b\"",
+            "| json",
+            "sum(",
+            "sum()",
+            "rate({a=\"b\"}[)",
+            "count_over_time({a=\"b\"}[5m]] )",
+            "{a=~\"(unclosed\"}",
+            "{a=\"\\\"}",
+            "topk(, x)",
+            "1 + + 2",
+            "(((((",
+            "{a=\"b\"} | | json",
+            "\u{1f600}{a=\"b\"}",
+            "{a=\"b\"} |~ `unterminated",
+            "sum by () (rate({a=\"b\"}[1m]))",
+        ];
+        for q in inputs {
+            // The call itself must not panic; the result may be Ok or Err.
+            let _ = parse(q);
+        }
+    }
+
+    #[test]
     fn test_parse_topk_param_and_quantile_over_time() {
         use ast::{LogQlExpr, SampleExpr};
         let e = parse(r#"topk(5, sum by (x) (rate({a="b"}[1m])))"#).unwrap();

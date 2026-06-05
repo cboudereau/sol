@@ -110,6 +110,13 @@ Legend: ✅ now · 🅿 target *parse* · 🅛 target *lower* this plan · ⛔ d
 "now" = behaviour of today's ad-hoc parser.
 
 ### LogQL
+**Status (Session 1, Tasks 1–5 shipped):** the grammar parser is **complete** for
+every row below except binary `on/ignoring/group_left/right` modifiers (parsed as
+bare operators only — a later slice). Lowering is wired into `translate_query_range`
+/ `handle_volume` / `series` / `index` **at parity**: selector matchers + line
+filters (`|= != |~ !~`) lower; all other stages and metric/binary lowering are
+parsed but return a clear "not yet supported" error (Task 6 widens lowering).
+
 | Feature | now | parse | lower | Notes / blocker |
 |---|:--:|:--:|:--:|---|
 | `{matchers}` `= != =~ !~` (anchored) | ✅ | 🅿 | 🅛 | parity |

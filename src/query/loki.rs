@@ -103,81 +103,76 @@ fn line_pred(op: &str, value: &str) -> Result<String, String> {
     })
 }
 
-/// Parse the `{...}` stream selector into `(key, op, value)` matchers.
-fn parse_selector(sel: &str) -> Result<Vec<(String, String, String)>, String> {
-    let inner = sel
-        .trim()
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .ok_or("LogQL must start with a `{...}` stream selector")?;
-    let mut out = Vec::new();
-    for part in inner.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        // op is the longest match of =~, !~, !=, = (check 2-char ops first).
-        let (key, op, val) = if let Some(i) = part.find("=~") {
-            (&part[..i], "=~", &part[i + 2..])
-        } else if let Some(i) = part.find("!~") {
-            (&part[..i], "!~", &part[i + 2..])
-        } else if let Some(i) = part.find("!=") {
-            (&part[..i], "!=", &part[i + 2..])
-        } else if let Some(i) = part.find('=') {
-            (&part[..i], "=", &part[i + 1..])
-        } else {
-            return Err(format!("malformed label matcher: {part}"));
-        };
-        // Strip the quotes, then unescape: double-quoted values use Go-style
-        // escapes (`\\` -> `\`); backtick values are raw strings (verbatim).
-        let val = val.trim();
-        let val = if let Some(inner) = val.strip_prefix('`').and_then(|s| s.strip_suffix('`')) {
-            inner.to_string()
-        } else if let Some(inner) = val.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-            unescape_dquoted(inner)
-        } else {
-            val.trim_matches('"').to_string()
-        };
-        out.push((key.trim().to_string(), op.to_string(), val));
+use super::logql::ast;
+
+/// SQL operator for a parsed label-matcher op.
+fn matchop_sql(op: &ast::MatchOp) -> &'static str {
+    match op {
+        ast::MatchOp::Eq => "=",
+        ast::MatchOp::Neq => "!=",
+        ast::MatchOp::Re => "=~",
+        ast::MatchOp::Nre => "!~",
     }
-    Ok(out)
 }
 
-/// Parse the pipeline after the selector into `(op, value)` line filters.
-fn parse_line_filters(pipeline: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out = Vec::new();
-    let mut rest = pipeline.trim();
-    while !rest.is_empty() {
-        let op = ["|=", "!=", "|~", "!~"]
-            .iter()
-            .find(|o| rest.starts_with(**o))
-            .ok_or_else(|| format!("unsupported LogQL pipeline near: {rest}"))?;
-        rest = rest[op.len()..].trim_start();
-        // LogQL line-filter values are quoted with `"` or backticks; Grafana's
-        // Explore sends an empty `|= \`\`` which is a no-op (matches everything).
-        let quote = match rest.chars().next() {
-            Some(q @ ('"' | '`')) => q,
-            _ => return Err("line filter value must be quoted".to_string()),
-        };
-        let end = rest[1..]
-            .find(quote)
-            .ok_or("unterminated line filter string")?;
-        let raw = &rest[1..=end];
-        // Double-quoted filter values carry Go-style escapes; backticks are raw.
-        let val = if quote == '"' {
-            unescape_dquoted(raw)
-        } else {
-            raw.to_string()
-        };
-        if !val.is_empty() {
-            out.push((op.to_string(), val));
+/// Line-filter op token for a parsed line-filter op. Pattern filters (`|>`/`!>`)
+/// are parsed but not yet lowered (a later slice).
+fn lineop_sql(op: &ast::LineOp) -> Result<&'static str, String> {
+    Ok(match op {
+        ast::LineOp::Contains => "|=",
+        ast::LineOp::NotContains => "!=",
+        ast::LineOp::Re => "|~",
+        ast::LineOp::Nre => "!~",
+        ast::LineOp::Pattern | ast::LineOp::NotPattern => {
+            return Err("pattern line filters (|>/!>) are not yet supported".to_string());
         }
-        rest = rest[end + 2..].trim_start();
+    })
+}
+
+/// Build WHERE predicates from a parsed log pipeline: selector matchers + line
+/// filters (empty filter = no-op). Non-line-filter stages (json, label_format,
+/// label filters, …) are parsed but not yet lowered to SQL → returns an error
+/// (FR3 staged lowering), reusing [`label_pred`]/[`line_pred`] so the emitted
+/// SQL is identical to the previous ad-hoc translator (FR5 parity).
+fn pipeline_preds(p: &ast::LogPipeline) -> Result<Vec<String>, String> {
+    let mut preds = Vec::new();
+    for m in &p.selector.matchers {
+        preds.push(label_pred(&m.name, matchop_sql(&m.op), &m.value)?);
     }
-    Ok(out)
+    for stage in &p.stages {
+        match stage {
+            ast::Stage::Line { op, value } => {
+                if value.is_empty() {
+                    continue; // empty filter is a no-op (matches everything)
+                }
+                preds.push(line_pred(lineop_sql(op)?, value)?);
+            }
+            other => {
+                return Err(format!(
+                    "LogQL pipeline stage not yet supported in lowering: {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(preds)
+}
+
+/// The first range aggregation reachable in a metric expression (for the volume
+/// path, which needs the underlying stream selector).
+fn first_range(expr: &ast::SampleExpr) -> Option<&ast::LogRange> {
+    match expr {
+        ast::SampleExpr::RangeAgg { range, .. } => Some(range),
+        ast::SampleExpr::VectorAgg { inner, .. } => first_range(inner),
+        ast::SampleExpr::Binary { lhs, rhs, .. } => {
+            first_range(lhs).or_else(|| first_range(rhs))
+        }
+        ast::SampleExpr::Number(_) => None,
+    }
 }
 
 /// Translate a LogQL log query + range params into SQL over the `logs` table.
+/// Parses with the grammar parser ([`super::logql`]) and lowers the supported
+/// subset; unsupported-but-parsed pipelines return a clear error.
 pub fn translate_query_range(
     logql: &str,
     start_ns: i64,
@@ -185,17 +180,8 @@ pub fn translate_query_range(
     limit: u32,
     forward: bool,
 ) -> Result<String, String> {
-    let logql = logql.trim();
-    let brace_end = logql.find('}').ok_or("missing `}` in stream selector")?;
-    let (selector, pipeline) = logql.split_at(brace_end + 1);
-
-    let mut preds: Vec<String> = Vec::new();
-    for (k, op, v) in parse_selector(selector)? {
-        preds.push(label_pred(&k, &op, &v)?);
-    }
-    for (op, v) in parse_line_filters(pipeline)? {
-        preds.push(line_pred(&op, &v)?);
-    }
+    let pipeline = super::logql::parse_pipeline(logql).map_err(|e| e.to_string())?;
+    let mut preds = pipeline_preds(&pipeline)?;
     preds.push(format!(
         "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
     ));
@@ -249,13 +235,18 @@ pub fn is_metric_query(logql: &str) -> bool {
 /// bars from the resulting matrix. We always group by `detected_level` (the
 /// Loki volume default), regardless of the query's `by(...)`.
 fn volume_sql(logql: &str, start_ns: i64, end_ns: i64, step_ns: i64) -> Result<String, String> {
-    let open = logql.find('{').ok_or("log volume query must contain a {...} selector")?;
-    let close = logql[open..].find('}').ok_or("unterminated {...} selector")? + open;
-    let selector = &logql[open..=close];
-    let mut preds: Vec<String> = parse_selector(selector)?
-        .into_iter()
-        .map(|(k, op, v)| label_pred(&k, &op, &v))
-        .collect::<Result<_, _>>()?;
+    // Parse the metric query and take the underlying stream selector (+ line
+    // filters) from its range aggregation.
+    let expr = super::logql::parse(logql).map_err(|e| e.to_string())?;
+    let range = match &expr {
+        ast::LogQlExpr::Sample(s) => {
+            first_range(s).ok_or("log volume query must contain a range aggregation")?
+        }
+        ast::LogQlExpr::Log(_) => {
+            return Err("log volume query must be a metric query".to_string());
+        }
+    };
+    let mut preds = pipeline_preds(&range.pipeline)?;
     preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
     let step = step_ns.max(1);
     // detected_level via the same severity ranges as `detected_level()`.
@@ -323,14 +314,13 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
 /// WHERE predicates from an optional LogQL `{selector}` (the part before any
 /// pipeline) plus the time range. Shared by `series` / `index` endpoints.
 fn selector_preds(query: &str, start_ns: i64, end_ns: i64) -> Result<Vec<String>, String> {
-    let mut preds: Vec<String> = Vec::new();
     let q = query.trim();
-    if let Some(open) = q.find('{') {
-        let close = q[open..].find('}').ok_or("unterminated {...} selector")? + open;
-        for (k, op, v) in parse_selector(&q[open..=close])? {
-            preds.push(label_pred(&k, &op, &v)?);
-        }
-    }
+    let mut preds = if q.is_empty() || q == "{}" {
+        Vec::new()
+    } else {
+        let pipeline = super::logql::parse_pipeline(q).map_err(|e| e.to_string())?;
+        pipeline_preds(&pipeline)?
+    };
     preds.push(format!(
         "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
     ));
@@ -598,6 +588,17 @@ pub async fn handle_query_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_translate_query_range_unsupported_or_metric_errors() {
+        // A parsed-but-not-yet-lowered stage (| json) must error — not panic,
+        // not emit wrong SQL (FR3 staged lowering).
+        assert!(translate_query_range(r#"{app="a"} | json"#, 0, 1, 10, true).is_err());
+        // The log-query path rejects a metric query.
+        assert!(translate_query_range(r#"count_over_time({app="a"}[5m])"#, 0, 1, 10, true).is_err());
+        // A line filter still lowers (parity).
+        assert!(translate_query_range(r#"{app="a"} |= "x""#, 0, 1, 10, true).is_ok());
+    }
 
     #[test]
     fn test_logql_label_matchers_to_where() {
