@@ -129,28 +129,87 @@ fn lineop_sql(op: &ast::LineOp) -> Result<&'static str, String> {
     })
 }
 
-/// Build WHERE predicates from a parsed log pipeline: selector matchers + line
-/// filters (empty filter = no-op). Non-line-filter stages (json, label_format,
-/// label filters, …) are parsed but not yet lowered to SQL → returns an error
-/// (FR3 staged lowering), reusing [`label_pred`]/[`line_pred`] so the emitted
-/// SQL is identical to the previous ad-hoc translator (FR5 parity).
+/// LHS SQL for a label name: promoted column or `prom_attr` on resource attrs.
+fn label_lhs(name: &str) -> String {
+    if name == PROMOTED_LABEL {
+        PROMOTED_LABEL.to_string()
+    } else {
+        format!("prom_attr(resource_attributes, '{}')", esc(name))
+    }
+}
+
+/// Lower a label-filter predicate over a *stored* label. String ops mirror the
+/// selector semantics; numeric ops cast the value to a double. A non-numeric
+/// value for a numeric op (e.g. a duration/bytes literal like `250ms`) is not
+/// yet supported → error.
+fn label_filter_pred(lf: &ast::LabelFilter) -> Result<String, String> {
+    use ast::CmpOp;
+    let lhs = label_lhs(&lf.name);
+    let v = esc(&lf.value);
+    let numeric = |op: &str| -> Result<String, String> {
+        let n = lf
+            .value
+            .parse::<f64>()
+            .map_err(|_| format!("non-numeric label filter value not yet supported: {}", lf.value))?;
+        Ok(format!("CAST({lhs} AS DOUBLE) {op} {n}"))
+    };
+    Ok(match lf.op {
+        CmpOp::Eq if lf.value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
+        CmpOp::Eq => format!("{lhs} = '{v}'"),
+        CmpOp::Neq => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
+        CmpOp::Re => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
+        CmpOp::Nre => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
+        CmpOp::EqEq => numeric("=")?,
+        CmpOp::Gt => numeric(">")?,
+        CmpOp::Gte => numeric(">=")?,
+        CmpOp::Lt => numeric("<")?,
+        CmpOp::Lte => numeric("<=")?,
+    })
+}
+
+/// Build WHERE predicates from a parsed log pipeline. Lowers selector matchers,
+/// line filters (`|= != |~ !~`; empty = no-op), and label filters over *stored*
+/// labels. Parser/format stages (json/logfmt/regexp/pattern/unpack, line_format,
+/// label_format, drop/keep, decolorize, unwrap) are no-ops for row matching.
+///
+/// A label filter that follows an extraction stage (json/logfmt/…) may reference
+/// a runtime-extracted label, which Sol's column-based backend cannot evaluate
+/// (the dynamic-label-pipeline non-goal); such a filter returns a clear error
+/// rather than silently-wrong SQL (FR3, NFR3).
 fn pipeline_preds(p: &ast::LogPipeline) -> Result<Vec<String>, String> {
+    use ast::Stage;
     let mut preds = Vec::new();
     for m in &p.selector.matchers {
         preds.push(label_pred(&m.name, matchop_sql(&m.op), &m.value)?);
     }
+    let mut extracted = false;
     for stage in &p.stages {
         match stage {
-            ast::Stage::Line { op, value } => {
-                if value.is_empty() {
-                    continue; // empty filter is a no-op (matches everything)
+            Stage::Line { op, value } => {
+                if !value.is_empty() {
+                    preds.push(line_pred(lineop_sql(op)?, value)?);
                 }
-                preds.push(line_pred(lineop_sql(op)?, value)?);
             }
-            other => {
-                return Err(format!(
-                    "LogQL pipeline stage not yet supported in lowering: {other:?}"
-                ));
+            // Extraction stages define new labels from the line; they don't
+            // filter rows, but they make later label filters dynamic.
+            Stage::Json | Stage::Logfmt | Stage::Unpack | Stage::Regexp(_) | Stage::Pattern(_) => {
+                extracted = true;
+            }
+            // Output-shaping stages: no effect on which rows match.
+            Stage::Decolorize
+            | Stage::LineFormat(_)
+            | Stage::LabelFormat(_)
+            | Stage::Drop(_)
+            | Stage::Keep(_)
+            | Stage::Unwrap(_) => {}
+            Stage::LabelFilter(lf) => {
+                if extracted {
+                    return Err(format!(
+                        "label filter on a runtime-extracted label is not supported: {}",
+                        lf.name
+                    ));
+                }
+                preds.push(label_filter_pred(lf)?);
             }
         }
     }
@@ -591,13 +650,52 @@ mod tests {
 
     #[test]
     fn test_translate_query_range_unsupported_or_metric_errors() {
-        // A parsed-but-not-yet-lowered stage (| json) must error — not panic,
-        // not emit wrong SQL (FR3 staged lowering).
-        assert!(translate_query_range(r#"{app="a"} | json"#, 0, 1, 10, true).is_err());
+        // A label filter after an extraction stage is a dynamic-label pipeline
+        // (non-goal) — must error, not emit silently-wrong SQL (FR3/NFR3).
+        assert!(
+            translate_query_range(r#"{app="a"} | json | level="x""#, 0, 1, 10, true).is_err()
+        );
         // The log-query path rejects a metric query.
         assert!(translate_query_range(r#"count_over_time({app="a"}[5m])"#, 0, 1, 10, true).is_err());
-        // A line filter still lowers (parity).
+        // Parser/format stages are no-ops for matching → still lowers.
+        assert!(translate_query_range(r#"{app="a"} | json"#, 0, 1, 10, true).is_ok());
+        // A line filter lowers (parity).
         assert!(translate_query_range(r#"{app="a"} |= "x""#, 0, 1, 10, true).is_ok());
+    }
+
+    #[test]
+    fn test_lower_label_filter_string_and_numeric() {
+        let s = translate_query_range(r#"{app="a"} | level="error""#, 0, 1, 10, true).unwrap();
+        assert!(
+            s.contains("prom_attr(resource_attributes, 'level') = 'error'"),
+            "sql: {s}"
+        );
+        let n = translate_query_range(r#"{app="a"} | status>=500"#, 0, 1, 10, true).unwrap();
+        assert!(
+            n.contains("CAST(prom_attr(resource_attributes, 'status') AS DOUBLE) >= 500"),
+            "sql: {n}"
+        );
+        // promoted column
+        let p = translate_query_range(r#"{app="a"} | service_name="x""#, 0, 1, 10, true).unwrap();
+        assert!(p.contains("service_name = 'x'"), "sql: {p}");
+        // a duration-valued numeric filter is not yet supported
+        assert!(translate_query_range(r#"{app="a"} | latency>250ms"#, 0, 1, 10, true).is_err());
+    }
+
+    #[test]
+    fn test_lower_parser_stages_are_noops() {
+        // json/logfmt/line_format/drop don't filter rows → lowers without error,
+        // adding no extra WHERE predicate beyond the selector + time bound.
+        let s = translate_query_range(
+            r#"{app="a"} | json | logfmt | line_format "{{.x}}" | drop a, b | decolorize"#,
+            0,
+            1,
+            10,
+            true,
+        )
+        .unwrap();
+        assert!(!s.contains("LIKE"), "no line filter: {s}");
+        assert!(s.contains("service_name = 'a'") || s.contains("prom_attr"), "selector kept: {s}");
     }
 
     #[test]
