@@ -461,6 +461,11 @@ datafusion-functions-json = { version = "0.53.1", optional = true }
 moka = { version = "0.12", features = ["sync"], optional = true }
 object_store = { version = "0.13", features = ["aws"], optional = true }
 promql-parser = { version = "0.9", optional = true }
+# grmtools — LogQL/TraceQL parsers (query-backend). Already in the tree via
+# promql-parser; pinned to the same 0.13 line. Codegen runs in build.rs.
+lrpar = { version = "0.13", optional = true }
+lrlex = { version = "0.13", optional = true }
+cfgrammar = { version = "0.13", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"
@@ -477,6 +482,11 @@ netlink-sys = { version = "0.8.7", features = ["tokio_socket"] }
 [build-dependencies]
 prost-build = { workspace = true, optional = true }
 tonic-build = { workspace = true, optional = true }
+# grmtools codegen for the LogQL/TraceQL grammars (gated at runtime on the
+# query-backend feature env var inside build.rs).
+cfgrammar = "0.13"
+lrlex = "0.13"
+lrpar = "0.13"
 # update 'openssl_version' in website/config.toml whenever <major.minor> version changes
 openssl-src = { version = "300", default-features = false, features = ["force-engine", "legacy"] }
 
@@ -572,6 +582,9 @@ query-backend = [
   "dep:moka",
   "dep:object_store",
   "dep:promql-parser",
+  "dep:lrpar",
+  "dep:lrlex",
+  "dep:cfgrammar",
   "codecs-parquet",
 ]
 
