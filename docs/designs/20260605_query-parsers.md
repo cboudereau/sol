@@ -1,5 +1,12 @@
 # query-parsers — Design Doc
 
+> **Status: implemented (Sessions 1–4, 2026-06-05).** LogQL and TraceQL parsers
+> ship on grmtools in `src/query/logql/` and `src/query/traceql/`, wired into
+> `translate_query_range`/`handle_volume`/`series`/`index` and `translate_search`
+> at parity. `query::` suite 153/153, clippy `-D warnings` clean. The shipped
+> parse/lower coverage and remaining gaps are in the **Coverage matrix** at the
+> end of this document. Decision: [ADR 0042](../adrs/0042-logql-traceql-parser-strategy.md).
+
 ## Context
 
 Sol's query backend translates LogQL and TraceQL to SQL over Parquet (DataFusion).
@@ -14,7 +21,7 @@ This work replaces that string-slicing with real grammar-faithful parsers built
 the **same way the Go upstream builds them** — a yacc/LALR grammar plus a
 hand-written lexer — using grmtools so the grammar artifact ports from, and
 re-syncs with, Loki's `pkg/logql/syntax/expr.y` and Tempo's `pkg/traceql/expr.y`.
-Background and upstream analysis: [QUERY-PARSING.md](../parquet-backend/QUERY-PARSING.md).
+Background and upstream analysis: [QUERY-PARSING.md](../workspace/parquet-backend/QUERY-PARSING.md).
 
 A core deliverable is an explicit **coverage matrix** per language — grammar
 feature → (parsed? / lowered-to-SQL? / deferred-why) — so the gap between today's
@@ -199,7 +206,7 @@ vs `deferred`. This cleanly separates "we can read the query" from "we can answe
 it", and is how the gap is made explicit.
 
 Decisions:
-- [Parser strategy: grmtools, porting the upstream goyacc grammar](./adrs/parser-strategy.md)
+- [ADR 0042 — Parser strategy: grmtools, porting the upstream goyacc grammar](../adrs/0042-logql-traceql-parser-strategy.md)
 
 ## Cross-cutting Concerns
 
@@ -211,3 +218,51 @@ Decisions:
 - **Rollback** — the parse→lower modules sit behind unchanged public functions; a
   regression reverts to the prior `loki.rs`/`tempo.rs` internals via git without API
   impact.
+
+## Coverage matrix (FR6 — shipped state & gap)
+
+Legend: ✅ shipped (parses + lowers) · 🟡 parses, lowering partial/at-parity ·
+⛔ deferred (non-goal, reason). Carried over from the workspace at integration.
+
+### LogQL
+Parser is **complete** except binary `on/ignoring/group_left/right` modifiers
+(parsed as bare operators). Lowering wired into `translate_query_range`/
+`handle_volume`/`series`/`index`.
+
+| Feature | state | Notes |
+|---|:--:|---|
+| `{matchers}` `= != =~ !~` (anchored) | ✅ | |
+| Line filters `\|= != \|~ !~` (empty no-op) | ✅ | |
+| `\|>` / `!>` pattern line filters | 🟡 | parsed; lowering deferred |
+| `or`-composed line filters | ⛔ | not parsed (later slice) |
+| label filter on stored labels (`\| lvl="x"`, numeric `>=`) | ✅ | |
+| `\| json/logfmt/unpack/regexp/pattern` | 🟡 | parsed; no-op for streams matching |
+| label filter after extraction (dynamic label) | ⛔ | needs row-pipeline executor |
+| `\| label_format` / `\| line_format` | ⛔ | per-row templating |
+| `\| drop/keep/decolorize/unwrap` | 🟡 | parsed; no-op for streams |
+| range/vector aggregations (`rate`, `_over_time`, `sum`, `topk`, …) | 🟡 | parsed; only the `count_over_time`+`sum by` volume shape lowers |
+| metric binary ops (`a/b`, on/ignoring/group) | 🟡 | parsed; lowering deferred |
+
+### TraceQL
+Parser covers spanset filters `{ … }` combined by `&& || >> <<`, field
+expressions (comparisons, `&&`/`||`, parens, scoped attrs, intrinsics, literals).
+Pipeline/aggregate/metrics parsing deferred. Lowering wired into `translate_search`.
+
+| Feature | state | Notes |
+|---|:--:|---|
+| `{ a=b }`, `{ a!=b }`, `&&` within a set | ✅ | |
+| `\|\|` within a set | ✅ | parenthesised OR |
+| comparison `> >= < <= =~ !~`, duration→nanos | ✅ | |
+| intrinsics + `span.`/`resource.` attrs | ✅ | |
+| `event/instrumentation/link/parent` scopes | 🟡 | parsed; lowering deferred |
+| structural `>> << ~` + `&`/`!` variants | 🟡 | parsed; lowering needs span-tree joins (deferred) |
+| multi-set combinators (`{a} && {b}`) | 🟡 | parsed; lowering deferred |
+| pipeline aggregates / `select`/`coalesce` / metrics | ⛔ | not parsed (later slice) |
+
+### Remaining work (future ADRs/slices)
+- LogQL metric-query lowering (a LogQL metric engine over the `logs` table,
+  mirroring the PromQL range work) — the largest item.
+- LogQL binary label-matching modifiers (`on`/`ignoring`/`group_left`/`group_right`).
+- TraceQL structural-operator lowering (recursive `parent_span_id` joins) and
+  pipeline/aggregate/metrics parsing.
+- `or`-composed LogQL line filters; pattern (`\|>`) lowering.
