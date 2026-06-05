@@ -1,7 +1,11 @@
 ---
-status: draft
+status: accepted
 ---
 # Parser strategy: grmtools, porting the upstream goyacc grammar
+
+> **Scope decision (accepted):** implement **LogQL first** and judge the payoff
+> before starting TraceQL. The grmtools approach below applies to both, but the
+> TraceQL sessions (3–4) are gated on a review after the LogQL sessions land.
 
 Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [NFR1](../DESIGN.md#nfr1), [NFR2](../DESIGN.md#nfr2)
 

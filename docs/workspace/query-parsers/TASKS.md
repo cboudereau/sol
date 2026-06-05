@@ -253,13 +253,16 @@ Tasks: 6
 **Checkpoint**: `cargo test --features query-backend --lib query::logql && cargo clippy --features query-backend -- -D warnings`
 **Commit point**: yes
 
-### Session 3 — TraceQL parser + parity (~3H)
+> ⏸ **Sessions 3–4 are gated.** Per the accepted scope decision, start TraceQL
+> only after a payoff review of the LogQL sessions (1–2). Do not auto-proceed.
+
+### Session 3 — TraceQL parser + parity (~3H) — ⏸ gated on LogQL payoff review
 Tasks: 7, 8, 9
 **Skills**: `rust-software-engineer`
 **Checkpoint**: `cargo test --features query-backend --lib query::tempo && cargo test --features query-backend --lib query::traceql && cargo clippy --features query-backend -- -D warnings`
 **Commit point**: yes
 
-### Session 4 — TraceQL lowering widen + hardening + gap finalise (~2.5H)
+### Session 4 — TraceQL lowering widen + hardening + gap finalise (~2.5H) — ⏸ gated
 Tasks: 10, 11
 **Skills**: `rust-software-engineer`
 **Checkpoint**: `cargo test --features query-backend --lib query:: && cargo clippy --features query-backend -- -D warnings`
