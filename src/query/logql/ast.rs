@@ -132,4 +132,112 @@ pub enum Stage {
     LabelFormat(Vec<(String, String)>),
     /// `| name op value` label filter.
     LabelFilter(LabelFilter),
+    /// `| unwrap <label>` — extract a numeric value from a label (range metric).
+    Unwrap(String),
+}
+
+/// Top-level LogQL expression: a log query or a metric (sample) query.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogQlExpr {
+    /// A log query (`{ … } | …`).
+    Log(LogPipeline),
+    /// A metric query (`rate(…)`, `sum(…)`, `a/b`, …).
+    Sample(SampleExpr),
+}
+
+/// `by (…)` / `without (…)` aggregation grouping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping {
+    /// `true` for `without`, `false` for `by`.
+    pub without: bool,
+    /// Grouping label names.
+    pub labels: Vec<String>,
+}
+
+/// A log range: a log pipeline plus the `[interval]` and optional `offset`.
+/// (`| unwrap label` is carried as a [`Stage::Unwrap`] inside `pipeline`.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRange {
+    /// The inner log pipeline.
+    pub pipeline: LogPipeline,
+    /// Raw range interval (e.g. `5m`).
+    pub interval: String,
+    /// Raw offset (e.g. `1h`), if any.
+    pub offset: Option<String>,
+}
+
+/// Binary operator on metric expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinOp {
+    /// `+`
+    Add,
+    /// `-`
+    Sub,
+    /// `*`
+    Mul,
+    /// `/`
+    Div,
+    /// `%`
+    Mod,
+    /// `^`
+    Pow,
+    /// `==`
+    Eq,
+    /// `!=`
+    Neq,
+    /// `>`
+    Gt,
+    /// `>=`
+    Gte,
+    /// `<`
+    Lt,
+    /// `<=`
+    Lte,
+    /// `and`
+    And,
+    /// `or`
+    Or,
+    /// `unless`
+    Unless,
+}
+
+/// A LogQL metric (sample) expression.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SampleExpr {
+    /// Range aggregation over a log range (`rate`, `count_over_time`, …).
+    RangeAgg {
+        /// Operator name (raw, e.g. `count_over_time`).
+        op: String,
+        /// Optional scalar parameter (e.g. the φ of `quantile_over_time`).
+        param: Option<String>,
+        /// The log range argument.
+        range: Box<LogRange>,
+        /// Optional grouping.
+        grouping: Option<Grouping>,
+    },
+    /// Vector aggregation over a metric expression (`sum`, `topk`, …).
+    VectorAgg {
+        /// Operator name (raw, e.g. `sum`).
+        op: String,
+        /// Optional scalar parameter (e.g. the `k` of `topk`).
+        param: Option<String>,
+        /// Inner metric expression.
+        inner: Box<SampleExpr>,
+        /// Optional grouping.
+        grouping: Option<Grouping>,
+    },
+    /// Binary operation between two metric expressions.
+    ///
+    /// `bool`/`on`/`ignoring`/`group_left`/`group_right` modifiers are not yet
+    /// parsed (a later slice); bare operators only.
+    Binary {
+        /// The operator.
+        op: BinOp,
+        /// Left operand.
+        lhs: Box<SampleExpr>,
+        /// Right operand.
+        rhs: Box<SampleExpr>,
+    },
+    /// A scalar number literal.
+    Number(f64),
 }

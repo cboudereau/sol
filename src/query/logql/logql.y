@@ -1,8 +1,15 @@
 %start Root
 %avoid_insert "IDENTIFIER" "STRING" "NUMLIT"
+%left "OR"
+%left "AND" "UNLESS"
+%nonassoc "EQEQ" "NEQ" "GT" "GTE" "LT" "LTE"
+%left "PLUS" "MINUS"
+%left "STAR" "SLASH" "PCT"
+%right "CARET"
 %%
-Root -> Result<LogPipeline, ()>:
-    Pipeline { $1 }
+Root -> Result<LogQlExpr, ()>:
+    Pipeline   { Ok(LogQlExpr::Log($1?)) }
+  | SampleExpr { Ok(LogQlExpr::Sample($1?)) }
   ;
 
 Pipeline -> Result<LogPipeline, ()>:
@@ -46,6 +53,7 @@ PStage -> Result<Stage, ()>:
   | "PIPE" "LOGFMT"      { Ok(Stage::Logfmt) }
   | "PIPE" "UNPACK"      { Ok(Stage::Unpack) }
   | "PIPE" "DECOLORIZE"  { Ok(Stage::Decolorize) }
+  | "PIPE" "UNWRAP" "IDENTIFIER" { Ok(Stage::Unwrap($lexer.span_str($3.map_err(|_| ())?.span()).to_string())) }
   | "PIPE" "REGEXP" "STRING"      { Ok(Stage::Regexp(unquote($lexer.span_str($3.map_err(|_| ())?.span())))) }
   | "PIPE" "PATTERN" "STRING"     { Ok(Stage::Pattern(unquote($lexer.span_str($3.map_err(|_| ())?.span())))) }
   | "PIPE" "LINE_FORMAT" "STRING" { Ok(Stage::LineFormat(unquote($lexer.span_str($3.map_err(|_| ())?.span())))) }
@@ -104,10 +112,91 @@ Fmt -> Result<(String, String), ()>:
         Ok((dst, src))
     }
   ;
+
+SampleExpr -> Result<SampleExpr, ()>:
+    SampleExpr "OR"     SampleExpr { bin(BinOp::Or,     $1, $3) }
+  | SampleExpr "AND"    SampleExpr { bin(BinOp::And,    $1, $3) }
+  | SampleExpr "UNLESS" SampleExpr { bin(BinOp::Unless, $1, $3) }
+  | SampleExpr "EQEQ"   SampleExpr { bin(BinOp::Eq,     $1, $3) }
+  | SampleExpr "NEQ"    SampleExpr { bin(BinOp::Neq,    $1, $3) }
+  | SampleExpr "GT"     SampleExpr { bin(BinOp::Gt,     $1, $3) }
+  | SampleExpr "GTE"    SampleExpr { bin(BinOp::Gte,    $1, $3) }
+  | SampleExpr "LT"     SampleExpr { bin(BinOp::Lt,     $1, $3) }
+  | SampleExpr "LTE"    SampleExpr { bin(BinOp::Lte,    $1, $3) }
+  | SampleExpr "PLUS"   SampleExpr { bin(BinOp::Add,    $1, $3) }
+  | SampleExpr "MINUS"  SampleExpr { bin(BinOp::Sub,    $1, $3) }
+  | SampleExpr "STAR"   SampleExpr { bin(BinOp::Mul,    $1, $3) }
+  | SampleExpr "SLASH"  SampleExpr { bin(BinOp::Div,    $1, $3) }
+  | SampleExpr "PCT"    SampleExpr { bin(BinOp::Mod,    $1, $3) }
+  | SampleExpr "CARET"  SampleExpr { bin(BinOp::Pow,    $1, $3) }
+  | "LPAREN" SampleExpr "RPAREN" { $2 }
+  | "NUMLIT" {
+        $lexer.span_str($1.map_err(|_| ())?.span())
+            .parse::<f64>().map(SampleExpr::Number).map_err(|_| ())
+    }
+  | Aggregation { $1 }
+  ;
+
+Aggregation -> Result<SampleExpr, ()>:
+    "IDENTIFIER" "LPAREN" LogRange "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::RangeAgg { op, param: None, range: Box::new($3?), grouping: None })
+    }
+  | "IDENTIFIER" "LPAREN" "NUMLIT" "COMMA" LogRange "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        let param = $lexer.span_str($3.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::RangeAgg { op, param: Some(param), range: Box::new($5?), grouping: None })
+    }
+  | "IDENTIFIER" "LPAREN" SampleExpr "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::VectorAgg { op, param: None, inner: Box::new($3?), grouping: None })
+    }
+  | "IDENTIFIER" "LPAREN" "NUMLIT" "COMMA" SampleExpr "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        let param = $lexer.span_str($3.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::VectorAgg { op, param: Some(param), inner: Box::new($5?), grouping: None })
+    }
+  | "IDENTIFIER" Group "LPAREN" LogRange "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::RangeAgg { op, param: None, range: Box::new($4?), grouping: Some($2?) })
+    }
+  | "IDENTIFIER" Group "LPAREN" SampleExpr "RPAREN" {
+        let op = $lexer.span_str($1.map_err(|_| ())?.span()).to_string();
+        Ok(SampleExpr::VectorAgg { op, param: None, inner: Box::new($4?), grouping: Some($2?) })
+    }
+  ;
+
+Group -> Result<Grouping, ()>:
+    "BY" "LPAREN" Idents "RPAREN"      { Ok(Grouping { without: false, labels: $3? }) }
+  | "WITHOUT" "LPAREN" Idents "RPAREN" { Ok(Grouping { without: true,  labels: $3? }) }
+  | "BY" "LPAREN" "RPAREN"            { Ok(Grouping { without: false, labels: vec![] }) }
+  | "WITHOUT" "LPAREN" "RPAREN"       { Ok(Grouping { without: true,  labels: vec![] }) }
+  ;
+
+LogRange -> Result<LogRange, ()>:
+    Pipeline "LBRACKET" "NUMLIT" "RBRACKET" OffsetOpt {
+        Ok(LogRange {
+            pipeline: $1?,
+            interval: $lexer.span_str($3.map_err(|_| ())?.span()).to_string(),
+            offset: $5?,
+        })
+    }
+  ;
+
+OffsetOpt -> Result<Option<String>, ()>:
+    { Ok(None) }
+  | "OFFSET" "NUMLIT" { Ok(Some($lexer.span_str($2.map_err(|_| ())?.span()).to_string())) }
+  ;
 %%
 use crate::query::logql::ast::{
-    CmpOp, LabelFilter, LabelMatcher, LineOp, LogPipeline, MatchOp, Selector, Stage,
+    BinOp, CmpOp, Grouping, LabelFilter, LabelMatcher, LineOp, LogPipeline, LogQlExpr, LogRange,
+    MatchOp, SampleExpr, Selector, Stage,
 };
+
+/// Build a binary metric expression.
+fn bin(op: BinOp, lhs: Result<SampleExpr, ()>, rhs: Result<SampleExpr, ()>) -> Result<SampleExpr, ()> {
+    Ok(SampleExpr::Binary { op, lhs: Box::new(lhs?), rhs: Box::new(rhs?) })
+}
 
 /// Strip surrounding quotes/backticks; double-quoted strings use Go-style
 /// escapes (`\\` → `\`), backticks are raw.

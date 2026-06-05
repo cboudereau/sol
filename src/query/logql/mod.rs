@@ -34,7 +34,7 @@ mod grammar {
     pub(super) use logql_y::parse;
 }
 
-use ast::{LogPipeline, Selector};
+use ast::{LogPipeline, LogQlExpr, Selector};
 
 /// A LogQL parse failure. Surfaced as HTTP 400 by the route handlers (FR7).
 #[derive(Debug)]
@@ -48,13 +48,10 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Parse a LogQL log query — a stream selector plus its pipeline — into a
-/// [`LogPipeline`]. Never panics on any input (NFR3); malformed input yields a
+/// Parse any LogQL query — a log query or a metric (sample) query — into a
+/// [`LogQlExpr`]. Never panics on any input (NFR3); malformed input yields a
 /// [`ParseError`].
-///
-/// Current scope: stream selector + pipeline stages (Tasks 1–2). Metric queries
-/// (`SampleExpr`) follow.
-pub fn parse_pipeline(input: &str) -> Result<LogPipeline, ParseError> {
+pub fn parse(input: &str) -> Result<LogQlExpr, ParseError> {
     let lexerdef = grammar::lexerdef();
     let lexer = lexerdef.lexer(input);
     let (res, errs) = grammar::parse(&lexer);
@@ -65,8 +62,19 @@ pub fn parse_pipeline(input: &str) -> Result<LogPipeline, ParseError> {
         )));
     }
     match res {
-        Some(Ok(p)) => Ok(p),
+        Some(Ok(expr)) => Ok(expr),
         _ => Err(ParseError("invalid LogQL query".to_string())),
+    }
+}
+
+/// Parse a LogQL log query (selector + pipeline). Errors if the input is a
+/// metric query.
+pub fn parse_pipeline(input: &str) -> Result<LogPipeline, ParseError> {
+    match parse(input)? {
+        LogQlExpr::Log(p) => Ok(p),
+        LogQlExpr::Sample(_) => {
+            Err(ParseError("expected a log query, got a metric query".to_string()))
+        }
     }
 }
 
@@ -168,5 +176,62 @@ mod tests {
         // Grafana Explore sends `|= \`\`` — must parse as an empty (no-op) filter.
         let p = parse_pipeline("{app=\"a\"} |= ``").unwrap();
         assert_eq!(p.stages, vec![Stage::Line { op: LineOp::Contains, value: String::new() }]);
+    }
+
+    #[test]
+    fn test_parse_range_aggregation_volume_shape() {
+        use ast::{LogQlExpr, SampleExpr};
+        // The demo's log-volume query.
+        let e = parse(r#"sum by (level) (count_over_time({app="a"}[5m]))"#).unwrap();
+        let LogQlExpr::Sample(SampleExpr::VectorAgg { op, grouping, inner, .. }) = e else {
+            panic!("expected vector agg: {e:?}");
+        };
+        assert_eq!(op, "sum");
+        let g = grouping.unwrap();
+        assert!(!g.without);
+        assert_eq!(g.labels, vec!["level".to_string()]);
+        let SampleExpr::RangeAgg { op, range, .. } = *inner else {
+            panic!("expected inner range agg");
+        };
+        assert_eq!(op, "count_over_time");
+        assert_eq!(range.interval, "5m");
+        assert_eq!(range.pipeline.selector.matchers.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_binary_ratio_with_precedence() {
+        use ast::{BinOp, LogQlExpr, SampleExpr};
+        // a / b + c  parses as  (a / b) + c
+        let e = parse(
+            r#"sum(rate({a="x"}[1m])) / sum(rate({b="y"}[1m])) + count_over_time({c="z"}[1m])"#,
+        )
+        .unwrap();
+        let LogQlExpr::Sample(SampleExpr::Binary { op: BinOp::Add, lhs, .. }) = e else {
+            panic!("top should be +: {e:?}");
+        };
+        assert!(matches!(*lhs, SampleExpr::Binary { op: BinOp::Div, .. }), "lhs should be /");
+    }
+
+    #[test]
+    fn test_parse_topk_param_and_quantile_over_time() {
+        use ast::{LogQlExpr, SampleExpr};
+        let e = parse(r#"topk(5, sum by (x) (rate({a="b"}[1m])))"#).unwrap();
+        let LogQlExpr::Sample(SampleExpr::VectorAgg { op, param, .. }) = e else {
+            panic!("expected topk vector agg");
+        };
+        assert_eq!(op, "topk");
+        assert_eq!(param.as_deref(), Some("5"));
+
+        let q = parse(r#"quantile_over_time(0.95, {a="b"} | unwrap latency [5m])"#).unwrap();
+        let LogQlExpr::Sample(SampleExpr::RangeAgg { op, param, range, .. }) = q else {
+            panic!("expected quantile range agg");
+        };
+        assert_eq!(op, "quantile_over_time");
+        assert_eq!(param.as_deref(), Some("0.95"));
+        assert!(
+            range.pipeline.stages.iter().any(|s| matches!(s, ast::Stage::Unwrap(l) if l == "latency")),
+            "unwrap stage present: {:?}",
+            range.pipeline.stages
+        );
     }
 }
