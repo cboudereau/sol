@@ -38,3 +38,98 @@ pub struct Selector {
     /// The label matchers inside the braces (possibly empty for `{}`).
     pub matchers: Vec<LabelMatcher>,
 }
+
+/// A log query: a stream selector followed by a left-to-right pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogPipeline {
+    /// The `{ … }` stream selector.
+    pub selector: Selector,
+    /// Pipeline stages applied in order.
+    pub stages: Vec<Stage>,
+}
+
+/// Line-filter operator. `|=`/`!=` are substring; `|~`/`!~` are regex; `|>`/`!>`
+/// are pattern filters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineOp {
+    /// `|=` — line contains.
+    Contains,
+    /// `!=` — line does not contain.
+    NotContains,
+    /// `|~` — line matches regex.
+    Re,
+    /// `!~` — line does not match regex.
+    Nre,
+    /// `|>` — line matches pattern.
+    Pattern,
+    /// `!>` — line does not match pattern.
+    NotPattern,
+}
+
+/// Label-filter comparison operator (on extracted/stored labels).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CmpOp {
+    /// `=`
+    Eq,
+    /// `==`
+    EqEq,
+    /// `!=`
+    Neq,
+    /// `=~`
+    Re,
+    /// `!~`
+    Nre,
+    /// `>`
+    Gt,
+    /// `>=`
+    Gte,
+    /// `<`
+    Lt,
+    /// `<=`
+    Lte,
+}
+
+/// A single label-filter predicate (`name op value`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelFilter {
+    /// Label name.
+    pub name: String,
+    /// Comparison operator.
+    pub op: CmpOp,
+    /// Right-hand value (string, number, or duration/bytes literal — raw).
+    pub value: String,
+}
+
+/// A pipeline stage. Node set mirrors Loki's pipeline stages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stage {
+    /// Line filter (`|=`, `!=`, `|~`, `!~`, `|>`, `!>`).
+    Line {
+        /// The line-filter operator.
+        op: LineOp,
+        /// The (unquoted) filter value; empty = no-op.
+        value: String,
+    },
+    /// `| json` (no explicit field map).
+    Json,
+    /// `| logfmt`.
+    Logfmt,
+    /// `| unpack`.
+    Unpack,
+    /// `| decolorize`.
+    Decolorize,
+    /// `| regexp "…"`.
+    Regexp(String),
+    /// `| pattern "…"`.
+    Pattern(String),
+    /// `| line_format "…"`.
+    LineFormat(String),
+    /// `| drop a, b`.
+    Drop(Vec<String>),
+    /// `| keep a, b`.
+    Keep(Vec<String>),
+    /// `| label_format dst=src|"template", …` (rhs captured raw).
+    LabelFormat(Vec<(String, String)>),
+    /// `| name op value` label filter.
+    LabelFilter(LabelFilter),
+}

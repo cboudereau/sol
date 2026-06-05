@@ -34,7 +34,7 @@ mod grammar {
     pub(super) use logql_y::parse;
 }
 
-use ast::Selector;
+use ast::{LogPipeline, Selector};
 
 /// A LogQL parse failure. Surfaced as HTTP 400 by the route handlers (FR7).
 #[derive(Debug)]
@@ -48,11 +48,13 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Parse a LogQL stream selector (`{ … }`) into a [`Selector`]. Never panics on
-/// any input (NFR3); malformed input yields a [`ParseError`].
+/// Parse a LogQL log query — a stream selector plus its pipeline — into a
+/// [`LogPipeline`]. Never panics on any input (NFR3); malformed input yields a
+/// [`ParseError`].
 ///
-/// Task 1 scope: the stream selector only. Pipeline + metric queries follow.
-pub fn parse_selector(input: &str) -> Result<Selector, ParseError> {
+/// Current scope: stream selector + pipeline stages (Tasks 1–2). Metric queries
+/// (`SampleExpr`) follow.
+pub fn parse_pipeline(input: &str) -> Result<LogPipeline, ParseError> {
     let lexerdef = grammar::lexerdef();
     let lexer = lexerdef.lexer(input);
     let (res, errs) = grammar::parse(&lexer);
@@ -63,9 +65,14 @@ pub fn parse_selector(input: &str) -> Result<Selector, ParseError> {
         )));
     }
     match res {
-        Some(Ok(sel)) => Ok(sel),
-        _ => Err(ParseError("invalid LogQL selector".to_string())),
+        Some(Ok(p)) => Ok(p),
+        _ => Err(ParseError("invalid LogQL query".to_string())),
     }
+}
+
+/// Parse just the stream selector of a LogQL log query.
+pub fn parse_selector(input: &str) -> Result<Selector, ParseError> {
+    parse_pipeline(input).map(|p| p.selector)
 }
 
 #[cfg(test)]
@@ -103,5 +110,63 @@ mod tests {
         assert!(parse_selector("garbage").is_err());
         assert!(parse_selector("").is_err());
         assert!(parse_selector("{=\"x\"}").is_err());
+    }
+
+    #[test]
+    fn test_parse_pipeline_line_filters() {
+        use ast::{LineOp, Stage};
+        let p = parse_pipeline(r#"{app="a"} |= "err" != "noise" |~ "re" !~ "nre""#).unwrap();
+        assert_eq!(p.selector.matchers.len(), 1);
+        assert_eq!(
+            p.stages,
+            vec![
+                Stage::Line { op: LineOp::Contains, value: "err".into() },
+                Stage::Line { op: LineOp::NotContains, value: "noise".into() },
+                Stage::Line { op: LineOp::Re, value: "re".into() },
+                Stage::Line { op: LineOp::Nre, value: "nre".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_pipeline_parsers_and_formats() {
+        use ast::Stage;
+        let p = parse_pipeline(
+            r#"{app="a"} | json | logfmt | regexp "(?P<x>.*)" | line_format "{{.x}}" | drop a, b | keep c"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p.stages,
+            vec![
+                Stage::Json,
+                Stage::Logfmt,
+                Stage::Regexp("(?P<x>.*)".into()),
+                Stage::LineFormat("{{.x}}".into()),
+                Stage::Drop(vec!["a".into(), "b".into()]),
+                Stage::Keep(vec!["c".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_pipeline_label_filter_and_format() {
+        use ast::{CmpOp, LabelFilter, Stage};
+        let p = parse_pipeline(r#"{app="a"} | status>=500 | label_format dst=src, t="v""#).unwrap();
+        assert_eq!(
+            p.stages[0],
+            Stage::LabelFilter(LabelFilter { name: "status".into(), op: CmpOp::Gte, value: "500".into() })
+        );
+        assert_eq!(
+            p.stages[1],
+            Stage::LabelFormat(vec![("dst".into(), "src".into()), ("t".into(), "v".into())])
+        );
+    }
+
+    #[test]
+    fn test_parse_pipeline_empty_backtick_line_filter() {
+        use ast::{LineOp, Stage};
+        // Grafana Explore sends `|= \`\`` — must parse as an empty (no-op) filter.
+        let p = parse_pipeline("{app=\"a\"} |= ``").unwrap();
+        assert_eq!(p.stages, vec![Stage::Line { op: LineOp::Contains, value: String::new() }]);
     }
 }
