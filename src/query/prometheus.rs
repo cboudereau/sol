@@ -1237,11 +1237,16 @@ pub async fn handle_range(
         None => &parsed,
     };
 
-    let table = select_range_table(engine, step_ns);
+    // A coarse step routes to a rollup tier table — but rollups only cover
+    // *sealed* days (the compactor never rolls up the active day). Routing the
+    // whole range to the tier would silently drop the live tail, so each window
+    // picks its source: sealed (cacheable) windows read the tier, the live one
+    // reads raw `metrics`. When no tier qualifies, both fall back to raw.
+    let tier = select_range_table(engine, step_ns);
+    let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
     let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
         // Per-day shards aligned to UTC midnight; everything before the last day
         // is sealed/cacheable. `split` emits the shard-count metric.
-        let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
         super::frontend::split(start_ns, end_ns, 0, sealed_ns)
             .into_iter()
             .map(|s| (s.start_ns, s.end_ns))
@@ -1252,7 +1257,10 @@ pub async fn handle_range(
 
     let mut merged: RangeSeries = BTreeMap::new();
     for (s, e) in windows {
-        match eval_range_window(engine, eval_expr, s, e, &table).await? {
+        // Sealed (cacheable) windows read the rollup tier; the live window — which
+        // the tier never covers — reads raw `metrics`.
+        let table: &str = if e <= sealed_ns { &tier } else { "metrics" };
+        match eval_range_window(engine, eval_expr, s, e, table).await? {
             RangeVal::Vector(part) => {
                 for (key, (metric, points)) in part {
                     merged
@@ -2349,6 +2357,94 @@ mod tests {
             resp.data.result[0].values,
             vec![(2.0, "20".to_string()), (3.0, "30".to_string())],
             "split+merge equals the unsplit rate"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_long_range_keeps_live_tail_when_tier_selected() {
+        // Regression: a coarse-step long range routes to a rollup tier table
+        // (`metrics_5m`). Rollups only cover *sealed* days — the active day is
+        // never rolled up. Routing the *whole* range to the tier silently drops
+        // the live tail (the symptom: rate panels miss recent data while the raw
+        // histogram path shows it). The live (unsealed) shard must read raw.
+        use crate::config::query::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("sum").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+        ]));
+        let mk = |times: &[i64], vals: &[f64]| {
+            let n = times.len();
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["s"; n])),
+                    Arc::new(StringArray::from(vec!["reqs"; n])),
+                    Arc::new(StringArray::from(vec![r#"{"sc":"a"}"#; n])),
+                    Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
+                    Arc::new(Float64Array::from(vals.to_vec())),
+                ],
+            )
+            .unwrap()
+        };
+        // raw `metrics`: a monotonic counter spanning day 0 (sealed) AND day 1 (live).
+        let raw = mk(
+            &[M5, 2 * M5, DAY_NS + M5, DAY_NS + 2 * M5],
+            &[10.0, 20.0, 30.0, 40.0],
+        );
+        let f = std::fs::File::create(dir.join("m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        w.write(&raw).unwrap();
+        w.close().unwrap();
+        // rollup-5m tier: ONLY the sealed day 0 (the live day is never rolled up).
+        let rolled = mk(&[M5, 2 * M5], &[10.0, 20.0]);
+        let f = std::fs::File::create(dir.join("rollup-5m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&rolled).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig { path: tmp.path().into(), url: None },
+            ..QuerierOptions::default()
+        };
+        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        assert!(engine.has_table("metrics_5m"), "tier registered");
+
+        // 5-minute step over a 2-day range → splits per day AND selects the M5 tier.
+        let resp = handle_range(
+            &engine,
+            "sum by (sc) (rate(reqs[5m]))",
+            0,
+            2 * DAY_NS,
+            M5,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let pts = &resp.data.result[0].values;
+        #[allow(clippy::cast_precision_loss)]
+        let day1_start_s = DAY_NS as f64 / 1e9;
+        assert!(
+            pts.iter().any(|(ts, _)| *ts >= day1_start_s),
+            "live (day-1) data must survive tier routing, got: {pts:?}"
         );
     }
 
