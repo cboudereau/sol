@@ -19,6 +19,7 @@ pub mod compaction;
 pub mod frontend;
 pub mod logql;
 pub mod loki;
+pub mod plan;
 pub mod prometheus;
 pub mod rollup;
 mod routes;

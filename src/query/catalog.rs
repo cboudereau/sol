@@ -413,6 +413,36 @@ impl QueryEngine {
         Ok(batches)
     }
 
+    /// A `DataFrame` over a registered signal table — the entry point for the
+    /// `Expr`/plan-based lowering ([`super::plan`]). Signal modules build on this
+    /// (`engine.table("traces")?.filter(pred)?…`) then run it via [`Self::collect`].
+    pub async fn table(
+        &self,
+        name: &str,
+    ) -> crate::Result<datafusion::dataframe::DataFrame> {
+        Ok(self.ctx.table(name).await?)
+    }
+
+    /// Execute a built `DataFrame`, collecting Arrow batches — the plan-based twin
+    /// of [`Self::sql`]. Cached on the plan's indented display (ADR: plan-cache-keying),
+    /// reusing the same moka cache + telemetry contract.
+    pub async fn collect(
+        &self,
+        df: datafusion::dataframe::DataFrame,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use super::cache::{CacheKey, QueryCache};
+        let key = CacheKey::for_sql(&df.logical_plan().display_indent().to_string());
+        if let Some(hit) = self.cache.get(&key) {
+            super::telemetry::record_cache(true);
+            return Ok((*hit).clone());
+        }
+        super::telemetry::record_cache(false);
+        let batches = df.collect().await?;
+        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        super::telemetry::set_cache_memory(self.cache.weighted_size());
+        Ok(batches)
+    }
+
     /// Run **untrusted** user SQL (the cross-signal `/api/v1/sql` endpoint).
     /// Unlike [`Self::sql`] (used only for internally-built, trusted queries),
     /// this rejects DDL, DML, and non-query statements via DataFusion
