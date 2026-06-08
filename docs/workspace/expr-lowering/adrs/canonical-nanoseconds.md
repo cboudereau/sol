@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Canonical nanosecond units; convert only at the boundary
 

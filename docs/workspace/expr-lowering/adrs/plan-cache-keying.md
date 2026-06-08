@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Plan-based query-cache keying
 

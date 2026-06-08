@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Lowering target: DataFusion `Expr` / `LogicalPlan` via the DataFrame API
 

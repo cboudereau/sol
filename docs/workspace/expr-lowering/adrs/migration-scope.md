@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 # Migration scope: full `Expr` migration (window primitives included)
 
