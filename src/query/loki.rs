@@ -233,9 +233,22 @@ fn first_range(expr: &ast::SampleExpr) -> Option<&ast::LogRange> {
 
 use datafusion::logical_expr::expr_fn::cast;
 use datafusion::logical_expr::when;
+use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions::regex::expr_fn::regexp_like;
-use datafusion::functions_aggregate::expr_fn::count;
+use datafusion::functions::string::octet_length;
+use datafusion::functions_aggregate::expr_fn::{count, count_distinct, sum};
 use datafusion::prelude::{col, lit, DataFrame, Expr};
+
+/// `COALESCE(sum(octet_length(body)), 0)` — total log bytes, as an `Expr`.
+fn bytes_sum() -> Expr {
+    coalesce(vec![sum(octet_length().call(vec![col("body")])), lit(0_i64)])
+}
+
+/// Cast the timestamp column to ns `i64` and bound it to `[start, end]`.
+fn time_between(start_ns: i64, end_ns: i64) -> Expr {
+    cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        .between(lit(start_ns), lit(end_ns))
+}
 
 /// Label LHS as an `Expr`: promoted `service_name` column, else `prom_attr` on
 /// the `resource_attributes` JSON column.
@@ -588,22 +601,6 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(e)
 }
 
-/// WHERE predicates from an optional LogQL `{selector}` (the part before any
-/// pipeline) plus the time range. Shared by `series` / `index` endpoints.
-fn selector_preds(query: &str, start_ns: i64, end_ns: i64) -> Result<Vec<String>, String> {
-    let q = query.trim();
-    let mut preds = if q.is_empty() || q == "{}" {
-        Vec::new()
-    } else {
-        let pipeline = super::logql::parse_pipeline(q).map_err(|e| e.to_string())?;
-        pipeline_preds(&pipeline)?
-    };
-    preds.push(format!(
-        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-    Ok(preds)
-}
-
 /// Explode a `resource_attributes` JSON blob into normalized labels, merged into
 /// `m` (existing keys win).
 fn merge_attrs(m: &mut BTreeMap<String, String>, json: &str) {
@@ -664,13 +661,20 @@ pub async fn handle_index_stats(
     use datafusion::arrow::array::AsArray;
     use datafusion::arrow::datatypes::Int64Type;
 
-    let preds = selector_preds(query, start_ns, end_ns).map_err(to_err)?;
-    let sql = format!(
-        "SELECT count(DISTINCT service_name) AS streams, count(*) AS entries, \
-         COALESCE(sum(octet_length(body)), 0) AS bytes FROM logs WHERE {}",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    let pred = selector_pred_expr(query).map_err(to_err)?;
+    let mut df = engine.table("logs").await?.filter(time_between(start_ns, end_ns))?;
+    if let Some(p) = pred {
+        df = df.filter(p)?;
+    }
+    let df = df.aggregate(
+        vec![],
+        vec![
+            count_distinct(col("service_name")).alias("streams"),
+            count(lit(1_i64)).alias("entries"),
+            bytes_sum().alias("bytes"),
+        ],
+    )?;
+    let batches = engine.collect(df).await?;
     let (mut streams, mut entries, mut bytes) = (0i64, 0i64, 0i64);
     if let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) {
         streams = batch.column(0).as_primitive::<Int64Type>().value(0);
@@ -697,17 +701,28 @@ pub async fn handle_index_volume(
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::datatypes::Int64Type;
 
-    let preds = selector_preds(query, start_ns, end_ns).map_err(to_err)?;
+    let pred = selector_pred_expr(query).map_err(to_err)?;
     #[allow(clippy::cast_precision_loss)] // ns→s for the matrix/vector timestamp
     let end_s = end_ns as f64 / 1e9;
+    let base = {
+        let mut df = engine.table("logs").await?.filter(time_between(start_ns, end_ns))?;
+        if let Some(p) = &pred {
+            df = df.filter(p.clone())?;
+        }
+        df
+    };
     if range {
         let step = step_ns.max(1);
-        let sql = format!(
-            "SELECT service_name AS svc, (CAST(time_unix_nano AS BIGINT) / {step}) * {step} AS bkt, \
-             COALESCE(sum(octet_length(body)), 0) AS b FROM logs WHERE {} GROUP BY svc, bkt ORDER BY bkt",
-            preds.join(" AND ")
-        );
-        let batches = engine.sql(&sql).await?;
+        let bucket = (cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+            / lit(step))
+            * lit(step);
+        let df = base
+            .aggregate(
+                vec![col("service_name").alias("svc"), bucket.alias("bkt")],
+                vec![bytes_sum().alias("b")],
+            )?
+            .sort(vec![col("bkt").sort(true, false)])?;
+        let batches = engine.collect(df).await?;
         let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for batch in &batches {
             let svc = batch.column(0).as_string::<i32>();
@@ -732,12 +747,8 @@ pub async fn handle_index_volume(
             "data": { "resultType": "matrix", "result": result }
         }));
     }
-    let sql = format!(
-        "SELECT service_name AS svc, COALESCE(sum(octet_length(body)), 0) AS b \
-         FROM logs WHERE {} GROUP BY svc",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    let df = base.aggregate(vec![col("service_name").alias("svc")], vec![bytes_sum().alias("b")])?;
+    let batches = engine.collect(df).await?;
     let mut result: Vec<serde_json::Value> = Vec::new();
     for batch in &batches {
         let svc = batch.column(0).as_string::<i32>();
