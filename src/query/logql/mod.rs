@@ -72,9 +72,9 @@ pub fn parse(input: &str) -> Result<LogQlExpr, ParseError> {
 pub fn parse_pipeline(input: &str) -> Result<LogPipeline, ParseError> {
     match parse(input)? {
         LogQlExpr::Log(p) => Ok(p),
-        LogQlExpr::Sample(_) => {
-            Err(ParseError("expected a log query, got a metric query".to_string()))
-        }
+        LogQlExpr::Sample(_) => Err(ParseError(
+            "expected a log query, got a metric query".to_string(),
+        )),
     }
 }
 
@@ -128,10 +128,22 @@ mod tests {
         assert_eq!(
             p.stages,
             vec![
-                Stage::Line { op: LineOp::Contains, value: "err".into() },
-                Stage::Line { op: LineOp::NotContains, value: "noise".into() },
-                Stage::Line { op: LineOp::Re, value: "re".into() },
-                Stage::Line { op: LineOp::Nre, value: "nre".into() },
+                Stage::Line {
+                    op: LineOp::Contains,
+                    value: "err".into()
+                },
+                Stage::Line {
+                    op: LineOp::NotContains,
+                    value: "noise".into()
+                },
+                Stage::Line {
+                    op: LineOp::Re,
+                    value: "re".into()
+                },
+                Stage::Line {
+                    op: LineOp::Nre,
+                    value: "nre".into()
+                },
             ]
         );
     }
@@ -162,7 +174,11 @@ mod tests {
         let p = parse_pipeline(r#"{app="a"} | status>=500 | label_format dst=src, t="v""#).unwrap();
         assert_eq!(
             p.stages[0],
-            Stage::LabelFilter(LabelFilter { name: "status".into(), op: CmpOp::Gte, value: "500".into() })
+            Stage::LabelFilter(LabelFilter {
+                name: "status".into(),
+                op: CmpOp::Gte,
+                value: "500".into()
+            })
         );
         assert_eq!(
             p.stages[1],
@@ -175,7 +191,13 @@ mod tests {
         use ast::{LineOp, Stage};
         // Grafana Explore sends `|= \`\`` — must parse as an empty (no-op) filter.
         let p = parse_pipeline("{app=\"a\"} |= ``").unwrap();
-        assert_eq!(p.stages, vec![Stage::Line { op: LineOp::Contains, value: String::new() }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Line {
+                op: LineOp::Contains,
+                value: String::new()
+            }]
+        );
     }
 
     #[test]
@@ -183,7 +205,13 @@ mod tests {
         use ast::{LogQlExpr, SampleExpr};
         // The demo's log-volume query.
         let e = parse(r#"sum by (level) (count_over_time({app="a"}[5m]))"#).unwrap();
-        let LogQlExpr::Sample(SampleExpr::VectorAgg { op, grouping, inner, .. }) = e else {
+        let LogQlExpr::Sample(SampleExpr::VectorAgg {
+            op,
+            grouping,
+            inner,
+            ..
+        }) = e
+        else {
             panic!("expected vector agg: {e:?}");
         };
         assert_eq!(op, "sum");
@@ -206,10 +234,18 @@ mod tests {
             r#"sum(rate({a="x"}[1m])) / sum(rate({b="y"}[1m])) + count_over_time({c="z"}[1m])"#,
         )
         .unwrap();
-        let LogQlExpr::Sample(SampleExpr::Binary { op: BinOp::Add, lhs, .. }) = e else {
+        let LogQlExpr::Sample(SampleExpr::Binary {
+            op: BinOp::Add,
+            lhs,
+            ..
+        }) = e
+        else {
             panic!("top should be +: {e:?}");
         };
-        assert!(matches!(*lhs, SampleExpr::Binary { op: BinOp::Div, .. }), "lhs should be /");
+        assert!(
+            matches!(*lhs, SampleExpr::Binary { op: BinOp::Div, .. }),
+            "lhs should be /"
+        );
     }
 
     #[test]
@@ -256,13 +292,20 @@ mod tests {
         assert_eq!(param.as_deref(), Some("5"));
 
         let q = parse(r#"quantile_over_time(0.95, {a="b"} | unwrap latency [5m])"#).unwrap();
-        let LogQlExpr::Sample(SampleExpr::RangeAgg { op, param, range, .. }) = q else {
+        let LogQlExpr::Sample(SampleExpr::RangeAgg {
+            op, param, range, ..
+        }) = q
+        else {
             panic!("expected quantile range agg");
         };
         assert_eq!(op, "quantile_over_time");
         assert_eq!(param.as_deref(), Some("0.95"));
         assert!(
-            range.pipeline.stages.iter().any(|s| matches!(s, ast::Stage::Unwrap(l) if l == "latency")),
+            range
+                .pipeline
+                .stages
+                .iter()
+                .any(|s| matches!(s, ast::Stage::Unwrap(l) if l == "latency")),
             "unwrap stage present: {:?}",
             range.pipeline.stages
         );

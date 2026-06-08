@@ -39,7 +39,7 @@ fn duration_nanos(raw: &str) -> Option<i64> {
 // --- `Expr`/DataFrame lowering (expr-lowering migration) ---
 
 use datafusion::logical_expr::expr_fn::cast;
-use datafusion::prelude::{col, lit, DataFrame, Expr};
+use datafusion::prelude::{DataFrame, Expr, col, lit};
 
 /// JSON attribute LHS as an `Expr` (`json_get_str(column, key)`).
 fn json_attr(column: &str, key: &str) -> Expr {
@@ -75,7 +75,9 @@ pub async fn build_trace_by_id(
 ) -> crate::Result<DataFrame> {
     let mut hex = trace_id_hex.trim().to_lowercase();
     if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(to_err("trace id must be a hex string of at most 32 chars".to_string()));
+        return Err(to_err(
+            "trace id must be a hex string of at most 32 chars".to_string(),
+        ));
     }
     if hex.len() < 32 {
         hex = format!("{hex:0>32}"); // zero-pad to the full 16-byte id
@@ -84,7 +86,10 @@ pub async fn build_trace_by_id(
         .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16))
         .collect::<Result<_, _>>()
         .map_err(|e: std::num::ParseIntError| to_err(e.to_string()))?;
-    let id = Expr::Literal(datafusion::scalar::ScalarValue::FixedSizeBinary(16, Some(bytes)), None);
+    let id = Expr::Literal(
+        datafusion::scalar::ScalarValue::FixedSizeBinary(16, Some(bytes)),
+        None,
+    );
     let b64 = |c: &str| super::plan::ids::encode_as(col(c), "base64");
     Ok(engine
         .table("traces")
@@ -115,7 +120,9 @@ pub async fn build_tag_values(engine: &super::QueryEngine, tag: &str) -> crate::
         .table("traces")
         .await?
         .filter(lhs.clone().is_not_null())?
-        .select(vec![cast(lhs, datafusion::arrow::datatypes::DataType::Utf8).alias("v")])?
+        .select(vec![
+            cast(lhs, datafusion::arrow::datatypes::DataType::Utf8).alias("v"),
+        ])?
         .distinct()?
         .sort(vec![col("v").sort(true, false)])?)
 }
@@ -130,10 +137,16 @@ fn field_lhs_expr(f: &tast::Field) -> Result<Expr, String> {
             "status" | "status.code" => col("status_code"),
             "kind" => col("kind"),
             "duration" => col("duration_nanos"),
-            other => return Err(format!("intrinsic '{other}' is not yet supported in lowering")),
+            other => {
+                return Err(format!(
+                    "intrinsic '{other}' is not yet supported in lowering"
+                ));
+            }
         },
         Field::Attr { scope, path } => match scope {
-            AttrScope::Resource | AttrScope::Unscoped if path == "service.name" => col("service_name"),
+            AttrScope::Resource | AttrScope::Unscoped if path == "service.name" => {
+                col("service_name")
+            }
             AttrScope::Span | AttrScope::Unscoped => json_attr("attributes", path),
             AttrScope::Resource => json_attr("resource_attributes", path),
             other => return Err(format!("{other:?} scope is not yet supported in lowering")),
@@ -212,8 +225,11 @@ pub async fn build_search(
             ));
         }
     };
-    let time = cast(col("start_time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        .between(lit(start_ns), lit(end_ns));
+    let time = cast(
+        col("start_time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    )
+    .between(lit(start_ns), lit(end_ns));
     let mut df = engine.table("traces").await?.filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
@@ -498,7 +514,10 @@ pub async fn handle_search(
     let traces: Vec<TempoTrace> = ordered
         .into_iter()
         .map(|(id, acc)| {
-            let span_set = TempoSpanSet { matched: acc.spans.len(), spans: acc.spans };
+            let span_set = TempoSpanSet {
+                matched: acc.spans.len(),
+                spans: acc.spans,
+            };
             TempoTrace {
                 trace_id: id,
                 root_service_name: acc.service,
@@ -555,7 +574,11 @@ pub async fn handle_trace_by_id(
             let start_ns = if start.is_null(i) { 0 } else { start.value(i) };
             let dur_ns = if dur.is_null(i) { 0 } else { dur.value(i) };
             // OTLP KeyValue-array attributes (not the raw JSON object).
-            let attributes = if attrs.is_null(i) { Vec::new() } else { otlp_attributes(attrs.value(i)) };
+            let attributes = if attrs.is_null(i) {
+                Vec::new()
+            } else {
+                otlp_attributes(attrs.value(i))
+            };
             if resource_attrs.is_empty() && !res_attrs.is_null(i) {
                 resource_attrs = otlp_attributes(res_attrs.value(i));
             }
@@ -685,7 +708,10 @@ mod tests {
         assert!(tags_of("resource").contains(&"host".to_string()));
         assert!(tags_of("intrinsic").contains(&"name".to_string()));
         // C-T4: event scope present (empty) + top-level metrics object.
-        assert!(scopes.iter().any(|s| s["name"] == "event"), "event scope: {scopes:?}");
+        assert!(
+            scopes.iter().any(|s| s["name"] == "event"),
+            "event scope: {scopes:?}"
+        );
         assert!(v["metrics"].is_object(), "metrics object: {v}");
 
         let flat = handle_tags_flat(&engine).await.unwrap();
@@ -865,7 +891,11 @@ mod tests {
         // (which Grafana 13 reads as spanSets[0]) must be populated.
         assert_eq!(t.span_sets.len(), 1, "spanSets present for Grafana 13");
         // serviceStats per service (Grafana reads trace.serviceStats).
-        assert_eq!(t.service_stats["client"].span_count, 2, "stats: {:?}", t.service_stats);
+        assert_eq!(
+            t.service_stats["client"].span_count, 2,
+            "stats: {:?}",
+            t.service_stats
+        );
         assert_eq!(t.service_stats["client"].error_count, 0);
         assert_eq!(t.span_sets[0].matched, t.span_set.matched);
         // spanSet carries both spans, with their attributes as OTLP KeyValue
@@ -893,21 +923,36 @@ mod tests {
         let s = &arr[0];
         // C-T2 OTLP proto-JSON span shape: base64 ids (not hex), KeyValue-array
         // attributes, kind + status enum strings.
-        assert_ne!(s["spanId"], "aaaaaaaaaaaaaaaa", "spanId must be base64, not hex: {s}");
-        assert!(s["attributes"].is_array(), "attributes is a KeyValue array: {s}");
+        assert_ne!(
+            s["spanId"], "aaaaaaaaaaaaaaaa",
+            "spanId must be base64, not hex: {s}"
+        );
+        assert!(
+            s["attributes"].is_array(),
+            "attributes is a KeyValue array: {s}"
+        );
         assert!(
             serde_json::to_string(&s["attributes"])
                 .unwrap()
                 .contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#),
             "attrs: {s}"
         );
-        assert!(s["kind"].as_str().unwrap().starts_with("SPAN_KIND"), "kind enum: {s}");
         assert!(
-            s["status"]["code"].as_str().unwrap().starts_with("STATUS_CODE"),
+            s["kind"].as_str().unwrap().starts_with("SPAN_KIND"),
+            "kind enum: {s}"
+        );
+        assert!(
+            s["status"]["code"]
+                .as_str()
+                .unwrap()
+                .starts_with("STATUS_CODE"),
             "status enum: {s}"
         );
         // resource attributes also a KeyValue array
-        assert!(v["trace"]["resourceSpans"][0]["resource"]["attributes"].is_array(), "{v}");
+        assert!(
+            v["trace"]["resourceSpans"][0]["resource"]["attributes"].is_array(),
+            "{v}"
+        );
     }
 
     #[tokio::test]

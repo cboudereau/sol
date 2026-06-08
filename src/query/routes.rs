@@ -40,11 +40,16 @@ fn parse_ns(s: &Option<String>, default: i64) -> i64 {
 /// may send) to nanoseconds; fall back to ~1/100 of the range (min 1s).
 fn loki_step_ns(step: &Option<String>, start: i64, end: i64) -> i64 {
     let parsed = step.as_ref().and_then(|s| {
-        let digits: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let digits: String = s
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         digits.parse::<f64>().ok()
     });
     if let Some(secs) = parsed.filter(|s| *s > 0.0) {
-        return super::units::DurationNs::from_secs_f64(secs).ns().max(1_000_000_000);
+        return super::units::DurationNs::from_secs_f64(secs)
+            .ns()
+            .max(1_000_000_000);
     }
     ((end - start) / 100).max(1_000_000_000)
 }
@@ -433,9 +438,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
     // Metric metadata (Grafana metric browser type/unit hints). Minimal: empty.
     let prom_metadata = warp::path!("prometheus" / "api" / "v1" / "metadata")
         .and(warp::get())
-        .map(|| {
-            warp::reply::json(&serde_json::json!({ "status": "success", "data": {} }))
-        });
+        .map(|| warp::reply::json(&serde_json::json!({ "status": "success", "data": {} })));
 
     // `series` takes `match[]` from the query string (GET) or form body (POST).
     let series_params = warp::get()

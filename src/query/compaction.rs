@@ -496,7 +496,8 @@ pub(crate) fn write_with_provenance(
         // 7z'd to 8 MB before this fix).
         let props = datafusion::parquet::file::properties::WriterProperties::builder()
             .set_compression(datafusion::parquet::basic::Compression::ZSTD(
-                datafusion::parquet::basic::ZstdLevel::try_new(9).map_err(|e| err(e.to_string()))?,
+                datafusion::parquet::basic::ZstdLevel::try_new(9)
+                    .map_err(|e| err(e.to_string()))?,
             ))
             .build();
         let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
@@ -703,7 +704,10 @@ mod tests {
         // Compacted output must be ZSTD, not the default UNCOMPRESSED (else
         // compaction grows on-disk size vs the zstd raw inputs).
         let f = fs::File::open(&compacted).unwrap();
-        let md = ParquetRecordBatchReaderBuilder::try_new(f).unwrap().metadata().clone();
+        let md = ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .metadata()
+            .clone();
         let codec = md.row_group(0).column(0).compression();
         assert!(
             matches!(codec, datafusion::parquet::basic::Compression::ZSTD(_)),

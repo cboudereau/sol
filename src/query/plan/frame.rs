@@ -18,8 +18,10 @@ use datafusion::functions_window::lead_lag::lag;
 use datafusion::functions_window::row_number::row_number;
 use datafusion::logical_expr::expr::WindowFunction;
 use datafusion::logical_expr::expr_fn::cast;
-use datafusion::logical_expr::{when, ExprFunctionExt, WindowFrame, WindowFrameBound, WindowFrameUnits};
-use datafusion::prelude::{col, lit, DataFrame, Expr};
+use datafusion::logical_expr::{
+    ExprFunctionExt, WindowFrame, WindowFrameBound, WindowFrameUnits, when,
+};
+use datafusion::prelude::{DataFrame, Expr, col, lit};
 use datafusion::scalar::ScalarValue;
 
 /// Sliding-window aggregate operator for `<agg>_over_time`.
@@ -47,7 +49,11 @@ fn ns(time_col: &str) -> Expr {
 ///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
-pub fn latest_per_series(df: DataFrame, part: Vec<Expr>, time_col: &str) -> crate::Result<DataFrame> {
+pub fn latest_per_series(
+    df: DataFrame,
+    part: Vec<Expr>,
+    time_col: &str,
+) -> crate::Result<DataFrame> {
     let rn = row_number()
         .partition_by(part)
         .order_by(vec![col(time_col).sort(false, false)])
@@ -63,7 +69,12 @@ pub fn latest_per_series(df: DataFrame, part: Vec<Expr>, time_col: &str) -> crat
 ///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
-pub fn rate(df: DataFrame, part: Vec<Expr>, v_col: &str, time_col: &str) -> crate::Result<DataFrame> {
+pub fn rate(
+    df: DataFrame,
+    part: Vec<Expr>,
+    v_col: &str,
+    time_col: &str,
+) -> crate::Result<DataFrame> {
     let order = vec![col(time_col).sort(true, false)];
     let prev_v = lag(col(v_col), Some(1), None)
         .partition_by(part.clone())
@@ -77,13 +88,22 @@ pub fn rate(df: DataFrame, part: Vec<Expr>, v_col: &str, time_col: &str) -> crat
         .alias("prev_t");
     let win = df.window(vec![prev_v, prev_t])?;
     // counter-reset-aware delta / elapsed-seconds
-    let delta = when(col(v_col).gt_eq(col("prev_v")), col(v_col) - col("prev_v"))
-        .otherwise(col(v_col))?;
+    let delta =
+        when(col(v_col).gt_eq(col("prev_v")), col(v_col) - col("prev_v")).otherwise(col(v_col))?;
     let dt_secs = cast(ns(time_col) - col("prev_t"), DataType::Float64) / lit(1e9);
     let rate = (delta / dt_secs).alias("v");
     Ok(win
-        .filter(col("prev_t").is_not_null().and(ns(time_col).not_eq(col("prev_t"))))?
-        .select(vec![col("service_name"), col("attributes"), col(time_col), rate])?)
+        .filter(
+            col("prev_t")
+                .is_not_null()
+                .and(ns(time_col).not_eq(col("prev_t"))),
+        )?
+        .select(vec![
+            col("service_name"),
+            col("attributes"),
+            col(time_col),
+            rate,
+        ])?)
 }
 
 /// P7 — `<agg>_over_time`: a sliding `agg(v)` over a `RANGE BETWEEN range_ns
@@ -122,7 +142,12 @@ pub fn over_time(
         .window_frame(frame)
         .build()?
         .alias("v");
-    Ok(df.select(vec![col("service_name"), col("attributes"), col(time_col), windowed])?)
+    Ok(df.select(vec![
+        col("service_name"),
+        col("attributes"),
+        col(time_col),
+        windowed,
+    ])?)
 }
 
 #[cfg(test)]
@@ -155,10 +180,18 @@ mod tests {
             schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client", "client"])),
-                Arc::new(StringArray::from(vec!["http_total", "http_total", "http_total"])),
+                Arc::new(StringArray::from(vec![
+                    "http_total",
+                    "http_total",
+                    "http_total",
+                ])),
                 Arc::new(
-                    TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000, 3_000_000_000])
-                        .with_timezone("UTC"),
+                    TimestampNanosecondArray::from(vec![
+                        1_000_000_000i64,
+                        2_000_000_000,
+                        3_000_000_000,
+                    ])
+                    .with_timezone("UTC"),
                 ),
                 Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
@@ -170,7 +203,10 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
@@ -194,7 +230,9 @@ mod tests {
 
     /// Collect the `v` column sorted by time — the parity comparison vector.
     async fn values_by_time(engine: &crate::query::QueryEngine, df: DataFrame) -> Vec<f64> {
-        let df = df.sort(vec![col("time_unix_nano").sort(true, false)]).unwrap();
+        let df = df
+            .sort(vec![col("time_unix_nano").sort(true, false)])
+            .unwrap();
         let batches = engine.collect(df).await.unwrap();
         let mut out = Vec::new();
         for b in &batches {
@@ -220,8 +258,15 @@ mod tests {
     async fn test_over_time_max_matches_sql_semantics() {
         let engine = counter_engine().await;
         let part = vec![col("service_name"), col("attributes")];
-        let df = over_time(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, OverTimeAgg::Max)
-            .unwrap();
+        let df = over_time(
+            base(&engine).await,
+            part,
+            "v",
+            "time_unix_nano",
+            300_000_000_000,
+            OverTimeAgg::Max,
+        )
+        .unwrap();
         // sliding max up to each point within 5m: 10, 30, 60.
         assert_eq!(values_by_time(&engine, df).await, vec![10.0, 30.0, 60.0]);
     }
@@ -235,7 +280,16 @@ mod tests {
         let n: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(n, 1, "one row per series (the latest)");
         // and it is the latest value, 60.
-        let v: Vec<f64> = values_by_time(&engine, latest_per_series(base(&engine).await, vec![col("service_name"), col("attributes")], "time_unix_nano").unwrap()).await;
+        let v: Vec<f64> = values_by_time(
+            &engine,
+            latest_per_series(
+                base(&engine).await,
+                vec![col("service_name"), col("attributes")],
+                "time_unix_nano",
+            )
+            .unwrap(),
+        )
+        .await;
         assert_eq!(v, vec![60.0]);
     }
 }

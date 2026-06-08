@@ -143,8 +143,14 @@ mod tests {
         // TraceQL fractional duration
         assert_eq!(parse_duration_ns("1.5s"), Some(DurationNs(1_500_000_000)));
         // Prometheus/LogQL compound
-        assert_eq!(parse_duration_ns("1h30m"), Some(DurationNs(5_400_000_000_000)));
-        assert_eq!(parse_duration_ns("2h45m30s"), Some(DurationNs(9_930_000_000_000)));
+        assert_eq!(
+            parse_duration_ns("1h30m"),
+            Some(DurationNs(5_400_000_000_000))
+        );
+        assert_eq!(
+            parse_duration_ns("2h45m30s"),
+            Some(DurationNs(9_930_000_000_000))
+        );
     }
 
     #[test]
@@ -162,6 +168,9 @@ mod tests {
         assert_eq!(TimeNs::from_unix_secs(1.5).ns(), 1_500_000_000);
         assert!((TimeNs(1_500_000_000).as_unix_secs() - 1.5).abs() < 1e-9);
         // whole seconds are exact
-        assert_eq!(TimeNs::from_unix_secs(1_700_000_000.0).ns(), 1_700_000_000_000_000_000);
+        assert_eq!(
+            TimeNs::from_unix_secs(1_700_000_000.0).ns(),
+            1_700_000_000_000_000_000
+        );
     }
 }

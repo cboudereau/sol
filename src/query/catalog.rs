@@ -416,10 +416,7 @@ impl QueryEngine {
     /// A `DataFrame` over a registered signal table — the entry point for the
     /// `Expr`/plan-based lowering ([`super::plan`]). Signal modules build on this
     /// (`engine.table("traces")?.filter(pred)?…`) then run it via [`Self::collect`].
-    pub async fn table(
-        &self,
-        name: &str,
-    ) -> crate::Result<datafusion::dataframe::DataFrame> {
+    pub async fn table(&self, name: &str) -> crate::Result<datafusion::dataframe::DataFrame> {
         Ok(self.ctx.table(name).await?)
     }
 

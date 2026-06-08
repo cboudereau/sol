@@ -4,7 +4,7 @@
 //! an `Expr`, replacing the SQL `encode(_, '…')` projections.
 
 use datafusion::functions::encoding::encode;
-use datafusion::prelude::{lit, Expr};
+use datafusion::prelude::{Expr, lit};
 
 /// `encode(e, fmt)` where `fmt` is `"hex"` or `"base64"`.
 #[must_use]

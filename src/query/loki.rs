@@ -69,32 +69,36 @@ fn first_range(expr: &ast::SampleExpr) -> Option<&ast::LogRange> {
     match expr {
         ast::SampleExpr::RangeAgg { range, .. } => Some(range),
         ast::SampleExpr::VectorAgg { inner, .. } => first_range(inner),
-        ast::SampleExpr::Binary { lhs, rhs, .. } => {
-            first_range(lhs).or_else(|| first_range(rhs))
-        }
+        ast::SampleExpr::Binary { lhs, rhs, .. } => first_range(lhs).or_else(|| first_range(rhs)),
         ast::SampleExpr::Number(_) => None,
     }
 }
 
 // --- `Expr`/DataFrame lowering (expr-lowering migration) ---
 
-use datafusion::logical_expr::expr_fn::cast;
-use datafusion::logical_expr::when;
 use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::octet_length;
 use datafusion::functions_aggregate::expr_fn::{count, count_distinct, sum};
-use datafusion::prelude::{col, lit, DataFrame, Expr};
+use datafusion::logical_expr::expr_fn::cast;
+use datafusion::logical_expr::when;
+use datafusion::prelude::{DataFrame, Expr, col, lit};
 
 /// `COALESCE(sum(octet_length(body)), 0)` — total log bytes, as an `Expr`.
 fn bytes_sum() -> Expr {
-    coalesce(vec![sum(octet_length().call(vec![col("body")])), lit(0_i64)])
+    coalesce(vec![
+        sum(octet_length().call(vec![col("body")])),
+        lit(0_i64),
+    ])
 }
 
 /// Cast the timestamp column to ns `i64` and bound it to `[start, end]`.
 fn time_between(start_ns: i64, end_ns: i64) -> Expr {
-    cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        .between(lit(start_ns), lit(end_ns))
+    cast(
+        col("time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    )
+    .between(lit(start_ns), lit(end_ns))
 }
 
 /// Label LHS as an `Expr`: promoted `service_name` column, else `prom_attr` on
@@ -162,7 +166,12 @@ fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
     use ast::Stage;
     let mut acc: Option<Expr> = None;
     for m in &p.selector.matchers {
-        let e = super::plan::predicate::cmp(label_lhs_expr(&m.name), matchop_kind(&m.op), &m.value, false)?;
+        let e = super::plan::predicate::cmp(
+            label_lhs_expr(&m.name),
+            matchop_kind(&m.op),
+            &m.value,
+            false,
+        )?;
         acc = and_opt(acc, e);
     }
     let mut extracted = false;
@@ -190,7 +199,15 @@ fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
                     ));
                 }
                 let (kind, numeric) = cmpop_kind(&lf.op);
-                acc = and_opt(acc, super::plan::predicate::cmp(label_lhs_expr(&lf.name), kind, &lf.value, numeric)?);
+                acc = and_opt(
+                    acc,
+                    super::plan::predicate::cmp(
+                        label_lhs_expr(&lf.name),
+                        kind,
+                        &lf.value,
+                        numeric,
+                    )?,
+                );
             }
         }
     }
@@ -209,8 +226,11 @@ pub async fn build_streams(
 ) -> crate::Result<DataFrame> {
     let pipeline = super::logql::parse_pipeline(logql).map_err(|e| to_err(e.to_string()))?;
     let pred = pipeline_pred_expr(&pipeline).map_err(to_err)?;
-    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        .between(lit(start_ns), lit(end_ns));
+    let time = cast(
+        col("time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    )
+    .between(lit(start_ns), lit(end_ns));
     let mut df = engine.table("logs").await?.filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
@@ -251,23 +271,30 @@ pub async fn build_volume(
 ) -> crate::Result<DataFrame> {
     let expr = super::logql::parse(query).map_err(|e| to_err(e.to_string()))?;
     let range = match &expr {
-        ast::LogQlExpr::Sample(s) => {
-            first_range(s).ok_or_else(|| to_err("log volume query must contain a range aggregation".to_string()))?
-        }
+        ast::LogQlExpr::Sample(s) => first_range(s).ok_or_else(|| {
+            to_err("log volume query must contain a range aggregation".to_string())
+        })?,
         ast::LogQlExpr::Log(_) => {
-            return Err(to_err("log volume query must be a metric query".to_string()));
+            return Err(to_err(
+                "log volume query must be a metric query".to_string(),
+            ));
         }
     };
     let pred = pipeline_pred_expr(&range.pipeline).map_err(to_err)?;
     let step = step_ns.max(1);
-    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        .between(lit(start_ns), lit(end_ns));
+    let time = cast(
+        col("time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    )
+    .between(lit(start_ns), lit(end_ns));
     let mut df = engine.table("logs").await?.filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
-    let bucket = (cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        / lit(step))
+    let bucket = (cast(
+        col("time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    ) / lit(step))
         * lit(step);
     Ok(df
         .aggregate(
@@ -296,8 +323,11 @@ pub async fn build_series(
     end_ns: i64,
 ) -> crate::Result<DataFrame> {
     let pred = selector_pred_expr(matcher.unwrap_or("{}")).map_err(to_err)?;
-    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-        .between(lit(start_ns), lit(end_ns));
+    let time = cast(
+        col("time_unix_nano"),
+        datafusion::arrow::datatypes::DataType::Int64,
+    )
+    .between(lit(start_ns), lit(end_ns));
     let mut df = engine.table("logs").await?.filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
@@ -320,7 +350,10 @@ pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_j
 /// Run Loki `label/:name/values` and build `{status, data:[...]}`.
 /// Build the Loki `label/:name/values` query as a `DataFrame` (P4): distinct
 /// non-null values of `label`.
-pub async fn build_label_values(engine: &super::QueryEngine, label: &str) -> crate::Result<DataFrame> {
+pub async fn build_label_values(
+    engine: &super::QueryEngine,
+    label: &str,
+) -> crate::Result<DataFrame> {
     let lhs = label_lhs_expr(label);
     Ok(engine
         .table("logs")
@@ -371,8 +404,11 @@ pub async fn handle_volume(
         let bkt = batch.column(1).as_primitive::<Int64Type>();
         let c = batch.column(2).as_primitive::<Int64Type>();
         for i in 0..batch.num_rows() {
-            let level =
-                if lvl.is_null(i) { "unknown".to_string() } else { lvl.value(i).to_string() };
+            let level = if lvl.is_null(i) {
+                "unknown".to_string()
+            } else {
+                lvl.value(i).to_string()
+            };
             #[allow(clippy::cast_precision_loss)] // ns→s for the matrix timestamp
             let ts = bkt.value(i) as f64 / 1e9;
             series
@@ -456,7 +492,10 @@ pub async fn handle_index_stats(
     use datafusion::arrow::datatypes::Int64Type;
 
     let pred = selector_pred_expr(query).map_err(to_err)?;
-    let mut df = engine.table("logs").await?.filter(time_between(start_ns, end_ns))?;
+    let mut df = engine
+        .table("logs")
+        .await?
+        .filter(time_between(start_ns, end_ns))?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
@@ -499,7 +538,10 @@ pub async fn handle_index_volume(
     #[allow(clippy::cast_precision_loss)] // ns→s for the matrix/vector timestamp
     let end_s = end_ns as f64 / 1e9;
     let base = {
-        let mut df = engine.table("logs").await?.filter(time_between(start_ns, end_ns))?;
+        let mut df = engine
+            .table("logs")
+            .await?
+            .filter(time_between(start_ns, end_ns))?;
         if let Some(p) = &pred {
             df = df.filter(p.clone())?;
         }
@@ -507,8 +549,10 @@ pub async fn handle_index_volume(
     };
     if range {
         let step = step_ns.max(1);
-        let bucket = (cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
-            / lit(step))
+        let bucket = (cast(
+            col("time_unix_nano"),
+            datafusion::arrow::datatypes::DataType::Int64,
+        ) / lit(step))
             * lit(step);
         let df = base
             .aggregate(
@@ -523,7 +567,11 @@ pub async fn handle_index_volume(
             let bkt = batch.column(1).as_primitive::<Int64Type>();
             let b = batch.column(2).as_primitive::<Int64Type>();
             for i in 0..batch.num_rows() {
-                let s = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
+                let s = if svc.is_null(i) {
+                    String::new()
+                } else {
+                    svc.value(i).to_string()
+                };
                 #[allow(clippy::cast_precision_loss)]
                 let ts = bkt.value(i) as f64 / 1e9;
                 series
@@ -541,14 +589,21 @@ pub async fn handle_index_volume(
             "data": { "resultType": "matrix", "result": result }
         }));
     }
-    let df = base.aggregate(vec![col("service_name").alias("svc")], vec![bytes_sum().alias("b")])?;
+    let df = base.aggregate(
+        vec![col("service_name").alias("svc")],
+        vec![bytes_sum().alias("b")],
+    )?;
     let batches = engine.collect(df).await?;
     let mut result: Vec<serde_json::Value> = Vec::new();
     for batch in &batches {
         let svc = batch.column(0).as_string::<i32>();
         let b = batch.column(1).as_primitive::<Int64Type>();
         for i in 0..batch.num_rows() {
-            let s = if svc.is_null(i) { String::new() } else { svc.value(i).to_string() };
+            let s = if svc.is_null(i) {
+                String::new()
+            } else {
+                svc.value(i).to_string()
+            };
             result.push(serde_json::json!({
                 "metric": { "service_name": s },
                 "value": [end_s, b.value(i).to_string()]
@@ -921,7 +976,10 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()

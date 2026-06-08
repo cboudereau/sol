@@ -98,7 +98,10 @@ pub async fn rollup_batches(
     use datafusion::prelude::{col, lit};
     let schema = batches[0].schema();
     let ctx = SessionContext::new();
-    ctx.register_table("m", Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?))?;
+    ctx.register_table(
+        "m",
+        Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?),
+    )?;
     // Keep the last raw sample per (series, time-bucket): partition by the series
     // key plus the bucket index `time / resolution`, take the latest by time (P5).
     let bucket = cast(col("time_unix_nano"), Int64) / lit(resolution_ns);

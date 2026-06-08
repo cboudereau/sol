@@ -27,8 +27,8 @@ pub mod sql;
 pub mod telemetry;
 pub mod tempo;
 pub mod traceql;
-pub mod units;
 mod udf;
+pub mod units;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::{CompactorOptions, QuerierOptions};

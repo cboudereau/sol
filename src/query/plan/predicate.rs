@@ -11,8 +11,8 @@
 use datafusion::arrow::datatypes::DataType;
 use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions::regex::expr_fn::regexp_like;
-use datafusion::logical_expr::expr_fn::cast;
 use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::expr_fn::cast;
 use datafusion::prelude::{col, lit};
 
 /// Comparison operator (the union over the three signals' matcher ops).
@@ -131,16 +131,30 @@ mod tests {
 
     #[test]
     fn test_numeric_cmp_casts_and_binds() {
-        let e = cmp(prom_attr("attributes", "status"), MatchKind::Gte, "500", true).unwrap();
+        let e = cmp(
+            prom_attr("attributes", "status"),
+            MatchKind::Gte,
+            "500",
+            true,
+        )
+        .unwrap();
         let s = format!("{e}");
         assert!(s.contains("500"), "numeric literal bound: {s}");
-        assert!(s.to_uppercase().contains("CAST") || s.contains("Float64"), "lhs cast: {s}");
+        assert!(
+            s.to_uppercase().contains("CAST") || s.contains("Float64"),
+            "lhs cast: {s}"
+        );
     }
 
     #[test]
     fn test_numeric_cmp_rejects_non_numeric_value() {
         // A malformed numeric comparison errors rather than binding NaN.
-        let r = cmp(prom_attr("attributes", "status"), MatchKind::Gte, "abc", true);
+        let r = cmp(
+            prom_attr("attributes", "status"),
+            MatchKind::Gte,
+            "abc",
+            true,
+        );
         assert!(r.is_err(), "non-numeric value must error: {r:?}");
         // The string path with the same value is still fine.
         assert!(cmp(col("x"), MatchKind::Eq, "abc", false).is_ok());
@@ -148,7 +162,10 @@ mod tests {
 
     #[test]
     fn test_prom_attr_is_udf_call() {
-        let s = format!("{}", prom_attr("resource_attributes", "deployment.environment"));
+        let s = format!(
+            "{}",
+            prom_attr("resource_attributes", "deployment.environment")
+        );
         assert!(s.contains("prom_attr"), "{s}");
         assert!(s.contains("deployment.environment"), "{s}");
     }

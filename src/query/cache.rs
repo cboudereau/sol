@@ -185,7 +185,10 @@ mod tests {
         let tiny = MokaQueryCache::with_budget(1, Duration::from_secs(60));
         tiny.insert(CacheKey::for_sql("q"), Arc::clone(&val));
         tiny.inner.run_pending_tasks();
-        assert!(tiny.get(&CacheKey::for_sql("q")).is_none(), "oversized entry rejected by budget");
+        assert!(
+            tiny.get(&CacheKey::for_sql("q")).is_none(),
+            "oversized entry rejected by budget"
+        );
 
         // Ample budget → admitted, and weighted_size tracks the cached bytes.
         let big = MokaQueryCache::with_budget(10_000_000, Duration::from_secs(60));
@@ -204,5 +207,4 @@ mod tests {
         cache.clear(); // simulates a catalog refresh
         assert!(cache.get(&key).is_none(), "refresh must drop stale entries");
     }
-
 }

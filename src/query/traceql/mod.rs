@@ -81,7 +81,9 @@ mod tests {
     fn test_parse_parity_cases() {
         // The current ad-hoc surface: { a="x" && b!="y" } with intrinsics + attrs.
         let fe = filter(r#"{ name="GET" && span.http.status_code != "500" }"#);
-        let FieldExpr::And(l, r) = fe else { panic!("expected &&: {fe:?}") };
+        let FieldExpr::And(l, r) = fe else {
+            panic!("expected &&: {fe:?}")
+        };
         assert_eq!(
             *l,
             FieldExpr::Cmp {
@@ -90,8 +92,16 @@ mod tests {
                 rhs: Box::new(Field::Str("GET".into())),
             }
         );
-        let FieldExpr::Cmp { lhs, op, rhs } = *r else { panic!("rhs cmp") };
-        assert_eq!(*lhs, Field::Attr { scope: AttrScope::Span, path: "http.status_code".into() });
+        let FieldExpr::Cmp { lhs, op, rhs } = *r else {
+            panic!("rhs cmp")
+        };
+        assert_eq!(
+            *lhs,
+            Field::Attr {
+                scope: AttrScope::Span,
+                path: "http.status_code".into()
+            }
+        );
         assert_eq!(op, FieldOp::Neq);
         assert_eq!(*rhs, Field::Str("500".into()));
     }
@@ -104,14 +114,24 @@ mod tests {
     #[test]
     fn test_parse_comparisons_and_literals() {
         let fe = filter(r#"{ duration > 1.5s }"#);
-        let FieldExpr::Cmp { lhs, op, rhs } = fe else { panic!() };
+        let FieldExpr::Cmp { lhs, op, rhs } = fe else {
+            panic!()
+        };
         assert_eq!(*lhs, Field::Intrinsic("duration".into()));
         assert_eq!(op, FieldOp::Gt);
         assert_eq!(*rhs, Field::Duration("1.5s".into()));
 
         let fe = filter(r#"{ .ok = true }"#);
-        let FieldExpr::Cmp { lhs, rhs, .. } = fe else { panic!() };
-        assert_eq!(*lhs, Field::Attr { scope: AttrScope::Unscoped, path: "ok".into() });
+        let FieldExpr::Cmp { lhs, rhs, .. } = fe else {
+            panic!()
+        };
+        assert_eq!(
+            *lhs,
+            Field::Attr {
+                scope: AttrScope::Unscoped,
+                path: "ok".into()
+            }
+        );
         assert_eq!(*rhs, Field::Bool(true));
     }
 
@@ -123,20 +143,46 @@ mod tests {
 
         // spanset-level && and descendant >>
         let e = parse(r#"{ name="a" } >> { name="b" }"#).unwrap();
-        let SpansetExpr::Op { op, .. } = e else { panic!("expected spanset op: {e:?}") };
+        let SpansetExpr::Op { op, .. } = e else {
+            panic!("expected spanset op: {e:?}")
+        };
         assert_eq!(op, SpansetOp::Descendant);
 
         let e = parse(r#"{ name="a" } && { resource.service.name="s" }"#).unwrap();
-        assert!(matches!(e, SpansetExpr::Op { op: SpansetOp::And, .. }), "{e:?}");
+        assert!(
+            matches!(
+                e,
+                SpansetExpr::Op {
+                    op: SpansetOp::And,
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
     }
 
     #[test]
     fn test_parse_never_panics_on_adversarial_input() {
         // NFR3: no input may panic.
         let inputs = [
-            "", "{", "}", "{}{}", "{ a }", "{ =\"b\" }", "{ a = }", "{ a == }",
-            "{ name }", "span.", ".", "{ name=\"a\" &&", "<<", "{ a } >>",
-            "(((", "{ a=~\"(unclosed\" }", "{ duration > }", "\u{1f600}{a=\"b\"}",
+            "",
+            "{",
+            "}",
+            "{}{}",
+            "{ a }",
+            "{ =\"b\" }",
+            "{ a = }",
+            "{ a == }",
+            "{ name }",
+            "span.",
+            ".",
+            "{ name=\"a\" &&",
+            "<<",
+            "{ a } >>",
+            "(((",
+            "{ a=~\"(unclosed\" }",
+            "{ duration > }",
+            "\u{1f600}{a=\"b\"}",
         ];
         for q in inputs {
             let _ = parse(q);

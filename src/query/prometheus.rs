@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use promql_parser::label::{MatchOp, Matcher};
 use promql_parser::parser::{
-    self, AggregateExpr, BinModifier, Expr, LabelModifier, VectorMatchCardinality,
-    VectorSelector, token,
+    self, AggregateExpr, BinModifier, Expr, LabelModifier, VectorMatchCardinality, VectorSelector,
+    token,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +43,7 @@ fn prom_name_expr() -> datafusion::logical_expr::Expr {
 
 /// A matcher → filter `Expr` (None for `__name__`, covered by the name predicate).
 fn matcher_expr(m: &Matcher) -> Option<datafusion::logical_expr::Expr> {
-    use super::plan::predicate::{cmp, MatchKind};
+    use super::plan::predicate::{MatchKind, cmp};
     if m.name == "__name__" {
         return None;
     }
@@ -85,7 +85,11 @@ pub async fn build_series(
         let expr = parser::parse(sel).map_err(to_err)?;
         let vs = match &expr {
             Expr::VectorSelector(vs) => vs,
-            _ => return Err(to_err("series match[] must be a metric selector".to_string())),
+            _ => {
+                return Err(to_err(
+                    "series match[] must be a metric selector".to_string(),
+                ));
+            }
         };
         if let Some(name) = vs.name.as_deref() {
             df = df.filter(name_pred_expr(name))?;
@@ -192,17 +196,28 @@ async fn lower_range_aggregate_df(
     let by = match &agg.modifier {
         Some(LabelModifier::Include(labels)) => labels.labels.clone(),
         Some(LabelModifier::Exclude(_)) => {
-            return Err(to_err("`without (...)` aggregation not supported (v1)".to_string()));
+            return Err(to_err(
+                "`without (...)` aggregation not supported (v1)".to_string(),
+            ));
         }
         None => Vec::new(),
     };
-    let inner = Box::pin(lower_range_df(engine, agg.expr.as_ref(), start_ns, end_ns, table)).await?;
+    let inner = Box::pin(lower_range_df(
+        engine,
+        agg.expr.as_ref(),
+        start_ns,
+        end_ns,
+        table,
+    ))
+    .await?;
     let v = agg_value_expr(op, col("v")).alias("v");
     if by.is_empty() {
         Ok(inner.aggregate(vec![col("time_unix_nano")], vec![v])?)
     } else {
-        let mut group: Vec<datafusion::logical_expr::Expr> =
-            by.iter().map(|k| label_lhs_expr(k).alias(sql_ident(k))).collect();
+        let mut group: Vec<datafusion::logical_expr::Expr> = by
+            .iter()
+            .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
+            .collect();
         group.push(col("time_unix_nano"));
         Ok(inner.aggregate(group, vec![v])?)
     }
@@ -217,7 +232,7 @@ async fn lower_range_df(
     end_ns: i64,
     table: &str,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
-    use super::plan::frame::{over_time, rate, OverTimeAgg};
+    use super::plan::frame::{OverTimeAgg, over_time, rate};
     use datafusion::prelude::col;
     match expr {
         Expr::Call(c) => {
@@ -235,20 +250,36 @@ async fn lower_range_df(
             let r = range_to_ns(range);
             match c.func.name {
                 "rate" | "irate" | "increase" => rate(base, part, "v", "time_unix_nano"),
-                "max_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Max),
-                "min_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Min),
-                "avg_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Avg),
-                "sum_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Sum),
-                "count_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Count),
-                other => Err(to_err(format!("unsupported range function: {other}() (v1)"))),
+                "max_over_time" => {
+                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Max)
+                }
+                "min_over_time" => {
+                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Min)
+                }
+                "avg_over_time" => {
+                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Avg)
+                }
+                "sum_over_time" => {
+                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Sum)
+                }
+                "count_over_time" => {
+                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Count)
+                }
+                other => Err(to_err(format!(
+                    "unsupported range function: {other}() (v1)"
+                ))),
             }
         }
         Expr::Paren(p) => Box::pin(lower_range_df(engine, &p.expr, start_ns, end_ns, table)).await,
-        Expr::Aggregate(agg) => lower_range_aggregate_df(engine, agg, start_ns, end_ns, table).await,
+        Expr::Aggregate(agg) => {
+            lower_range_aggregate_df(engine, agg, start_ns, end_ns, table).await
+        }
         Expr::VectorSelector(vs) => Ok(metric_base_df(engine, vs, start_ns, end_ns, table)
             .await?
             .sort(vec![col("time_unix_nano").sort(true, false)])?),
-        _ => Err(to_err("unsupported PromQL expression for query_range (v1)".to_string())),
+        _ => Err(to_err(
+            "unsupported PromQL expression for query_range (v1)".to_string(),
+        )),
     }
 }
 
@@ -266,7 +297,10 @@ async fn latest_selected_df(
         .name
         .as_deref()
         .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
-    let mut df = engine.table("metrics").await?.filter(name_pred_expr(name))?;
+    let mut df = engine
+        .table("metrics")
+        .await?
+        .filter(name_pred_expr(name))?;
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_expr(m) {
             df = df.filter(p)?;
@@ -282,7 +316,11 @@ async fn latest_selected_df(
         metric_value_expr(name).alias("v"),
     ])?;
     // latest per (name, attributes) — matches the SQL row_number partition.
-    super::plan::frame::latest_per_series(base, vec![col("name"), col("attributes")], "time_unix_nano")
+    super::plan::frame::latest_per_series(
+        base,
+        vec![col("name"), col("attributes")],
+        "time_unix_nano",
+    )
 }
 
 /// Instant `<agg> [by (...)]` over the latest samples, as a `DataFrame` (P4).
@@ -296,15 +334,25 @@ async fn lower_aggregate_instant_df(
         Expr::VectorSelector(vs) => vs,
         Expr::Paren(p) => match p.expr.as_ref() {
             Expr::VectorSelector(vs) => vs,
-            _ => return Err(to_err("aggregate inner must be a vector selector (instant)".to_string())),
+            _ => {
+                return Err(to_err(
+                    "aggregate inner must be a vector selector (instant)".to_string(),
+                ));
+            }
         },
-        _ => return Err(to_err("aggregate inner must be a vector selector (instant)".to_string())),
+        _ => {
+            return Err(to_err(
+                "aggregate inner must be a vector selector (instant)".to_string(),
+            ));
+        }
     };
     let op = agg_name(agg.op).map_err(to_err)?;
     let by = match &agg.modifier {
         Some(LabelModifier::Include(labels)) => labels.labels.clone(),
         Some(LabelModifier::Exclude(_)) => {
-            return Err(to_err("`without (...)` aggregation not supported (v1)".to_string()));
+            return Err(to_err(
+                "`without (...)` aggregation not supported (v1)".to_string(),
+            ));
         }
         None => Vec::new(),
     };
@@ -313,8 +361,10 @@ async fn lower_aggregate_instant_df(
     if by.is_empty() {
         Ok(inner.aggregate(vec![], vec![v])?)
     } else {
-        let group: Vec<datafusion::logical_expr::Expr> =
-            by.iter().map(|k| label_lhs_expr(k).alias(sql_ident(k))).collect();
+        let group: Vec<datafusion::logical_expr::Expr> = by
+            .iter()
+            .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
+            .collect();
         Ok(inner.aggregate(group, vec![v])?)
     }
 }
@@ -330,7 +380,9 @@ async fn lower_instant_df(
         Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
         Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
         Expr::Aggregate(agg) => lower_aggregate_instant_df(engine, agg, time_ns).await,
-        _ => Err(to_err("unsupported PromQL expression for instant query (v1)".to_string())),
+        _ => Err(to_err(
+            "unsupported PromQL expression for instant query (v1)".to_string(),
+        )),
     }
 }
 
@@ -466,13 +518,19 @@ impl LabelCols {
         for (i, f) in schema.fields().iter().enumerate() {
             let n = f.name().as_str();
             if n == "attributes" {
-                attrs = Some(cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?);
+                attrs = Some(
+                    cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?,
+                );
                 continue;
             }
             if SKIP.contains(&n) {
                 continue;
             }
-            let key = if n == "prom_name" { "__name__".to_string() } else { n.to_string() };
+            let key = if n == "prom_name" {
+                "__name__".to_string()
+            } else {
+                n.to_string()
+            };
             let arr = cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
             promoted.push((key, arr));
         }
@@ -603,7 +661,10 @@ pub async fn build_label_values(
     use datafusion::functions::expr_fn::concat;
     use datafusion::prelude::{col, lit};
     if label == "__name__" {
-        let names = engine.table("metrics").await?.select(vec![prom_name_expr().alias("v")])?;
+        let names = engine
+            .table("metrics")
+            .await?
+            .select(vec![prom_name_expr().alias("v")])?;
         let variant = |suffix: &str| concat(vec![prom_name_expr(), lit(suffix.to_string())]);
         let bkt = engine
             .table("metrics")
@@ -830,7 +891,7 @@ fn group_range_series(
 /// A recognised classic-histogram quantile query (owned, no AST borrow).
 struct HistSpec {
     phi: f64,
-    base: String,                              // normalized base name (without `_bucket`)
+    base: String, // normalized base name (without `_bucket`)
     preds: Vec<datafusion::logical_expr::Expr>, // matcher predicates (excluding `le`)
     group_by: Vec<String>,
     topk: Option<(i64, bool)>, // (n, is_topk) — bottomk when false
@@ -920,7 +981,11 @@ async fn handle_hist_quantile_range(
         df = df.filter(p.clone())?;
     }
     df = df.filter(prom_time_between(start_ns, end_ns))?;
-    let mut proj = vec![col("time_unix_nano"), col("bucket_counts"), col("explicit_bounds")];
+    let mut proj = vec![
+        col("time_unix_nano"),
+        col("bucket_counts"),
+        col("explicit_bounds"),
+    ];
     for g in &spec.group_by {
         proj.push(label_lhs_expr(g).alias(sql_ident(g)));
     }
@@ -1076,7 +1141,11 @@ async fn handle_bucket_heatmap(
         df = df.filter(p.clone())?;
     }
     df = df.filter(prom_time_between(start_ns, end_ns))?;
-    let mut proj = vec![col("time_unix_nano"), col("bucket_counts"), col("explicit_bounds")];
+    let mut proj = vec![
+        col("time_unix_nano"),
+        col("bucket_counts"),
+        col("explicit_bounds"),
+    ];
     for g in &spec.group_by {
         proj.push(label_lhs_expr(g).alias(sql_ident(g)));
     }
@@ -1575,7 +1644,13 @@ fn cardinality(modifier: &Option<BinModifier>) -> Result<Card, String> {
 /// Apply a scalar PromQL binary op. For filtering comparisons (no `bool`), emit
 /// `keep_val` (the vector operand's value) when the predicate holds, else `None`
 /// (the sample is dropped). With `bool`, comparisons emit `1`/`0`.
-fn apply_binop(op: token::TokenType, l: f64, r: f64, return_bool: bool, keep_val: f64) -> Option<f64> {
+fn apply_binop(
+    op: token::TokenType,
+    l: f64,
+    r: f64,
+    return_bool: bool,
+    keep_val: f64,
+) -> Option<f64> {
     let cmp = |t: bool| {
         if return_bool {
             Some(if t { 1.0 } else { 0.0 })
@@ -1665,7 +1740,11 @@ fn scalar_vector_range(
         let labels = drop_name(labels);
         let mut pts = Vec::new();
         for (t, v) in points {
-            let (l, r) = if scalar_left { (scalar, v) } else { (v, scalar) };
+            let (l, r) = if scalar_left {
+                (scalar, v)
+            } else {
+                (v, scalar)
+            };
             if let Some(res) = apply_binop(op, l, r, rb, v) {
                 pts.push((t, res));
             }
@@ -1838,7 +1917,11 @@ fn scalar_vector_instant(
 ) -> Vec<(BTreeMap<String, String>, f64)> {
     vec.into_iter()
         .filter_map(|(labels, v)| {
-            let (l, r) = if scalar_left { (scalar, v) } else { (v, scalar) };
+            let (l, r) = if scalar_left {
+                (scalar, v)
+            } else {
+                (v, scalar)
+            };
             apply_binop(op, l, r, rb, v).map(|res| (drop_name(labels), res))
         })
         .collect()
@@ -1868,7 +1951,11 @@ fn vector_vector_instant(
         let Some((olabels, oval)) = one_idx.get(&kind.key(mlabels)) else {
             continue;
         };
-        let (l, r) = if group_right { (*oval, *mval) } else { (*mval, *oval) };
+        let (l, r) = if group_right {
+            (*oval, *mval)
+        } else {
+            (*mval, *oval)
+        };
         let Some(res) = apply_binop(op, l, r, rb, l) else {
             continue;
         };
@@ -1944,7 +2031,9 @@ async fn eval_instant(
                 Ok(InstantVal::Vector(v))
             } else {
                 let df = lower_instant_df(engine, expr, time_ns).await?;
-                Ok(InstantVal::Vector(instant_vector_from_df(engine, df).await?))
+                Ok(InstantVal::Vector(
+                    instant_vector_from_df(engine, df).await?,
+                ))
             }
         }
     }
@@ -2058,17 +2147,30 @@ mod tests {
     #[tokio::test]
     async fn test_bare_selector_range_returns_raw_matrix() {
         let engine = counter_engine().await;
-        let resp =
-            handle_range(&engine, r#"http_total{service_name="client"}"#, 0, 10_000_000_000, 0)
-                .await
-                .unwrap();
+        let resp = handle_range(
+            &engine,
+            r#"http_total{service_name="client"}"#,
+            0,
+            10_000_000_000,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.data.result_type, "matrix");
         assert_eq!(resp.data.result.len(), 1, "one series");
         let s = &resp.data.result[0];
-        assert_eq!(s.metric["__name__"], "http_total", "normalized name: {:?}", s.metric);
+        assert_eq!(
+            s.metric["__name__"], "http_total",
+            "normalized name: {:?}",
+            s.metric
+        );
         assert_eq!(
             s.values,
-            vec![(1.0, "10".to_string()), (2.0, "30".to_string()), (3.0, "60".to_string())],
+            vec![
+                (1.0, "10".to_string()),
+                (2.0, "30".to_string()),
+                (3.0, "60".to_string())
+            ],
             "raw samples over the range"
         );
     }
@@ -2121,7 +2223,10 @@ mod tests {
             schema.clone(),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client"])),
-                Arc::new(StringArray::from(vec!["http.server.requests", "http.server.requests"])),
+                Arc::new(StringArray::from(vec![
+                    "http.server.requests",
+                    "http.server.requests",
+                ])),
                 Arc::new(StringArray::from(vec![Some("By"), Some("By")])),
                 Arc::new(
                     TimestampNanosecondArray::from(vec![1_000_000_000i64, 1_000_000_000])
@@ -2132,7 +2237,10 @@ mod tests {
                     Some(r#"{"http.response.status_code":"500","http.route":"/user"}"#),
                 ])),
                 Arc::new(Float64Array::from(vec![3.0, 1.0])),
-                Arc::new(datafusion::arrow::array::BooleanArray::from(vec![Some(false), Some(false)])),
+                Arc::new(datafusion::arrow::array::BooleanArray::from(vec![
+                    Some(false),
+                    Some(false),
+                ])),
             ],
         )
         .unwrap();
@@ -2141,20 +2249,38 @@ mod tests {
         w.write(&batch).unwrap();
         w.close().unwrap();
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
 
-        let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000).await.unwrap();
+        let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000)
+            .await
+            .unwrap();
         // Two distinct series (200 vs 500) — not collapsed into one.
-        assert_eq!(resp.data.result.len(), 2, "attributes exploded → 2 series: {:?}", resp.data.result);
+        assert_eq!(
+            resp.data.result.len(),
+            2,
+            "attributes exploded → 2 series: {:?}",
+            resp.data.result
+        );
         for s in &resp.data.result {
             // normalized __name__ (dots→_, unit suffix), not the raw dotted name
-            assert_eq!(s.metric["__name__"], "http_server_requests_bytes", "metric: {:?}", s.metric);
+            assert_eq!(
+                s.metric["__name__"], "http_server_requests_bytes",
+                "metric: {:?}",
+                s.metric
+            );
             assert_eq!(s.metric["service_name"], "client");
             assert_eq!(s.metric["http_route"], "/user");
-            assert!(s.metric.contains_key("http_response_status_code"), "status label: {:?}", s.metric);
+            assert!(
+                s.metric.contains_key("http_response_status_code"),
+                "status label: {:?}",
+                s.metric
+            );
         }
     }
 
@@ -2241,23 +2367,25 @@ mod tests {
         w.close().unwrap();
 
         let opts = QuerierOptions {
-            storage: StorageConfig { path: tmp.path().into(), url: None },
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
             ..QuerierOptions::default()
         };
         let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
         assert!(engine.has_table("metrics_5m"), "tier registered");
 
         // 5-minute step over a 2-day range → splits per day AND selects the M5 tier.
-        let resp = handle_range(
-            &engine,
-            "sum by (sc) (rate(reqs[5m]))",
-            0,
-            2 * DAY_NS,
-            M5,
-        )
-        .await
-        .unwrap();
-        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let resp = handle_range(&engine, "sum by (sc) (rate(reqs[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.data.result.len(),
+            1,
+            "one series: {:?}",
+            resp.data.result
+        );
         let pts = &resp.data.result[0].values;
         #[allow(clippy::cast_precision_loss)]
         let day1_start_s = DAY_NS as f64 / 1e9;
@@ -2660,13 +2788,13 @@ mod tests {
             false,
         )
         .unwrap();
-        let by: BTreeMap<String, f64> = out
-            .iter()
-            .map(|(m, v)| (m["code"].clone(), *v))
-            .collect();
+        let by: BTreeMap<String, f64> = out.iter().map(|(m, v)| (m["code"].clone(), *v)).collect();
         assert_eq!(by["200"], 5.0);
         assert_eq!(by["500"], 1.0);
-        assert!(out.iter().all(|(m, _)| !m.contains_key("__name__")), "drops __name__");
+        assert!(
+            out.iter().all(|(m, _)| !m.contains_key("__name__")),
+            "drops __name__"
+        );
     }
 
     #[test]
@@ -2680,7 +2808,8 @@ mod tests {
         let mut b = BTreeMap::new();
         b.insert("__name__".to_string(), "b".to_string());
         b.insert("service_name".to_string(), "x".to_string());
-        let out = vector_vector_instant(op, vec![(a, 9.0)], vec![(b, 3.0)], &modifier, false).unwrap();
+        let out =
+            vector_vector_instant(op, vec![(a, 9.0)], vec![(b, 3.0)], &modifier, false).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].1, 3.0);
         // `ignoring(code)` drops code from the result too.
@@ -2703,7 +2832,11 @@ mod tests {
         assert_eq!(resp.data.result.len(), 1, "{:?}", resp.data.result);
         assert_eq!(
             resp.data.result[0].values,
-            vec![(1.0, "1".to_string()), (2.0, "3".to_string()), (3.0, "6".to_string())]
+            vec![
+                (1.0, "1".to_string()),
+                (2.0, "3".to_string()),
+                (3.0, "6".to_string())
+            ]
         );
         assert!(
             !resp.data.result[0].metric.contains_key("__name__"),
@@ -2715,10 +2848,14 @@ mod tests {
     #[tokio::test]
     async fn test_instant_scalar_mul_and_unary_minus() {
         let engine = counter_engine().await;
-        let resp = handle_instant(&engine, "http_total * 2", 3_000_000_000).await.unwrap();
+        let resp = handle_instant(&engine, "http_total * 2", 3_000_000_000)
+            .await
+            .unwrap();
         assert_eq!(resp.data.result.len(), 1);
         assert_eq!(resp.data.result[0].value.1, "120");
-        let neg = handle_instant(&engine, "- http_total", 3_000_000_000).await.unwrap();
+        let neg = handle_instant(&engine, "- http_total", 3_000_000_000)
+            .await
+            .unwrap();
         assert_eq!(neg.data.result[0].value.1, "-60");
     }
 
@@ -2736,11 +2873,23 @@ mod tests {
     #[tokio::test]
     async fn test_instant_comparison_filters_and_bool() {
         let engine = counter_engine().await;
-        let none = handle_instant(&engine, "http_total > 100", 3_000_000_000).await.unwrap();
-        assert!(none.data.result.is_empty(), "60 > 100 is false → filtered out");
-        let some = handle_instant(&engine, "http_total > 50", 3_000_000_000).await.unwrap();
-        assert_eq!(some.data.result[0].value.1, "60", "kept value is the LHS sample");
-        let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000).await.unwrap();
+        let none = handle_instant(&engine, "http_total > 100", 3_000_000_000)
+            .await
+            .unwrap();
+        assert!(
+            none.data.result.is_empty(),
+            "60 > 100 is false → filtered out"
+        );
+        let some = handle_instant(&engine, "http_total > 50", 3_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            some.data.result[0].value.1, "60",
+            "kept value is the LHS sample"
+        );
+        let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000)
+            .await
+            .unwrap();
         assert_eq!(b.data.result[0].value.1, "0", "bool comparison → 0/1");
     }
 
@@ -2754,7 +2903,13 @@ mod tests {
         let out = resample_to_grid(&pts, 0, 5_000_000_000, 1_000_000_000, STALENESS_NS);
         assert_eq!(
             out,
-            vec![(1.0, 10.0), (2.0, 30.0), (3.0, 60.0), (4.0, 60.0), (5.0, 60.0)]
+            vec![
+                (1.0, 10.0),
+                (2.0, 30.0),
+                (3.0, 60.0),
+                (4.0, 60.0),
+                (5.0, 60.0)
+            ]
         );
     }
 
