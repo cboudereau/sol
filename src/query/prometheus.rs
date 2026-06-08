@@ -460,6 +460,30 @@ pub(super) async fn string_column(
 
 /// Distinct raw attribute keys across a JSON object column. Bounded by label-set
 /// cardinality: only each *distinct* blob is parsed.
+/// Collect the first (string) column of a built `DataFrame` — the plan-based twin
+/// of [`string_column`]. Shared by the label/tag-value discovery endpoints.
+pub(super) async fn string_column_df(
+    engine: &super::QueryEngine,
+    df: datafusion::dataframe::DataFrame,
+) -> crate::Result<Vec<String>> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::DataType;
+
+    let batches = engine.collect(df).await?;
+    let mut values: Vec<String> = Vec::new();
+    for batch in &batches {
+        let col = cast(batch.column(0), &DataType::Utf8)?;
+        let col = col.as_string::<i32>();
+        for i in 0..batch.num_rows() {
+            if !col.is_null(i) {
+                values.push(col.value(i).to_string());
+            }
+        }
+    }
+    Ok(values)
+}
+
 pub(super) async fn distinct_json_keys(
     engine: &super::QueryEngine,
     table: &str,

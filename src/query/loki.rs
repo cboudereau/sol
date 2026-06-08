@@ -505,11 +505,26 @@ pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_j
 }
 
 /// Run Loki `label/:name/values` and build `{status, data:[...]}`.
+/// Build the Loki `label/:name/values` query as a `DataFrame` (P4): distinct
+/// non-null values of `label`.
+pub async fn build_label_values(engine: &super::QueryEngine, label: &str) -> crate::Result<DataFrame> {
+    let lhs = label_lhs_expr(label);
+    Ok(engine
+        .table("logs")
+        .await?
+        .filter(lhs.clone().is_not_null())?
+        .select(vec![lhs.alias("v")])?
+        .distinct()?
+        .sort(vec![col("v").sort(true, false)])?)
+}
+
+/// Run Loki `label/:name/values` and build `{status, data:[...]}`.
 pub async fn handle_label_values(
     engine: &super::QueryEngine,
     label: &str,
 ) -> crate::Result<serde_json::Value> {
-    let values = super::prometheus::string_column(engine, &label_values_sql(label)).await?;
+    let df = build_label_values(engine, label).await?;
+    let values = super::prometheus::string_column_df(engine, df).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
 
