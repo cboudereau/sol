@@ -167,6 +167,39 @@ fn json_attr(column: &str, key: &str) -> Expr {
     datafusion_functions_json::udfs::json_get_str_udf().call(vec![col(column), lit(key)])
 }
 
+/// LHS `Expr` for a raw TraceQL tag string (mirrors [`traceql_lhs`]).
+fn tag_lhs_expr(tag: &str) -> Expr {
+    match tag {
+        "name" => col("name"),
+        "status" | "status.code" => col("status_code"),
+        "kind" => col("kind"),
+        "duration" => col("duration_nanos"),
+        "resource.service.name" | "service.name" | ".service.name" => col("service_name"),
+        _ => {
+            if let Some(a) = tag.strip_prefix("resource.") {
+                json_attr("resource_attributes", a)
+            } else if let Some(a) = tag.strip_prefix("span.") {
+                json_attr("attributes", a)
+            } else {
+                json_attr("attributes", tag.strip_prefix('.').unwrap_or(tag))
+            }
+        }
+    }
+}
+
+/// Build the Tempo `tag/:tag/values` query as a `DataFrame` (P4): distinct
+/// stringified values of the tag.
+pub async fn build_tag_values(engine: &super::QueryEngine, tag: &str) -> crate::Result<DataFrame> {
+    let lhs = tag_lhs_expr(tag);
+    Ok(engine
+        .table("traces")
+        .await?
+        .filter(lhs.clone().is_not_null())?
+        .select(vec![cast(lhs, datafusion::arrow::datatypes::DataType::Utf8).alias("v")])?
+        .distinct()?
+        .sort(vec![col("v").sort(true, false)])?)
+}
+
 /// Resolve a TraceQL field to its `Expr` LHS (promoted column or JSON extraction).
 /// `event`/`instrumentation`/`link`/`parent` scopes are parsed but not lowered.
 fn field_lhs_expr(f: &tast::Field) -> Result<Expr, String> {
@@ -745,7 +778,8 @@ pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate:
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let batches = engine.sql(&tag_values_sql(tag)).await?;
+    let df = build_tag_values(engine, tag).await?;
+    let batches = engine.collect(df).await?;
     let mut values: Vec<Value> = Vec::new();
     for batch in &batches {
         let col = cast(batch.column(0), &DataType::Utf8)?;
