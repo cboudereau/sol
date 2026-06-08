@@ -232,7 +232,9 @@ fn first_range(expr: &ast::SampleExpr) -> Option<&ast::LogRange> {
 // --- `Expr`/DataFrame lowering (expr-lowering migration) ---
 
 use datafusion::logical_expr::expr_fn::cast;
+use datafusion::logical_expr::when;
 use datafusion::functions::regex::expr_fn::regexp_like;
+use datafusion::functions_aggregate::expr_fn::count;
 use datafusion::prelude::{col, lit, DataFrame, Expr};
 
 /// Label LHS as an `Expr`: promoted `service_name` column, else `prom_attr` on
@@ -365,6 +367,57 @@ pub async fn build_streams(
         .limit(0, Some(limit as usize))?)
 }
 
+/// `detected_level` CASE over the OTLP severity ranges, as an `Expr`.
+fn detected_level_expr() -> Expr {
+    let sev = || col("severity_number");
+    when(sev().between(lit(1), lit(4)), lit("trace"))
+        .when(sev().between(lit(5), lit(8)), lit("debug"))
+        .when(sev().between(lit(9), lit(12)), lit("info"))
+        .when(sev().between(lit(13), lit(16)), lit("warn"))
+        .when(sev().between(lit(17), lit(20)), lit("error"))
+        .when(sev().between(lit(21), lit(24)), lit("fatal"))
+        .otherwise(lit("unknown"))
+        .expect("CASE with otherwise is total")
+}
+
+/// Build the log-volume query as a `DataFrame` (P8): count per
+/// `(detected_level, step-bucket)` over the metric query's underlying selector.
+/// Columns match [`handle_volume`]: `lvl`, `bkt`, `c`.
+pub async fn build_volume(
+    engine: &super::QueryEngine,
+    query: &str,
+    start_ns: i64,
+    end_ns: i64,
+    step_ns: i64,
+) -> crate::Result<DataFrame> {
+    let expr = super::logql::parse(query).map_err(|e| to_err(e.to_string()))?;
+    let range = match &expr {
+        ast::LogQlExpr::Sample(s) => {
+            first_range(s).ok_or_else(|| to_err("log volume query must contain a range aggregation".to_string()))?
+        }
+        ast::LogQlExpr::Log(_) => {
+            return Err(to_err("log volume query must be a metric query".to_string()));
+        }
+    };
+    let pred = pipeline_pred_expr(&range.pipeline).map_err(to_err)?;
+    let step = step_ns.max(1);
+    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        .between(lit(start_ns), lit(end_ns));
+    let mut df = engine.table("logs").await?.filter(time)?;
+    if let Some(p) = pred {
+        df = df.filter(p)?;
+    }
+    let bucket = (cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        / lit(step))
+        * lit(step);
+    Ok(df
+        .aggregate(
+            vec![detected_level_expr().alias("lvl"), bucket.alias("bkt")],
+            vec![count(lit(1_i64)).alias("c")],
+        )?
+        .sort(vec![col("bkt").sort(true, false)])?)
+}
+
 /// Translate a LogQL log query + range params into SQL over the `logs` table.
 /// Parses with the grammar parser ([`super::logql`]) and lowers the supported
 /// subset; unsupported-but-parsed pipelines return a clear error.
@@ -472,9 +525,8 @@ pub async fn handle_volume(
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::datatypes::Int64Type;
 
-    let sql = volume_sql(query, start_ns, end_ns, step_ns)
-        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
-    let batches = engine.sql(&sql).await?;
+    let df = build_volume(engine, query, start_ns, end_ns, step_ns).await?;
+    let batches = engine.collect(df).await?;
 
     let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for batch in &batches {
