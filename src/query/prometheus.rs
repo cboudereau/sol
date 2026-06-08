@@ -97,6 +97,81 @@ fn matcher_pred(m: &Matcher) -> Option<String> {
     })
 }
 
+// --- PromQL Expr/DataFrame lowering (expr-lowering migration) ---
+
+/// Label LHS as an `Expr`: promoted `service_name`, else `prom_attr(attributes, key)`.
+fn label_lhs_expr(key: &str) -> datafusion::logical_expr::Expr {
+    if key == "service_name" {
+        datafusion::prelude::col("service_name")
+    } else {
+        super::plan::predicate::prom_attr("attributes", key)
+    }
+}
+
+/// `prom_metric_name(name, unit, is_monotonic)` as an `Expr`.
+fn prom_name_expr() -> datafusion::logical_expr::Expr {
+    use datafusion::prelude::col;
+    super::udf::prom_metric_name_udf().call(vec![col("name"), col("unit"), col("is_monotonic")])
+}
+
+/// A matcher → filter `Expr` (None for `__name__`, covered by the name predicate).
+fn matcher_expr(m: &Matcher) -> Option<datafusion::logical_expr::Expr> {
+    use super::plan::predicate::{cmp, MatchKind};
+    if m.name == "__name__" {
+        return None;
+    }
+    let kind = match &m.op {
+        MatchOp::Equal => MatchKind::Eq,
+        MatchOp::NotEqual => MatchKind::Neq,
+        MatchOp::Re(_) => MatchKind::Re,
+        MatchOp::NotRe(_) => MatchKind::Nre,
+    };
+    Some(cmp(label_lhs_expr(&m.name), kind, &m.value, false))
+}
+
+/// Metric-name predicate `Expr` mirroring [`metric_value_and_match`]: the exact
+/// normalized name, plus the histogram `_count`/`_sum` synthesis on bucket rows.
+fn name_pred_expr(name: &str) -> datafusion::logical_expr::Expr {
+    use datafusion::prelude::{col, lit};
+    let exact = |n: &str| prom_name_expr().eq(lit(n.to_string()));
+    let hist = |base: &str| exact(base).and(col("bucket_counts").is_not_null());
+    if let Some(base) = name.strip_suffix("_count") {
+        exact(name).or(hist(base))
+    } else if let Some(base) = name.strip_suffix("_sum") {
+        exact(name).or(hist(base))
+    } else {
+        exact(name)
+    }
+}
+
+/// Build the PromQL `series` query as a `DataFrame` (P4): distinct
+/// `(normalized __name__, service_name)` matching an optional `match[]` selector.
+pub async fn build_series(
+    engine: &super::QueryEngine,
+    matcher: Option<&str>,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let mut df = engine.table("metrics").await?;
+    if let Some(sel) = matcher.map(str::trim).filter(|s| !s.is_empty()) {
+        let expr = parser::parse(sel).map_err(to_err)?;
+        let vs = match &expr {
+            Expr::VectorSelector(vs) => vs,
+            _ => return Err(to_err("series match[] must be a metric selector".to_string())),
+        };
+        if let Some(name) = vs.name.as_deref() {
+            df = df.filter(name_pred_expr(name))?;
+        }
+        for m in &vs.matchers.matchers {
+            if let Some(p) = matcher_expr(m) {
+                df = df.filter(p)?;
+            }
+        }
+    }
+    Ok(df
+        .select(vec![prom_name_expr().alias("name"), col("service_name")])?
+        .distinct()?)
+}
+
 /// Subquery selecting, per series, the latest sample at/before `time_ns`
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
@@ -550,8 +625,8 @@ pub async fn handle_series(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let sql = series_sql(matcher).map_err(to_err)?;
-    let batches = engine.sql(&sql).await?;
+    let df = build_series(engine, matcher).await?;
+    let batches = engine.collect(df).await?;
     let mut series: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
         let name_arr = cast(batch.column(0), &DataType::Utf8)?;
