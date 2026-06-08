@@ -187,6 +187,46 @@ fn tag_lhs_expr(tag: &str) -> Expr {
     }
 }
 
+/// Build the Tempo trace-by-id query as a `DataFrame` (P3 + P9): the spans of one
+/// trace, ids base64-encoded. Columns match [`handle_trace_by_id`]'s reads.
+pub async fn build_trace_by_id(
+    engine: &super::QueryEngine,
+    trace_id_hex: &str,
+) -> crate::Result<DataFrame> {
+    let mut hex = trace_id_hex.trim().to_lowercase();
+    if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(to_err("trace id must be a hex string of at most 32 chars".to_string()));
+    }
+    if hex.len() < 32 {
+        hex = format!("{hex:0>32}"); // zero-pad to the full 16-byte id
+    }
+    let bytes: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16))
+        .collect::<Result<_, _>>()
+        .map_err(|e: std::num::ParseIntError| to_err(e.to_string()))?;
+    let id = Expr::Literal(datafusion::scalar::ScalarValue::FixedSizeBinary(16, Some(bytes)), None);
+    let b64 = |c: &str| super::plan::ids::encode_as(col(c), "base64");
+    Ok(engine
+        .table("traces")
+        .await?
+        .filter(col("trace_id").eq(id))?
+        .select(vec![
+            b64("trace_id").alias("trace_b64"),
+            b64("span_id").alias("span_b64"),
+            col("service_name"),
+            col("name"),
+            col("start_time_unix_nano"),
+            col("duration_nanos"),
+            col("status_code"),
+            col("attributes"),
+            col("resource_attributes"),
+            b64("parent_span_id").alias("parent_b64"),
+            col("kind"),
+            col("scope_name"),
+        ])?
+        .sort(vec![col("start_time_unix_nano").sort(true, false)])?)
+}
+
 /// Build the Tempo `tag/:tag/values` query as a `DataFrame` (P4): distinct
 /// stringified values of the tag.
 pub async fn build_tag_values(engine: &super::QueryEngine, tag: &str) -> crate::Result<DataFrame> {
@@ -676,9 +716,8 @@ pub async fn handle_trace_by_id(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    let to_err = |e: String| Box::<dyn std::error::Error + Send + Sync>::from(e);
-    let sql = trace_by_id_sql(trace_id_hex).map_err(to_err)?;
-    let batches = engine.sql(&sql).await?;
+    let df = build_trace_by_id(engine, trace_id_hex).await?;
+    let batches = engine.collect(df).await?;
 
     let mut spans: Vec<Value> = Vec::new();
     let mut resource_attrs: Vec<Value> = Vec::new();
