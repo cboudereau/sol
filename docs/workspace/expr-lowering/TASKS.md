@@ -134,8 +134,16 @@ confirm `QueryEngine::sql` is used only by `sql_user`; update the design coverag
 full checkpoint.
 **Tests**: `test_no_format_sql_in_core` (a test or CI grep asserting the invariant).
 **Verify**: `cargo test --features query-backend --lib query:: && cargo clippy --features query-backend --lib -- -D warnings`
-**Acceptance**: [ ] invariant holds (grep clean); [ ] full `query::` green; [ ] clippy clean; [ ] coverage map updated.
+**Acceptance**: [x] invariant holds (`test_no_format_sql_in_core` green); [x] full `query::` green (137 passed); [x] clippy clean (`--lib -D warnings`); [x] coverage map updated.
 **Depends on**: 3, 4 **Time-box**: ~60 min
+
+> **Status (done):** all tasks T0–T5 complete and committed. Read+write query
+> construction is fully on the DataFusion `Expr`/`DataFrame` API; the only
+> sanctioned `.sql()` is `QueryEngine::sql` (user endpoint, borrowed `&str`).
+> Phase 6 (move ADRs/DESIGN to durable docs, delete this workspace) is
+> **intentionally deferred** per the user — this workspace stays in place.
+> Pre-existing `clippy --tests` `clone_on_ref_ptr` warnings in test fixtures
+> are out of scope (the checkpoint is lib-only clippy).
 
 ## Sessions
 

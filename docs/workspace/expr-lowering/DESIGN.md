@@ -164,9 +164,9 @@ flowchart TB
 |---|---|---|
 | P1 predicate | `col.eq(lit())`, `regexp_match`, `is_null().or(..)` | all matchers/filters (all signals) |
 | P2 LHS resolver | `col(..)` / `ScalarUDF.call(args)` | `*_lhs`, value/name exprs |
-| P3 scan/filter/project/sort/limit | `ctx.table(t).filter().select().sort().limit()` | selectors, search, streams, trace-by-id, `metric_base` |
+| P3 scan/filter/project/sort/limit | `ctx.table(t).filter().select().sort().limit()` | selectors, search, streams, trace-by-id, `metric_base_df`, **compactor sort-merge** |
 | P4 distinct/aggregate | `.distinct()` / `.aggregate(group, aggs)` | labels, series, tags, tag values, index stats/volume, instant `sum by` |
-| P5 latest-per-series | `Expr::WindowFunction(row_number)` + `filter(rn=1)` | PromQL instant, histogram/latest scan |
+| P5 latest-per-series | `Expr::WindowFunction(row_number)` + `filter(rn=1)` | PromQL instant, histogram/latest scan, **rollup last-per-bucket** |
 | P6 rate | `WindowFunction(lag)` + `when().otherwise()` + arithmetic | `rate`/`irate`/`increase` |
 | P7 `*_over_time` | `WindowFunction(agg)` + `WindowFrame(Range, Preceding(d), CurrentRow)` | `<agg>_over_time` |
 | P8 range agg | `.aggregate(group_exprs, agg_exprs)` | `sum/max/… by (…)` over range |
@@ -184,13 +184,22 @@ src/query/plan/          # NEW — the 9 primitives over DataFusion Expr/DataFra
   ids.rs                 #   P9  (encode / FixedSizeBinary literal)
 src/query/catalog.rs     # QueryEngine::collect(plan) + plan-based cache key
 src/query/{prometheus,loki,tempo}.rs
-                         # translate_*/handle_* compose plan primitives; no format! SQL
+                         # build_*/handle_* compose plan primitives; no format! SQL
+                         #   (all translate_*/*_sql/lower_* SQL builders removed)
+src/query/{compaction,rollup}.rs
+                         # write-side: sort-merge + downsample on the DataFrame API too
 ```
+
+The FR6 invariant is enforced by `query::no_sql_invariant_tests::test_no_format_sql_in_core`,
+which scans `src/query/` and fails on any `format!`-built SQL (`SELECT/FROM/WHERE/GROUP BY/JOIN`)
+or `.sql(&format!…)` outside `sql.rs` (the user-SQL endpoint) and `#[cfg(test)]` fixtures.
+The only remaining `.sql()` is `QueryEngine::sql` — a borrowed `&str` passthrough.
 
 ### Interfaces
 
 - `units::{TimeNs, DurationNs}` value objects; `parse_duration_ns(&str) -> DurationNs`.
-- `plan::predicate::cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr`.
+- `plan::predicate::cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Result<Expr, String>`
+  (errors on a malformed numeric value rather than binding `NaN`).
 - `plan::frame::{latest_per_series, rate, over_time}(base: DataFrame, …) -> DataFrame`.
 - `QueryEngine::collect(plan) -> Result<Vec<RecordBatch>>` (cache + telemetry, keyed
   on the optimized `LogicalPlan`).
