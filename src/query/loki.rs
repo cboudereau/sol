@@ -229,6 +229,142 @@ fn first_range(expr: &ast::SampleExpr) -> Option<&ast::LogRange> {
     }
 }
 
+// --- `Expr`/DataFrame lowering (expr-lowering migration) ---
+
+use datafusion::logical_expr::expr_fn::cast;
+use datafusion::functions::regex::expr_fn::regexp_like;
+use datafusion::prelude::{col, lit, DataFrame, Expr};
+
+/// Label LHS as an `Expr`: promoted `service_name` column, else `prom_attr` on
+/// the `resource_attributes` JSON column.
+fn label_lhs_expr(name: &str) -> Expr {
+    if name == PROMOTED_LABEL {
+        col(PROMOTED_LABEL)
+    } else {
+        super::plan::predicate::prom_attr("resource_attributes", name)
+    }
+}
+
+fn matchop_kind(op: &ast::MatchOp) -> super::plan::predicate::MatchKind {
+    use super::plan::predicate::MatchKind;
+    match op {
+        ast::MatchOp::Eq => MatchKind::Eq,
+        ast::MatchOp::Neq => MatchKind::Neq,
+        ast::MatchOp::Re => MatchKind::Re,
+        ast::MatchOp::Nre => MatchKind::Nre,
+    }
+}
+
+/// Map a label-filter comparison op to `(MatchKind, numeric)`.
+fn cmpop_kind(op: &ast::CmpOp) -> (super::plan::predicate::MatchKind, bool) {
+    use super::plan::predicate::MatchKind;
+    match op {
+        ast::CmpOp::Eq => (MatchKind::Eq, false),
+        ast::CmpOp::Neq => (MatchKind::Neq, false),
+        ast::CmpOp::Re => (MatchKind::Re, false),
+        ast::CmpOp::Nre => (MatchKind::Nre, false),
+        ast::CmpOp::EqEq => (MatchKind::Eq, true),
+        ast::CmpOp::Gt => (MatchKind::Gt, true),
+        ast::CmpOp::Gte => (MatchKind::Gte, true),
+        ast::CmpOp::Lt => (MatchKind::Lt, true),
+        ast::CmpOp::Lte => (MatchKind::Lte, true),
+    }
+}
+
+/// A line filter (`body`) as an `Expr`. Pattern filters (`|>`/`!>`) deferred.
+fn line_pred_expr(op: &ast::LineOp, value: &str) -> Result<Expr, String> {
+    let body = col("body");
+    Ok(match op {
+        ast::LineOp::Contains => body.like(lit(format!("%{value}%"))),
+        ast::LineOp::NotContains => !body.like(lit(format!("%{value}%"))),
+        ast::LineOp::Re => regexp_like(body, lit(value.to_string()), None),
+        ast::LineOp::Nre => !regexp_like(body, lit(value.to_string()), None),
+        ast::LineOp::Pattern | ast::LineOp::NotPattern => {
+            return Err("pattern line filters (|>/!>) are not yet supported".to_string());
+        }
+    })
+}
+
+/// Combine `a` into the running filter with `AND` (or seed it).
+fn and_opt(acc: Option<Expr>, e: Expr) -> Option<Expr> {
+    Some(match acc {
+        Some(a) => a.and(e),
+        None => e,
+    })
+}
+
+/// Build the WHERE filter `Expr` from a parsed log pipeline. Mirrors
+/// [`pipeline_preds`] (selector matchers + line filters + stored-label filters;
+/// parser/format stages are no-ops; a label filter after an extraction stage
+/// errors — the dynamic-label non-goal).
+fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
+    use ast::Stage;
+    let mut acc: Option<Expr> = None;
+    for m in &p.selector.matchers {
+        let e = super::plan::predicate::cmp(label_lhs_expr(&m.name), matchop_kind(&m.op), &m.value, false);
+        acc = and_opt(acc, e);
+    }
+    let mut extracted = false;
+    for stage in &p.stages {
+        match stage {
+            Stage::Line { op, value } => {
+                if !value.is_empty() {
+                    acc = and_opt(acc, line_pred_expr(op, value)?);
+                }
+            }
+            Stage::Json | Stage::Logfmt | Stage::Unpack | Stage::Regexp(_) | Stage::Pattern(_) => {
+                extracted = true;
+            }
+            Stage::Decolorize
+            | Stage::LineFormat(_)
+            | Stage::LabelFormat(_)
+            | Stage::Drop(_)
+            | Stage::Keep(_)
+            | Stage::Unwrap(_) => {}
+            Stage::LabelFilter(lf) => {
+                if extracted {
+                    return Err(format!(
+                        "label filter on a runtime-extracted label is not supported: {}",
+                        lf.name
+                    ));
+                }
+                let (kind, numeric) = cmpop_kind(&lf.op);
+                acc = and_opt(acc, super::plan::predicate::cmp(label_lhs_expr(&lf.name), kind, &lf.value, numeric));
+            }
+        }
+    }
+    Ok(acc)
+}
+
+/// Build the LogQL streams query as a `DataFrame` (P3). Columns match the order
+/// [`handle_query_range`] reads: service_name, time_unix_nano, body, severity_number.
+pub async fn build_streams(
+    engine: &super::QueryEngine,
+    logql: &str,
+    start_ns: i64,
+    end_ns: i64,
+    limit: u32,
+    forward: bool,
+) -> crate::Result<DataFrame> {
+    let pipeline = super::logql::parse_pipeline(logql).map_err(|e| to_err(e.to_string()))?;
+    let pred = pipeline_pred_expr(&pipeline).map_err(to_err)?;
+    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        .between(lit(start_ns), lit(end_ns));
+    let mut df = engine.table("logs").await?.filter(time)?;
+    if let Some(p) = pred {
+        df = df.filter(p)?;
+    }
+    Ok(df
+        .select(vec![
+            col("service_name"),
+            col("time_unix_nano"),
+            col("body"),
+            col("severity_number"),
+        ])?
+        .sort(vec![col("time_unix_nano").sort(forward, false)])?
+        .limit(0, Some(limit as usize))?)
+}
+
 /// Translate a LogQL log query + range params into SQL over the `logs` table.
 /// Parses with the grammar parser ([`super::logql`]) and lowers the supported
 /// subset; unsupported-but-parsed pipelines return a clear error.
@@ -615,9 +751,8 @@ pub async fn handle_query_range(
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::datatypes::{Int32Type, TimestampNanosecondType};
 
-    let sql = translate_query_range(query, start_ns, end_ns, limit, forward)
-        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
-    let batches = engine.sql(&sql).await?;
+    let df = build_streams(engine, query, start_ns, end_ns, limit, forward).await?;
+    let batches = engine.collect(df).await?;
 
     let mut rows: Vec<(String, &'static str, i64, String)> = Vec::new();
     for batch in &batches {
