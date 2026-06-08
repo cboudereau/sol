@@ -469,14 +469,29 @@ pub(super) async fn distinct_json_keys(
     // label-set cardinality, but a high-cardinality attribute (e.g. a per-request
     // id embedded in the JSON) would otherwise make this an unbounded scan +
     // parse. 10k distinct blobs is far more label sets than any real schema.
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::DataType;
     const MAX_DISTINCT_BLOBS: usize = 10_000;
-    let sql = format!(
-        "SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL LIMIT {MAX_DISTINCT_BLOBS}"
-    );
+    let df = engine
+        .table(table)
+        .await?
+        .filter(datafusion::prelude::col(column).is_not_null())?
+        .select(vec![datafusion::prelude::col(column)])?
+        .distinct()?
+        .limit(0, Some(MAX_DISTINCT_BLOBS))?;
+    let batches = engine.collect(df).await?;
     let mut keys = std::collections::BTreeSet::new();
-    for blob in string_column(engine, &sql).await? {
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&blob) {
-            keys.extend(map.keys().cloned());
+    for batch in &batches {
+        let c = cast(batch.column(0), &DataType::Utf8)?;
+        let c = c.as_string::<i32>();
+        for i in 0..batch.num_rows() {
+            if !c.is_null(i)
+                && let Ok(serde_json::Value::Object(map)) =
+                    serde_json::from_str::<serde_json::Value>(c.value(i))
+            {
+                keys.extend(map.keys().cloned());
+            }
         }
     }
     Ok(keys)
