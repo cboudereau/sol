@@ -418,6 +418,36 @@ pub async fn build_volume(
         .sort(vec![col("bkt").sort(true, false)])?)
 }
 
+/// Filter `Expr` from a bare `{selector}` matcher string (series/index endpoints).
+fn selector_pred_expr(query: &str) -> Result<Option<Expr>, String> {
+    let q = query.trim();
+    if q.is_empty() || q == "{}" {
+        return Ok(None);
+    }
+    let p = super::logql::parse_pipeline(q).map_err(|e| e.to_string())?;
+    pipeline_pred_expr(&p)
+}
+
+/// Build the Loki `series` query as a `DataFrame` (P4): distinct
+/// `(service_name, resource_attributes)` matching `matcher`.
+pub async fn build_series(
+    engine: &super::QueryEngine,
+    matcher: Option<&str>,
+    start_ns: i64,
+    end_ns: i64,
+) -> crate::Result<DataFrame> {
+    let pred = selector_pred_expr(matcher.unwrap_or("{}")).map_err(to_err)?;
+    let time = cast(col("time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        .between(lit(start_ns), lit(end_ns));
+    let mut df = engine.table("logs").await?.filter(time)?;
+    if let Some(p) = pred {
+        df = df.filter(p)?;
+    }
+    Ok(df
+        .select(vec![col("service_name"), col("resource_attributes")])?
+        .distinct()?)
+}
+
 /// Translate a LogQL log query + range params into SQL over the `logs` table.
 /// Parses with the grammar parser ([`super::logql`]) and lowers the supported
 /// subset; unsupported-but-parsed pipelines return a clear error.
@@ -599,12 +629,8 @@ pub async fn handle_series(
 ) -> crate::Result<serde_json::Value> {
     use datafusion::arrow::array::{Array, AsArray};
 
-    let preds = selector_preds(matcher.unwrap_or("{}"), start_ns, end_ns).map_err(to_err)?;
-    let sql = format!(
-        "SELECT DISTINCT service_name, resource_attributes FROM logs WHERE {}",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    let df = build_series(engine, matcher, start_ns, end_ns).await?;
+    let batches = engine.collect(df).await?;
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut data: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
