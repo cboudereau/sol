@@ -1240,9 +1240,13 @@ pub async fn handle_range(
     // A coarse step routes to a rollup tier table — but rollups only cover
     // *sealed* days (the compactor never rolls up the active day). Routing the
     // whole range to the tier would silently drop the live tail, so each window
-    // picks its source: sealed (cacheable) windows read the tier, the live one
-    // reads raw `metrics`. When no tier qualifies, both fall back to raw.
+    // picks its source per the sealed boundary below. When no tier qualifies,
+    // every window falls back to raw `metrics`.
     let tier = select_range_table(engine, step_ns);
+    // The trailing day of the range is treated as unsealed and read from raw —
+    // a rolling `end − 1d` (not a wall-clock "today"), so the boundary day of a
+    // historical range is raw too. That is coarser, not wrong: the `metrics`
+    // union includes the compacted daily, so the data is present either way.
     let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
     let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
         // Per-day shards aligned to UTC midnight; everything before the last day
@@ -1257,8 +1261,8 @@ pub async fn handle_range(
 
     let mut merged: RangeSeries = BTreeMap::new();
     for (s, e) in windows {
-        // Sealed (cacheable) windows read the rollup tier; the live window — which
-        // the tier never covers — reads raw `metrics`.
+        // Sealed windows read the rollup tier; the trailing window — which the
+        // tier never covers — reads raw `metrics`.
         let table: &str = if e <= sealed_ns { &tier } else { "metrics" };
         match eval_range_window(engine, eval_expr, s, e, table).await? {
             RangeVal::Vector(part) => {
@@ -2405,7 +2409,9 @@ mod tests {
             )
             .unwrap()
         };
-        // raw `metrics`: a monotonic counter spanning day 0 (sealed) AND day 1 (live).
+        // raw `metrics`: a monotonic counter spanning day 0 (sealed) AND day 1
+        // (live). Day-0 raw rises 10→20 (rate 1/30) — deliberately a *different*
+        // slope from the tier below, so we can tell which source served day 0.
         let raw = mk(
             &[M5, 2 * M5, DAY_NS + M5, DAY_NS + 2 * M5],
             &[10.0, 20.0, 30.0, 40.0],
@@ -2414,8 +2420,9 @@ mod tests {
         let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
         w.write(&raw).unwrap();
         w.close().unwrap();
-        // rollup-5m tier: ONLY the sealed day 0 (the live day is never rolled up).
-        let rolled = mk(&[M5, 2 * M5], &[10.0, 20.0]);
+        // rollup-5m tier: ONLY the sealed day 0 (the live day is never rolled
+        // up). Rises 10→40 (rate 3/30 = 0.1) — distinct from day-0 raw.
+        let rolled = mk(&[M5, 2 * M5], &[10.0, 40.0]);
         let f = std::fs::File::create(dir.join("rollup-5m.parquet")).unwrap();
         let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
         w.write(&rolled).unwrap();
@@ -2442,6 +2449,23 @@ mod tests {
         let pts = &resp.data.result[0].values;
         #[allow(clippy::cast_precision_loss)]
         let day1_start_s = DAY_NS as f64 / 1e9;
+        let val = |ts: f64| -> Option<f64> {
+            pts.iter()
+                .find(|(t, _)| (*t - ts).abs() < 1.0)
+                .and_then(|(_, v)| v.parse::<f64>().ok())
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let (day0_ts, day1_ts) = (2.0 * M5 as f64 / 1e9, (DAY_NS + 2 * M5) as f64 / 1e9);
+        // Day 0 (sealed) is served by the tier — its 0.1 slope, NOT raw's 1/30.
+        assert!(
+            val(day0_ts).is_some_and(|v| (v - 0.1).abs() < 1e-6),
+            "sealed day 0 must come from the tier (rate 0.1), got: {pts:?}"
+        );
+        // Day 1 (trailing/live) survives — and is served by raw (its 1/30 slope).
+        assert!(
+            val(day1_ts).is_some_and(|v| (v - 1.0 / 30.0).abs() < 1e-6),
+            "live day 1 must survive via raw (rate 1/30), got: {pts:?}"
+        );
         assert!(
             pts.iter().any(|(ts, _)| *ts >= day1_start_s),
             "live (day-1) data must survive tier routing, got: {pts:?}"
