@@ -324,6 +324,88 @@ async fn lower_range_df(
     }
 }
 
+/// Latest sample per series at/before `time_ns`, as a `DataFrame` (P5): the
+/// instant-query base (`metric_base` filtered `<= time_ns`, then `rn = 1`).
+async fn latest_selected_df(
+    engine: &super::QueryEngine,
+    vs: &VectorSelector,
+    time_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::{col, lit};
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
+    let mut df = engine.table("metrics").await?.filter(name_pred_expr(name))?;
+    for m in &vs.matchers.matchers {
+        if let Some(p) = matcher_expr(m) {
+            df = df.filter(p)?;
+        }
+    }
+    df = df.filter(cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
+    let base = df.select(vec![
+        prom_name_expr().alias("prom_name"),
+        col("name"),
+        col("service_name"),
+        col("attributes"),
+        col("time_unix_nano"),
+        metric_value_expr(name).alias("v"),
+    ])?;
+    // latest per (name, attributes) — matches the SQL row_number partition.
+    super::plan::frame::latest_per_series(base, vec![col("name"), col("attributes")], "time_unix_nano")
+}
+
+/// Instant `<agg> [by (...)]` over the latest samples, as a `DataFrame` (P4).
+async fn lower_aggregate_instant_df(
+    engine: &super::QueryEngine,
+    agg: &AggregateExpr,
+    time_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let vs = match agg.expr.as_ref() {
+        Expr::VectorSelector(vs) => vs,
+        Expr::Paren(p) => match p.expr.as_ref() {
+            Expr::VectorSelector(vs) => vs,
+            _ => return Err(to_err("aggregate inner must be a vector selector (instant)".to_string())),
+        },
+        _ => return Err(to_err("aggregate inner must be a vector selector (instant)".to_string())),
+    };
+    let op = agg_name(agg.op).map_err(to_err)?;
+    let by = match &agg.modifier {
+        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
+        Some(LabelModifier::Exclude(_)) => {
+            return Err(to_err("`without (...)` aggregation not supported (v1)".to_string()));
+        }
+        None => Vec::new(),
+    };
+    let inner = latest_selected_df(engine, vs, time_ns).await?;
+    let v = agg_value_expr(op, col("v")).alias("v");
+    if by.is_empty() {
+        Ok(inner.aggregate(vec![], vec![v])?)
+    } else {
+        let group: Vec<datafusion::logical_expr::Expr> =
+            by.iter().map(|k| label_lhs_expr(k).alias(sql_ident(k))).collect();
+        Ok(inner.aggregate(group, vec![v])?)
+    }
+}
+
+/// Lower an instant PromQL expression to a `DataFrame` (the `Expr` twin of
+/// [`lower`]): latest-per-series selectors and `<agg> by` aggregations.
+async fn lower_instant_df(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    time_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    match expr {
+        Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
+        Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
+        Expr::Aggregate(agg) => lower_aggregate_instant_df(engine, agg, time_ns).await,
+        _ => Err(to_err("unsupported PromQL expression for instant query (v1)".to_string())),
+    }
+}
+
 /// Subquery selecting, per series, the latest sample at/before `time_ns`
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
@@ -2108,15 +2190,15 @@ async fn eval_range_window(
 
 /// Run a single-`v`/`time_unix_nano` SQL and group rows into instant samples
 /// (latest value per series via [`LabelCols`]).
-async fn instant_vector_from_sql(
+async fn instant_vector_from_df(
     engine: &super::QueryEngine,
-    sql: &str,
+    df: datafusion::dataframe::DataFrame,
 ) -> crate::Result<Vec<(BTreeMap<String, String>, f64)>> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type};
 
-    let batches = engine.sql(sql).await?;
+    let batches = engine.collect(df).await?;
     let mut out = Vec::new();
     for batch in &batches {
         let schema = batch.schema();
@@ -2248,8 +2330,8 @@ async fn eval_instant(
                     .collect();
                 Ok(InstantVal::Vector(v))
             } else {
-                let sql = lower(expr, time_ns).map_err(to_err)?;
-                Ok(InstantVal::Vector(instant_vector_from_sql(engine, &sql).await?))
+                let df = lower_instant_df(engine, expr, time_ns).await?;
+                Ok(InstantVal::Vector(instant_vector_from_df(engine, df).await?))
             }
         }
     }
