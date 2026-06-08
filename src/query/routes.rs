@@ -44,9 +44,7 @@ fn loki_step_ns(step: &Option<String>, start: i64, end: i64) -> i64 {
         digits.parse::<f64>().ok()
     });
     if let Some(secs) = parsed.filter(|s| *s > 0.0) {
-        #[allow(clippy::cast_possible_truncation)]
-        let ns = (secs * 1e9) as i64;
-        return ns.max(1_000_000_000);
+        return super::units::DurationNs::from_secs_f64(secs).ns().max(1_000_000_000);
     }
     ((end - start) / 100).max(1_000_000_000)
 }
@@ -94,14 +92,10 @@ struct PromInstantParams {
 /// Parse a Prometheus `time` (unix seconds, possibly fractional) to nanoseconds.
 /// Absent/unparseable means "now" → the latest sample (`i64::MAX`).
 fn parse_time_ns(s: &Option<String>) -> i64 {
+    // Ingress boundary: Prometheus/Tempo `time` is unix seconds → canonical ns.
     s.as_ref()
         .and_then(|v| v.parse::<f64>().ok())
-        // Prometheus `time` is unix seconds; truncation to ns is intentional.
-        .map(|secs| {
-            #[allow(clippy::cast_possible_truncation)]
-            let ns = (secs * 1_000_000_000.0) as i64;
-            ns
-        })
+        .map(|secs| super::units::TimeNs::from_unix_secs(secs).ns())
         .unwrap_or(i64::MAX)
 }
 
@@ -149,11 +143,7 @@ struct PromRangeParams {
 fn parse_step_ns(s: &Option<String>) -> i64 {
     s.as_ref()
         .and_then(|v| v.parse::<f64>().ok())
-        .map(|secs| {
-            #[allow(clippy::cast_possible_truncation)]
-            let ns = (secs * 1_000_000_000.0) as i64;
-            ns
-        })
+        .map(|secs| super::units::DurationNs::from_secs_f64(secs).ns())
         .unwrap_or(0)
 }
 

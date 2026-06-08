@@ -84,20 +84,8 @@ fn lit_str(f: &tast::Field) -> Result<String, String> {
 
 /// Parse a duration literal (e.g. `1.5s`, `200ms`) to nanoseconds.
 fn duration_nanos(raw: &str) -> Option<i64> {
-    let split = raw.find(|c: char| c.is_ascii_alphabetic())?;
-    let (num, unit) = raw.split_at(split);
-    let v: f64 = num.parse().ok()?;
-    let mult = match unit {
-        "ns" => 1.0,
-        "us" => 1e3,
-        "ms" => 1e6,
-        "s" => 1e9,
-        "m" => 6e10,
-        "h" => 3.6e12,
-        _ => return None,
-    };
-    #[allow(clippy::cast_possible_truncation)]
-    Some((v * mult) as i64)
+    // Single shared duration parser (FR7) — also handles fractional/compound forms.
+    super::units::parse_duration_ns(raw).map(|d| d.ns())
 }
 
 /// Lower a single field comparison to a SQL boolean expression.
