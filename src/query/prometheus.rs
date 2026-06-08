@@ -509,34 +509,8 @@ pub async fn handle_instant(
     Ok(PromResponse::vector(samples))
 }
 
-/// Run a single-string-column SQL and collect the non-null values. Shared by
-/// the label/tag discovery endpoints (Prometheus, Loki).
-pub(super) async fn string_column(
-    engine: &super::QueryEngine,
-    sql: &str,
-) -> crate::Result<Vec<String>> {
-    use datafusion::arrow::array::{Array, AsArray};
-    use datafusion::arrow::compute::cast;
-    use datafusion::arrow::datatypes::DataType;
-
-    let batches = engine.sql(sql).await?;
-    let mut values: Vec<String> = Vec::new();
-    for batch in &batches {
-        let col = cast(batch.column(0), &DataType::Utf8)?;
-        let col = col.as_string::<i32>();
-        for i in 0..batch.num_rows() {
-            if !col.is_null(i) {
-                values.push(col.value(i).to_string());
-            }
-        }
-    }
-    Ok(values)
-}
-
-/// Distinct raw attribute keys across a JSON object column. Bounded by label-set
-/// cardinality: only each *distinct* blob is parsed.
-/// Collect the first (string) column of a built `DataFrame` — the plan-based twin
-/// of [`string_column`]. Shared by the label/tag-value discovery endpoints.
+/// Collect the first (string) column of a built `DataFrame`. Shared by the
+/// label/tag-value discovery endpoints (Prometheus, Loki).
 pub(super) async fn string_column_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
@@ -596,12 +570,58 @@ pub(super) async fn distinct_json_keys(
     Ok(keys)
 }
 
+/// Build the PromQL `label/:name/values` query as a `DataFrame` (P4). `__name__`
+/// is the normalized metric names plus the synthetic `_bucket`/`_count`/`_sum`
+/// histogram series; other labels are the distinct promoted/`prom_attr` values.
+pub async fn build_label_values(
+    engine: &super::QueryEngine,
+    label: &str,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::functions::expr_fn::concat;
+    use datafusion::prelude::{col, lit};
+    if label == "__name__" {
+        let names = engine.table("metrics").await?.select(vec![prom_name_expr().alias("v")])?;
+        let variant = |suffix: &str| concat(vec![prom_name_expr(), lit(suffix.to_string())]);
+        let bkt = engine
+            .table("metrics")
+            .await?
+            .filter(col("bucket_counts").is_not_null())?
+            .select(vec![variant("_bucket").alias("v")])?;
+        let cnt = engine
+            .table("metrics")
+            .await?
+            .filter(col("bucket_counts").is_not_null())?
+            .select(vec![variant("_count").alias("v")])?;
+        let sm = engine
+            .table("metrics")
+            .await?
+            .filter(col("bucket_counts").is_not_null())?
+            .select(vec![variant("_sum").alias("v")])?;
+        return Ok(names
+            .union(bkt)?
+            .union(cnt)?
+            .union(sm)?
+            .filter(col("v").is_not_null())?
+            .distinct()?
+            .sort(vec![col("v").sort(true, false)])?);
+    }
+    let lhs = label_lhs_expr(label);
+    Ok(engine
+        .table("metrics")
+        .await?
+        .filter(lhs.clone().is_not_null())?
+        .select(vec![lhs.alias("v")])?
+        .distinct()?
+        .sort(vec![col("v").sort(true, false)])?)
+}
+
 /// Run `label/:name/values` and build `{status, data:[...]}`.
 pub async fn handle_label_values(
     engine: &super::QueryEngine,
     label: &str,
 ) -> crate::Result<serde_json::Value> {
-    let values = string_column(engine, &label_values_sql(label)).await?;
+    let df = build_label_values(engine, label).await?;
+    let values = string_column_df(engine, df).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
 
