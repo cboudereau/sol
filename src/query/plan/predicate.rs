@@ -58,19 +58,25 @@ pub fn anchored_regex(lhs: Expr, pattern: &str, negated: bool) -> Expr {
 /// P1 — build a comparison predicate. `value` is always a bound literal. For the
 /// ordering ops, `numeric` casts the LHS to `Float64` (JSON/text columns) and
 /// binds a numeric literal.
-#[must_use]
-pub fn cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr {
+///
+/// # Errors
+/// Returns `Err` when `numeric` is set but `value` is not a valid `f64` — a
+/// malformed numeric comparison (e.g. `status>="abc"`) is surfaced rather than
+/// silently bound as `NaN` (which would compare false against everything).
+pub fn cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Result<Expr, String> {
     // Regex is always a string match.
     match op {
-        MatchKind::Re => return anchored_regex(lhs, value, false),
-        MatchKind::Nre => return anchored_regex(lhs, value, true),
+        MatchKind::Re => return Ok(anchored_regex(lhs, value, false)),
+        MatchKind::Nre => return Ok(anchored_regex(lhs, value, true)),
         _ => {}
     }
     // Numeric comparison: cast the LHS to f64 and bind a numeric literal.
     if numeric {
         let l = cast(lhs, DataType::Float64);
-        let r = lit(value.parse::<f64>().unwrap_or(f64::NAN));
-        return match op {
+        let r = lit(value
+            .parse::<f64>()
+            .map_err(|_| format!("invalid numeric comparison value: {value:?}"))?);
+        return Ok(match op {
             MatchKind::Eq => l.eq(r),
             MatchKind::Neq => l.not_eq(r),
             MatchKind::Gt => l.gt(r),
@@ -78,10 +84,10 @@ pub fn cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr {
             MatchKind::Lt => l.lt(r),
             MatchKind::Lte => l.lt_eq(r),
             MatchKind::Re | MatchKind::Nre => unreachable!(),
-        };
+        });
     }
     // String comparison (absent-aware for `=`/`!=`).
-    match op {
+    Ok(match op {
         MatchKind::Eq if value.is_empty() => lhs.clone().is_null().or(lhs.eq(lit(""))),
         MatchKind::Eq => lhs.eq(lit(value)),
         MatchKind::Neq if value.is_empty() => lhs.clone().is_not_null().and(lhs.not_eq(lit(""))),
@@ -91,7 +97,7 @@ pub fn cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr {
         MatchKind::Lt => lhs.lt(lit(value)),
         MatchKind::Lte => lhs.lt_eq(lit(value)),
         MatchKind::Re | MatchKind::Nre => unreachable!(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -101,7 +107,7 @@ mod tests {
     #[test]
     fn test_cmp_eq_binds_literal_not_interpolated() {
         // A value with a quote / `&&` must be a bound literal, never text.
-        let e = cmp(col("service_name"), MatchKind::Eq, "a'b && c", false);
+        let e = cmp(col("service_name"), MatchKind::Eq, "a'b && c", false).unwrap();
         let s = format!("{e}");
         assert!(s.contains("a'b && c"), "value bound as a literal: {s}");
         assert!(s.contains("service_name"), "{s}");
@@ -109,26 +115,35 @@ mod tests {
 
     #[test]
     fn test_anchored_regex_form() {
-        let e = cmp(col("pod"), MatchKind::Re, "web", false);
+        let e = cmp(col("pod"), MatchKind::Re, "web", false).unwrap();
         let s = format!("{e}");
         assert!(s.contains("^(?:web)$"), "anchored: {s}");
-        let neg = cmp(col("pod"), MatchKind::Nre, "web", false);
+        let neg = cmp(col("pod"), MatchKind::Nre, "web", false).unwrap();
         assert!(format!("{neg}").contains("^(?:web)$"), "{neg}");
     }
 
     #[test]
     fn test_eq_empty_is_absent_aware() {
-        let e = cmp(col("x"), MatchKind::Eq, "", false);
+        let e = cmp(col("x"), MatchKind::Eq, "", false).unwrap();
         let s = format!("{e}");
         assert!(s.to_uppercase().contains("IS NULL"), "absent≡empty: {s}");
     }
 
     #[test]
     fn test_numeric_cmp_casts_and_binds() {
-        let e = cmp(prom_attr("attributes", "status"), MatchKind::Gte, "500", true);
+        let e = cmp(prom_attr("attributes", "status"), MatchKind::Gte, "500", true).unwrap();
         let s = format!("{e}");
         assert!(s.contains("500"), "numeric literal bound: {s}");
         assert!(s.to_uppercase().contains("CAST") || s.contains("Float64"), "lhs cast: {s}");
+    }
+
+    #[test]
+    fn test_numeric_cmp_rejects_non_numeric_value() {
+        // A malformed numeric comparison errors rather than binding NaN.
+        let r = cmp(prom_attr("attributes", "status"), MatchKind::Gte, "abc", true);
+        assert!(r.is_err(), "non-numeric value must error: {r:?}");
+        // The string path with the same value is still fine.
+        assert!(cmp(col("x"), MatchKind::Eq, "abc", false).is_ok());
     }
 
     #[test]

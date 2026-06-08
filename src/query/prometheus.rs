@@ -53,7 +53,9 @@ fn matcher_expr(m: &Matcher) -> Option<datafusion::logical_expr::Expr> {
         MatchOp::Re(_) => MatchKind::Re,
         MatchOp::NotRe(_) => MatchKind::Nre,
     };
-    Some(cmp(label_lhs_expr(&m.name), kind, &m.value, false))
+    // Matchers are always string ops (Eq/Neq/Re/Nre) — the numeric branch that
+    // can error is never taken, so `.ok()` is total here.
+    cmp(label_lhs_expr(&m.name), kind, &m.value, false).ok()
 }
 
 /// Metric-name predicate `Expr`: the exact
@@ -1951,6 +1953,20 @@ async fn eval_instant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_matcher_value_is_bound_literal_not_injected() {
+        // A PromQL matcher value carrying SQL metacharacters must land as a
+        // single bound `Utf8` literal — never interpolated into plan structure.
+        let evil = r#"a' OR 1=1 && x"#;
+        let m = Matcher::new(MatchOp::Equal, "pod", evil);
+        let e = matcher_expr(&m).expect("string matcher lowers");
+        let s = format!("{e}");
+        assert!(
+            s.contains(&format!("Utf8({evil:?})")),
+            "value bound as one literal, not injected: {s}"
+        );
+    }
 
     #[test]
     fn test_prom_vector_response_shape() {

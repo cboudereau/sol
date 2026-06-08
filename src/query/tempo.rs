@@ -183,7 +183,7 @@ fn field_pred(fe: &tast::FieldExpr) -> Result<Expr, String> {
         FieldExpr::Cmp { lhs, op, rhs } => {
             let l = field_lhs_expr(lhs)?;
             let (value, numeric) = field_rhs(lhs, rhs)?;
-            Ok(super::plan::predicate::cmp(l, field_matchkind(op), &value, numeric))
+            super::plan::predicate::cmp(l, field_matchkind(op), &value, numeric)
         }
         FieldExpr::And(a, b) => Ok(field_pred(a)?.and(field_pred(b)?)),
         FieldExpr::Or(a, b) => Ok(field_pred(a)?.or(field_pred(b)?)),
@@ -647,6 +647,24 @@ pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_field_value_is_bound_literal_not_injected() {
+        // A TraceQL field value with SQL metacharacters must bind as a single
+        // literal in the lowered predicate.
+        let evil = r#"a' OR 1=1 && x"#;
+        let q = format!("{{ name=\"{evil}\" }}");
+        let parsed = super::super::traceql::parse(&q).expect("parses");
+        let tast::SpansetExpr::Filter(Some(fe)) = parsed else {
+            panic!("expected a single filter spanset");
+        };
+        let e = field_pred(&fe).expect("field lowers");
+        let s = format!("{e}");
+        assert!(
+            s.contains(&format!("Utf8({evil:?})")),
+            "value bound as one literal, not injected: {s}"
+        );
+    }
 
     #[tokio::test]
     async fn test_tags_include_stored_attribute_keys() {

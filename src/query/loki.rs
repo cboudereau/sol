@@ -162,7 +162,7 @@ fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
     use ast::Stage;
     let mut acc: Option<Expr> = None;
     for m in &p.selector.matchers {
-        let e = super::plan::predicate::cmp(label_lhs_expr(&m.name), matchop_kind(&m.op), &m.value, false);
+        let e = super::plan::predicate::cmp(label_lhs_expr(&m.name), matchop_kind(&m.op), &m.value, false)?;
         acc = and_opt(acc, e);
     }
     let mut extracted = false;
@@ -190,7 +190,7 @@ fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
                     ));
                 }
                 let (kind, numeric) = cmpop_kind(&lf.op);
-                acc = and_opt(acc, super::plan::predicate::cmp(label_lhs_expr(&lf.name), kind, &lf.value, numeric));
+                acc = and_opt(acc, super::plan::predicate::cmp(label_lhs_expr(&lf.name), kind, &lf.value, numeric)?);
             }
         }
     }
@@ -665,6 +665,20 @@ pub async fn handle_query_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_selector_value_is_bound_literal_not_injected() {
+        // A LogQL stream-selector value with SQL metacharacters must bind as a
+        // single literal, leaving the predicate a plain equality.
+        let evil = r#"a' OR '1'='1 && x"#;
+        let q = format!("{{app=\"{evil}\"}}");
+        let e = selector_pred_expr(&q).unwrap().expect("selector lowers");
+        let s = format!("{e}");
+        assert!(
+            s.contains(&format!("Utf8({evil:?})")),
+            "value bound as one literal, not injected: {s}"
+        );
+    }
 
     #[test]
     fn test_is_metric_query_detects_volume() {
