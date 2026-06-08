@@ -17,6 +17,11 @@ fn esc(value: &str) -> String {
     value.replace('\'', "''")
 }
 
+/// Box a `String` message into the crate error type.
+fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::<dyn std::error::Error + Send + Sync>::from(e)
+}
+
 /// Map a TraceQL field to a SQL left-hand side. Intrinsics and
 /// `resource.service.name` are promoted columns; `span.*` / `resource.*` and
 /// bare `.attr` go through JSON extraction.
@@ -150,6 +155,131 @@ fn collect_preds(fe: &tast::FieldExpr, out: &mut Vec<String>) -> Result<(), Stri
         other => out.push(lower_field_expr(other)?),
     }
     Ok(())
+}
+
+// --- `Expr`/DataFrame lowering (expr-lowering migration) ---
+
+use datafusion::logical_expr::expr_fn::cast;
+use datafusion::prelude::{col, lit, DataFrame, Expr};
+
+/// JSON attribute LHS as an `Expr` (`json_get_str(column, key)`).
+fn json_attr(column: &str, key: &str) -> Expr {
+    datafusion_functions_json::udfs::json_get_str_udf().call(vec![col(column), lit(key)])
+}
+
+/// Resolve a TraceQL field to its `Expr` LHS (promoted column or JSON extraction).
+/// `event`/`instrumentation`/`link`/`parent` scopes are parsed but not lowered.
+fn field_lhs_expr(f: &tast::Field) -> Result<Expr, String> {
+    use tast::{AttrScope, Field};
+    Ok(match f {
+        Field::Intrinsic(s) => match s.as_str() {
+            "name" => col("name"),
+            "status" | "status.code" => col("status_code"),
+            "kind" => col("kind"),
+            "duration" => col("duration_nanos"),
+            other => return Err(format!("intrinsic '{other}' is not yet supported in lowering")),
+        },
+        Field::Attr { scope, path } => match scope {
+            AttrScope::Resource | AttrScope::Unscoped if path == "service.name" => col("service_name"),
+            AttrScope::Span | AttrScope::Unscoped => json_attr("attributes", path),
+            AttrScope::Resource => json_attr("resource_attributes", path),
+            other => return Err(format!("{other:?} scope is not yet supported in lowering")),
+        },
+        _ => return Err("expected a field reference on the left of a comparison".to_string()),
+    })
+}
+
+fn field_matchkind(op: &tast::FieldOp) -> super::plan::predicate::MatchKind {
+    use super::plan::predicate::MatchKind;
+    use tast::FieldOp;
+    match op {
+        FieldOp::Eq => MatchKind::Eq,
+        FieldOp::Neq => MatchKind::Neq,
+        FieldOp::Re => MatchKind::Re,
+        FieldOp::Nre => MatchKind::Nre,
+        FieldOp::Gt => MatchKind::Gt,
+        FieldOp::Gte => MatchKind::Gte,
+        FieldOp::Lt => MatchKind::Lt,
+        FieldOp::Lte => MatchKind::Lte,
+    }
+}
+
+/// The RHS literal text + whether the comparison is numeric (duration → nanos).
+fn field_rhs(lhs: &tast::Field, rhs: &tast::Field) -> Result<(String, bool), String> {
+    use tast::Field;
+    let numeric_lhs = matches!(
+        lhs,
+        Field::Intrinsic(s) if s == "duration" || s == "status" || s == "status.code" || s == "kind"
+    );
+    match rhs {
+        Field::Str(s) => Ok((s.clone(), false)),
+        Field::Bool(b) => Ok((b.to_string(), false)),
+        Field::Num(n) => Ok((fmt_num(*n), numeric_lhs)),
+        Field::Duration(d) => {
+            let nanos = duration_nanos(d).ok_or_else(|| format!("invalid duration: {d}"))?;
+            Ok((nanos.to_string(), true))
+        }
+        _ => Err("expected a literal on the right of a comparison".to_string()),
+    }
+}
+
+/// Lower a TraceQL field expression to a boolean filter `Expr`.
+fn field_pred(fe: &tast::FieldExpr) -> Result<Expr, String> {
+    use tast::FieldExpr;
+    match fe {
+        FieldExpr::Cmp { lhs, op, rhs } => {
+            let l = field_lhs_expr(lhs)?;
+            let (value, numeric) = field_rhs(lhs, rhs)?;
+            Ok(super::plan::predicate::cmp(l, field_matchkind(op), &value, numeric))
+        }
+        FieldExpr::And(a, b) => Ok(field_pred(a)?.and(field_pred(b)?)),
+        FieldExpr::Or(a, b) => Ok(field_pred(a)?.or(field_pred(b)?)),
+        FieldExpr::Field(f) => Ok(field_lhs_expr(f)?.is_not_null()),
+    }
+}
+
+/// Build the TraceQL search query as a `DataFrame` (P3 + P9). Columns match the
+/// order [`handle_search`] reads (trace_hex, span_hex, service_name, name, start,
+/// duration, parent, attributes, status_code).
+pub async fn build_search(
+    engine: &super::QueryEngine,
+    traceql: &str,
+    start_ns: i64,
+    end_ns: i64,
+    limit: u32,
+) -> crate::Result<DataFrame> {
+    let expr = super::traceql::parse(traceql).map_err(|e| to_err(e.to_string()))?;
+    let pred = match &expr {
+        tast::SpansetExpr::Filter(None) => None,
+        tast::SpansetExpr::Filter(Some(fe)) => Some(field_pred(fe).map_err(to_err)?),
+        tast::SpansetExpr::Op { .. } => {
+            return Err(to_err(
+                "spanset operators (&& || >> <<) between sets are not yet supported in search"
+                    .to_string(),
+            ));
+        }
+    };
+    let time = cast(col("start_time_unix_nano"), datafusion::arrow::datatypes::DataType::Int64)
+        .between(lit(start_ns), lit(end_ns));
+    let mut df = engine.table("traces").await?.filter(time)?;
+    if let Some(p) = pred {
+        df = df.filter(p)?;
+    }
+    let df = df
+        .select(vec![
+            super::plan::ids::encode_as(col("trace_id"), "hex").alias("trace_hex"),
+            super::plan::ids::encode_as(col("span_id"), "hex").alias("span_hex"),
+            col("service_name"),
+            col("name"),
+            col("start_time_unix_nano"),
+            col("duration_nanos"),
+            col("parent_span_id"),
+            col("attributes"),
+            col("status_code"),
+        ])?
+        .sort(vec![col("start_time_unix_nano").sort(false, false)])?
+        .limit(0, Some((limit as usize).saturating_mul(64)))?;
+    Ok(df)
 }
 
 /// OTLP `SpanKind` enum string for a stored kind int (proto-JSON form Grafana
@@ -379,9 +509,8 @@ pub async fn handle_search(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    let to_err = |e: String| Box::<dyn std::error::Error + Send + Sync>::from(e);
-    let sql = translate_search(traceql, start_ns, end_ns, limit).map_err(to_err)?;
-    let batches = engine.sql(&sql).await?;
+    let df = build_search(engine, traceql, start_ns, end_ns, limit).await?;
+    let batches = engine.collect(df).await?;
 
     // Per-trace accumulator: root fields + the matched spans (for spanSet).
     struct Acc {

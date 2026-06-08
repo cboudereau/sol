@@ -13,4 +13,5 @@
 //! land in follow-up tasks.
 
 pub mod frame;
+pub mod ids;
 pub mod predicate;

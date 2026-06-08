@@ -60,27 +60,37 @@ pub fn anchored_regex(lhs: Expr, pattern: &str, negated: bool) -> Expr {
 /// binds a numeric literal.
 #[must_use]
 pub fn cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr {
+    // Regex is always a string match.
+    match op {
+        MatchKind::Re => return anchored_regex(lhs, value, false),
+        MatchKind::Nre => return anchored_regex(lhs, value, true),
+        _ => {}
+    }
+    // Numeric comparison: cast the LHS to f64 and bind a numeric literal.
+    if numeric {
+        let l = cast(lhs, DataType::Float64);
+        let r = lit(value.parse::<f64>().unwrap_or(f64::NAN));
+        return match op {
+            MatchKind::Eq => l.eq(r),
+            MatchKind::Neq => l.not_eq(r),
+            MatchKind::Gt => l.gt(r),
+            MatchKind::Gte => l.gt_eq(r),
+            MatchKind::Lt => l.lt(r),
+            MatchKind::Lte => l.lt_eq(r),
+            MatchKind::Re | MatchKind::Nre => unreachable!(),
+        };
+    }
+    // String comparison (absent-aware for `=`/`!=`).
     match op {
         MatchKind::Eq if value.is_empty() => lhs.clone().is_null().or(lhs.eq(lit(""))),
         MatchKind::Eq => lhs.eq(lit(value)),
         MatchKind::Neq if value.is_empty() => lhs.clone().is_not_null().and(lhs.not_eq(lit(""))),
         MatchKind::Neq => lhs.clone().is_null().or(lhs.not_eq(lit(value))),
-        MatchKind::Re => anchored_regex(lhs, value, false),
-        MatchKind::Nre => anchored_regex(lhs, value, true),
-        MatchKind::Gt | MatchKind::Gte | MatchKind::Lt | MatchKind::Lte => {
-            let (l, r) = if numeric {
-                (cast(lhs, DataType::Float64), lit(value.parse::<f64>().unwrap_or(f64::NAN)))
-            } else {
-                (lhs, lit(value))
-            };
-            match op {
-                MatchKind::Gt => l.gt(r),
-                MatchKind::Gte => l.gt_eq(r),
-                MatchKind::Lt => l.lt(r),
-                MatchKind::Lte => l.lt_eq(r),
-                _ => unreachable!(),
-            }
-        }
+        MatchKind::Gt => lhs.gt(lit(value)),
+        MatchKind::Gte => lhs.gt_eq(lit(value)),
+        MatchKind::Lt => lhs.lt(lit(value)),
+        MatchKind::Lte => lhs.lt_eq(lit(value)),
+        MatchKind::Re | MatchKind::Nre => unreachable!(),
     }
 }
 
