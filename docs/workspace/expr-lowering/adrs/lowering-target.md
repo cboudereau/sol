@@ -37,7 +37,8 @@ cache-keying cost outweigh the benefit.
 **Easier**: cross-signal predicate reuse; structural injection-safety (drop `esc()`
 on migrated paths); type-checked plans; one fewer parse per request.
 
-**Harder**: window-function queries are awkward in the API (→ kept as SQL, see the
-[hybrid-boundary ADR](./hybrid-boundary.md)); the query cache needs a plan-based key
-(see [cache-and-unparser ADR](./cache-and-unparser.md)); SQL-text test assertions
+**Harder**: window-function queries are more verbose in the API (built once as the
+shared `plan::frame` primitives — see the [migration-scope ADR](./migration-scope.md));
+the query cache needs a plan-based key
+(see [plan-cache-keying ADR](./plan-cache-keying.md)); SQL-text test assertions
 must become plan/result assertions.

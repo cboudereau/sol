@@ -1,196 +1,184 @@
 # expr-lowering — Tasks
 
 Design: [DESIGN.md](./DESIGN.md) · ADRs: [lowering-target](./adrs/lowering-target.md),
-[hybrid-boundary](./adrs/hybrid-boundary.md), [cache-and-unparser](./adrs/cache-and-unparser.md)
+[migration-scope](./adrs/migration-scope.md), [plan-cache-keying](./adrs/plan-cache-keying.md),
+[canonical-nanoseconds](./adrs/canonical-nanoseconds.md)
 
 ## Analysis
 
 Build: `cargo build --features query-backend` — green (baseline)
 Test: `cargo test --features query-backend --lib query::` — green (**153** tests)
 Lint: `cargo clippy --features query-backend --lib -- -D warnings` — green
-New module test filter: `… --lib query::predicate`.
+New filters: `… --lib query::units`, `… --lib query::plan`.
 
-> ⚠ Builds are slow here (~8–14 min for the full `sol` test-binary relink). Batch
-> verification at session checkpoints; prefer `cargo check -p sol` mid-task.
+> ⚠ Builds are slow here (~8–14 min full test relink). Use `cargo check -p sol`
+> mid-task; batch test runs at session checkpoints.
+
+### Goal invariant (FR6)
+After migration: **no `format!`-built SQL in `src/query/` except `sql.rs`** (the
+user endpoint) and test fixtures. A grep gate enforces it.
+
+### The 9 primitives (target of the migration) — see [DESIGN](./DESIGN.md#design)
+P1 predicate · P2 LHS resolver · P3 scan/filter/project/sort/limit · P4 distinct/agg ·
+P5 latest-per-series (window) · P6 rate (window) · P7 `*_over_time` (window frame) ·
+P8 range group-by · P9 id encode/lookup.
+
+### Unit-conversion sites to centralize ([FR7](./DESIGN.md#fr7))
+Ingress: `routes.rs::{parse_ns, parse_time_ns, parse_step_ns, loki_step_ns}` (sec→ns).
+Duration parsers (3 → 1): PromQL `Duration::as_nanos`, TraceQL `duration_nanos`, LogQL `[5m]`.
+Egress: `prometheus.rs` `ts as f64 / 1e9` (matrix/vector). Core: drop all `*1e9`/`/1e9`/`CAST AS BIGINT` unit use.
 
 ### Known-failing tests
 | Test | Reason | Action |
 |---|---|---|
 | (none) | clean baseline | — |
 
-### Current predicate/lowering surface (to unify or migrate)
-| Signal | label-LHS fn | predicate fn(s) | UDFs used |
-|---|---|---|---|
-| prometheus | `label_lhs` | `matcher_pred`, `metric_value_and_match` | `prom_attr`, `prom_metric_name`, `regexp_like` |
-| loki | `label_lhs` | `label_pred`, `line_pred`, `label_filter_pred` | `prom_attr`, `regexp_like`, `octet_length` |
-| tempo | `traceql_lhs` | `lower_cmp`, `lower_field_expr`, `collect_preds` | `json_get_str`, `regexp_like` |
-
-Execution: all via `QueryEngine::sql(&str)` (`ctx.sql`), cache keyed by SQL text
-(`CacheKey::for_sql`). UDFs registered on the `SessionContext` (json funcs via
-`datafusion-functions-json`; `prom_attr`/`prom_metric_name` in `src/query/udf.rs`).
-
 ### Domain model
 
 ```mermaid
 classDiagram
-    class MatchKind {
-        <<enum>>
-        Eq · Neq · Re · Nre · Gt · Gte · Lt · Lte
-    }
-    class LabelMatch {
-        +Expr lhs
-        +MatchKind op
-        +String value
-        +bool numeric
-        +to_expr() Expr
-    }
-    class PredicateBuilder {
-        <<module fns>>
-        +attr_call(udf, column, key) Expr
-        +anchored_regex(lhs, pattern) Expr
-        +eq_absent_aware(lhs, value) Expr
-        +cmp(lhs, MatchKind, value, numeric) Expr
-    }
-    class QueryEngine {
-        +sql(text) Vec~RecordBatch~
-        +collect(DataFrame) Vec~RecordBatch~
-    }
-    LabelMatch --> MatchKind
-    LabelMatch ..> PredicateBuilder : built by
-    QueryEngine ..> LabelMatch : filters with
+    class TimeNs { +i64 ns }
+    class DurationNs { +i64 ns }
+    class MatchKind { <<enum>> Eq·Neq·Re·Nre·Gt·Gte·Lt·Lte }
+    class predicate { <<mod>> +cmp(Expr,MatchKind,value,numeric) Expr +attr_call(udf,col,key) Expr +anchored_regex(Expr,pat) Expr }
+    class frame { <<mod>> +latest_per_series(df,part,order) DataFrame +rate(df,part) DataFrame +over_time(df,part,DurationNs,agg) DataFrame }
+    class agg { <<mod>> +distinct(df,cols) DataFrame +group_agg(df,group,aggs) DataFrame }
+    class ids { <<mod>> +encode_hex/b64(Expr) Expr +id_lookup(bytes) Expr }
+    class QueryEngine { +sql(text) +collect(DataFrame) }
+    predicate --> MatchKind
+    frame ..> DurationNs
+    QueryEngine ..> frame
+    QueryEngine ..> agg
 ```
 
 ### Requirement traceability
-| Type / Fn | Addresses | Notes |
+| Type / Module | Addresses | Notes |
 |---|---|---|
-| `predicate::MatchKind`, `LabelMatch`, `cmp/attr_call/anchored_regex/eq_absent_aware` | [FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2) | the shared builder; `lit()` values |
+| `units::{TimeNs, DurationNs, parse_duration_ns}` + ingress/egress funnels | [FR7](./DESIGN.md#fr7) | canonical ns; boundary-only conversion |
+| `plan::predicate` (P1, P2) | [FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2) | shared matcher → `Expr`, `lit()` values |
+| `plan::frame` (P5, P6, P7) | [FR3](./DESIGN.md#fr3) | window primitives; isolation-tested |
+| `plan::agg` (P4, P8), `plan::ids` (P9) | [FR3](./DESIGN.md#fr3) | distinct/group-by, id encode/lookup |
 | `QueryEngine::collect` + plan cache key | [FR4](./DESIGN.md#fr4), [NFR2](./DESIGN.md#nfr2) | DataFrame execution + cache |
-| `tempo::*` (search via DataFrame) | [FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5) | pilot |
-| `loki::*` (streams/volume/discovery via DataFrame) | [FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5) | |
-| `prometheus::*` (series/label_values via DataFrame; matchers via builder) | [FR3](./DESIGN.md#fr3), [FR6](./DESIGN.md#fr6) | instant/rate stay SQL |
-| hybrid boundary doc | [FR6](./DESIGN.md#fr6) | which side each query is on |
+| `tempo::*`, `loki::*`, `prometheus::*` rewired | [FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5), [FR6](./DESIGN.md#fr6) | compose primitives; no SQL |
 
 ### Transformations
 | Function | Input → Output | Invariant |
 |---|---|---|
-| `LabelMatch::to_expr` | `&self → Expr` | value is `lit()`; regex anchored `^(?:…)$`; `=""`/`!=` honor absent≡empty |
-| `QueryEngine::collect` | `DataFrame → Result<Vec<RecordBatch>>` | same cache/telemetry contract as `sql()`; equal plan → cache hit |
-| `tempo::build_search` | `(SpansetExpr, range, limit) → DataFrame` | result-equivalent to today's `translate_search` SQL |
-
-### Constraints discovered
-- `translate_*` internal helpers may **change shape/return type** (e.g. `translate_search`
-  String→DataFrame); the **HTTP handlers + routes are the stable surface** (FR5). Tests
-  asserting SQL text get rewritten to plan/result assertions.
-- PromQL instant uses a `ROW_NUMBER` window → it is **not** a pure-filter query; it
-  stays SQL (only its matcher predicates may be shared via the builder + unparser).
-- Cache key must exist for a plan → derive from optimized `LogicalPlan` display (ADR).
+| `predicate::cmp` | `(Expr, MatchKind, value, numeric) → Expr` | value is `lit()`; regex anchored; absent≡empty |
+| `frame::rate` | `DataFrame → DataFrame` | result == current `rate_sql` (counter-reset, dup-ts drop, /dt) |
+| `frame::over_time` | `(DataFrame, DurationNs, agg) → DataFrame` | RANGE frame in ns == current `over_time_sql` |
+| `frame::latest_per_series` | `DataFrame → DataFrame` | one row per series at/before `t` (== `rn=1`) |
+| `QueryEngine::collect` | `DataFrame → Vec<RecordBatch>` | same cache/telemetry as `sql()` |
+| `parse_duration_ns` | `&str → DurationNs` | `5m`→300e9, `1.5s`→1.5e9; one parser for all 3 langs |
 
 ## Tasks
 
-### 1. Shared predicate builder + plan execution path ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2), [FR4](./DESIGN.md#fr4))
-**Goal**: Stand up `src/query/predicate.rs` (lhs/op/value → `Expr`, `lit()` values) and `QueryEngine::collect(DataFrame)` with plan-based cache keying.
-**Types**: `MatchKind`, `LabelMatch`, `attr_call`, `anchored_regex`, `eq_absent_aware`, `cmp` — see domain model
-**Constraints**:
-- [ADR: lowering-target](./adrs/lowering-target.md) — `Expr` via DataFrame; no new dep.
-- [ADR: cache-and-unparser](./adrs/cache-and-unparser.md) — key on optimized `LogicalPlan` display.
-- Invariant: values are `lit()`; regex anchored; absent≡empty for `=""`/`!=`.
-**Tests**:
-- `test_cmp_builds_literal_expr` — `cmp(col("x"), Eq, "a'b", false)` produces `x = Utf8("a'b")` (value bound, not interpolated).
-- `test_anchored_regex_expr` — `=~"web"` → regex `^(?:web)$`.
-- `test_eq_absent_aware` — `=""` → `(x IS NULL OR x = "")`.
-- `test_collect_executes_and_caches` — build a trivial DataFrame over a fixture table, `collect()` twice → second is a cache hit (telemetry/`record_cache`).
-**Verify**: `cargo test --features query-backend --lib query::predicate`
-**Acceptance criteria**:
-- [ ] `predicate` module builds the 8 ops with `lit()` values.
-- [ ] `QueryEngine::collect` returns batches and integrates the cache (equal plan → hit).
-- [ ] No new crate in `cargo tree`.
-**Depends on**: (none) **Time-box**: ~90 min
+### 0. Canonical-nanosecond units ([FR7](./DESIGN.md#fr7))
+**Goal**: Introduce `units` (`TimeNs`, `DurationNs`, `parse_duration_ns`); route the
+4 ingress parsers + 3 duration parsers + Prometheus egress through it; delete scattered
+`*1e9`/`/1e9` unit handling. Parity-safe (no behaviour change).
+**Types**: `TimeNs`, `DurationNs` — see domain model
+**Constraints**: [ADR canonical-nanoseconds](./adrs/canonical-nanoseconds.md); values stay `f64`; conversions only at ingress/egress.
+**Tests**: `test_parse_duration_ns` (`5m/1.5s/200ms/1h`), `test_ingress_sec_to_ns`, `test_egress_ns_to_sec_fractional`, existing `query::` suite stays green.
+**Verify**: `cargo test --features query-backend --lib query::units && cargo test --features query-backend --lib query::`
+**Acceptance**: [ ] one ingress + one egress conversion site each; [ ] one duration parser; [ ] `query::` green (parity); [ ] no `*1e9`/`/1e9` outside `units` + serializers.
+**Depends on**: (none) **Time-box**: ~75 min
 
-### 2. Pilot — migrate TraceQL search to predicate + DataFrame ([FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5))
-**Goal**: Build the TraceQL search query via `predicate` + DataFrame; route `handle_search` through `collect`; prove parity + cache keying end-to-end.
-**Types**: `tempo::build_search(&SpansetExpr, …) -> DataFrame`
-**Constraints**:
-- [ADR: hybrid-boundary](./adrs/hybrid-boundary.md) — search is a pure-filter query (migrates).
-- Field comparison lowering reuses `predicate::cmp`; `traceql_lhs` returns `Expr` (promoted col / `json_get_str` UDF call); deferred scopes/structural ops still error.
-- Invariant: result-equivalent to today's `translate_search` SQL.
-**Tests**: rewrite `query::tempo` search tests from SQL-substring to plan/result:
-- `test_search_filter_plan` — the built plan filters on `service_name = lit("client")` etc. (assert via `df.logical_plan()` display or executed result over a fixture).
-- existing `test_search_groups_spans_into_traces` (result-level) stays green unchanged.
-- `test_search_unsupported_still_errors` — structural ops / event scope error.
-**Verify**: `cargo test --features query-backend --lib query::tempo`
-**Acceptance criteria**:
-- [ ] `handle_search` executes a DataFrame (no `format!` SQL for the search filter).
-- [ ] `query::tempo` green (rewritten assertions of equal meaning).
-- [ ] Search values are literals (a value containing `'`/`&&` cannot alter the plan) — test included.
+### 1. Predicate/agg/ids primitives + plan execution ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2), [FR4](./DESIGN.md#fr4))
+**Goal**: `plan::predicate` (P1/P2), `plan::agg` (P4/P8), `plan::ids` (P9), and `QueryEngine::collect(DataFrame)` with plan-based cache keying.
+**Types**: `MatchKind`, `predicate::*`, `agg::*`, `ids::*` — see domain model
+**Constraints**: [lowering-target](./adrs/lowering-target.md), [plan-cache-keying](./adrs/plan-cache-keying.md); `lit()` values; UDFs as `Expr::ScalarFunction` from the registry; no new dep.
+**Tests**: `test_cmp_literal_expr` (value bound, `a'b` safe), `test_anchored_regex`, `test_eq_absent_aware`, `test_collect_caches` (equal plan → hit).
+**Verify**: `cargo test --features query-backend --lib query::plan`
+**Acceptance**: [ ] 8 ops build with `lit()`; [ ] `collect` returns batches + caches; [ ] `prom_attr`/`json_get_str`/`encode` reachable as `Expr`.
+**Depends on**: 0 **Time-box**: ~90 min
+
+### 2. Window primitives, parity-tested in isolation ([FR3](./DESIGN.md#fr3), [NFR2](./DESIGN.md#nfr2))
+**Goal**: `plan::frame::{latest_per_series, rate, over_time}` (P5/P6/P7) built and
+proven against the **current SQL outputs** before any rewire (the de-risking gate).
+**Types**: `frame::*` — see domain model
+**Constraints**: [migration-scope](./adrs/migration-scope.md); ns `i64` order key + frame bound (canonical units); reproduce counter-reset + dup-ts drop (P6) and RANGE-frame (P7) exactly.
+**Tests** (over a fixture, assert equality to the existing SQL path's result):
+- `test_rate_matches_sql` — same values as `rate_sql` on the counter fixture (incl. reset).
+- `test_over_time_matches_sql` — `max_over_time` RANGE frame equals `over_time_sql`.
+- `test_latest_per_series_matches_sql` — one row/series at/before `t`.
+**Verify**: `cargo test --features query-backend --lib query::plan`
+**Acceptance**: [ ] all three window helpers match the SQL path on fixtures; [ ] frame bounds in ns; [ ] helpers frozen (signatures stable for rewire).
 **Depends on**: 1 **Time-box**: ~90 min
 
-### 3. Migrate LogQL streams + volume to DataFrame ([FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5))
-**Goal**: Build the LogQL streams query (`handle_query_range`) and volume (`handle_volume`) via `predicate` + DataFrame (filter + project/limit; volume = group-by level/bucket + count).
-**Types**: `loki::build_streams`, `loki::build_volume`
-**Constraints**: selector matchers + line filters + label filters reuse `predicate`; parser-stage no-ops + dynamic-label error preserved; the level `CASE` and bucket arithmetic become `Expr`.
-**Tests**: rewrite `query::loki` lowering tests to plan/result; keep the end-to-end fixture tests green.
-**Verify**: `cargo test --features query-backend --lib query::loki`
-**Acceptance criteria**:
-- [ ] streams + volume build via DataFrame; `query::loki` green.
-- [ ] line/label filter values are literals.
+### 3. Rewire TraceQL + LogQL (filters/discovery, no windows) ([FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5))
+**Goal**: TraceQL search/trace-by-id/tags + LogQL streams/volume/discovery build via
+`plan::*` + DataFrame; route handlers through `collect`. No `format!` SQL in tempo.rs/loki.rs.
+**Constraints**: parity; deferred TraceQL/LogQL features still error; volume level `CASE`/bucket as `Expr`.
+**Tests**: rewrite `query::tempo`/`query::loki` SQL-substring tests to plan/result; end-to-end fixtures stay green; value-injection test (`'`/`&&` can't alter plan).
+**Verify**: `cargo test --features query-backend --lib query::tempo && cargo test --features query-backend --lib query::loki`
+**Acceptance**: [ ] tempo.rs + loki.rs have no `format!` SQL; [ ] both suites green.
 **Depends on**: 1 **Time-box**: ~90 min
 
-### 4. Migrate discovery endpoints to DataFrame ([FR3](./DESIGN.md#fr3))
-**Goal**: labels / label values / series / tags / tag values / index stats+volume across loki, tempo, and prometheus `series_sql`/`label_values_sql` build via DataFrame (distinct / aggregate), reusing `predicate` for any `match[]` filtering.
-**Constraints**: same normalized-label output as today (parity); `prom_metric_name`/`prom_attr`/`json_get_str` called as `Expr::ScalarFunction` from the UDF registry.
-**Tests**: rewrite discovery tests to result-level; existing end-to-end label/tag tests stay green.
-**Verify**: `cargo test --features query-backend --lib query::loki && cargo test --features query-backend --lib query::tempo && cargo test --features query-backend --lib query::prometheus`
-**Acceptance criteria**:
-- [ ] discovery endpoints execute via DataFrame; the three suites green.
-**Depends on**: 1 **Time-box**: ~90 min
+### 4. Rewire PromQL (instant + range, windows) ([FR3](./DESIGN.md#fr3), [FR5](./DESIGN.md#fr5))
+**Goal**: PromQL instant (P5 latest + P4 `sum by`), range (P6 rate, P7 `*_over_time`,
+P8 group-by, bare selector), series/labels (P4) compose the primitives. The
+histogram/bucket/binary-op/resample Rust analytics are unchanged (consume batches).
+**Constraints**: parity with the full `query::prometheus` suite; rollup-tier table
+selection + frontend shard split preserved; instant ts = eval time.
+**Tests**: rewrite SQL-substring tests to plan/result; the existing execution tests
+(`test_rate_executes…`, `test_max_over_time_executes…`, `test_topk…`, hist tests) stay
+green unchanged (they assert results).
+**Verify**: `cargo test --features query-backend --lib query::prometheus`
+**Acceptance**: [ ] prometheus.rs query-construction has no `format!` SQL; [ ] suite green.
+**Depends on**: 2, 3 **Time-box**: ~90 min
 
-### 5. Predicate reuse in SQL-staying paths + boundary doc + checkpoint ([FR6](./DESIGN.md#fr6), [NFR2](./DESIGN.md#nfr2))
-**Goal**: Where it round-trips, render the shared `Expr` predicates to SQL via `Unparser` for the window/instant paths (prometheus `matcher_pred`, loki label filters feeding metric SQL) so the builder is the single source of truth; otherwise leave hand-written and record it. Finalize the hybrid-boundary matrix in the design.
-**Constraints**: [ADR: cache-and-unparser](./adrs/cache-and-unparser.md) — gate on round-trip fidelity; do not chase unparser edge cases (rabbit-hole cap).
-**Tests**: `test_unparser_roundtrip_matcher` (or, if it doesn't round-trip, a documented note + the path stays as-is with its existing test).
+### 5. Enforce the no-SQL invariant + finalize ([FR6](./DESIGN.md#fr6))
+**Goal**: Add the grep gate (no `format!` SQL in `src/query/` outside `sql.rs`/tests);
+confirm `QueryEngine::sql` is used only by `sql_user`; update the design coverage map;
+full checkpoint.
+**Tests**: `test_no_format_sql_in_core` (a test or CI grep asserting the invariant).
 **Verify**: `cargo test --features query-backend --lib query:: && cargo clippy --features query-backend --lib -- -D warnings`
-**Acceptance criteria**:
-- [ ] Full `query::` suite green; clippy `-D warnings` clean.
-- [ ] Hybrid boundary documented (which queries migrated, which stay SQL, and predicate-reuse status).
-**Depends on**: 2, 3, 4 **Time-box**: ~75 min
+**Acceptance**: [ ] invariant holds (grep clean); [ ] full `query::` green; [ ] clippy clean; [ ] coverage map updated.
+**Depends on**: 3, 4 **Time-box**: ~60 min
 
 ## Sessions
 
-### Session 1 — builder + pilot (~3H)
-Tasks: 1, 2
+### Session 1 — units + primitives (~4H)
+Tasks: 0, 1, 2
 **Skills**: `rust-software-engineer`
-**Checkpoint**: `cargo test --features query-backend --lib query::predicate && cargo test --features query-backend --lib query::tempo && cargo clippy --features query-backend --lib -- -D warnings`
+**Checkpoint**: `cargo test --features query-backend --lib query::units && cargo test --features query-backend --lib query::plan && cargo test --features query-backend --lib query:: && cargo clippy --features query-backend --lib -- -D warnings`
 **Commit point**: yes (after each task)
 
-### Session 2 — LogQL + discovery migration (~3H)
-Tasks: 3, 4
+### Session 2 — TraceQL + LogQL rewire (~2H)
+Tasks: 3
 **Skills**: `rust-software-engineer`
-**Checkpoint**: `cargo test --features query-backend --lib query::loki && cargo test --features query-backend --lib query::tempo && cargo test --features query-backend --lib query::prometheus`
+**Checkpoint**: `cargo test --features query-backend --lib query::tempo && cargo test --features query-backend --lib query::loki && cargo clippy --features query-backend --lib -- -D warnings`
 **Commit point**: yes
 
-### Session 3 — SQL-path predicate reuse + boundary + final checkpoint (~1.5H)
-Tasks: 5
+### Session 3 — PromQL rewire + invariant (~2.5H)
+Tasks: 4, 5
 **Skills**: `rust-software-engineer`
 **Checkpoint**: `cargo test --features query-backend --lib query:: && cargo clippy --features query-backend --lib -- -D warnings`
 **Commit point**: yes
 
 ## Quality gates (post-session review)
 - [ ] Acceptance criteria all green
-- [ ] Code review: migrated queries match prior results; predicate builder is the single op-semantics source
-- [ ] Code organization: `predicate.rs` shared; signals only build LHS + assemble plans
-- [ ] Security: migrated paths use `lit()` (no `esc()`); a `'`/`&&`-laden value cannot alter a plan (tested)
-- [ ] Observability: `collect()` emits the same request/cache telemetry as `sql()`
-- [ ] Performance: no latency regression vs SQL path; cache hit-rate preserved (equal query → hit)
+- [ ] No `format!` SQL in core (grep gate), `sql()` only for the user endpoint
+- [ ] Window primitives match the prior SQL outputs on fixtures (parity gate)
+- [ ] Predicate builder is the single op-semantics source; values are `lit()`
+- [ ] Units: one ingress + one egress conversion; no `*1e9`/`/1e9`/`CAST AS BIGINT` in core
+- [ ] Observability: `collect()` emits the same telemetry as `sql()`
+- [ ] Performance: no latency regression; cache hit-rate preserved
 
 ## Uncertainty (hill chart)
-- T1 — **downhill** (Expr API + a `collect` mirroring `sql` are well-understood).
-- T2 pilot — **downhill, watch cache keying** (the one genuinely new mechanism; pilot validates it).
-- T3, T4 — **downhill** (same pattern repeated; volume's `CASE`/bucket as `Expr` is mechanical).
-- T5 — **downhill** for the boundary doc; **uphill risk on `Unparser` fidelity** → capped as a non-blocking "reuse if it round-trips, else leave SQL".
-- No task is uphill in a way that blocks autopilot; the only uncertainty (unparser reuse) is explicitly optional.
+- T0 units — **downhill** (centralization of existing logic; parity-safe).
+- T1 predicate/agg/ids + `collect` — **downhill** (well-understood API).
+- T2 window primitives — **downhill but the real risk**; the isolation-vs-SQL parity
+  tests are the gate — if any can't reach parity in time-box, fall back to hybrid for
+  that one primitive ([migration-scope](./adrs/migration-scope.md) escape hatch).
+- T3, T4, T5 — **downhill** once T2 is green (compose + rewire + invariant).
+- No task is blocking-uphill; the only concentrated risk (P5/P6/P7) is isolated and
+  has a documented fallback.
 
 ## Pre-flight gate (Phase 4c) — confirm before Phase 5
-- [ ] ADRs accepted (lowering-target, hybrid-boundary, cache-and-unparser).
+- [ ] ADRs accepted (lowering-target, migration-scope, plan-cache-keying, canonical-nanoseconds).
 - [ ] Baseline build/test/lint green (run now).
-- [ ] Confirm `QueryEngine::collect` + plan cache key design against the moka cache (`CacheKey`).
-- [ ] Confirm `lit()`/UDF-as-`Expr` reachability for `prom_attr`/`prom_metric_name`/`json_get_str`.
+- [ ] `QueryEngine::collect` + plan cache key validated against the moka `CacheKey`.
+- [ ] `functions_window` (row_number/lag) + `WindowFrame(Range, Preceding)` confirmed in DataFusion 53 API.
+- [ ] `lit()`/UDF-as-`Expr` reachability for `prom_attr`/`prom_metric_name`/`json_get_str`/`encode`.

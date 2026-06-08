@@ -8,173 +8,206 @@ Sol's query backend lowers three parsed query languages (PromQL, LogQL, TraceQL)
 to SQL **text** built with `format!`, then hands the string to `ctx.sql(query)`
 (`QueryEngine::sql`), which DataFusion *re-parses* into a `LogicalPlan`. Today
 there are ~110 `format!` SQL-build sites (prometheus 54, loki 34, tempo 22, sql 2),
-and each signal carries its **own** label-resolution + predicate builders that all
-emit SQL fragments:
+each signal re-implementing the same *label/field `op` value → predicate* shape,
+every value string-interpolated (guarded by `esc()` — an injection surface, NFR9).
 
-- prometheus: `label_lhs`, `matcher_pred`, `metric_value_and_match`, `series_sql`.
-- loki: `label_lhs`, `label_pred`, `line_pred`, `label_filter_pred`, `pipeline_preds`.
-- tempo: `traceql_lhs`, `field_key`, `lower_cmp`, `lower_field_expr`, `collect_preds`.
+DataFusion's SQL is a front-end over its **logical layer**: `ctx.sql(text)` parses
+to a sqlparser AST then lowers to a `LogicalPlan` of `Expr` nodes — the same IR the
+`DataFrame`/`LogicalPlanBuilder` API builds directly. Building `Expr` reaches that IR
+without text or a re-parse, is type-safe, and makes values literals.
 
-They share the same shape — *label/field `op` value → predicate* — and the same
-UDFs (`prom_attr` ×29, `prom_metric_name` ×31, `json_get_str` ×8, `regexp_like` ×17,
-`octet_length` ×4), yet none of it is shared, and every value is string-interpolated
-(guarded by `esc()` — an injection surface, NFR9).
+**This work fully migrates query construction off SQL strings onto the DataFusion
+`Expr`/`LogicalPlan` API.** An audit shows the entire SQL surface collapses to **9
+reusable plan primitives** (P1–P9 below); only three are "hard" (window functions:
+latest-per-series, rate, `*_over_time`). Building those three once, parity-tested in
+isolation, lets every signal compose them. The **only** SQL that remains is the
+user-supplied `/api/v1/sql` endpoint (we don't build it) and the **Rust-native Arrow
+compute** (histogram interpolation, bucket-heatmap explode, resample, binary-op
+vector matching) — which was never SQL.
 
-DataFusion's SQL is itself a front-end over its **logical layer**: `ctx.sql(text)`
-parses to a sqlparser AST then lowers to a `LogicalPlan` built from `Expr` nodes —
-the *same* IR the `DataFrame`/`LogicalPlanBuilder` API builds directly. Building
-`Expr` programmatically reaches that IR one step lower (no text, no re-parse) and is
-the engine's native, type-safe, injection-safe form. This work introduces a **shared
-`Expr` predicate builder** as the common lowering target across the three signals,
-and migrates the filter/projection/group-by/distinct queries to the `DataFrame` API,
-while keeping window-function metric lowering and Rust-native histogram/array compute
-as-is (hybrid).
+The migration also fixes a second sprawl: **unit conversions**. Internally the code
+is already nanoseconds (storage is `Timestamp(Nanosecond)`; all math is ns `i64`),
+but conversions (`* 1e9`, `/ 1e9`, sec↔ns parsers, per-signal duration parsers) are
+scattered. We standardize on a **canonical nanosecond `i64`** core with conversion
+only at the boundary, which also removes the per-site `CAST(time_unix_nano AS BIGINT)`
+ambiguity that is the chief risk in the window primitives.
 
 ## Functional Requirements
 
-### <a id="fr1"></a>FR1 — Shared `Expr` predicate builder
-A single module builds DataFusion `Expr` predicates from a normalized
-*(lhs, op, value)* triple, reused by PromQL matchers, LogQL label filters/selector
-matchers, and TraceQL field comparisons. It covers `= != =~ !~ > >= < <=`, the
-Prometheus/LogQL absent-label semantics (absent ≡ empty for `=""`/`!=`), anchored
-regex (`^(?:…)$`), and numeric comparison. Label LHS resolution (promoted column vs
-`prom_attr`/`json_get_str` UDF call on an attributes column) is a parameter, not
-duplicated per signal.
+### <a id="fr1"></a>FR1 — Shared predicate builder (`Expr`)
+One module builds DataFusion `Expr` predicates from a normalized *(lhs, op, value)*
+triple, reused by PromQL matchers, LogQL label/line filters, and TraceQL field
+comparisons: `= != =~ !~ > >= < <=`, absent-label semantics (absent ≡ empty),
+anchored regex (`^(?:…)$`), numeric/text comparison, `body` substring/regex. Label
+LHS resolution (promoted column vs `prom_attr`/`json_get_str` UDF call) is a
+parameter, not duplicated per signal. **[P1, P2]**
 
-### <a id="fr2"></a>FR2 — `Expr` values are literals (injection-safe)
-Every query value enters as `lit(value)` (a bound literal in the plan), never as
-interpolated text. The `esc()` discipline is removed from migrated paths; no query
-value can alter SQL structure (NFR9 satisfied structurally, not by escaping).
+### <a id="fr2"></a>FR2 — Literal values (injection-safe)
+Every query value enters as `lit(value)`, never interpolated. `esc()` is removed from
+all migrated paths; no query value can alter plan structure (NFR9, structural).
 
-### <a id="fr3"></a>FR3 — Migrate filter/projection/group-by/distinct queries to DataFrame
-The "pure" queries — filter + project + sort + limit, distinct, and simple group-by
-aggregation — are built and executed via the `DataFrame`/`LogicalPlanBuilder` API
-instead of SQL strings: TraceQL search (`translate_search`→`handle_search`), LogQL
-streams (`translate_query_range`→`handle_query_range`) and volume, and the discovery
-endpoints (labels / label values / series / tags / tag values / index stats+volume).
+### <a id="fr3"></a>FR3 — Full migration of query construction to the DataFrame/`Expr` API
+**All** query building moves to `Expr`/`DataFrame`/`LogicalPlanBuilder` — including
+the window-function lowerings previously thought of as SQL-only:
+- **P3** scan→filter→project→sort→limit (selectors, search, streams, trace-by-id).
+- **P4** distinct / group-by aggregate (labels, series, tags, tag values, index
+  stats/volume, instant `sum by`).
+- **P5** latest-per-series (`row_number()` window → `rn = 1`): PromQL instant + the
+  histogram/latest scan.
+- **P6** rate (`lag()` window + counter-reset `CASE` + `/dt`).
+- **P7** `<agg>_over_time` (`agg()` window with a `RANGE … PRECEDING` frame).
+- **P8** range aggregation (`sum/max/… by (labels)` group-by over time).
+- **P9** binary-id encode / binary-literal lookup (`encode(_,'hex'/'base64')`,
+  `FixedSizeBinary(16)` literal instead of `arrow_cast(X'…')`).
 
-### <a id="fr4"></a>FR4 — Plan-based execution path on the engine
-`QueryEngine` gains a method to execute a built `DataFrame`/`LogicalPlan` (collect to
-Arrow batches) alongside the existing `sql(&str)`, with query-cache integration
-(keying derived from the plan, not SQL text). The cache contract (FR5/NFR6 of
-parquet-backend) is preserved.
+After this, **no `format!` SQL exists in the query-construction path.**
+
+### <a id="fr4"></a>FR4 — Plan execution path on the engine
+`QueryEngine` gains `collect(DataFrame|LogicalPlan)` alongside `sql(&str)`, with the
+query cache keyed off the plan (not SQL text), preserving the cache contract
+(FR5/NFR6 of parquet-backend). After the migration the internal `sql()` callers are
+gone; `sql()` may remain only for `sql_user` (the user endpoint).
 
 ### <a id="fr5"></a>FR5 — Behavioural parity
-Every query the current string lowering handles produces equivalent results after
-the migration. `query::` tests stay green; where a test asserts SQL *text*, it is
-rewritten to assert `Expr`/plan structure or result-level equivalence of equal
-meaning. Public function signatures and HTTP routes are unchanged.
+Every query the string lowering handles produces equivalent results after migration.
+`query::` tests stay green; SQL-text assertions are rewritten to plan-structure or
+result-level assertions of equal meaning. HTTP handlers/routes and the response JSON
+are unchanged. Window primitives are validated in isolation against the current SQL's
+outputs before rewiring (the de-risking gate).
 
-### <a id="fr6"></a>FR6 — Hybrid boundary made explicit
-A documented list of which lowerings migrate to `Expr` and which deliberately stay
-SQL-string (window functions + array/JSON-histogram compute), with the reason. The
-shared predicate builder is still reused by the SQL-staying paths via `Expr`
-un-parsing where it reduces duplication (see [ADR: cache + unparser](./adrs/cache-and-unparser.md)).
+### <a id="fr6"></a>FR6 — No SQL in core (the invariant) + primitive catalog
+A CI-checkable invariant: outside `sql.rs` (user endpoint) and test fixtures, there
+are **no `format!`-built SQL strings** in `src/query/`. The design documents the
+9-primitive catalog and which functions map to which primitive (the coverage map).
+
+### <a id="fr7"></a>FR7 — Canonical nanosecond units, converted only at the boundary
+Internal time and duration are **nanoseconds `i64`**, carried as newtypes
+`TimeNs`/`DurationNs` so the core cannot mix sec/ms/ns. Conversions live **only** at:
+- **Ingress** — the HTTP param parsers (sec→ns for Prometheus/Tempo; Loki already ns)
+  and a **single** `parse_duration_ns` for PromQL `[5m]`, TraceQL `1.5s`, LogQL
+  `[5m]`/`offset`.
+- **Egress** — the response serializers (ns→sec for Prometheus output only; Loki
+  emits ns; Tempo durations are ns).
+
+No `* 1e9` / `/ 1e9` / `CAST … AS BIGINT` unit handling in the core. Sample **values**
+stay `f64` (Prometheus is float by spec; not standardized).
 
 ## Non-Functional Requirements
 
 ### <a id="nfr1"></a>NFR1 — No new external dependency
-Only `datafusion::logical_expr` / `datafusion::prelude` (DataFrame, `col`, `lit`,
-`Expr`) and `datafusion::sql::unparser` — all already in the tree (DataFusion 53.1.0).
+Only `datafusion::{logical_expr, prelude, functions_window, functions}` — all already
+in the tree (DataFusion 53.1.0).
 
-### <a id="nfr2"></a>NFR2 — No performance regression
-Plan-based execution must not regress latency vs the SQL path (it skips a parse, so
-should be ≤). The query cache must remain effective (equal queries → cache hit).
+### <a id="nfr2"></a>NFR2 — No performance / cache regression
+Plan-based execution skips a parse (≤ SQL latency); the cache stays effective (equal
+plan → hit). Window plans must not be materially slower than the current SQL windows.
 
-### <a id="nfr3"></a>NFR3 — Incremental, reversible migration
-Migrate one signal/endpoint per vertical slice behind unchanged public functions, so
-each slice is independently shippable and revertible; never a flag-day.
+### <a id="nfr3"></a>NFR3 — Incremental, reversible, parity-gated
+Units first (parity-safe), then primitives (tested in isolation), then per-signal
+rewire — each a shippable, revertible slice. No flag-day.
 
 ## Non-goals
 
-- **Migrating window-function metric lowering.** `rate` (LAG + counter-reset),
-  `<agg>_over_time` (RANGE frames), the Prometheus instant *latest-per-series*
-  (`ROW_NUMBER … WHERE rn=1`), `sum by`/`topk` over windows — these are expressible
-  via `Expr::WindowFunction` but far more verbose and error-prone than the existing,
-  tested SQL. They **stay SQL** (hybrid). Reason: cost/risk ≫ benefit; revisit only
-  if the predicate-builder reuse proves compelling there too.
-- **Rust-native histogram/array compute.** `histogram_quantile`, classic-bucket
-  heatmap synthesis, byte-volume `octet_length` — already computed over Arrow arrays
-  in Rust (parquet-backend rabbit-hole #5), not SQL. Unaffected.
-- **The cross-signal `/api/v1/sql` endpoint.** User-supplied SQL stays
-  `sql_user` (sqlparser path); not a lowering we build. Unaffected.
-- **A unified *source* AST across signals.** PromQL/LogQL/TraceQL stay distinct
-  front-ends; the shared layer is the lowering *target* (`Expr`), not the parse AST.
-  (Already established in the parsers design — a fact, not a gap.)
+- **The cross-signal `/api/v1/sql` endpoint.** It executes *user-supplied* SQL via
+  `sql_user` (sqlparser path) — not a lowering we build. It stays SQL by definition;
+  it is the one sanctioned SQL site.
+- **Rust-native Arrow post-processing.** `histogram_quantile` interpolation, classic
+  bucket-heatmap explode, `resample_to_grid`, `topk_series`, binary-op vector matching,
+  matrix/streams shaping — these run on result `RecordBatch`es and were never SQL.
+  Unaffected; they are *not* "SQL in core".
+- **A unified source AST across signals.** PromQL/LogQL/TraceQL stay distinct
+  front-ends; the shared layer is the lowering *target* (`Expr`) — established fact.
+- **Standardizing sample values.** Values stay `f64`.
 
 ## Rabbit holes
 
-- **Window functions in the DataFrame API.** Tempting to migrate `rate`/`_over_time`
-  too. *Cap:* out of scope (non-goal); do not attempt — they stay SQL.
-- **`Unparser` fidelity.** Rendering shared `Expr` predicates back to SQL text for
-  the SQL-staying paths (so the builder is reused everywhere) depends on
-  `datafusion::sql::unparser` reproducing UDF calls / anchored regex faithfully.
-  *Cap:* if an `Expr` doesn't round-trip to the expected SQL within the pilot slice,
-  keep those SQL paths hand-written and reuse the builder only in DataFrame paths;
-  do not chase unparser edge cases.
-- **Cache keying for plans.** The cache is keyed by SQL text. A plan-based key must
-  be stable + collision-free. *Cap:* derive from the optimized `LogicalPlan`'s
-  indented display string (deterministic); if that proves fragile, fall back to a
-  structured `CacheKey`. Decide in the ADR; don't invent a bespoke hash scheme.
-- **UDF lookup as `Expr`.** Calling `prom_attr`/`prom_metric_name`/`json_get_str` as
-  `Expr::ScalarFunction` needs the registered `ScalarUDF` from the context registry.
-  *Cap:* resolve once via the `SessionContext` UDF registry; if a UDF isn't reachable
-  as an `Expr` builder, that signal's affected predicate stays SQL for now.
+- **Window-frame RANGE units (P7).** The `RANGE BETWEEN d PRECEDING` bound must be in
+  the same units as the `ORDER BY` key. With canonical ns (FR7) both are ns `i64`,
+  removing the per-site cast ambiguity. *Cap:* order/ frame on the ns `i64` key; if a
+  frame can't be expressed in ns directly, use an `INTERVAL`; validate P7 against the
+  current SQL output before rewiring — do not improvise frame semantics.
+- **`lag()`/window null & order semantics (P6).** Counter-reset `CASE`, dup-timestamp
+  drop, `/dt`. *Cap:* reproduce the tested values exactly in the isolation tests; the
+  rate helper is frozen once parity holds.
+- **UDF-as-`Expr`.** `prom_attr`/`prom_metric_name`/`json_get_str`/`encode` as
+  `Expr::ScalarFunction` need the registered UDF from the context registry. *Cap:*
+  resolve once via the `SessionContext`; if one isn't reachable as an `Expr`, surface
+  it (do not silently fall back to SQL — that would break FR6).
+- **Plan cache key.** Cache is SQL-text keyed today. *Cap:* key on the optimized
+  `LogicalPlan` indented display (deterministic, best-effort); see the ADR.
+- **`i64` ns overflow.** ~year 2262; out of scope.
 
 ## Design
 
-### Architecture (C4 level 2 — lowering targets the logical layer)
+### The 9 primitives (the whole SQL surface)
 
 ```mermaid
-flowchart LR
-    subgraph parse [parsers (shipped)]
-      P["PromQL AST"]
-      L["LogQL AST"]
-      T["TraceQL AST"]
+flowchart TB
+    subgraph easy [filter / project / aggregate — trivial]
+      P1[P1 predicate Expr]
+      P2[P2 label-LHS resolver col / UDF call]
+      P3[P3 scan·filter·project·sort·limit]
+      P4[P4 distinct / group-by aggregate]
+      P9[P9 id encode + binary-literal lookup]
     end
-    P & L & T --> PB["shared predicate builder\n(lhs, op, value) → Expr  (lit values)"]
-    PB --> DF["DataFrame / LogicalPlanBuilder\n(filter · project · group-by · distinct)"]
-    PB -. unparse .-> SQLW["SQL WHERE fragment\n(window-fn queries that stay SQL)"]
-    DF --> ENG["QueryEngine.collect(plan)\n(cache by plan key)"]
-    SQLW --> STR["format! SQL (rate / *_over_time / instant)"]
-    STR --> ENGSQL["QueryEngine.sql(text)"]
-    ENG & ENGSQL --> EXEC["LogicalPlan → optimize → execute (Arrow)"]
+    subgraph hard [window functions — the only hard part]
+      P5[P5 latest-per-series row_number rn=1]
+      P6[P6 rate lag + counter-reset]
+      P7[P7 *_over_time RANGE frame]
+      P8[P8 range agg group-by over time]
+    end
+    P1 & P2 --> P3 --> P5 & P6 & P7 --> P8
+    P3 --> P4
 ```
+
+| Primitive | DataFusion-API form | Used by |
+|---|---|---|
+| P1 predicate | `col.eq(lit())`, `regexp_match`, `is_null().or(..)` | all matchers/filters (all signals) |
+| P2 LHS resolver | `col(..)` / `ScalarUDF.call(args)` | `*_lhs`, value/name exprs |
+| P3 scan/filter/project/sort/limit | `ctx.table(t).filter().select().sort().limit()` | selectors, search, streams, trace-by-id, `metric_base` |
+| P4 distinct/aggregate | `.distinct()` / `.aggregate(group, aggs)` | labels, series, tags, tag values, index stats/volume, instant `sum by` |
+| P5 latest-per-series | `Expr::WindowFunction(row_number)` + `filter(rn=1)` | PromQL instant, histogram/latest scan |
+| P6 rate | `WindowFunction(lag)` + `when().otherwise()` + arithmetic | `rate`/`irate`/`increase` |
+| P7 `*_over_time` | `WindowFunction(agg)` + `WindowFrame(Range, Preceding(d), CurrentRow)` | `<agg>_over_time` |
+| P8 range agg | `.aggregate(group_exprs, agg_exprs)` | `sum/max/… by (…)` over range |
+| P9 id encode/lookup | `encode()` scalar fn; `lit(ScalarValue::FixedSizeBinary)` | Tempo search/trace-by-id |
 
 ### Module layout
 
 ```
-src/query/predicate.rs   # NEW — shared Expr builders:
-                         #   label_eq/neq/re/nre/cmp(lhs: Expr, value, …) -> Expr
-                         #   attr_call(udf, column, key) -> Expr   (prom_attr / json_get_str)
-                         #   anchored_regex(lhs, pattern) -> Expr
-                         #   absent-aware equality (NULL-or-empty)
-src/query/catalog.rs     # QueryEngine::collect(df|plan) + plan-based cache key
+src/query/units.rs       # NEW — TimeNs, DurationNs newtypes; parse_duration_ns;
+                         #   ingress (sec→ns) + egress (ns→sec) funnels
+src/query/plan/          # NEW — the 9 primitives over DataFusion Expr/DataFrame:
+  predicate.rs           #   P1, P2  (lhs/op/value → Expr; UDF-call helpers)
+  frame.rs               #   P5, P6, P7  (window helpers: latest, rate, over_time)
+  agg.rs                 #   P4, P8  (distinct / group-by)
+  ids.rs                 #   P9  (encode / FixedSizeBinary literal)
+src/query/catalog.rs     # QueryEngine::collect(plan) + plan-based cache key
 src/query/{prometheus,loki,tempo}.rs
-                         # *_lhs return Expr; pure queries build via DataFrame;
-                         # window/array lowering unchanged (SQL)
+                         # translate_*/handle_* compose plan primitives; no format! SQL
 ```
 
-### Domain model & interfaces
+### Interfaces
 
-- `predicate::LabelMatch { lhs: Expr, op: MatchKind, value: String, numeric: bool }`
-  → `to_expr() -> Expr` — the one place op-semantics live.
-- `QueryEngine::collect(plan: DataFrame) -> Result<Vec<RecordBatch>>` — mirrors
-  `sql()` (cache + telemetry), keyed by the plan (ADR).
-- Each signal keeps its public `translate_*`/`handle_*` signatures; internals route
-  through `predicate` + `DataFrame` for the migrated set.
+- `units::{TimeNs, DurationNs}` value objects; `parse_duration_ns(&str) -> DurationNs`.
+- `plan::predicate::cmp(lhs: Expr, op: MatchKind, value: &str, numeric: bool) -> Expr`.
+- `plan::frame::{latest_per_series, rate, over_time}(base: DataFrame, …) -> DataFrame`.
+- `QueryEngine::collect(plan) -> Result<Vec<RecordBatch>>` (cache + telemetry, keyed
+  on the optimized `LogicalPlan`).
+- Public `handle_*` signatures + HTTP routes unchanged (FR5).
 
 Decisions:
-- [Lowering target: DataFusion Expr / LogicalPlan via DataFrame](./adrs/lowering-target.md)
-- [Hybrid boundary: which queries migrate vs stay SQL](./adrs/hybrid-boundary.md)
-- [Plan-based cache keying + Expr unparser reuse](./adrs/cache-and-unparser.md)
+- [Lowering target: DataFusion Expr / LogicalPlan](./adrs/lowering-target.md)
+- [Migration scope: full (window primitives included)](./adrs/migration-scope.md)
+- [Plan-based cache keying](./adrs/plan-cache-keying.md)
+- [Canonical nanosecond units; convert only at the boundary](./adrs/canonical-nanoseconds.md)
 
 ## Cross-cutting Concerns
 
-- **Observability** — `collect()` reuses the same `record_request`/`record_cache`
-  telemetry as `sql()`; no dashboard change.
-- **Migration** — vertical, parity-first, one endpoint/signal per slice; pilot on
-  TraceQL search (purest filter case) to validate the builder, DataFrame execution,
-  and cache keying before extending.
-- **Rollback** — each slice sits behind an unchanged public function; revert one
-  commit to restore the SQL-string lowering for that endpoint, no API impact.
+- **Observability** — `collect()` reuses `record_request`/`record_cache`; no dashboard
+  change.
+- **Migration** — units (parity-safe) → primitives (isolation-tested) → per-signal
+  rewire; each slice shippable and revertible. PromQL range/instant is the last and
+  largest rewire (it has all three window primitives).
+- **Rollback** — each slice behind unchanged public functions; revert a commit to
+  restore that endpoint's prior lowering.
