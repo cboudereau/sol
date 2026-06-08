@@ -37,7 +37,7 @@ transforms:
   # (metrics/<subtype>/dt=…) → narrow per-subtype schemas, clean ListingTables.
   route_metrics:
     type: route
-    inputs: ["promote_resource_attrs"]
+    inputs: ["promote_resource_attrs", "host_metrics_for_parquet", "self_metrics_for_parquet"]
     # the five OTLP metric types are exhaustive; drop anything else rather than
     # emit an unconsumed _unmatched stream.
     reroute_unmatched: false
@@ -60,6 +60,29 @@ transforms:
     inputs: ["host_metrics"]
     source: |
       .name = "node_" + string!(.name)
+
+  # Parquet branches for host + self metrics. Mimir derives `job` from the OTLP
+  # resource `service.name` during ingest; Sol stores raw attributes, so promote
+  # `service.name` to an explicit `job` data-point attribute here (the `host`
+  # data-point tag is already set by the host_metrics source). These feed
+  # `route_metrics` → the per-subtype Parquet sinks, so Sol serves the same
+  # node_*/self series as Mimir. The Mimir path (otlp_self_metrics) is unchanged.
+  host_metrics_for_parquet:
+    type: remap
+    inputs: ["promote_host_metrics_attrs"]
+    source: |
+      .attributes.job = .resource.attributes."service.name"
+      # The host_metrics names already embed their unit/`_total` (node-exporter
+      # style, e.g. node_cpu_seconds_total). Sol's prom_metric_name re-appends the
+      # unit suffix before the trailing `_total` → node_cpu_seconds_total_seconds_total.
+      # Clear the unit so the literal name is kept verbatim (matches the dashboard).
+      .unit = ""
+
+  self_metrics_for_parquet:
+    type: remap
+    inputs: ["promote_self_metrics_attrs"]
+    source: |
+      .attributes.job = .resource.attributes."service.name"
 
 sinks:
   otlp_traces:
