@@ -1,6 +1,6 @@
 # expr-lowering — Design Doc
 
-Builds on: [designs/20260605_query-parsers.md](../../designs/20260605_query-parsers.md)
+Builds on: [designs/20260605_query-parsers.md](./20260605_query-parsers.md)
 
 ## Context
 
@@ -206,10 +206,10 @@ The only remaining `.sql()` is `QueryEngine::sql` — a borrowed `&str` passthro
 - Public `handle_*` signatures + HTTP routes unchanged (FR5).
 
 Decisions:
-- [Lowering target: DataFusion Expr / LogicalPlan](./adrs/lowering-target.md)
-- [Migration scope: full (window primitives included)](./adrs/migration-scope.md)
-- [Plan-based cache keying](./adrs/plan-cache-keying.md)
-- [Canonical nanosecond units; convert only at the boundary](./adrs/canonical-nanoseconds.md)
+- [Lowering target: DataFusion Expr / LogicalPlan](../adrs/0043-lowering-target.md)
+- [Migration scope: full (window primitives included)](../adrs/0044-migration-scope.md)
+- [Plan-based cache keying](../adrs/0045-plan-cache-keying.md)
+- [Canonical nanosecond units; convert only at the boundary](../adrs/0046-canonical-nanoseconds.md)
 
 ## Cross-cutting Concerns
 

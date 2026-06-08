@@ -3,7 +3,7 @@ status: accepted
 ---
 # Lowering target: DataFusion `Expr` / `LogicalPlan` via the DataFrame API
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../designs/20260608_expr-lowering.md#fr1), [FR2](../designs/20260608_expr-lowering.md#fr2), [FR3](../designs/20260608_expr-lowering.md#fr3), [NFR1](../designs/20260608_expr-lowering.md#nfr1)
 
 ## Problem
 
@@ -38,7 +38,7 @@ cache-keying cost outweigh the benefit.
 on migrated paths); type-checked plans; one fewer parse per request.
 
 **Harder**: window-function queries are more verbose in the API (built once as the
-shared `plan::frame` primitives — see the [migration-scope ADR](./migration-scope.md));
+shared `plan::frame` primitives — see the [migration-scope ADR](./0044-migration-scope.md));
 the query cache needs a plan-based key
-(see [plan-cache-keying ADR](./plan-cache-keying.md)); SQL-text test assertions
+(see [plan-cache-keying ADR](./0045-plan-cache-keying.md)); SQL-text test assertions
 must become plan/result assertions.

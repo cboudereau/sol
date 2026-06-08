@@ -3,12 +3,12 @@ status: accepted
 ---
 # Plan-based query-cache keying
 
-Addresses: [FR4](../DESIGN.md#fr4), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR4](../designs/20260608_expr-lowering.md#fr4), [NFR2](../designs/20260608_expr-lowering.md#nfr2)
 
 ## Problem
 
 `QueryEngine`'s cache keys by **SQL text** (`CacheKey::for_sql`). With full migration
-([migration-scope](./migration-scope.md)) queries are `LogicalPlan`s, not strings, so
+([migration-scope](./0044-migration-scope.md)) queries are `LogicalPlan`s, not strings, so
 the cache needs a stable key derived from the plan. (No SQL-staying paths remain, so
 there is no `Unparser`/round-trip concern — that earlier coupling is dropped.)
 

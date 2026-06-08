@@ -3,7 +3,7 @@ status: accepted
 ---
 # Canonical nanosecond units; convert only at the boundary
 
-Addresses: [FR7](../DESIGN.md#fr7)
+Addresses: [FR7](../designs/20260608_expr-lowering.md#fr7)
 
 ## Problem
 

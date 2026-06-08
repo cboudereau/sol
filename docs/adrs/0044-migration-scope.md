@@ -3,7 +3,7 @@ status: accepted
 ---
 # Migration scope: full `Expr` migration (window primitives included)
 
-Addresses: [FR3](../DESIGN.md#fr3), [FR6](../DESIGN.md#fr6)
+Addresses: [FR3](../designs/20260608_expr-lowering.md#fr3), [FR6](../designs/20260608_expr-lowering.md#fr6)
 
 ## Problem
 
@@ -27,7 +27,7 @@ surface reduces to 9 reusable primitives (P1–P9 in the design); only P5/P6/P7
 (latest-per-series, rate, `*_over_time`) are window functions, built **once** as a
 parity-tested `plan::frame` module and reused by every signal. The chief window risk
 — `RANGE` frame units vs the `ORDER BY` key — is removed by the canonical-nanosecond
-convention ([ADR](./canonical-nanoseconds.md)).
+convention ([ADR](./0046-canonical-nanoseconds.md)).
 
 **Remaining non-`Expr` (sanctioned):**
 - `/api/v1/sql` — *user-supplied* SQL via `sql_user`; we don't build it (the one SQL site).
