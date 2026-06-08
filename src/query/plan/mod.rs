@@ -12,4 +12,5 @@
 //! Window primitives (P5/P6/P7), aggregation (P4/P8), and id encode/lookup (P9)
 //! land in follow-up tasks.
 
+pub mod frame;
 pub mod predicate;
