@@ -172,6 +172,158 @@ pub async fn build_series(
         .distinct()?)
 }
 
+/// Numeric value `Expr` mirroring [`metric_value_and_match`]'s value part.
+fn metric_value_expr(name: &str) -> datafusion::logical_expr::Expr {
+    use datafusion::arrow::datatypes::DataType::Float64;
+    use datafusion::functions::expr_fn::coalesce;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::col;
+    let dv = col("double_value");
+    let iv = cast(col("int_value"), Float64);
+    if name.ends_with("_count") {
+        coalesce(vec![dv, iv, cast(col("count"), Float64)])
+    } else if name.ends_with("_sum") {
+        coalesce(vec![dv, col("sum")])
+    } else {
+        coalesce(vec![dv, iv])
+    }
+}
+
+/// `CAST(time_unix_nano AS BIGINT) BETWEEN start AND end`.
+fn prom_time_between(start_ns: i64, end_ns: i64) -> datafusion::logical_expr::Expr {
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::{col, lit};
+    cast(col("time_unix_nano"), Int64).between(lit(start_ns), lit(end_ns))
+}
+
+/// Per-sample base over `metrics` as a `DataFrame` (P3): the matched series'
+/// `(prom_name, name, service_name, attributes, time, v)`.
+async fn metric_base_df(
+    engine: &super::QueryEngine,
+    vs: &VectorSelector,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
+    let mut df = engine.table(table).await?.filter(name_pred_expr(name))?;
+    for m in &vs.matchers.matchers {
+        if let Some(p) = matcher_expr(m) {
+            df = df.filter(p)?;
+        }
+    }
+    df = df.filter(prom_time_between(start_ns, end_ns))?;
+    Ok(df.select(vec![
+        prom_name_expr().alias("prom_name"),
+        col("name"),
+        col("service_name"),
+        col("attributes"),
+        col("time_unix_nano"),
+        metric_value_expr(name).alias("v"),
+    ])?)
+}
+
+/// The `(name, service_name, attributes)` window partition for PromQL.
+fn prom_part() -> Vec<datafusion::logical_expr::Expr> {
+    use datafusion::prelude::col;
+    vec![col("name"), col("service_name"), col("attributes")]
+}
+
+fn agg_value_expr(op: &str, e: datafusion::logical_expr::Expr) -> datafusion::logical_expr::Expr {
+    use datafusion::functions_aggregate::expr_fn::{avg, count, max, min, sum};
+    match op {
+        "max" => max(e),
+        "min" => min(e),
+        "avg" => avg(e),
+        "count" => count(e),
+        _ => sum(e),
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn range_to_ns(range: Duration) -> i64 {
+    i64::try_from(range.as_nanos()).unwrap_or(i64::MAX)
+}
+
+/// `<agg> [by (...)]` over a range expression, as a `DataFrame` (P8).
+async fn lower_range_aggregate_df(
+    engine: &super::QueryEngine,
+    agg: &AggregateExpr,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let op = agg_name(agg.op).map_err(to_err)?;
+    let by = match &agg.modifier {
+        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
+        Some(LabelModifier::Exclude(_)) => {
+            return Err(to_err("`without (...)` aggregation not supported (v1)".to_string()));
+        }
+        None => Vec::new(),
+    };
+    let inner = Box::pin(lower_range_df(engine, agg.expr.as_ref(), start_ns, end_ns, table)).await?;
+    let v = agg_value_expr(op, col("v")).alias("v");
+    if by.is_empty() {
+        Ok(inner.aggregate(vec![col("time_unix_nano")], vec![v])?)
+    } else {
+        let mut group: Vec<datafusion::logical_expr::Expr> =
+            by.iter().map(|k| label_lhs_expr(k).alias(sql_ident(k))).collect();
+        group.push(col("time_unix_nano"));
+        Ok(inner.aggregate(group, vec![v])?)
+    }
+}
+
+/// Lower a range PromQL expression to a `DataFrame` (the `Expr` twin of
+/// [`lower_range`]): rate/`*_over_time` via [`super::plan::frame`], `<agg> by`
+/// via group-by, bare selectors as raw samples.
+async fn lower_range_df(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use super::plan::frame::{over_time, rate, OverTimeAgg};
+    use datafusion::prelude::col;
+    match expr {
+        Expr::Call(c) => {
+            let (vs, range) = match c.args.args.first().map(|b| b.as_ref()) {
+                Some(Expr::MatrixSelector(ms)) => (&ms.vs, ms.range),
+                _ => {
+                    return Err(to_err(format!(
+                        "{}() expects a range-vector argument like m[5m]",
+                        c.func.name
+                    )));
+                }
+            };
+            let base = metric_base_df(engine, vs, start_ns, end_ns, table).await?;
+            let part = prom_part();
+            let r = range_to_ns(range);
+            match c.func.name {
+                "rate" | "irate" | "increase" => rate(base, part, "v", "time_unix_nano"),
+                "max_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Max),
+                "min_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Min),
+                "avg_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Avg),
+                "sum_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Sum),
+                "count_over_time" => over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Count),
+                other => Err(to_err(format!("unsupported range function: {other}() (v1)"))),
+            }
+        }
+        Expr::Paren(p) => Box::pin(lower_range_df(engine, &p.expr, start_ns, end_ns, table)).await,
+        Expr::Aggregate(agg) => lower_range_aggregate_df(engine, agg, start_ns, end_ns, table).await,
+        Expr::VectorSelector(vs) => Ok(metric_base_df(engine, vs, start_ns, end_ns, table)
+            .await?
+            .sort(vec![col("time_unix_nano").sort(true, false)])?),
+        _ => Err(to_err("unsupported PromQL expression for query_range (v1)".to_string())),
+    }
+}
+
 /// Subquery selecting, per series, the latest sample at/before `time_ns`
 /// (`rn = 1`). Value is the gauge/sum numeric value.
 fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
@@ -928,16 +1080,26 @@ impl PromMatrixResponse {
 type RangeSeries = BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)>;
 
 /// Group the rows of an already-built range SQL into per-series point lists.
-async fn range_series_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result<RangeSeries> {
+/// Group an already-built range `DataFrame`'s rows into per-series point lists.
+async fn range_series_from_df(
+    engine: &super::QueryEngine,
+    df: datafusion::dataframe::DataFrame,
+) -> crate::Result<RangeSeries> {
+    let batches = engine.collect(df).await?;
+    group_range_series(&batches)
+}
+
+/// Group result batches (`v` + `time_unix_nano` + label columns) into per-series
+/// point lists keyed by the (ordered) label set.
+fn group_range_series(
+    batches: &[datafusion::arrow::record_batch::RecordBatch],
+) -> crate::Result<RangeSeries> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type, Int64Type};
 
-    let batches = engine.sql(sql).await?;
-
-    // Group points by their (ordered) label set; BTreeMap key keeps it stable.
     let mut series: RangeSeries = BTreeMap::new();
-    for batch in &batches {
+    for batch in batches {
         let schema = batch.schema();
         let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
         let v = cast(batch.column(v_idx), &DataType::Float64)?;
@@ -1937,8 +2099,8 @@ async fn eval_range_window(
                     RangeVal::Vector(m) => RangeVal::Vector(topk_series(m, n, is_topk)),
                 })
             } else {
-                let sql = lower_range(expr, s, e, table).map_err(to_err)?;
-                Ok(RangeVal::Vector(range_series_sql(engine, &sql).await?))
+                let df = lower_range_df(engine, expr, s, e, table).await?;
+                Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
             }
         }
     }
