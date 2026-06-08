@@ -12,57 +12,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// SQL-escape a string literal value (NFR9 — guards against injection).
-fn esc(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 /// Box a `String` message into the crate error type.
 fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(e)
 }
 
-/// Map a TraceQL field to a SQL left-hand side. Intrinsics and
-/// `resource.service.name` are promoted columns; `span.*` / `resource.*` and
-/// bare `.attr` go through JSON extraction.
-fn traceql_lhs(key: &str) -> String {
-    match key {
-        "name" => "name".to_string(),
-        "status" | "status.code" => "status_code".to_string(),
-        "kind" => "kind".to_string(),
-        "duration" => "duration_nanos".to_string(),
-        "resource.service.name" | "service.name" | ".service.name" => "service_name".to_string(),
-        _ => {
-            if let Some(attr) = key.strip_prefix("resource.") {
-                format!("json_get_str(resource_attributes, '{}')", esc(attr))
-            } else if let Some(attr) = key.strip_prefix("span.") {
-                format!("json_get_str(attributes, '{}')", esc(attr))
-            } else {
-                let attr = key.strip_prefix('.').unwrap_or(key);
-                format!("json_get_str(attributes, '{}')", esc(attr))
-            }
-        }
-    }
-}
-
 use super::traceql::ast as tast;
-
-/// Reconstruct the TraceQL field key (the string form [`traceql_lhs`] consumes)
-/// from a parsed field. `event`/`instrumentation`/`link`/`parent` scopes are
-/// parsed but not lowered (their attributes aren't stored as queryable columns).
-fn field_key(f: &tast::Field) -> Result<String, String> {
-    use tast::{AttrScope, Field};
-    match f {
-        Field::Intrinsic(s) => Ok(s.clone()),
-        Field::Attr { scope, path } => match scope {
-            AttrScope::Unscoped => Ok(format!(".{path}")),
-            AttrScope::Span => Ok(format!("span.{path}")),
-            AttrScope::Resource => Ok(format!("resource.{path}")),
-            other => Err(format!("{other:?} scope is not yet supported in lowering")),
-        },
-        _ => Err("expected a field reference on the left of a comparison".to_string()),
-    }
-}
 
 /// Format an `f64` literal without a trailing `.0` for whole numbers.
 fn fmt_num(n: f64) -> String {
@@ -75,86 +30,10 @@ fn fmt_num(n: f64) -> String {
     }
 }
 
-/// The literal text of a value field (for the RHS of a comparison).
-fn lit_str(f: &tast::Field) -> Result<String, String> {
-    use tast::Field;
-    match f {
-        Field::Str(s) => Ok(s.clone()),
-        Field::Num(n) => Ok(fmt_num(*n)),
-        Field::Bool(b) => Ok(b.to_string()),
-        Field::Duration(d) => Ok(d.clone()),
-        _ => Err("expected a literal on the right of a comparison".to_string()),
-    }
-}
-
 /// Parse a duration literal (e.g. `1.5s`, `200ms`) to nanoseconds.
 fn duration_nanos(raw: &str) -> Option<i64> {
     // Single shared duration parser (FR7) — also handles fractional/compound forms.
     super::units::parse_duration_ns(raw).map(|d| d.ns())
-}
-
-/// Lower a single field comparison to a SQL boolean expression.
-fn lower_cmp(lhs: &tast::Field, op: &tast::FieldOp, rhs: &tast::Field) -> Result<String, String> {
-    use tast::{Field, FieldOp};
-    let col = traceql_lhs(&field_key(lhs)?);
-    match op {
-        FieldOp::Eq => Ok(format!("{col} = '{}'", esc(&lit_str(rhs)?))),
-        FieldOp::Neq => Ok(format!("{col} <> '{}'", esc(&lit_str(rhs)?))),
-        FieldOp::Re => Ok(format!("regexp_like(COALESCE({col}, ''), '^(?:{})$')", esc(&lit_str(rhs)?))),
-        FieldOp::Nre => Ok(format!("NOT regexp_like(COALESCE({col}, ''), '^(?:{})$')", esc(&lit_str(rhs)?))),
-        FieldOp::Gt | FieldOp::Gte | FieldOp::Lt | FieldOp::Lte => {
-            let opsql = match op {
-                FieldOp::Gt => ">",
-                FieldOp::Gte => ">=",
-                FieldOp::Lt => "<",
-                FieldOp::Lte => "<=",
-                _ => unreachable!(),
-            };
-            let rhs_num = match rhs {
-                Field::Duration(d) => {
-                    duration_nanos(d).ok_or_else(|| format!("invalid duration: {d}"))?.to_string()
-                }
-                Field::Num(n) => fmt_num(*n),
-                _ => return Err("numeric comparison requires a number/duration literal".to_string()),
-            };
-            // Promoted numeric intrinsics compare directly; JSON/text columns cast.
-            let numeric_intrinsic = matches!(
-                lhs,
-                Field::Intrinsic(s) if s == "duration" || s == "status" || s == "kind"
-            );
-            if numeric_intrinsic {
-                Ok(format!("{col} {opsql} {rhs_num}"))
-            } else {
-                Ok(format!("CAST({col} AS DOUBLE) {opsql} {rhs_num}"))
-            }
-        }
-    }
-}
-
-/// Lower a field expression to a single SQL boolean (parenthesised for `&&`/`||`).
-fn lower_field_expr(fe: &tast::FieldExpr) -> Result<String, String> {
-    use tast::FieldExpr;
-    match fe {
-        FieldExpr::Cmp { lhs, op, rhs } => lower_cmp(lhs, op, rhs),
-        FieldExpr::And(a, b) => Ok(format!("({} AND {})", lower_field_expr(a)?, lower_field_expr(b)?)),
-        FieldExpr::Or(a, b) => Ok(format!("({} OR {})", lower_field_expr(a)?, lower_field_expr(b)?)),
-        // A bare field is an existence check.
-        FieldExpr::Field(f) => Ok(format!("{} IS NOT NULL", traceql_lhs(&field_key(f)?))),
-    }
-}
-
-/// Flatten a field expression's top-level `&&` chain into separate WHERE
-/// conjuncts (so the emitted SQL matches the previous ad-hoc translator — FR5).
-fn collect_preds(fe: &tast::FieldExpr, out: &mut Vec<String>) -> Result<(), String> {
-    use tast::FieldExpr;
-    match fe {
-        FieldExpr::And(a, b) => {
-            collect_preds(a, out)?;
-            collect_preds(b, out)?;
-        }
-        other => out.push(lower_field_expr(other)?),
-    }
-    Ok(())
 }
 
 // --- `Expr`/DataFrame lowering (expr-lowering migration) ---
@@ -167,7 +46,8 @@ fn json_attr(column: &str, key: &str) -> Expr {
     datafusion_functions_json::udfs::json_get_str_udf().call(vec![col(column), lit(key)])
 }
 
-/// LHS `Expr` for a raw TraceQL tag string (mirrors [`traceql_lhs`]).
+/// LHS `Expr` for a raw TraceQL tag string: promoted intrinsic columns, or JSON
+/// extraction for `span.*`/`resource.*`/bare `.attr`.
 fn tag_lhs_expr(tag: &str) -> Expr {
     match tag {
         "name" => col("name"),
@@ -398,74 +278,6 @@ fn otlp_attributes(json: &str) -> Vec<Value> {
             json!({ "key": key, "value": value })
         })
         .collect()
-}
-
-/// Translate a TraceQL search query into SQL over the `traces` table. Returns
-/// one row per matching span (the handler groups by trace). Parses with the
-/// grammar parser ([`super::traceql`]) and lowers the supported subset; spanset
-/// operators between sets (`&& || >> <<`) and unsupported scopes return a clear
-/// error rather than wrong SQL (FR4).
-pub fn translate_search(
-    traceql: &str,
-    start_ns: i64,
-    end_ns: i64,
-    limit: u32,
-) -> Result<String, String> {
-    let mut preds: Vec<String> = Vec::new();
-    match super::traceql::parse(traceql).map_err(|e| e.to_string())? {
-        // `{}` matches everything (time-bounded).
-        tast::SpansetExpr::Filter(None) => {}
-        tast::SpansetExpr::Filter(Some(fe)) => collect_preds(&fe, &mut preds)?,
-        tast::SpansetExpr::Op { .. } => {
-            return Err(
-                "spanset operators (&& || >> <<) between sets are not yet supported in search"
-                    .to_string(),
-            );
-        }
-    }
-    preds.push(format!(
-        "CAST(start_time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-    Ok(format!(
-        "SELECT encode(trace_id, 'hex') AS trace_hex, encode(span_id, 'hex') AS span_hex, \
-         service_name, name, start_time_unix_nano, duration_nanos, parent_span_id, attributes, \
-         status_code \
-         FROM traces WHERE {} ORDER BY start_time_unix_nano DESC LIMIT {}",
-        preds.join(" AND "),
-        limit.saturating_mul(64) // headroom: several spans per trace
-    ))
-}
-
-/// Validate a hex trace-id and render the `WHERE trace_id = X'..'` lookup SQL.
-/// Tempo strips leading zeros from trace ids (so a search hit may be <32 hex
-/// chars); left-pad back to 32 rather than rejecting odd-length, else Grafana's
-/// "open trace from search" link breaks for any id with a leading zero.
-pub fn trace_by_id_sql(trace_id_hex: &str) -> Result<String, String> {
-    let mut hex = trace_id_hex.trim().to_lowercase();
-    if hex.is_empty() || hex.len() > 32 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("trace id must be a hex string of at most 32 chars".to_string());
-    }
-    if hex.len() < 32 {
-        hex = format!("{hex:0>32}"); // zero-pad to the full 16-byte id
-    }
-    // Span ids/parents and the trace id as base64 (OTLP proto-JSON wire form);
-    // kind / status_code / scope_name for the OTLP span shape.
-    Ok(format!(
-        "SELECT encode(trace_id, 'base64') AS trace_b64, encode(span_id, 'base64') AS span_b64, \
-         service_name, name, start_time_unix_nano, duration_nanos, status_code, \
-         attributes, resource_attributes, encode(parent_span_id, 'base64') AS parent_b64, \
-         kind, scope_name \
-         FROM traces WHERE trace_id = arrow_cast(X'{hex}', 'FixedSizeBinary(16)') \
-         ORDER BY start_time_unix_nano"
-    ))
-}
-
-/// `SELECT DISTINCT` SQL for `tag/:tag/values`.
-pub fn tag_values_sql(tag: &str) -> String {
-    let lhs = traceql_lhs(tag);
-    format!(
-        "SELECT DISTINCT CAST({lhs} AS VARCHAR) AS v FROM traces WHERE {lhs} IS NOT NULL ORDER BY v"
-    )
 }
 
 /// The intrinsic tag names always available (attribute-key discovery over JSON
@@ -836,71 +648,6 @@ pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate:
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_traceql_top_level_columns() {
-        let sql = translate_search(
-            r#"{resource.service.name="client" && name="GET /x"}"#,
-            0,
-            100,
-            20,
-        )
-        .unwrap();
-        assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
-        assert!(sql.contains("name = 'GET /x'"), "sql: {sql}");
-        assert!(sql.contains("encode(trace_id, 'hex')"), "sql: {sql}");
-    }
-
-    #[test]
-    fn test_traceql_double_backslash_unescaped() {
-        // Wire form carries Go-style escapes: `name="a\\b"` must collapse to
-        // the literal value `a\b` (same regression as the LogQL log panels).
-        let sql = translate_search(r#"{name="a\\b"}"#, 0, 100, 20).unwrap();
-        assert!(sql.contains(r#"name = 'a\b'"#), "sql: {sql}");
-    }
-
-    #[test]
-    fn test_traceql_span_attr_json_extract() {
-        let sql = translate_search(r#"{span.http.method="GET" && .code!="0"}"#, 0, 1, 5).unwrap();
-        assert!(
-            sql.contains("json_get_str(attributes, 'http.method') = 'GET'"),
-            "sql: {sql}"
-        );
-        assert!(
-            sql.contains("json_get_str(attributes, 'code') <> '0'"),
-            "sql: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_traceql_comparison_and_regex_and_or() {
-        // Numeric duration comparison → duration_nanos in nanoseconds.
-        let s = translate_search(r#"{ duration > 1.5s }"#, 0, 1, 5).unwrap();
-        assert!(s.contains("duration_nanos > 1500000000"), "sql: {s}");
-        // Regex on an intrinsic, anchored.
-        let r = translate_search(r#"{ name =~ "GET.*" }"#, 0, 1, 5).unwrap();
-        assert!(r.contains("regexp_like(COALESCE(name, ''), '^(?:GET.*)$')"), "sql: {r}");
-        // `||` inside a set → a single parenthesised OR predicate.
-        let o = translate_search(r#"{ name="a" || name="b" }"#, 0, 1, 5).unwrap();
-        assert!(o.contains("(name = 'a' OR name = 'b')"), "sql: {o}");
-        // numeric attribute comparison casts the JSON text to double.
-        let n = translate_search(r#"{ span.http.status_code >= 500 }"#, 0, 1, 5).unwrap();
-        assert!(
-            n.contains("CAST(json_get_str(attributes, 'http.status_code') AS DOUBLE) >= 500"),
-            "sql: {n}"
-        );
-    }
-
-    #[test]
-    fn test_traceql_unsupported_lowering_errors() {
-        // Spanset structural operators between sets are not lowered.
-        assert!(translate_search(r#"{ name="a" } >> { name="b" }"#, 0, 1, 5).is_err());
-        // event/parent scopes are parsed but not lowered.
-        assert!(translate_search(r#"{ event.exception="x" }"#, 0, 1, 5).is_err());
-        // `{}` still matches all (time-bounded), no selector predicate.
-        let empty = translate_search("{}", 0, 1, 5).unwrap();
-        assert!(empty.contains("start_time_unix_nano"), "sql: {empty}");
-    }
-
     #[tokio::test]
     async fn test_tags_include_stored_attribute_keys() {
         let engine = trace_engine().await;
@@ -933,36 +680,6 @@ mod tests {
         for expected in ["name", "http.method", "db.system", "host"] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }
-    }
-
-    #[test]
-    fn test_trace_by_id_hex_to_binary_literal() {
-        let sql = trace_by_id_sql("3bc59070ba6c121cad3d88a3f889b303").unwrap();
-        assert!(
-            sql.contains("X'3bc59070ba6c121cad3d88a3f889b303'"),
-            "binary literal missing; sql: {sql}"
-        );
-        assert!(sql.contains("FixedSizeBinary(16)"), "sql: {sql}");
-        // base64-encoded ids for the OTLP proto-JSON span shape (C-T2)
-        assert!(sql.contains("encode(trace_id, 'base64')"), "sql: {sql}");
-        assert!(sql.contains("encode(parent_span_id, 'base64')"), "sql: {sql}");
-        // C-T1: Tempo strips leading zeros; a short/odd id is zero-padded to 32,
-        // not rejected (else open-trace-from-search breaks).
-        let padded = trace_by_id_sql("133ff683fa8f734deec615053457a59").unwrap(); // 31 chars
-        assert!(padded.contains("X'0133ff683fa8f734deec615053457a59'"), "zero-padded: {padded}");
-        assert!(trace_by_id_sql("abc").is_ok(), "odd-length id is padded, not rejected");
-        // non-hex / too-long still rejected
-        assert!(trace_by_id_sql("xyz").is_err());
-        assert!(trace_by_id_sql(&"a".repeat(33)).is_err());
-    }
-
-    #[test]
-    fn test_tag_values_distinct() {
-        assert!(tag_values_sql("name").contains("SELECT DISTINCT"));
-        assert!(tag_values_sql("name").contains("FROM traces"));
-        assert!(
-            tag_values_sql("span.http.method").contains("json_get_str(attributes, 'http.method')")
-        );
     }
 
     #[test]

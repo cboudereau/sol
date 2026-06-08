@@ -13,88 +13,15 @@ use std::time::Duration;
 
 use promql_parser::label::{MatchOp, Matcher};
 use promql_parser::parser::{
-    self, AggregateExpr, BinModifier, Call, Expr, LabelModifier, VectorMatchCardinality,
+    self, AggregateExpr, BinModifier, Expr, LabelModifier, VectorMatchCardinality,
     VectorSelector, token,
 };
 use serde::{Deserialize, Serialize};
-
-fn esc(v: &str) -> String {
-    v.replace('\'', "''")
-}
-
-/// Left-hand side for a label: promoted `service_name` is a column; everything
-/// else is extracted from the JSON `attributes` column via `prom_attr`, which
-/// matches the Prometheus-normalized name against the raw OTLP key.
-fn label_lhs(key: &str) -> String {
-    if key == "service_name" {
-        "service_name".to_string()
-    } else {
-        format!("prom_attr(attributes, '{}')", esc(key))
-    }
-}
 
 fn sql_ident(key: &str) -> String {
     key.chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect()
-}
-
-/// Resolve a metric selector to `(value_expr, name_predicate)`, synthesizing the
-/// classic histogram component series from the OTLP histogram columns:
-/// `<base>_count` → the `count` column, `<base>_sum` → the `sum` column (both
-/// guarded to histogram rows), anything else → the gauge/counter value. The
-/// name predicate also matches a real metric named exactly `<name>`.
-fn metric_value_and_match(name: &str) -> (String, String) {
-    let exact = format!(
-        "prom_metric_name(name, unit, is_monotonic) = '{}'",
-        esc(name)
-    );
-    let hist = |base: &str| {
-        format!(
-            "prom_metric_name(name, unit, is_monotonic) = '{}' AND bucket_counts IS NOT NULL",
-            esc(base)
-        )
-    };
-    if let Some(base) = name.strip_suffix("_count") {
-        (
-            "COALESCE(double_value, CAST(int_value AS DOUBLE), CAST(\"count\" AS DOUBLE))"
-                .to_string(),
-            format!("({exact} OR ({}))", hist(base)),
-        )
-    } else if let Some(base) = name.strip_suffix("_sum") {
-        (
-            "COALESCE(double_value, \"sum\")".to_string(),
-            format!("({exact} OR ({}))", hist(base)),
-        )
-    } else {
-        (
-            "COALESCE(double_value, CAST(int_value AS DOUBLE))".to_string(),
-            exact,
-        )
-    }
-}
-
-fn matcher_pred(m: &Matcher) -> Option<String> {
-    if m.name == "__name__" {
-        return None;
-    }
-    let lhs = label_lhs(&m.name);
-    // Prometheus matcher semantics: an absent label behaves like the empty
-    // string. So `=""` matches absent/empty; `!="v"` matches absent; regex
-    // matchers test the value with absent coerced to '' (so `=~".*"` matches
-    // everything, including series lacking the label).
-    let v = esc(&m.value);
-    Some(match &m.op {
-        MatchOp::Equal if m.value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
-        MatchOp::Equal => format!("{lhs} = '{v}'"),
-        MatchOp::NotEqual if m.value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
-        MatchOp::NotEqual => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
-        // Prometheus fully anchors regex matchers (`^(?:RE)$`); DataFusion
-        // regexp_like is unanchored (substring), so anchor explicitly or
-        // `pod=~"web"` would wrongly match `web-1`.
-        MatchOp::Re(_) => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-        MatchOp::NotRe(_) => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-    })
 }
 
 // --- PromQL Expr/DataFrame lowering (expr-lowering migration) ---
@@ -129,7 +56,7 @@ fn matcher_expr(m: &Matcher) -> Option<datafusion::logical_expr::Expr> {
     Some(cmp(label_lhs_expr(&m.name), kind, &m.value, false))
 }
 
-/// Metric-name predicate `Expr` mirroring [`metric_value_and_match`]: the exact
+/// Metric-name predicate `Expr`: the exact
 /// normalized name, plus the histogram `_count`/`_sum` synthesis on bucket rows.
 fn name_pred_expr(name: &str) -> datafusion::logical_expr::Expr {
     use datafusion::prelude::{col, lit};
@@ -172,7 +99,7 @@ pub async fn build_series(
         .distinct()?)
 }
 
-/// Numeric value `Expr` mirroring [`metric_value_and_match`]'s value part.
+/// Numeric value `Expr`: the gauge/counter value, or the histogram count/sum.
 fn metric_value_expr(name: &str) -> datafusion::logical_expr::Expr {
     use datafusion::arrow::datatypes::DataType::Float64;
     use datafusion::functions::expr_fn::coalesce;
@@ -279,9 +206,8 @@ async fn lower_range_aggregate_df(
     }
 }
 
-/// Lower a range PromQL expression to a `DataFrame` (the `Expr` twin of
-/// [`lower_range`]): rate/`*_over_time` via [`super::plan::frame`], `<agg> by`
-/// via group-by, bare selectors as raw samples.
+/// Lower a range PromQL expression to a `DataFrame`: rate/`*_over_time` via
+/// [`super::plan::frame`], `<agg> by` via group-by, bare selectors as raw samples.
 async fn lower_range_df(
     engine: &super::QueryEngine,
     expr: &Expr,
@@ -391,8 +317,8 @@ async fn lower_aggregate_instant_df(
     }
 }
 
-/// Lower an instant PromQL expression to a `DataFrame` (the `Expr` twin of
-/// [`lower`]): latest-per-series selectors and `<agg> by` aggregations.
+/// Lower an instant PromQL expression to a `DataFrame`: latest-per-series
+/// selectors and `<agg> by` aggregations.
 async fn lower_instant_df(
     engine: &super::QueryEngine,
     expr: &Expr,
@@ -406,37 +332,6 @@ async fn lower_instant_df(
     }
 }
 
-/// Subquery selecting, per series, the latest sample at/before `time_ns`
-/// (`rn = 1`). Value is the gauge/sum numeric value.
-fn latest_per_series(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
-    let name = vs
-        .name
-        .as_deref()
-        .ok_or("metric selector requires a name")?;
-    let (value_expr, name_pred) = metric_value_and_match(name);
-    let mut preds = vec![name_pred];
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_pred(m) {
-            preds.push(p);
-        }
-    }
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) <= {time_ns}"));
-    Ok(format!(
-        "SELECT prom_metric_name(name, unit, is_monotonic) AS prom_name, name, service_name, attributes, \
-         {value_expr} AS v, time_unix_nano, \
-         row_number() OVER (PARTITION BY name, attributes ORDER BY time_unix_nano DESC) AS rn \
-         FROM metrics WHERE {}",
-        preds.join(" AND ")
-    ))
-}
-
-fn latest_selected(vs: &VectorSelector, time_ns: i64) -> Result<String, String> {
-    Ok(format!(
-        "SELECT prom_name, service_name, attributes, v, time_unix_nano FROM ({}) WHERE rn = 1",
-        latest_per_series(vs, time_ns)?
-    ))
-}
-
 fn agg_name(op: token::TokenType) -> Result<&'static str, String> {
     match op.id() {
         token::T_SUM => Ok("sum"),
@@ -446,114 +341,6 @@ fn agg_name(op: token::TokenType) -> Result<&'static str, String> {
         token::T_COUNT => Ok("count"),
         _ => Err("unsupported aggregation operator (instant: sum/max/min/avg/count)".to_string()),
     }
-}
-
-fn lower_aggregate(agg: &AggregateExpr, time_ns: i64) -> Result<String, String> {
-    let vs = match agg.expr.as_ref() {
-        Expr::VectorSelector(vs) => vs,
-        Expr::Paren(p) => match p.expr.as_ref() {
-            Expr::VectorSelector(vs) => vs,
-            _ => return Err("aggregate inner must be a vector selector (instant)".to_string()),
-        },
-        _ => {
-            return Err(
-                "aggregate inner must be a vector selector (rate etc. is task 5)".to_string(),
-            );
-        }
-    };
-    let op = agg_name(agg.op)?;
-    let by = match &agg.modifier {
-        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        Some(LabelModifier::Exclude(_)) => {
-            return Err("`without (...)` aggregation not supported (v1)".to_string());
-        }
-        None => Vec::new(), // bare `sum(...)` → aggregate across all series
-    };
-    let inner = latest_selected(vs, time_ns)?;
-    if by.is_empty() {
-        return Ok(format!("SELECT {op}(v) AS v FROM ({inner})"));
-    }
-    let select_cols: Vec<String> = by
-        .iter()
-        .map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k)))
-        .collect();
-    let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
-    Ok(format!(
-        "SELECT {}, {}(v) AS v FROM ({}) GROUP BY {}",
-        select_cols.join(", "),
-        op,
-        inner,
-        group_refs.join(", ")
-    ))
-}
-
-/// Translate an instant PromQL query to SQL over the `metrics` table.
-pub fn translate_instant(query: &str, time_ns: i64) -> Result<String, String> {
-    lower(&parser::parse(query)?, time_ns)
-}
-
-fn lower(expr: &Expr, time_ns: i64) -> Result<String, String> {
-    match expr {
-        Expr::VectorSelector(vs) => latest_selected(vs, time_ns),
-        Expr::Paren(p) => lower(&p.expr, time_ns),
-        Expr::Aggregate(agg) => lower_aggregate(agg, time_ns),
-        Expr::Call(_) => Err(
-            "unsupported PromQL function for instant query (range functions are task 5)"
-                .to_string(),
-        ),
-        Expr::MatrixSelector(_) | Expr::Subquery(_) => {
-            Err("range/subquery selectors require query_range (task 5)".to_string())
-        }
-        Expr::Binary(_) => Err("binary operators not yet supported (v1)".to_string()),
-        Expr::Unary(_) => Err("unary operators not yet supported (v1)".to_string()),
-        _ => Err("unsupported PromQL expression".to_string()),
-    }
-}
-
-/// `SELECT DISTINCT` SQL for `label/:name/values`.
-pub fn label_values_sql(label: &str) -> String {
-    if label == "__name__" {
-        // Metric-name discovery (Grafana's metric browser): the normalized
-        // base names plus the synthetic `_bucket`/`_count`/`_sum` series
-        // exposed for histogram metrics.
-        return "SELECT DISTINCT v FROM ( \
-                SELECT prom_metric_name(name, unit, is_monotonic) AS v FROM metrics \
-                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_bucket' FROM metrics WHERE bucket_counts IS NOT NULL \
-                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_count' FROM metrics WHERE bucket_counts IS NOT NULL \
-                UNION ALL SELECT prom_metric_name(name, unit, is_monotonic) || '_sum' FROM metrics WHERE bucket_counts IS NOT NULL \
-            ) AS t WHERE v IS NOT NULL ORDER BY v"
-            .to_string();
-    }
-    let lhs = label_lhs(label);
-    format!("SELECT DISTINCT {lhs} AS v FROM metrics WHERE {lhs} IS NOT NULL ORDER BY v")
-}
-
-/// `SELECT DISTINCT` SQL for `series`, optionally filtered by a `match[]`
-/// selector. Emits the Prometheus-normalized `__name__` (not the raw dotted
-/// OTLP name) and applies the selector's matchers (C-P1/C-P2).
-pub fn series_sql(matcher: Option<&str>) -> Result<String, String> {
-    let mut preds: Vec<String> = Vec::new();
-    if let Some(sel) = matcher.map(str::trim).filter(|s| !s.is_empty()) {
-        let expr = parser::parse(sel)?;
-        let vs = match &expr {
-            Expr::VectorSelector(vs) => vs,
-            _ => return Err("series match[] must be a metric selector".to_string()),
-        };
-        if let Some(name) = vs.name.as_deref() {
-            preds.push(metric_value_and_match(name).1);
-        }
-        for m in &vs.matchers.matchers {
-            if let Some(p) = matcher_pred(m) {
-                preds.push(p);
-            }
-        }
-    }
-    let where_clause =
-        if preds.is_empty() { String::new() } else { format!(" WHERE {}", preds.join(" AND ")) };
-    Ok(format!(
-        "SELECT DISTINCT prom_metric_name(name, unit, is_monotonic) AS name, service_name \
-         FROM metrics{where_clause}"
-    ))
 }
 
 /// Serialize a unix-seconds timestamp as an integer JSON number when it has no
@@ -903,98 +690,6 @@ pub async fn handle_series(
 
 // --- Range queries (query_range → resultType=matrix) ---
 
-/// Base per-sample selection over `metrics` for a range query: exposes the
-/// grouping columns plus a numeric `v` (gauge/counter value) and the time.
-fn metric_base(
-    vs: &VectorSelector,
-    start_ns: i64,
-    end_ns: i64,
-    table: &str,
-) -> Result<String, String> {
-    let name = vs
-        .name
-        .as_deref()
-        .ok_or("metric selector requires a name")?;
-    let (value_expr, name_pred) = metric_value_and_match(name);
-    let mut preds = vec![name_pred];
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_pred(m) {
-            preds.push(p);
-        }
-    }
-    preds.push(format!(
-        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-    Ok(format!(
-        "SELECT prom_metric_name(name, unit, is_monotonic) AS prom_name, name, \
-         service_name, attributes, time_unix_nano, \
-         {value_expr} AS v FROM {table} WHERE {}",
-        preds.join(" AND ")
-    ))
-}
-
-/// `rate(m[d])` — per-sample delta via `LAG` over the series window. Counter
-/// resets (`v < prev_v`) use the current value as the delta (simplified, per
-/// the PromQL ADR). The range `[d]` bounds the outer time filter only.
-fn rate_sql(
-    vs: &VectorSelector,
-    start_ns: i64,
-    end_ns: i64,
-    table: &str,
-) -> Result<String, String> {
-    let base = metric_base(vs, start_ns, end_ns, table)?;
-    Ok(format!(
-        "WITH ordered AS (SELECT name, service_name, attributes, time_unix_nano, v, \
-         LAG(v) OVER w AS prev_v, LAG(CAST(time_unix_nano AS BIGINT)) OVER w AS prev_t \
-         FROM ({base}) WINDOW w AS (PARTITION BY name, service_name, attributes ORDER BY time_unix_nano)) \
-         SELECT service_name, attributes, time_unix_nano, \
-         CASE WHEN v >= prev_v THEN (v - prev_v) ELSE v END \
-         / ((CAST(time_unix_nano AS BIGINT) - prev_t) / 1e9) AS v \
-         FROM ordered WHERE prev_t IS NOT NULL \
-         AND CAST(time_unix_nano AS BIGINT) <> prev_t"
-    ))
-}
-
-/// `<agg>_over_time(m[d])` — a sliding window aggregate over the last `d`.
-fn over_time_sql(
-    vs: &VectorSelector,
-    range: Duration,
-    start_ns: i64,
-    end_ns: i64,
-    agg: &str,
-    table: &str,
-) -> Result<String, String> {
-    let base = metric_base(vs, start_ns, end_ns, table)?;
-    let range_ns = i64::try_from(range.as_nanos()).unwrap_or(i64::MAX);
-    Ok(format!(
-        "SELECT service_name, attributes, time_unix_nano, \
-         {agg}(v) OVER (PARTITION BY name, service_name, attributes \
-         ORDER BY CAST(time_unix_nano AS BIGINT) \
-         RANGE BETWEEN {range_ns} PRECEDING AND CURRENT ROW) AS v FROM ({base})"
-    ))
-}
-
-fn lower_call(c: &Call, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
-    let (vs, range) = match c.args.args.first().map(|b| b.as_ref()) {
-        Some(Expr::MatrixSelector(ms)) => (&ms.vs, ms.range),
-        _ => {
-            return Err(format!(
-                "{}() expects a range-vector argument like m[5m]",
-                c.func.name
-            ));
-        }
-    };
-    match c.func.name {
-        "rate" | "irate" | "increase" => rate_sql(vs, start_ns, end_ns, table),
-        "max_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MAX", table),
-        "min_over_time" => over_time_sql(vs, range, start_ns, end_ns, "MIN", table),
-        "avg_over_time" => over_time_sql(vs, range, start_ns, end_ns, "AVG", table),
-        "sum_over_time" => over_time_sql(vs, range, start_ns, end_ns, "SUM", table),
-        "count_over_time" => over_time_sql(vs, range, start_ns, end_ns, "COUNT", table),
-        other => Err(format!("unsupported range function: {other}() (v1)")),
-    }
-}
-
 fn as_count(expr: &Expr) -> Result<i64, String> {
     match expr {
         // Prometheus requires an integer scalar here; reject non-integral or
@@ -1012,96 +707,6 @@ fn as_count(expr: &Expr) -> Result<i64, String> {
         }
         _ => Err("topk/bottomk requires a scalar count parameter".to_string()),
     }
-}
-
-fn lower_range_aggregate(
-    agg: &AggregateExpr,
-    start_ns: i64,
-    end_ns: i64,
-    table: &str,
-) -> Result<String, String> {
-    // topk/bottomk: order the inner series by value and limit.
-    if agg.op.id() == token::T_TOPK || agg.op.id() == token::T_BOTTOMK {
-        let n = as_count(
-            agg.param
-                .as_deref()
-                .ok_or("topk/bottomk requires a count")?,
-        )?;
-        let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
-        let dir = if agg.op.id() == token::T_TOPK {
-            "DESC"
-        } else {
-            "ASC"
-        };
-        return Ok(format!(
-            "SELECT * FROM ({inner}) ORDER BY v {dir} LIMIT {n}"
-        ));
-    }
-    // sum/max/min/avg/count [by (...)] over a range expression.
-    let op = agg_name(agg.op)?;
-    let by = match &agg.modifier {
-        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        Some(LabelModifier::Exclude(_)) => {
-            return Err("`without (...)` aggregation not supported (v1)".to_string());
-        }
-        None => Vec::new(), // bare `sum(rate(...))` → aggregate across all series
-    };
-    let inner = lower_range(agg.expr.as_ref(), start_ns, end_ns, table)?;
-    if by.is_empty() {
-        return Ok(format!(
-            "SELECT time_unix_nano, {op}(v) AS v FROM ({inner}) GROUP BY time_unix_nano"
-        ));
-    }
-    let select_cols: Vec<String> = by
-        .iter()
-        .map(|k| format!("{} AS {}", label_lhs(k), sql_ident(k)))
-        .collect();
-    let group_refs: Vec<String> = by.iter().map(|k| label_lhs(k)).collect();
-    Ok(format!(
-        "SELECT {}, time_unix_nano, {}(v) AS v FROM ({}) GROUP BY {}, time_unix_nano",
-        select_cols.join(", "),
-        op,
-        inner,
-        group_refs.join(", ")
-    ))
-}
-
-fn lower_range(expr: &Expr, start_ns: i64, end_ns: i64, table: &str) -> Result<String, String> {
-    match expr {
-        Expr::Call(c) => lower_call(c, start_ns, end_ns, table),
-        Expr::Paren(p) => lower_range(&p.expr, start_ns, end_ns, table),
-        Expr::Aggregate(agg) => lower_range_aggregate(agg, start_ns, end_ns, table),
-        // A bare instant-vector selector in query_range (e.g. Grafana Explore):
-        // Prometheus step-evaluates it, returning the series' raw samples over
-        // the range as a matrix. Emit the time-ordered base samples; the handler
-        // groups them per series (LabelCols → normalized __name__ + labels).
-        Expr::VectorSelector(vs) => Ok(format!(
-            "SELECT * FROM ({}) ORDER BY time_unix_nano",
-            metric_base(vs, start_ns, end_ns, table)?
-        )),
-        Expr::Binary(_) | Expr::Unary(_) => {
-            Err("binary/unary operators not yet supported for query_range (v1)".to_string())
-        }
-        _ => Err("unsupported PromQL expression for query_range (v1)".to_string()),
-    }
-}
-
-/// Translate a range PromQL query to SQL over the `metrics` table. The `step`
-/// is applied by the caller (no SQL-side resampling in v1).
-pub fn translate_range(query: &str, start_ns: i64, end_ns: i64) -> Result<String, String> {
-    translate_range_on(query, start_ns, end_ns, "metrics")
-}
-
-/// Like [`translate_range`] but targeting an explicit table — the query-frontend
-/// passes a rollup tier table (`metrics_5m`/`metrics_1h`/`metrics_1d`) for coarse
-/// long-range queries (FR6).
-pub fn translate_range_on(
-    query: &str,
-    start_ns: i64,
-    end_ns: i64,
-    table: &str,
-) -> Result<String, String> {
-    lower_range(&parser::parse(query)?, start_ns, end_ns, table)
 }
 
 /// Prometheus `query_range` response envelope (`resultType=matrix`).
@@ -1223,8 +828,8 @@ fn group_range_series(
 /// A recognised classic-histogram quantile query (owned, no AST borrow).
 struct HistSpec {
     phi: f64,
-    base: String,       // normalized base name (without `_bucket`)
-    preds: Vec<String>, // matcher predicates (excluding `le`)
+    base: String,                              // normalized base name (without `_bucket`)
+    preds: Vec<datafusion::logical_expr::Expr>, // matcher predicates (excluding `le`)
     group_by: Vec<String>,
     topk: Option<(i64, bool)>, // (n, is_topk) — bottomk when false
 }
@@ -1277,7 +882,7 @@ fn detect_hist_quantile(expr: &Expr) -> Option<HistSpec> {
                 .matchers
                 .matchers
                 .iter()
-                .filter_map(matcher_pred)
+                .filter_map(matcher_expr)
                 .collect();
             Some(HistSpec {
                 phi,
@@ -1304,24 +909,20 @@ async fn handle_hist_quantile_range(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    let mut preds = vec![format!(
-        "prom_metric_name(name, unit, is_monotonic) = '{}'",
-        esc(&spec.base)
-    )];
-    preds.extend(spec.preds.iter().cloned());
-    preds.push(format!(
-        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-    let group_cols: String = spec
-        .group_by
-        .iter()
-        .map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g)))
-        .collect();
-    let sql = format!(
-        "SELECT time_unix_nano, bucket_counts, explicit_bounds{group_cols} FROM metrics WHERE {}",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    use datafusion::prelude::{col, lit};
+    let mut df = engine
+        .table("metrics")
+        .await?
+        .filter(prom_name_expr().eq(lit(spec.base.clone())))?;
+    for p in &spec.preds {
+        df = df.filter(p.clone())?;
+    }
+    df = df.filter(prom_time_between(start_ns, end_ns))?;
+    let mut proj = vec![col("time_unix_nano"), col("bucket_counts"), col("explicit_bounds")];
+    for g in &spec.group_by {
+        proj.push(label_lhs_expr(g).alias(sql_ident(g)));
+    }
+    let batches = engine.collect(df.select(proj)?).await?;
 
     // group key → (label map, ts → summed bucket counts, bounds)
     type Group = (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>, Vec<f64>);
@@ -1413,7 +1014,7 @@ async fn handle_hist_quantile_range(
 /// A recognised `_bucket`-by-`le` heatmap query.
 struct BucketSpec {
     base: String,
-    preds: Vec<String>,
+    preds: Vec<datafusion::logical_expr::Expr>,
     group_by: Vec<String>, // extra grouping labels (the `by` set minus `le`)
 }
 
@@ -1439,7 +1040,7 @@ fn detect_bucket_heatmap(expr: &Expr) -> Option<BucketSpec> {
         .matchers
         .matchers
         .iter()
-        .filter_map(matcher_pred)
+        .filter_map(matcher_expr)
         .collect();
     let group_by: Vec<String> = by.into_iter().filter(|l| l != "le").collect();
     Some(BucketSpec {
@@ -1463,27 +1064,21 @@ async fn handle_bucket_heatmap(
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    let mut preds = vec![
-        format!(
-            "prom_metric_name(name, unit, is_monotonic) = '{}'",
-            esc(&spec.base)
-        ),
-        "bucket_counts IS NOT NULL".to_string(),
-    ];
-    preds.extend(spec.preds.iter().cloned());
-    preds.push(format!(
-        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-    let group_cols: String = spec
-        .group_by
-        .iter()
-        .map(|g| format!(", {} AS {}", label_lhs(g), sql_ident(g)))
-        .collect();
-    let sql = format!(
-        "SELECT time_unix_nano, bucket_counts, explicit_bounds{group_cols} FROM metrics WHERE {}",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    use datafusion::prelude::{col, lit};
+    let mut df = engine
+        .table("metrics")
+        .await?
+        .filter(prom_name_expr().eq(lit(spec.base.clone())))?
+        .filter(col("bucket_counts").is_not_null())?;
+    for p in &spec.preds {
+        df = df.filter(p.clone())?;
+    }
+    df = df.filter(prom_time_between(start_ns, end_ns))?;
+    let mut proj = vec![col("time_unix_nano"), col("bucket_counts"), col("explicit_bounds")];
+    for g in &spec.group_by {
+        proj.push(label_lhs_expr(g).alias(sql_ident(g)));
+    }
+    let batches = engine.collect(df.select(proj)?).await?;
 
     // (G-values + le) → ts → cumulative count
     let mut series: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<i64, f64>)> =
@@ -1828,25 +1423,41 @@ async fn handle_histogram(
         .name
         .as_deref()
         .ok_or_else(|| to_err("histogram selector requires a name".into()))?;
-    let mut preds = vec![format!(
-        "prom_metric_name(name, unit, is_monotonic) = '{}'",
-        esc(name)
-    )];
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast as df_cast;
+    use datafusion::prelude::{col, lit};
+    let mut df = engine
+        .table("metrics")
+        .await?
+        .filter(prom_name_expr().eq(lit(name.to_string())))?;
     for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_pred(m) {
-            preds.push(p);
+        if let Some(p) = matcher_expr(m) {
+            df = df.filter(p)?;
         }
     }
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) <= {time_ns}"));
+    df = df.filter(df_cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
+    let base = df.select(vec![
+        col("name"),
+        col("service_name"),
+        col("attributes"),
+        col("bucket_counts"),
+        col("explicit_bounds"),
+        col("time_unix_nano"),
+    ])?;
     // Latest histogram row per series at/before the eval time.
-    let sql = format!(
-        "SELECT service_name, attributes, bucket_counts, explicit_bounds FROM (\
-         SELECT service_name, attributes, bucket_counts, explicit_bounds, \
-         row_number() OVER (PARTITION BY name, service_name, attributes ORDER BY time_unix_nano DESC) AS rn \
-         FROM metrics WHERE {}) WHERE rn = 1",
-        preds.join(" AND ")
-    );
-    let batches = engine.sql(&sql).await?;
+    let latest = super::plan::frame::latest_per_series(
+        base,
+        vec![col("name"), col("service_name"), col("attributes")],
+        "time_unix_nano",
+    )?;
+    let batches = engine
+        .collect(latest.select(vec![
+            col("service_name"),
+            col("attributes"),
+            col("bucket_counts"),
+            col("explicit_bounds"),
+        ])?)
+        .await?;
     #[allow(clippy::cast_precision_loss)]
     let time_s = time_ns as f64 / 1_000_000_000.0;
 
@@ -2342,79 +1953,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_label_values_sql_metric_name_discovery() {
-        // `__name__` lists normalized metric names plus the synthetic
-        // histogram series; other labels keep the plain DISTINCT path.
-        let sql = label_values_sql("__name__");
-        assert!(
-            sql.contains("prom_metric_name(name, unit, is_monotonic)"),
-            "sql: {sql}"
-        );
-        for suffix in ["'_bucket'", "'_count'", "'_sum'"] {
-            assert!(sql.contains(suffix), "missing {suffix}: {sql}");
-        }
-        assert!(sql.contains("bucket_counts IS NOT NULL"), "sql: {sql}");
-
-        let plain = label_values_sql("service_name");
-        assert!(
-            plain.contains("SELECT DISTINCT service_name AS v FROM metrics"),
-            "sql: {plain}"
-        );
-    }
-
-    #[test]
-    fn test_promql_instant_selector_to_sql() {
-        let sql = translate_instant(r#"node_memory_total_bytes{host="h1"}"#, 1000).unwrap();
-        assert!(
-            sql.contains("prom_metric_name(name, unit, is_monotonic) = 'node_memory_total_bytes'"),
-            "sql: {sql}"
-        );
-        assert!(
-            sql.contains("prom_attr(attributes, 'host') = 'h1'"),
-            "sql: {sql}"
-        );
-        assert!(sql.contains("CAST(time_unix_nano AS BIGINT) <= 1000"));
-        assert!(sql.contains("WHERE rn = 1"));
-    }
-
-    #[test]
-    fn test_promql_sum_by_label_groups_on_json_extract() {
-        let sql =
-            translate_instant(r#"sum by (le) (http_bucket{service_name="client"})"#, 5).unwrap();
-        assert!(sql.contains("sum(v) AS v"), "sql: {sql}");
-        assert!(sql.contains("prom_attr(attributes, 'le')"), "sql: {sql}");
-        assert!(
-            sql.contains("GROUP BY prom_attr(attributes, 'le')"),
-            "sql: {sql}"
-        );
-        assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
-    }
-
-    #[test]
-    fn test_promql_unsupported_fn_returns_error() {
-        assert!(translate_instant("rate(http_total[1m])", 0).is_err());
-        assert!(translate_instant("predict_linear(x[1h], 60)", 0).is_err());
-        // never panics on a parse error either
-        assert!(translate_instant("{{bad", 0).is_err());
-    }
-
-    #[test]
-    fn test_label_values_and_series_sql() {
-        assert_eq!(
-            label_values_sql("service_name"),
-            "SELECT DISTINCT service_name AS v FROM metrics WHERE service_name IS NOT NULL ORDER BY v"
-        );
-        assert!(label_values_sql("http_route").contains("prom_attr(attributes, 'http_route')"));
-        // C-P1/C-P2: normalized __name__, and match[] applied as predicates.
-        let all = series_sql(None).unwrap();
-        assert!(all.contains("prom_metric_name(name, unit, is_monotonic) AS name"), "{all}");
-        assert!(!all.contains("WHERE"), "no match[] → no filter: {all}");
-        let filtered = series_sql(Some(r#"http_total{service_name="client"}"#)).unwrap();
-        assert!(filtered.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "{filtered}");
-        assert!(filtered.contains("service_name = 'client'"), "{filtered}");
-    }
-
-    #[test]
     fn test_prom_vector_response_shape() {
         let mut m = BTreeMap::new();
         m.insert("service_name".to_string(), "client".to_string());
@@ -2425,117 +1963,6 @@ mod tests {
             json.contains(r#""value":[1700000000,"42"]"#),
             "integer seconds (Mimir parity): {json}"
         );
-    }
-
-    #[test]
-    fn test_rate_translates_to_lag_window() {
-        let sql = translate_range("rate(http_total[1m])", 0, 100).unwrap();
-        assert!(sql.contains("LAG(v) OVER w"), "sql: {sql}");
-        assert!(
-            sql.contains("PARTITION BY name, service_name, attributes ORDER BY time_unix_nano"),
-            "sql: {sql}"
-        );
-        assert!(sql.contains("WHERE prev_t IS NOT NULL"), "sql: {sql}");
-        assert!(
-            sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"),
-            "sql: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_range_targets_selected_tier_table() {
-        // FR6: the frontend routes coarse queries to a rollup tier table.
-        let tier = translate_range_on("rate(http_total[1m])", 0, 100, "metrics_1h").unwrap();
-        assert!(tier.contains("FROM metrics_1h WHERE"), "sql: {tier}");
-        // the default still targets raw `metrics`
-        let raw = translate_range("rate(http_total[1m])", 0, 100).unwrap();
-        assert!(raw.contains("FROM metrics WHERE"), "sql: {raw}");
-        assert!(!raw.contains("metrics_1h"), "sql: {raw}");
-    }
-
-    #[test]
-    fn test_rate_counter_reset_uses_current_value() {
-        let sql = translate_range("rate(http_total[1m])", 0, 100).unwrap();
-        assert!(
-            sql.contains("CASE WHEN v >= prev_v THEN (v - prev_v) ELSE v END"),
-            "counter-reset branch missing; sql: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_topk_orders_and_limits() {
-        let sql = translate_range("topk(3, rate(http_total[1m]))", 0, 100).unwrap();
-        assert!(sql.contains("ORDER BY v DESC LIMIT 3"), "sql: {sql}");
-        // inner rate is still present
-        assert!(sql.contains("LAG(v) OVER w"), "sql: {sql}");
-    }
-
-    #[test]
-    fn test_regex_matcher_is_anchored() {
-        // H1: Prometheus fully anchors `=~`/`!~`; unanchored would match substrings.
-        let sql = translate_instant(r#"http_total{pod=~"web"}"#, 1000).unwrap();
-        assert!(
-            sql.contains("regexp_like(COALESCE(prom_attr(attributes, 'pod'), ''), '^(?:web)$')"),
-            "regex matcher must be anchored: {sql}"
-        );
-        let neg = translate_instant(r#"http_total{pod!~"web"}"#, 1000).unwrap();
-        assert!(
-            neg.contains(
-                "NOT regexp_like(COALESCE(prom_attr(attributes, 'pod'), ''), '^(?:web)$')"
-            ),
-            "{neg}"
-        );
-    }
-
-    #[test]
-    fn test_rate_drops_duplicate_timestamps() {
-        // M2: equal consecutive timestamps would divide by zero (inf/NaN).
-        let sql = translate_range("rate(http_total[1m])", 0, 100).unwrap();
-        assert!(
-            sql.contains("CAST(time_unix_nano AS BIGINT) <> prev_t"),
-            "rate must skip zero-dt pairs: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_topk_rejects_non_integer_count() {
-        // L2: Prometheus errors on a non-integer count; we must too (not truncate).
-        assert!(translate_range("topk(2.9, rate(http_total[1m]))", 0, 100).is_err());
-        assert!(translate_range("topk(1e30, rate(http_total[1m]))", 0, 100).is_err());
-        // an integer count still works
-        assert!(translate_range("topk(3, rate(http_total[1m]))", 0, 100).is_ok());
-    }
-
-    #[test]
-    fn test_max_over_time_window() {
-        let sql = translate_range("max_over_time(cpu_usage[5m])", 0, 100).unwrap();
-        assert!(sql.contains("MAX(v) OVER"), "sql: {sql}");
-        assert!(
-            sql.contains("RANGE BETWEEN 300000000000 PRECEDING AND CURRENT ROW"),
-            "sql: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_sum_by_over_rate_groups_on_label() {
-        let sql = translate_range("sum by (service_name) (rate(http_total[1m]))", 0, 100).unwrap();
-        assert!(sql.contains("sum(v) AS v"), "sql: {sql}");
-        assert!(
-            sql.contains("GROUP BY service_name, time_unix_nano"),
-            "sql: {sql}"
-        );
-        assert!(
-            sql.contains("LAG(v) OVER w"),
-            "inner rate missing; sql: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_range_unsupported_returns_error() {
-        // A bare selector IS valid in query_range now (raw samples → matrix).
-        assert!(translate_range("http_total", 0, 1).is_ok());
-        assert!(translate_range("predict_linear(x[1h], 60)", 0, 1).is_err());
-        assert!(translate_range("{{bad", 0, 1).is_err());
     }
 
     #[test]
@@ -2610,15 +2037,6 @@ mod tests {
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
-    }
-
-    #[test]
-    fn test_bare_selector_range_is_accepted() {
-        // Grafana Explore sends a bare selector to query_range; it must translate
-        // (raw samples over the range), not error.
-        let sql = translate_range(r#"http_total{service_name="client"}"#, 0, 100).unwrap();
-        assert!(sql.contains("ORDER BY time_unix_nano"), "sql: {sql}");
-        assert!(sql.contains("prom_metric_name(name, unit, is_monotonic) = 'http_total'"), "sql: {sql}");
     }
 
     #[tokio::test]

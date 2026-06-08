@@ -156,3 +156,63 @@ impl Server {
         Ok(Server { _shutdown })
     }
 }
+
+#[cfg(test)]
+mod no_sql_invariant_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rs_files(&path, out);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// FR6 — the "no SQL in core" invariant. Outside `sql.rs` (the user-SQL
+    /// endpoint) and `#[cfg(test)]` fixtures, the query surface builds queries
+    /// through the DataFusion `Expr`/`DataFrame` API only — no `format!`-built
+    /// SQL strings. Both the read path (PromQL/LogQL/TraceQL lowering) and the
+    /// write path (compaction sort-merge, rollup downsample) were migrated, so
+    /// the only `.sql()` call left is `QueryEngine::sql` (a borrowed `&str`
+    /// passthrough for the user endpoint), never a `format!` literal.
+    #[test]
+    fn test_no_format_sql_in_core() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/query");
+        let mut files = Vec::new();
+        rs_files(&root, &mut files);
+        assert!(!files.is_empty(), "expected to scan query source files");
+
+        for f in &files {
+            if f.file_name().unwrap() == "sql.rs" {
+                continue; // user-SQL endpoint: the one sanctioned SQL surface
+            }
+            let src = fs::read_to_string(f).unwrap();
+            // Production region only — drop everything from the first test module.
+            let prod = src.split("#[cfg(test)]").next().unwrap();
+            // Strip line comments so SQL keywords in docs don't trip the gate.
+            let code: String = prod
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let rel = f.strip_prefix(&root).unwrap().display();
+
+            assert!(
+                !code.contains(".sql(&format!") && !code.contains(".sql(format!"),
+                "{rel}: executes a `format!`-built SQL string — use the DataFrame API"
+            );
+            for kw in ["SELECT ", " FROM ", " WHERE ", " GROUP BY ", " JOIN "] {
+                assert!(
+                    !code.contains(kw),
+                    "{rel}: contains a SQL-shaped string literal ({kw:?}) — \
+                     query construction must go through `Expr`/`DataFrame`"
+                );
+            }
+        }
+    }
+}

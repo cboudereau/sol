@@ -93,24 +93,27 @@ pub async fn rollup_batches(
     if batches.is_empty() || resolution_ns <= 0 {
         return Ok(batches);
     }
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::{col, lit};
     let schema = batches[0].schema();
     let ctx = SessionContext::new();
-    ctx.register_table("m", Arc::new(MemTable::try_new(schema, vec![batches])?))?;
-    // Join each row to the max timestamp of its (series, bucket) → last sample.
-    let sql = format!(
-        "SELECT m.* FROM m JOIN (\
-           SELECT name, service_name, attributes, \
-             MAX(CAST(time_unix_nano AS BIGINT)) AS maxt \
-           FROM m \
-           GROUP BY name, service_name, attributes, CAST(time_unix_nano AS BIGINT) / {res}) g \
-         ON m.name = g.name AND m.service_name = g.service_name \
-         AND COALESCE(m.attributes, '') = COALESCE(g.attributes, '') \
-         AND CAST(m.time_unix_nano AS BIGINT) = g.maxt \
-         ORDER BY m.service_name, m.time_unix_nano",
-        res = resolution_ns
-    );
-    let df = ctx.sql(&sql).await?;
-    Ok(df.collect().await?)
+    ctx.register_table("m", Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?))?;
+    // Keep the last raw sample per (series, time-bucket): partition by the series
+    // key plus the bucket index `time / resolution`, take the latest by time (P5).
+    let bucket = cast(col("time_unix_nano"), Int64) / lit(resolution_ns);
+    let latest = super::plan::frame::latest_per_series(
+        ctx.table("m").await?,
+        vec![col("name"), col("service_name"), col("attributes"), bucket],
+        "time_unix_nano",
+    )?;
+    // Project the original columns back (drop the window `rn`), preserving schema.
+    let cols: Vec<_> = schema.fields().iter().map(|f| col(f.name())).collect();
+    let out = latest.select(cols)?.sort(vec![
+        col("service_name").sort(true, false),
+        col("time_unix_nano").sort(true, false),
+    ])?;
+    Ok(out.collect().await?)
 }
 
 /// Whether `out` already reflects `sources` — true when the rollup file exists

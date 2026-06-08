@@ -248,11 +248,10 @@ impl Compactor {
         let ctx = SessionContext::new();
         let mem = MemTable::try_new(Arc::clone(&schema), vec![batches])?;
         ctx.register_table("t", Arc::new(mem))?;
-        let df = ctx
-            .sql(&format!(
-                "SELECT * FROM t ORDER BY service_name, {time_col}"
-            ))
-            .await?;
+        let df = ctx.table("t").await?.sort(vec![
+            datafusion::prelude::col("service_name").sort(true, false),
+            datafusion::prelude::col(time_col).sort(true, false),
+        ])?;
         let sorted = df.collect().await?;
         let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 

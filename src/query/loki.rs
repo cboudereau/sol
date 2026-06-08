@@ -16,12 +16,6 @@ use serde::{Deserialize, Serialize};
 /// JSON `resource_attributes` column.
 const PROMOTED_LABEL: &str = "service_name";
 
-/// SQL-escape a string literal value (double single-quotes) — guards against
-/// injection from label/line-filter values (NFR9 security).
-fn esc(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 /// Unescape a double-quoted LogQL/PromQL/TraceQL string literal (Go-style
 /// escapes). Grafana sends regex matchers with escaped backslashes
 /// (`"1\\.0\\.0"` on the wire), which must collapse to the regex `1\.0\.0` to
@@ -67,154 +61,7 @@ fn detected_level(severity_number: i32) -> &'static str {
     }
 }
 
-/// Render a label predicate. Promoted label → column; others → `prom_attr`,
-/// which matches the Prometheus-normalized name against the raw OTLP key (so
-/// `deployment_environment` hits the stored `deployment.environment`). Matcher
-/// semantics mirror Prometheus: an absent label behaves like the empty string.
-fn label_pred(key: &str, op: &str, value: &str) -> Result<String, String> {
-    let lhs = if key == PROMOTED_LABEL {
-        PROMOTED_LABEL.to_string()
-    } else {
-        format!("prom_attr(resource_attributes, '{}')", esc(key))
-    };
-    let v = esc(value);
-    Ok(match op {
-        "=" if value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
-        "=" => format!("{lhs} = '{v}'"),
-        "!=" if value.is_empty() => format!("({lhs} IS NOT NULL AND {lhs} <> '')"),
-        "!=" => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
-        // LogQL anchors label-matcher regexes (`^(?:RE)$`), unlike DataFusion's
-        // substring regexp_like. (Line filters `|~`/`!~` below stay unanchored —
-        // those are substring matches in LogQL.)
-        "=~" => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-        "!~" => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-        other => return Err(format!("unsupported label matcher op: {other}")),
-    })
-}
-
-/// Render a line filter over the `body` column.
-fn line_pred(op: &str, value: &str) -> Result<String, String> {
-    Ok(match op {
-        "|=" => format!("body LIKE '%{}%'", esc(value)),
-        "!=" => format!("body NOT LIKE '%{}%'", esc(value)),
-        "|~" => format!("regexp_like(body, '{}')", esc(value)),
-        "!~" => format!("NOT regexp_like(body, '{}')", esc(value)),
-        other => return Err(format!("unsupported line filter op: {other}")),
-    })
-}
-
 use super::logql::ast;
-
-/// SQL operator for a parsed label-matcher op.
-fn matchop_sql(op: &ast::MatchOp) -> &'static str {
-    match op {
-        ast::MatchOp::Eq => "=",
-        ast::MatchOp::Neq => "!=",
-        ast::MatchOp::Re => "=~",
-        ast::MatchOp::Nre => "!~",
-    }
-}
-
-/// Line-filter op token for a parsed line-filter op. Pattern filters (`|>`/`!>`)
-/// are parsed but not yet lowered (a later slice).
-fn lineop_sql(op: &ast::LineOp) -> Result<&'static str, String> {
-    Ok(match op {
-        ast::LineOp::Contains => "|=",
-        ast::LineOp::NotContains => "!=",
-        ast::LineOp::Re => "|~",
-        ast::LineOp::Nre => "!~",
-        ast::LineOp::Pattern | ast::LineOp::NotPattern => {
-            return Err("pattern line filters (|>/!>) are not yet supported".to_string());
-        }
-    })
-}
-
-/// LHS SQL for a label name: promoted column or `prom_attr` on resource attrs.
-fn label_lhs(name: &str) -> String {
-    if name == PROMOTED_LABEL {
-        PROMOTED_LABEL.to_string()
-    } else {
-        format!("prom_attr(resource_attributes, '{}')", esc(name))
-    }
-}
-
-/// Lower a label-filter predicate over a *stored* label. String ops mirror the
-/// selector semantics; numeric ops cast the value to a double. A non-numeric
-/// value for a numeric op (e.g. a duration/bytes literal like `250ms`) is not
-/// yet supported → error.
-fn label_filter_pred(lf: &ast::LabelFilter) -> Result<String, String> {
-    use ast::CmpOp;
-    let lhs = label_lhs(&lf.name);
-    let v = esc(&lf.value);
-    let numeric = |op: &str| -> Result<String, String> {
-        let n = lf
-            .value
-            .parse::<f64>()
-            .map_err(|_| format!("non-numeric label filter value not yet supported: {}", lf.value))?;
-        Ok(format!("CAST({lhs} AS DOUBLE) {op} {n}"))
-    };
-    Ok(match lf.op {
-        CmpOp::Eq if lf.value.is_empty() => format!("({lhs} IS NULL OR {lhs} = '')"),
-        CmpOp::Eq => format!("{lhs} = '{v}'"),
-        CmpOp::Neq => format!("({lhs} IS NULL OR {lhs} <> '{v}')"),
-        CmpOp::Re => format!("regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-        CmpOp::Nre => format!("NOT regexp_like(COALESCE({lhs}, ''), '^(?:{v})$')"),
-        CmpOp::EqEq => numeric("=")?,
-        CmpOp::Gt => numeric(">")?,
-        CmpOp::Gte => numeric(">=")?,
-        CmpOp::Lt => numeric("<")?,
-        CmpOp::Lte => numeric("<=")?,
-    })
-}
-
-/// Build WHERE predicates from a parsed log pipeline. Lowers selector matchers,
-/// line filters (`|= != |~ !~`; empty = no-op), and label filters over *stored*
-/// labels. Parser/format stages (json/logfmt/regexp/pattern/unpack, line_format,
-/// label_format, drop/keep, decolorize, unwrap) are no-ops for row matching.
-///
-/// A label filter that follows an extraction stage (json/logfmt/…) may reference
-/// a runtime-extracted label, which Sol's column-based backend cannot evaluate
-/// (the dynamic-label-pipeline non-goal); such a filter returns a clear error
-/// rather than silently-wrong SQL (FR3, NFR3).
-fn pipeline_preds(p: &ast::LogPipeline) -> Result<Vec<String>, String> {
-    use ast::Stage;
-    let mut preds = Vec::new();
-    for m in &p.selector.matchers {
-        preds.push(label_pred(&m.name, matchop_sql(&m.op), &m.value)?);
-    }
-    let mut extracted = false;
-    for stage in &p.stages {
-        match stage {
-            Stage::Line { op, value } => {
-                if !value.is_empty() {
-                    preds.push(line_pred(lineop_sql(op)?, value)?);
-                }
-            }
-            // Extraction stages define new labels from the line; they don't
-            // filter rows, but they make later label filters dynamic.
-            Stage::Json | Stage::Logfmt | Stage::Unpack | Stage::Regexp(_) | Stage::Pattern(_) => {
-                extracted = true;
-            }
-            // Output-shaping stages: no effect on which rows match.
-            Stage::Decolorize
-            | Stage::LineFormat(_)
-            | Stage::LabelFormat(_)
-            | Stage::Drop(_)
-            | Stage::Keep(_)
-            | Stage::Unwrap(_) => {}
-            Stage::LabelFilter(lf) => {
-                if extracted {
-                    return Err(format!(
-                        "label filter on a runtime-extracted label is not supported: {}",
-                        lf.name
-                    ));
-                }
-                preds.push(label_filter_pred(lf)?);
-            }
-        }
-    }
-    Ok(preds)
-}
 
 /// The first range aggregation reachable in a metric expression (for the volume
 /// path, which needs the underlying stream selector).
@@ -308,10 +155,9 @@ fn and_opt(acc: Option<Expr>, e: Expr) -> Option<Expr> {
     })
 }
 
-/// Build the WHERE filter `Expr` from a parsed log pipeline. Mirrors
-/// [`pipeline_preds`] (selector matchers + line filters + stored-label filters;
-/// parser/format stages are no-ops; a label filter after an extraction stage
-/// errors — the dynamic-label non-goal).
+/// Build the WHERE filter `Expr` from a parsed log pipeline: selector matchers +
+/// line filters + stored-label filters; parser/format stages are no-ops; a label
+/// filter after an extraction stage errors — the dynamic-label non-goal.
 fn pipeline_pred_expr(p: &ast::LogPipeline) -> Result<Option<Expr>, String> {
     use ast::Stage;
     let mut acc: Option<Expr> = None;
@@ -461,39 +307,6 @@ pub async fn build_series(
         .distinct()?)
 }
 
-/// Translate a LogQL log query + range params into SQL over the `logs` table.
-/// Parses with the grammar parser ([`super::logql`]) and lowers the supported
-/// subset; unsupported-but-parsed pipelines return a clear error.
-pub fn translate_query_range(
-    logql: &str,
-    start_ns: i64,
-    end_ns: i64,
-    limit: u32,
-    forward: bool,
-) -> Result<String, String> {
-    let pipeline = super::logql::parse_pipeline(logql).map_err(|e| e.to_string())?;
-    let mut preds = pipeline_preds(&pipeline)?;
-    preds.push(format!(
-        "CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"
-    ));
-
-    let dir = if forward { "ASC" } else { "DESC" };
-    Ok(format!(
-        "SELECT service_name, time_unix_nano, body, severity_number FROM logs WHERE {} ORDER BY time_unix_nano {dir} LIMIT {limit}",
-        preds.join(" AND ")
-    ))
-}
-
-/// `SELECT DISTINCT` SQL for Loki `label/:name/values` over the logs table.
-pub fn label_values_sql(label: &str) -> String {
-    let lhs = if label == PROMOTED_LABEL {
-        PROMOTED_LABEL.to_string()
-    } else {
-        format!("prom_attr(resource_attributes, '{}')", esc(label))
-    };
-    format!("SELECT DISTINCT {lhs} AS v FROM logs WHERE {lhs} IS NOT NULL ORDER BY v")
-}
-
 /// Run Loki `labels` (label-name discovery for Grafana's log browser): the
 /// promoted column plus the normalized resource-attribute keys.
 pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
@@ -534,40 +347,6 @@ pub async fn handle_label_values(
 /// a Prometheus-style matrix, not a `streams` result.
 pub fn is_metric_query(logql: &str) -> bool {
     !logql.trim_start().starts_with('{')
-}
-
-/// SQL for a log-volume query: count logs per `(detected_level, time-bucket of
-/// step_ns)` over the inner `{selector}`. Grafana renders the per-level volume
-/// bars from the resulting matrix. We always group by `detected_level` (the
-/// Loki volume default), regardless of the query's `by(...)`.
-fn volume_sql(logql: &str, start_ns: i64, end_ns: i64, step_ns: i64) -> Result<String, String> {
-    // Parse the metric query and take the underlying stream selector (+ line
-    // filters) from its range aggregation.
-    let expr = super::logql::parse(logql).map_err(|e| e.to_string())?;
-    let range = match &expr {
-        ast::LogQlExpr::Sample(s) => {
-            first_range(s).ok_or("log volume query must contain a range aggregation")?
-        }
-        ast::LogQlExpr::Log(_) => {
-            return Err("log volume query must be a metric query".to_string());
-        }
-    };
-    let mut preds = pipeline_preds(&range.pipeline)?;
-    preds.push(format!("CAST(time_unix_nano AS BIGINT) BETWEEN {start_ns} AND {end_ns}"));
-    let step = step_ns.max(1);
-    // detected_level via the same severity ranges as `detected_level()`.
-    let level = "CASE \
-        WHEN severity_number BETWEEN 1 AND 4 THEN 'trace' \
-        WHEN severity_number BETWEEN 5 AND 8 THEN 'debug' \
-        WHEN severity_number BETWEEN 9 AND 12 THEN 'info' \
-        WHEN severity_number BETWEEN 13 AND 16 THEN 'warn' \
-        WHEN severity_number BETWEEN 17 AND 20 THEN 'error' \
-        WHEN severity_number BETWEEN 21 AND 24 THEN 'fatal' ELSE 'unknown' END";
-    Ok(format!(
-        "SELECT {level} AS lvl, (CAST(time_unix_nano AS BIGINT) / {step}) * {step} AS bkt, \
-         count(*) AS c FROM logs WHERE {} GROUP BY lvl, bkt ORDER BY bkt",
-        preds.join(" AND ")
-    ))
 }
 
 /// Run a log-volume metric query and build a Prometheus-style `matrix` response
@@ -888,156 +667,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_translate_query_range_unsupported_or_metric_errors() {
-        // A label filter after an extraction stage is a dynamic-label pipeline
-        // (non-goal) — must error, not emit silently-wrong SQL (FR3/NFR3).
-        assert!(
-            translate_query_range(r#"{app="a"} | json | level="x""#, 0, 1, 10, true).is_err()
-        );
-        // The log-query path rejects a metric query.
-        assert!(translate_query_range(r#"count_over_time({app="a"}[5m])"#, 0, 1, 10, true).is_err());
-        // Parser/format stages are no-ops for matching → still lowers.
-        assert!(translate_query_range(r#"{app="a"} | json"#, 0, 1, 10, true).is_ok());
-        // A line filter lowers (parity).
-        assert!(translate_query_range(r#"{app="a"} |= "x""#, 0, 1, 10, true).is_ok());
-    }
-
-    #[test]
-    fn test_lower_label_filter_string_and_numeric() {
-        let s = translate_query_range(r#"{app="a"} | level="error""#, 0, 1, 10, true).unwrap();
-        assert!(
-            s.contains("prom_attr(resource_attributes, 'level') = 'error'"),
-            "sql: {s}"
-        );
-        let n = translate_query_range(r#"{app="a"} | status>=500"#, 0, 1, 10, true).unwrap();
-        assert!(
-            n.contains("CAST(prom_attr(resource_attributes, 'status') AS DOUBLE) >= 500"),
-            "sql: {n}"
-        );
-        // promoted column
-        let p = translate_query_range(r#"{app="a"} | service_name="x""#, 0, 1, 10, true).unwrap();
-        assert!(p.contains("service_name = 'x'"), "sql: {p}");
-        // a duration-valued numeric filter is not yet supported
-        assert!(translate_query_range(r#"{app="a"} | latency>250ms"#, 0, 1, 10, true).is_err());
-    }
-
-    #[test]
-    fn test_lower_parser_stages_are_noops() {
-        // json/logfmt/line_format/drop don't filter rows → lowers without error,
-        // adding no extra WHERE predicate beyond the selector + time bound.
-        let s = translate_query_range(
-            r#"{app="a"} | json | logfmt | line_format "{{.x}}" | drop a, b | decolorize"#,
-            0,
-            1,
-            10,
-            true,
-        )
-        .unwrap();
-        assert!(!s.contains("LIKE"), "no line filter: {s}");
-        assert!(s.contains("service_name = 'a'") || s.contains("prom_attr"), "selector kept: {s}");
-    }
-
-    #[test]
-    fn test_logql_label_matchers_to_where() {
-        let sql = translate_query_range(
-            r#"{service_name="client", service_version=~"1\.0\.0"}"#,
-            100,
-            200,
-            1000,
-            false,
-        )
-        .unwrap();
-        assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
-        assert!(
-            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '^(?:1\.0\.0)$')"#),
-            "sql: {sql}"
-        );
-        assert!(sql.contains("CAST(time_unix_nano AS BIGINT) BETWEEN 100 AND 200"));
-        assert!(sql.contains("ORDER BY time_unix_nano DESC LIMIT 1000"));
-    }
-
-    #[test]
-    fn test_logql_regex_double_backslash_unescaped() {
-        // Grafana sends regex matchers with escaped backslashes on the wire:
-        //   service_version=~"1\\.0\\.0"
-        // A double-quoted LogQL/PromQL string must be unescaped (`\\` -> `\`)
-        // before use, collapsing to the regex `1\.0\.0` which matches "1.0.0".
-        // Regression: the value was used verbatim, producing a regex with literal
-        // backslashes that never matched -> empty log panels in the demo.
-        let sql = translate_query_range(
-            r#"{service_name="client", service_version=~"1\\.0\\.0"}"#,
-            100,
-            200,
-            1000,
-            false,
-        )
-        .unwrap();
-        assert!(
-            sql.contains(r#"regexp_like(COALESCE(prom_attr(resource_attributes, 'service_version'), ''), '^(?:1\.0\.0)$')"#),
-            "double-backslash regex must unescape to single backslash: {sql}"
-        );
-    }
-
-    #[test]
-    fn test_logql_line_filter_to_like() {
-        let sql =
-            translate_query_range(r#"{service_name="client"} |= "error""#, 0, 1, 10, true).unwrap();
-        assert!(sql.contains("body LIKE '%error%'"), "sql: {sql}");
-        assert!(sql.contains("ORDER BY time_unix_nano ASC"));
-    }
-
-    #[test]
-    fn test_logql_escapes_quotes() {
-        let sql = translate_query_range(r#"{service_name="a'b"}"#, 0, 1, 1, true).unwrap();
-        assert!(sql.contains("service_name = 'a''b'"), "sql: {sql}");
-    }
-
-    #[test]
     fn test_is_metric_query_detects_volume() {
         assert!(is_metric_query(
             r#"sum by (detected_level) (count_over_time({service_name="client"}[1m]))"#
         ));
         assert!(!is_metric_query(r#"{service_name="client"} |= "x""#));
-    }
-
-    #[test]
-    fn test_volume_sql_buckets_by_step_and_level() {
-        let sql = volume_sql(
-            r#"sum by (detected_level) (count_over_time({service_name="client"}[1m]))"#,
-            0,
-            1_000_000_000_000,
-            60_000_000_000,
-        )
-        .unwrap();
-        assert!(sql.contains("service_name = 'client'"), "selector filter: {sql}");
-        assert!(sql.contains("count(*) AS c"), "{sql}");
-        assert!(sql.contains("GROUP BY lvl, bkt"), "{sql}");
-        assert!(sql.contains("/ 60000000000) * 60000000000"), "step bucketing: {sql}");
-        assert!(sql.contains("'info'") && sql.contains("'error'"), "level CASE: {sql}");
-    }
-
-    #[test]
-    fn test_logql_empty_backtick_filter_is_noop() {
-        // Grafana Explore sends an empty backtick line filter; it must parse and
-        // add no body predicate (matches everything), not error.
-        let sql = translate_query_range(
-            "{service_name=\"client\", deployment_environment=\"dev\"} |= ``",
-            0,
-            1,
-            10,
-            true,
-        )
-        .unwrap();
-        assert!(
-            !sql.contains("body LIKE"),
-            "empty filter adds no body predicate: {sql}"
-        );
-        assert!(sql.contains("service_name = 'client'"), "sql: {sql}");
-        // normalized attribute label
-        assert!(
-            sql.contains("prom_attr(resource_attributes, 'deployment_environment') = 'dev'"),
-            "sql: {sql}"
-        );
     }
 
     #[test]
@@ -1098,15 +732,6 @@ mod tests {
             .expect("error stream");
         assert_eq!(err.values.len(), 1);
         assert_eq!(err.values[0][1], "b");
-    }
-
-    #[test]
-    fn test_logql_selects_severity_number() {
-        let sql = translate_query_range(r#"{service_name="client"}"#, 0, 1, 10, true).unwrap();
-        assert!(
-            sql.contains("SELECT service_name, time_unix_nano, body, severity_number"),
-            "sql: {sql}"
-        );
     }
 
     #[tokio::test]
@@ -1171,18 +796,6 @@ mod tests {
         assert_eq!(s.stream["detected_level"], "unknown");
         assert_eq!(s.values.len(), 1, "only 'hello world' matches");
         assert_eq!(s.values[0][1], "hello world");
-    }
-
-    #[test]
-    fn test_loki_label_values_sql() {
-        assert!(
-            label_values_sql("service_name")
-                .contains("SELECT DISTINCT service_name AS v FROM logs"),
-        );
-        assert!(
-            label_values_sql("deployment_environment")
-                .contains("prom_attr(resource_attributes, 'deployment_environment')")
-        );
     }
 
     #[tokio::test]
