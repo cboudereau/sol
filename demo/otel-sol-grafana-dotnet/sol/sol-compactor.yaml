@@ -26,22 +26,27 @@ sources:
     resource_attributes:
       service.name: sol/compactor
       service.namespace: compactor
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol-compactor
 
 transforms:
-  promote_self_metrics_attrs:
+  promote_host_metrics_attrs:
     type: remap
-    inputs: ["self_metrics"]
+    inputs: ["host_metrics"]
     source: |
-      .attributes."service.name" = .resource.attributes."service.name"
-      .attributes."service.namespace" = .resource.attributes."service.namespace"
+      .name = "node_" + string!(.name)
 
 sinks:
   otlp_self_metrics:
     type: opentelemetry
-    inputs: ["promote_self_metrics_attrs"]
+    inputs: ["self_metrics", "promote_host_metrics_attrs"]
     protocol:
-      type: http
-      endpoint: "http://mimir:9009/otlp"
+      type: grpc
+      endpoint: "http://sol-gateway:4317"
       batch:
         max_events: 1000
         timeout_secs: 15
