@@ -199,6 +199,7 @@ mod tests {
                 false,
             ),
             Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         let metric_batch = RecordBatch::try_new(
             metric_schema.clone(),
@@ -209,6 +210,7 @@ mod tests {
                     TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
                 ),
                 Arc::new(datafusion::arrow::array::Float64Array::from(vec![0.5])),
+                Arc::new(StringArray::from(vec!["cpu"])),
             ],
         )
         .unwrap();

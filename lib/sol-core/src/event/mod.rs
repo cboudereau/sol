@@ -39,6 +39,7 @@ pub mod otel_fields;
 pub mod otel_json;
 pub mod otel_metric;
 pub mod otlp;
+pub mod prom_name;
 mod r#ref;
 mod ser;
 pub use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;

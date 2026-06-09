@@ -35,10 +35,11 @@ fn label_lhs_expr(key: &str) -> datafusion::logical_expr::Expr {
     }
 }
 
-/// `prom_metric_name(name, unit, is_monotonic)` as an `Expr`.
+/// The materialized, prunable `prom_name` column (the normalized Prometheus
+/// name). Written at ingest by the codec; the read path filters it directly
+/// instead of recomputing `prom_metric_name` per row.
 fn prom_name_expr() -> datafusion::logical_expr::Expr {
-    use datafusion::prelude::col;
-    super::udf::prom_metric_name_udf().call(vec![col("name"), col("unit"), col("is_monotonic")])
+    datafusion::prelude::col("prom_name")
 }
 
 /// A matcher → filter `Expr` (None for `__name__`, covered by the name predicate).
@@ -2115,6 +2116,7 @@ mod tests {
             ),
             Field::new("attributes", DataType::Utf8, true),
             Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -2135,6 +2137,11 @@ mod tests {
                 ),
                 Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
+                Arc::new(StringArray::from(vec![
+                    "http_total",
+                    "http_total",
+                    "http_total",
+                ])),
             ],
         )
         .unwrap();
@@ -2226,6 +2233,7 @@ mod tests {
             Field::new("attributes", DataType::Utf8, true),
             Field::new("double_value", DataType::Float64, true),
             Field::new("is_monotonic", DataType::Boolean, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         // Two series of the same OTLP metric, differing only by status_code.
         let batch = RecordBatch::try_new(
@@ -2249,6 +2257,10 @@ mod tests {
                 Arc::new(datafusion::arrow::array::BooleanArray::from(vec![
                     Some(false),
                     Some(false),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "http_server_requests_bytes",
+                    "http_server_requests_bytes",
                 ])),
             ],
         )
@@ -2341,6 +2353,7 @@ mod tests {
                 false,
             ),
             Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         let mk = |times: &[i64], vals: &[f64]| {
             let n = times.len();
@@ -2352,6 +2365,7 @@ mod tests {
                     Arc::new(StringArray::from(vec![r#"{"sc":"a"}"#; n])),
                     Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                     Arc::new(Float64Array::from(vals.to_vec())),
+                    Arc::new(StringArray::from(vec!["reqs"; n])),
                 ],
             )
             .unwrap()
@@ -2445,6 +2459,7 @@ mod tests {
                 false,
             ),
             Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         // two counter series at t=1s,2s: sc=a rises 10→30 (rate 20), sc=b 5→10 (rate 5)
         let batch = RecordBatch::try_new(
@@ -2468,6 +2483,7 @@ mod tests {
                     .with_timezone("UTC"),
                 ),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 5.0, 10.0])),
+                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
             ],
         )
         .unwrap();
@@ -2559,6 +2575,7 @@ mod tests {
             Field::new("attributes", DataType::Utf8, true),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -2573,6 +2590,7 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("{}")])),
                 Arc::new(StringArray::from(vec![Some("[0,20,30,30,15,5]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
+                Arc::new(StringArray::from(vec!["http_server_request_duration_seconds"])),
             ],
         )
         .unwrap();
@@ -2645,6 +2663,7 @@ mod tests {
             Field::new("attributes", DataType::Utf8, true),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]));
         // two cumulative-increasing snapshots at t=1s and t=2s (bounds [10,20])
         let batch = RecordBatch::try_new(
@@ -2664,6 +2683,10 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
                 Arc::new(StringArray::from(vec![Some("[0,2,3]"), Some("[0,4,6]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20]"), Some("[10,20]")])),
+                Arc::new(StringArray::from(vec![
+                    "http_server_request_duration_seconds",
+                    "http_server_request_duration_seconds",
+                ])),
             ],
         )
         .unwrap();

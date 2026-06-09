@@ -141,7 +141,7 @@ fn trace_schema() -> SchemaRef {
 /// columns a given subtype file lacks with null.
 fn metric_union_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
-        // common (15)
+        // common (16)
         utf8("service_name", false),
         utf8("name", false),
         utf8("description", true),
@@ -157,6 +157,9 @@ fn metric_union_schema() -> SchemaRef {
         utf8("scope_version", true),
         utf8("scope_attributes", true),
         utf8("scope_schema_url", true),
+        // prom_name — normalized Prometheus name (read-side filter column);
+        // REQUIRED (clean cutover — every metric file carries it).
+        utf8("prom_name", false),
         // number (gauge/sum)
         i64n("int_value"),
         f64n("double_value"),
@@ -360,9 +363,8 @@ impl QueryEngine {
         // prom_attr(attributes, 'name'): OTLP→Prometheus normalized attribute
         // lookup so the Prometheus API matches dashboards (ADR 0039 / query-side).
         ctx.register_udf(super::udf::prom_attr_udf());
-        // prom_metric_name(name, unit, is_monotonic): OTLP→Prometheus metric-name
-        // normalization (dots→_, unit suffix, _total) so queries match Mimir names.
-        ctx.register_udf(super::udf::prom_metric_name_udf());
+        // Metric-name normalization is materialized into the `prom_name` column at
+        // write time (codec), so no read-time `prom_metric_name` UDF is registered.
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         catalog.register(&ctx).await?;
         Ok(Self {
