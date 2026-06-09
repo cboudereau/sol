@@ -55,6 +55,7 @@ transforms:
     type: remap
     inputs: ["host_metrics"]
     source: |
+      .attributes.job = .resource.attributes."service.name"
       .name = "node_" + string!(.name)
 
   span_metrics:

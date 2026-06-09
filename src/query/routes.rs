@@ -172,11 +172,22 @@ async fn prom_range(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PromLabelParams {
+    start: Option<String>,
+    end: Option<String>,
+}
+
 async fn prom_label_values(
     label: String,
+    params: PromLabelParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    match prometheus::handle_label_values(&engine, &label).await {
+    // start defaults to 0 (all past), end to now/latest — same window convention
+    // as the range query; an absent window means "all history" (unchanged).
+    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
+    let end_ns = parse_time_ns(&params.end);
+    match prometheus::handle_label_values(&engine, &label, start_ns, end_ns).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -420,6 +431,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
 
     let prom_label_values = warp::path!("prometheus" / "api" / "v1" / "label" / String / "values")
         .and(warp::get())
+        .and(warp::query::<PromLabelParams>())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_label_values);
 

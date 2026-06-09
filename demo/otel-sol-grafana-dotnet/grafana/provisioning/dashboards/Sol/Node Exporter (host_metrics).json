@@ -3454,6 +3454,10 @@
           "text": "sol",
           "value": "sol"
         },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "definition": "label_values(node_uptime, job)",
         "hide": 0,
         "includeAll": false,
@@ -3475,6 +3479,10 @@
           "selected": false,
           "text": "",
           "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
         },
         "definition": "label_values(node_uptime{job=\"$job\"}, host)",
         "hide": 0,
@@ -3516,7 +3524,7 @@
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},

@@ -657,29 +657,36 @@ pub(super) async fn distinct_json_keys(
 pub async fn build_label_values(
     engine: &super::QueryEngine,
     label: &str,
+    start_ns: i64,
+    end_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::functions::expr_fn::concat;
     use datafusion::prelude::{col, lit};
+    // Scope every scan to the requested time window so listing a label only
+    // processes rows in range (and gets time-stats pruning) instead of all
+    // history — an absent window is `[0, i64::MAX]`, i.e. unchanged behaviour.
+    let window = || prom_time_between(start_ns, end_ns);
     if label == "__name__" {
         let names = engine
             .table("metrics")
             .await?
+            .filter(window())?
             .select(vec![prom_name_expr().alias("v")])?;
         let variant = |suffix: &str| concat(vec![prom_name_expr(), lit(suffix.to_string())]);
         let bkt = engine
             .table("metrics")
             .await?
-            .filter(col("bucket_counts").is_not_null())?
+            .filter(window().and(col("bucket_counts").is_not_null()))?
             .select(vec![variant("_bucket").alias("v")])?;
         let cnt = engine
             .table("metrics")
             .await?
-            .filter(col("bucket_counts").is_not_null())?
+            .filter(window().and(col("bucket_counts").is_not_null()))?
             .select(vec![variant("_count").alias("v")])?;
         let sm = engine
             .table("metrics")
             .await?
-            .filter(col("bucket_counts").is_not_null())?
+            .filter(window().and(col("bucket_counts").is_not_null()))?
             .select(vec![variant("_sum").alias("v")])?;
         return Ok(names
             .union(bkt)?
@@ -693,7 +700,7 @@ pub async fn build_label_values(
     Ok(engine
         .table("metrics")
         .await?
-        .filter(lhs.clone().is_not_null())?
+        .filter(window().and(lhs.clone().is_not_null()))?
         .select(vec![lhs.alias("v")])?
         .distinct()?
         .sort(vec![col("v").sort(true, false)])?)
@@ -703,8 +710,10 @@ pub async fn build_label_values(
 pub async fn handle_label_values(
     engine: &super::QueryEngine,
     label: &str,
+    start_ns: i64,
+    end_ns: i64,
 ) -> crate::Result<serde_json::Value> {
-    let df = build_label_values(engine, label).await?;
+    let df = build_label_values(engine, label, start_ns, end_ns).await?;
     let values = string_column_df(engine, df).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
