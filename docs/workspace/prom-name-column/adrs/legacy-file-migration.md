@@ -1,44 +1,43 @@
 ---
 status: draft
 ---
-# Legacy-file migration via dual-predicate fallback
+# Clean cutover — no backward compatibility
 
 Addresses: [FR6](../DESIGN.md#fr6), [NFR2](../DESIGN.md#nfr2)
 
 ## Problem
 
 Parquet files written before this change have no `prom_name` column. Once the
-metrics schema declares `prom_name`, a query filtering `prom_name = 'x'` would
-match **nothing** in old files (the column reads as NULL there) — silently
-dropping all pre-change metrics until they age out or are rewritten. How do we
-stay correct on a mixed dataset while still pruning new files?
+metrics schema declares `prom_name` and the read filter uses it, those files
+won't match. Do we support a mixed old/new dataset, or cut over cleanly?
 
 ## Options
 
 | Option | Pros | Cons |
 |---|---|---|
-| A. Eager backfill (rewrite every file) | clean cutover; all files prunable | expensive one-off; touches retention/GC; risky on a live store |
-| B. Dual predicate: `prom_name = x OR (prom_name IS NULL AND udf(...) = x)` | correct on mixed data; new files prune; zero migration step; converges as compaction rewrites | old files still full-scan (UDF) until rewritten; predicate slightly more complex |
-| C. Hard cutover (ignore old files) | simplest | data loss for the retention window — unacceptable |
+| A. Eager backfill (rewrite every file) | all files prunable; no read-time complexity | expensive one-off; touches retention/GC; risky on a live store |
+| B. Dual predicate `prom_name = x OR (prom_name IS NULL AND udf = x)` | correct on mixed data; converges as compaction rewrites | keeps the UDF; read predicate more complex; old files still full-scan |
+| C. Clean cutover — regenerate the store, no fallback | simplest read path (plain column equality); lets the UDF be **removed**; smallest code | drops pre-change data (must wipe/regenerate) |
 
 ## Decision
 
-**Option B — dual-predicate fallback.** The read filter is
-`prom_name = name OR (prom_name IS NULL AND prom_metric_name(name,unit,is_monotonic) = name)`
-(plus the histogram OR-branch). DataFusion prunes new (`prom_name`-bearing) files
-on the column predicate; old files (where `prom_name` is NULL) fall back to the
-UDF and remain correct. As the compactor/rollup rewrites sealed days
-([FR5](../DESIGN.md#fr5) sort included), old files gain `prom_name` and become
-prunable — the dataset converges within the retention window with no explicit
-migration job.
+**Option C — clean cutover.** Per the explicit call ("we don't care about
+retro-compatibility right now"), we regenerate the Parquet store so every metric
+file carries `prom_name`, and the read path assumes the column is present. No
+fallback predicate, no mixed-data handling, no backfill job. This is what lets
+the DataFusion `prom_metric_name_udf` be **removed** entirely
+([prom-name-materialization](./prom-name-materialization.md),
+[normalizer-canonical-location](./normalizer-canonical-location.md)) rather than
+retained as a fallback — the read filter is a plain `col("prom_name") = lit(x)`.
+
+`prom_name` is declared **REQUIRED** (non-null) in both codec and catalog
+schemas (no nullable-for-fallback needed).
 
 ## Consequences
 
-- Correctness on mixed old/new data (NFR2 parity) with no migration step.
-- Transitional: queries touching not-yet-rewritten old files still pay the UDF
-  full-scan **for those files only**; the active/new tail prunes immediately.
-- The `prom_metric_name` UDF must remain registered (it is the fallback).
-- If `prom_name` is declared REQUIRED in the schema, DataFusion may not NULL-fill
-  it for files lacking the column; the implementation must declare `prom_name`
-  **OPTIONAL/nullable** in the catalog read schema so the `IS NULL` fallback is
-  reachable. (New files always write a non-null value.)
+- Simplest possible read path; the UDF and its registration are deleted.
+- **Pre-change Parquet files are unreadable** — the store must be wiped and
+  regenerated before deploying. (Acceptable: the demo/dev data is disposable.)
+- If an in-place migration is ever needed later, revisit (Option A backfill or
+  re-introduce the Option B dual predicate) — recorded here so the trade-off is
+  not silently lost.

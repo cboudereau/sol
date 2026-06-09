@@ -37,6 +37,7 @@ Option B is rejected as infeasible (no inverse). Option A is the problem.
 - The metric schema gains a column; codec and catalog schemas must both change
   (see [normalizer-canonical-location](./normalizer-canonical-location.md) and
   the schema-contract NFR).
-- Legacy files lack the column → handled by
-  [legacy-file-migration](./legacy-file-migration.md).
-- The UDF is retained (fallback + ad-hoc SQL), not removed.
+- No backward compatibility — clean cutover, store regenerated
+  ([legacy-file-migration](./legacy-file-migration.md)).
+- The DataFusion `prom_metric_name_udf` is **removed** (read uses the column);
+  only the pure normalization fn survives in `sol-core` for the write path.

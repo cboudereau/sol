@@ -64,10 +64,9 @@ classDiagram
     }
     class namePredExpr {
         <<fn, query>>
-        +(name) Expr  col-eq + hist OR + legacy fallback
+        +(name) Expr  col-eq + hist OR (no fallback)
     }
-    promMetricName --> MetricParquetSchema : writes prom_name
-    promMetricName --> namePredExpr : FR6 fallback
+    promMetricName --> MetricParquetSchema : writes prom_name (codec)
     MetricParquetSchema ..> MetricUnionSchema : binding contract
     promNameExpr --> namePredExpr
 ```
@@ -75,12 +74,12 @@ classDiagram
 ### Requirement traceability
 | Type / Fn | Addresses | Notes |
 |---|---|---|
-| `prom_metric_name` (moved to `sol-core`) | [FR2](./DESIGN.md#fr2) | single source of truth, write + read |
-| `prom_metric_name_udf` (wrapper, kept) | [FR2](./DESIGN.md#fr2), [FR6](./DESIGN.md#fr6) | delegates to moved fn; FR6 fallback + ad-hoc SQL |
+| `prom_metric_name` (moved to `sol-core`) | [FR2](./DESIGN.md#fr2) | single source of truth; write path (codec) only |
+| `prom_metric_name_udf` (**deleted** in Task 4) | [FR2](./DESIGN.md#fr2), [FR6](./DESIGN.md#fr6) | DataFusion wrapper + registration removed |
 | `prom_name` column (codec subtype schemas) | [FR1](./DESIGN.md#fr1), [NFR3](./DESIGN.md#nfr3) | REQUIRED non-null on write |
-| `prom_name` field (`metric_union_schema`) | [FR3](./DESIGN.md#fr3), [NFR3](./DESIGN.md#nfr3) | OPTIONAL/nullable (FR6 fallback) |
+| `prom_name` field (`metric_union_schema`) | [FR3](./DESIGN.md#fr3), [NFR3](./DESIGN.md#nfr3), [FR6](./DESIGN.md#fr6) | REQUIRED (clean cutover) |
 | `prom_name_expr` | [FR3](./DESIGN.md#fr3) | returns `col("prom_name")` |
-| `name_pred_expr` | [FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4), [FR6](./DESIGN.md#fr6) | col-eq + histogram OR + NULL→UDF fallback |
+| `name_pred_expr` | [FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4) | col-eq + histogram OR (no fallback) |
 | `sort_dp_rows` / compaction sort | [FR5](./DESIGN.md#fr5) | sort by `(service_name, prom_name, time)` |
 
 ### Transformations
@@ -88,22 +87,22 @@ classDiagram
 |---|---|---|
 | `prom_metric_name` | `(name, unit, is_monotonic) → String` | unchanged rules (token-dedup); identical for write & read |
 | codec metric encode | `OtelMetric dp → parquet row` | `prom_name == prom_metric_name(name, unit, is_monotonic)` for every row |
-| `name_pred_expr(name)` | `&str → Expr` | matches the same series as today's UDF filter, on both new (`prom_name`) and legacy (NULL→UDF) files |
+| `name_pred_expr(name)` | `&str → Expr` | matches the same series as the prior UDF filter, via the `prom_name` column (regenerated data) |
 
 ## Tasks
 
-### 1. Move the canonical normalizer to `sol-core` ([FR2](./DESIGN.md#fr2))
-**Goal**: One `prom_metric_name`/`unit_suffix` reachable by codec (write) and query (read).
+### 1. Move the pure normalizer to `sol-core` ([FR2](./DESIGN.md#fr2))
+**Goal**: `prom_metric_name`/`unit_suffix` live in `sol-core` so the codec can call them at write; one source of truth.
 **Types**: `prom_metric_name` (fn) — see domain model.
 **Constraints**:
-- [ADR: normalizer-canonical-location](./adrs/normalizer-canonical-location.md) — move the **pure** fns to `lib/sol-core`; keep the `ScalarUDF` wrapper in `src/query/udf.rs` delegating to the moved fn.
+- [ADR: normalizer-canonical-location](./adrs/normalizer-canonical-location.md) — move the **pure** fns to `lib/sol-core`. The `prom_metric_name_udf` wrapper in `src/query/udf.rs` stays for now and delegates to the moved fn (it is **deleted in Task 4** with the read switch, so Session 1 stays green).
 - Transformation: normalization rules unchanged (token-dedup behavior preserved).
 - Do not move `normalize` (key-name) or `prom_attr` — out of scope.
-**Tests** (red→green): move the existing `udf.rs` normalization cases to `sol-core` (`test_prom_metric_name_*`, incl. the double-suffix/idempotency cases); keep a thin delegation test in `udf.rs`.
+**Tests** (red→green): move the existing `udf.rs` normalization cases to `sol-core` (`test_prom_metric_name_*`, incl. the double-suffix/idempotency cases); `udf.rs` keeps a thin delegation test.
 **Verify**: `cargo test -p sol-core prom_metric_name && cargo test --features query-backend --lib query::udf::`
 **Acceptance**:
-- [ ] `prom_metric_name`/`unit_suffix` defined in `sol-core`, called by `udf.rs`
-- [ ] no duplicated normalization logic remains
+- [ ] `prom_metric_name`/`unit_suffix` defined in `sol-core`; no duplicated copy
+- [ ] `udf.rs` wrapper delegates to the `sol-core` fn
 - [ ] normalization test cases pass in `sol-core`
 **Depends on**: (none) **Time-box**: ~45 min
 
@@ -127,9 +126,9 @@ classDiagram
 **Goal**: The metrics read schema mirrors the codec, with `prom_name` nullable for legacy files.
 **Types**: `prom_name` field in `metric_union_schema`.
 **Constraints**:
-- [ADR: legacy-file-migration](./adrs/legacy-file-migration.md) — declare `prom_name` **OPTIONAL/nullable** so files lacking it read as NULL (fallback reachable). New files write non-null.
+- [ADR: legacy-file-migration](./adrs/legacy-file-migration.md) — clean cutover: declare `prom_name` **REQUIRED (non-null)** to mirror the codec; no nullable-for-fallback. (Pre-change files are unsupported; store is regenerated.)
 - Field position/name must match the codec schema (binding contract, NFR3).
-**Tests**: `test_metric_union_schema_has_prom_name` (nullable); existing catalog registration tests stay green.
+**Tests**: `test_metric_union_schema_has_prom_name`; existing catalog registration tests stay green.
 **Verify**: `cargo test --features query-backend --lib query::catalog::`
 **Acceptance**:
 - [ ] `metric_union_schema` includes nullable `prom_name`
@@ -141,25 +140,25 @@ classDiagram
 **Types**: `prom_name_expr`, `name_pred_expr` — see domain model.
 **Constraints**:
 - `prom_name_expr()` → `col("prom_name")` (was the UDF call).
-- `name_pred_expr(name)` → `col("prom_name") = lit(name)` **+** histogram `_count`/`_sum` OR-branch ([FR4](./DESIGN.md#fr4)) **+** legacy fallback `OR (col("prom_name").is_null() AND <udf>(name,unit,is_monotonic) = name)` ([FR6](./DESIGN.md#fr6)).
+- `name_pred_expr(name)` → `col("prom_name") = lit(name)` **+** histogram `_count`/`_sum` OR-branch ([FR4](./DESIGN.md#fr4)). **No fallback, no UDF** ([FR6](./DESIGN.md#fr6) clean cutover).
 - Update all caller sites that select/alias `prom_name_expr()` (prometheus.rs :104, :155, :311, :667–668, :979, :1138, :1503) to the column.
-- Keep `register_udf(prom_metric_name_udf())` (catalog.rs:365) — it is the fallback.
-- [NFR2](./DESIGN.md#nfr2): results identical to current (instant, range, label_values(`__name__`), series, histogram components).
-**Tests**: `test_name_filter_uses_prom_name_column` (plan/Display contains `prom_name`, not the UDF, for the column branch); `test_histogram_component_names_resolve` (`X_count`/`X_sum` still match); `test_legacy_null_prom_name_falls_back` (a row with NULL prom_name still matches via UDF). Existing `handle_*` parity tests stay green.
+- **Delete** `prom_metric_name_udf` from `src/query/udf.rs`, its registration at `src/query/catalog.rs:365`, and the `udf.rs` wrapper test. No read site may reference the UDF afterward.
+- Update the `query::` test fixtures (in-memory `MemTable`s for `handle_*`) to include a `prom_name` column so the column filter resolves.
+- [NFR2](./DESIGN.md#nfr2): results identical to the prior UDF behavior (instant, range, label_values(`__name__`), series, histogram components) on regenerated data.
+**Tests**: `test_name_filter_uses_prom_name_column` (plan/Display references `prom_name`, no `prom_metric_name`); `test_histogram_component_names_resolve` (`X_count`/`X_sum` still match). Existing `handle_*` parity tests stay green (fixtures updated).
 **Verify**: `cargo test --features query-backend --lib query::`
 **Acceptance**:
-- [ ] `prom_name_expr` returns the column; no caller computes the UDF for the default filter
+- [ ] `prom_name_expr` returns the column; `prom_metric_name_udf` + registration deleted; no read site references the UDF
 - [ ] `__name__` label_values + series still return the normalized names
 - [ ] histogram `_count`/`_sum`/`_bucket` parity holds
-- [ ] legacy (NULL `prom_name`) rows still match via the fallback
-**Depends on**: 3 **Time-box**: ~90 min
+**Depends on**: 1, 3 **Time-box**: ~90 min
 
 ### 5. Compaction + rollup carry and sort by `prom_name` ([FR5](./DESIGN.md#fr5), [NFR2](./DESIGN.md#nfr2))
-**Goal**: Rewrites preserve `prom_name` and re-sort for pruning, so old files converge to prunable.
+**Goal**: Rewrites preserve `prom_name` and re-sort for pruning.
 **Types**: compaction sort-merge, `rollup_batches`.
 **Constraints**:
 - `prom_name` round-trips through `rollup_batches` (it is another Arrow column — verify, don't drop it).
-- Compaction sort-merge orders by `(service_name, prom_name, time)` ([FR5](./DESIGN.md#fr5)); if a compacted batch came from legacy files without `prom_name`, the rewrite materializes it (the codec write path, Task 2, does this when re-encoding) — confirm the compactor re-encodes via the codec.
+- Compaction sort-merge orders by `(service_name, prom_name, time)` ([FR5](./DESIGN.md#fr5)). (All inputs carry `prom_name` — clean cutover, [FR6](./DESIGN.md#fr6).)
 **Tests**: `test_rollup_preserves_prom_name`; `test_compaction_sorts_by_prom_name` (or confirms column present post-compaction).
 **Verify**: `cargo test --features query-backend --lib query::compaction:: query::rollup::`
 **Acceptance**:

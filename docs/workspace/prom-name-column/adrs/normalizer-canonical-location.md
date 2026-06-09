@@ -24,15 +24,18 @@ Where does the single source of truth live so write and read agree forever?
 
 **Option B.** Move `prom_metric_name` and `unit_suffix` (pure, dependency-free
 string fns) into `lib/sol-core` next to `OtelMetric`. `lib/codecs` already
-depends on `sol-core`, and the `sol` crate does too, so both write and read call
-the identical function. The DataFusion `ScalarUDF` wrapper
-(`prom_metric_name_udf`) stays in `src/query/udf.rs` and delegates to the moved
-fn (it is the FR6 fallback + ad-hoc SQL surface). The `normalize` key-name helper
-and JSON `prom_attr` UDF stay in `src/query` (read-only concerns, out of scope).
+depends on `sol-core`, so the **codec** calls it at write time. The DataFusion
+`ScalarUDF` wrapper (`prom_metric_name_udf`) and its catalog registration are
+**deleted** — with the clean cutover the read path filters the stored `prom_name`
+column and never normalizes at query time. The `normalize` key-name helper and
+the JSON `prom_attr` UDF stay in `src/query` (separate read-only concerns).
 
 ## Consequences
 
-- One normalizer; stored `prom_name` and the read-time UDF can never diverge.
+- Normalization runs once, at write; there is no read-time normalizer to drift
+  from it.
 - A test in `sol-core` pins the normalization rules (the existing `udf.rs` cases
-  move/copy there); `udf.rs` keeps a thin wrapper test.
+  move there). `src/query/udf.rs` loses `prom_metric_name`/`prom_metric_name_udf`
+  and their tests.
 - Codec gains a `sol-core` call at encode (already a dependency — no new dep).
+- The ad-hoc SQL endpoint can no longer call `prom_metric_name()` (UDF gone).
