@@ -2,6 +2,15 @@
 
 Design: [DESIGN.md](./DESIGN.md)
 
+> **Status (✅ implemented):** Tasks 1–6 done and committed (`894809c9d` Tasks 1–4,
+> `62c0334b4` Task 5). `query::` 136 passed; `sol-core` + `codecs` parquet tests
+> green; `clippy --lib -D warnings` clean. The metric read filter is now a plain
+> `col("prom_name")` equality (UDF removed); the codec materializes+sorts the
+> column; compaction/rollup sort by it. **Clean cutover — the Parquet store must
+> be regenerated** (pre-change files lack `prom_name`). Task 6's pruning EXPLAIN
+> is a live-stack check on the rebuilt `sol-query` image (deferred; needs docker).
+> Phase 6 (docs integration) awaits go-ahead.
+
 ## Analysis
 
 Build: `cargo build --features query-backend --lib` — verified compiles green
