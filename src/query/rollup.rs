@@ -112,8 +112,11 @@ pub async fn rollup_batches(
     )?;
     // Project the original columns back (drop the window `rn`), preserving schema.
     let cols: Vec<_> = schema.fields().iter().map(|f| col(f.name())).collect();
+    // Rollups are metrics-only, so prom_name is always present — sort on it
+    // (between service_name and time) so the tier files prune like the raw ones.
     let out = latest.select(cols)?.sort(vec![
         col("service_name").sort(true, false),
+        col("prom_name").sort(true, false),
         col("time_unix_nano").sort(true, false),
     ])?;
     Ok(out.collect().await?)
@@ -219,6 +222,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
         ]))
     }
 
@@ -233,6 +237,7 @@ mod tests {
                 Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                 Arc::new(Float64Array::from(vals.to_vec())),
                 Arc::new(StringArray::from(buckets.to_vec())),
+                Arc::new(StringArray::from(vec!["m"; n])),
             ],
         )
         .unwrap()

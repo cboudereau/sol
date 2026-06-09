@@ -248,10 +248,15 @@ impl Compactor {
         let ctx = SessionContext::new();
         let mem = MemTable::try_new(Arc::clone(&schema), vec![batches])?;
         ctx.register_table("t", Arc::new(mem))?;
-        let df = ctx.table("t").await?.sort(vec![
-            datafusion::prelude::col("service_name").sort(true, false),
-            datafusion::prelude::col(time_col).sort(true, false),
-        ])?;
+        // Sort by (service_name, [prom_name], time): metric files carry prom_name
+        // and sorting on it tightens read-time row-group pruning; logs/traces have
+        // no prom_name column, so include it only when present.
+        let mut sort_exprs = vec![datafusion::prelude::col("service_name").sort(true, false)];
+        if schema.field_with_name("prom_name").is_ok() {
+            sort_exprs.push(datafusion::prelude::col("prom_name").sort(true, false));
+        }
+        sort_exprs.push(datafusion::prelude::col(time_col).sort(true, false));
+        let df = ctx.table("t").await?.sort(sort_exprs)?;
         let sorted = df.collect().await?;
         let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 
@@ -840,6 +845,7 @@ mod tests {
                     false,
                 ),
                 Field::new("double_value", DataType::Float64, true),
+                Field::new("prom_name", DataType::Utf8, false),
             ]));
             let batch = RecordBatch::try_new(
                 s.clone(),
@@ -851,6 +857,7 @@ mod tests {
                         TimestampNanosecondArray::from(vec![1000i64, 2000]).with_timezone("UTC"),
                     ),
                     Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                    Arc::new(StringArray::from(vec!["cpu", "cpu"])),
                 ],
             )
             .unwrap();
