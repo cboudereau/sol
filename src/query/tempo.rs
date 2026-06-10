@@ -740,7 +740,9 @@ pub async fn handle_trace_by_id_otlp(
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
-    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    use opentelemetry_proto::tonic::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue, any_value::Value as AnyVal,
+    };
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status, TracesData,
@@ -764,10 +766,18 @@ pub async fn handle_trace_by_id_otlp(
         }
     };
 
-    let mut spans: Vec<Span> = Vec::new();
-    let mut resource = Resource::default();
-    let mut scope = InstrumentationScope::default();
+    // Group spans by their service into one ResourceSpans each, with service.name
+    // in the resource. A trace spans multiple services (client, service); without
+    // per-service resources carrying service.name, Grafana shows
+    // "OTLPResourceNoServiceName" and collapses everything to one service.
+    struct Group {
+        res_attrs: Option<String>,
+        scope_name: String,
+        spans: Vec<Span>,
+    }
+    let mut groups: std::collections::BTreeMap<String, Group> = std::collections::BTreeMap::new();
     for batch in &batches {
+        let service = batch.column(2).as_string::<i32>();
         let name = cast(batch.column(3), &DataType::Utf8)?;
         let name = name.as_string::<i32>();
         let start = cast(batch.column(4), &DataType::Int64)?;
@@ -785,17 +795,11 @@ pub async fn handle_trace_by_id_otlp(
         let sid = batch.column(13).as_fixed_size_binary();
         let pid = batch.column(14).as_fixed_size_binary();
         for i in 0..batch.num_rows() {
-            if resource.attributes.is_empty() && !res_attrs.is_null(i) {
-                resource.attributes = kvs(res_attrs.value(i));
-            }
-            if scope.name.is_empty() && !scope_name.is_null(i) {
-                scope.name = scope_name.value(i).to_string();
-            }
             #[allow(clippy::cast_sign_loss)]
             let start_ns = if start.is_null(i) { 0 } else { start.value(i) } as u64;
             #[allow(clippy::cast_sign_loss)]
             let dur_ns = if dur.is_null(i) { 0 } else { dur.value(i) } as u64;
-            spans.push(Span {
+            let span = Span {
                 trace_id: bytes(tid, i),
                 span_id: bytes(sid, i),
                 parent_span_id: bytes(pid, i),
@@ -817,21 +821,57 @@ pub async fn handle_trace_by_id_otlp(
                     ..Default::default()
                 }),
                 ..Default::default()
+            };
+            let svc = if service.is_null(i) {
+                String::new()
+            } else {
+                service.value(i).to_string()
+            };
+            let g = groups.entry(svc).or_insert_with(|| Group {
+                res_attrs: None,
+                scope_name: String::new(),
+                spans: Vec::new(),
             });
+            if g.res_attrs.is_none() && !res_attrs.is_null(i) {
+                g.res_attrs = Some(res_attrs.value(i).to_string());
+            }
+            if g.scope_name.is_empty() && !scope_name.is_null(i) {
+                g.scope_name = scope_name.value(i).to_string();
+            }
+            g.spans.push(span);
         }
     }
-    let data = TracesData {
-        resource_spans: vec![ResourceSpans {
-            resource: Some(resource),
-            scope_spans: vec![ScopeSpans {
-                scope: Some(scope),
-                spans,
+    let resource_spans = groups
+        .into_iter()
+        .map(|(svc, g)| {
+            // service.name first (promoted out of the JSON), then the rest.
+            let mut attributes = vec![KeyValue {
+                key: "service.name".to_string(),
+                value: Some(AnyValue {
+                    value: Some(AnyVal::StringValue(svc)),
+                }),
+            }];
+            if let Some(j) = &g.res_attrs {
+                attributes.extend(kvs(j).into_iter().filter(|kv| kv.key != "service.name"));
+            }
+            ResourceSpans {
+                resource: Some(Resource {
+                    attributes,
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: g.scope_name,
+                        ..Default::default()
+                    }),
+                    spans: g.spans,
+                    ..Default::default()
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-    Ok(data.encode_to_vec())
+            }
+        })
+        .collect();
+    Ok(TracesData { resource_spans }.encode_to_vec())
 }
 
 /// Wrap an encoded OTLP `TracesData` (≡ `tempopb.Trace { batches = 1 }`) as the
