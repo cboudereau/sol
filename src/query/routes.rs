@@ -353,6 +353,7 @@ async fn tempo_search(
 async fn tempo_trace_by_id(
     id: String,
     accept: Option<String>,
+    v2: bool,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
     let t = std::time::Instant::now();
@@ -363,9 +364,16 @@ async fn tempo_trace_by_id(
         .is_some_and(|a| a.contains("application/protobuf") || a.contains("application/x-protobuf"));
     let response = if wants_proto {
         tempo::handle_trace_by_id_otlp(&engine, &id).await.map(|bytes| {
+            // V2 (/api/v2/traces) wraps the trace in TraceByIDResponse{trace=1};
+            // V1 (/api/traces) returns the bare trace.
+            let body = if v2 {
+                tempo::wrap_trace_by_id_v2(&bytes)
+            } else {
+                bytes
+            };
             warp::http::Response::builder()
                 .header("content-type", "application/protobuf")
-                .body(bytes.into())
+                .body(body.into())
                 .unwrap_or_default()
         })
     } else {
@@ -525,11 +533,13 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
     let tempo_trace_v2 = warp::path!("tempo" / "api" / "v2" / "traces" / String)
         .and(warp::get())
         .and(warp::header::optional::<String>("accept"))
+        .and(warp::any().map(|| true))
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
     let tempo_trace_v1 = warp::path!("tempo" / "api" / "traces" / String)
         .and(warp::get())
         .and(warp::header::optional::<String>("accept"))
+        .and(warp::any().map(|| false))
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
     let tempo_tags_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tags")

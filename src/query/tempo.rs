@@ -830,6 +830,19 @@ pub async fn handle_trace_by_id_otlp(
     Ok(data.encode_to_vec())
 }
 
+/// Wrap an encoded OTLP `TracesData` (≡ `tempopb.Trace { batches = 1 }`) as the
+/// V2 `TraceByIDResponse { trace = 1 }` that `/api/v2/traces/:id` returns —
+/// Grafana's V2 decoder expects that extra wrapper, so returning the bare trace
+/// is off by one nesting level and fails with a `KeyValue` wiretype error.
+#[must_use]
+pub fn wrap_trace_by_id_v2(trace_bytes: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(trace_bytes.len() + 6);
+    buf.push(0x0a); // field 1 (trace), wiretype 2 (length-delimited)
+    prost::encoding::encode_varint(trace_bytes.len() as u64, &mut buf);
+    buf.extend_from_slice(trace_bytes);
+    buf
+}
+
 /// Run `GET /api/v2/search/tags` (scoped): intrinsics plus the stored span /
 /// resource attribute keys (raw OTLP dotted names — TraceQL uses them
 /// unnormalized), so Grafana's trace browser offers real tags.
@@ -888,6 +901,17 @@ pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_wrap_trace_by_id_v2_prepends_trace_field() {
+        // V2 wrapper = TraceByIDResponse{ trace = 1 }: field-1 (wiretype 2) tag,
+        // a varint length, then the bare trace bytes verbatim.
+        let inner = vec![0x0a, 0x02, 0xab, 0xcd];
+        let w = wrap_trace_by_id_v2(&inner);
+        assert_eq!(w[0], 0x0a, "field 1, wiretype 2");
+        assert_eq!(w[1] as usize, inner.len(), "varint length");
+        assert_eq!(&w[2..], &inner[..], "trace bytes follow verbatim");
+    }
 
     #[test]
     fn test_search_attrs_are_matched_only_and_uniform() {
