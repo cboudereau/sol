@@ -108,6 +108,11 @@ pub async fn build_trace_by_id(
             b64("parent_span_id").alias("parent_b64"),
             col("kind"),
             col("scope_name"),
+            // Raw ids (FixedSizeBinary) for the OTLP-protobuf response (Grafana
+            // fetches traces as protobuf, where ids are bytes, not base64).
+            col("trace_id"),
+            col("span_id"),
+            col("parent_span_id"),
         ])?
         .sort(vec![col("start_time_unix_nano").sort(true, false)])?)
 }
@@ -717,6 +722,112 @@ pub async fn handle_trace_by_id(
             }],
         }
     }))
+}
+
+/// Trace-by-id as OTLP-protobuf bytes — what Grafana's Tempo backend expects
+/// when it requests `Accept: application/protobuf` (it decodes the body as
+/// protobuf regardless of `Content-Type`, so returning JSON yields
+/// "proto: illegal wireType"). Same data as [`handle_trace_by_id`], serialized
+/// as `TracesData` (ids as raw bytes, not base64).
+pub async fn handle_trace_by_id_otlp(
+    engine: &super::QueryEngine,
+    trace_id_hex: &str,
+) -> crate::Result<Vec<u8>> {
+    use datafusion::arrow::array::{Array, AsArray};
+    use datafusion::arrow::compute::cast;
+    use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
+    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+    use opentelemetry_proto::tonic::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, Status, TracesData,
+    };
+    use prost::Message;
+    use sol_lib::event::OtelAttributes;
+
+    let df = build_trace_by_id(engine, trace_id_hex).await?;
+    let batches = engine.collect(df).await?;
+
+    let kvs = |json: &str| {
+        serde_json::from_str::<OtelAttributes>(json)
+            .map(|a| a.to_key_values())
+            .unwrap_or_default()
+    };
+    let bytes = |arr: &datafusion::arrow::array::FixedSizeBinaryArray, i: usize| {
+        if arr.is_null(i) {
+            Vec::new()
+        } else {
+            arr.value(i).to_vec()
+        }
+    };
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut resource = Resource::default();
+    let mut scope = InstrumentationScope::default();
+    for batch in &batches {
+        let name = cast(batch.column(3), &DataType::Utf8)?;
+        let name = name.as_string::<i32>();
+        let start = cast(batch.column(4), &DataType::Int64)?;
+        let start = start.as_primitive::<Int64Type>();
+        let dur = cast(batch.column(5), &DataType::Int64)?;
+        let dur = dur.as_primitive::<Int64Type>();
+        let status = cast(batch.column(6), &DataType::Int32)?;
+        let status = status.as_primitive::<Int32Type>();
+        let attrs = batch.column(7).as_string::<i32>();
+        let res_attrs = batch.column(8).as_string::<i32>();
+        let kind = cast(batch.column(10), &DataType::Int32)?;
+        let kind = kind.as_primitive::<Int32Type>();
+        let scope_name = batch.column(11).as_string::<i32>();
+        let tid = batch.column(12).as_fixed_size_binary();
+        let sid = batch.column(13).as_fixed_size_binary();
+        let pid = batch.column(14).as_fixed_size_binary();
+        for i in 0..batch.num_rows() {
+            if resource.attributes.is_empty() && !res_attrs.is_null(i) {
+                resource.attributes = kvs(res_attrs.value(i));
+            }
+            if scope.name.is_empty() && !scope_name.is_null(i) {
+                scope.name = scope_name.value(i).to_string();
+            }
+            #[allow(clippy::cast_sign_loss)]
+            let start_ns = if start.is_null(i) { 0 } else { start.value(i) } as u64;
+            #[allow(clippy::cast_sign_loss)]
+            let dur_ns = if dur.is_null(i) { 0 } else { dur.value(i) } as u64;
+            spans.push(Span {
+                trace_id: bytes(tid, i),
+                span_id: bytes(sid, i),
+                parent_span_id: bytes(pid, i),
+                name: if name.is_null(i) {
+                    String::new()
+                } else {
+                    name.value(i).to_string()
+                },
+                kind: if kind.is_null(i) { 0 } else { kind.value(i) },
+                start_time_unix_nano: start_ns,
+                end_time_unix_nano: start_ns.saturating_add(dur_ns),
+                attributes: if attrs.is_null(i) {
+                    Vec::new()
+                } else {
+                    kvs(attrs.value(i))
+                },
+                status: Some(Status {
+                    code: if status.is_null(i) { 0 } else { status.value(i) },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+    }
+    let data = TracesData {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(resource),
+            scope_spans: vec![ScopeSpans {
+                scope: Some(scope),
+                spans,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    Ok(data.encode_to_vec())
 }
 
 /// Run `GET /api/v2/search/tags` (scoped): intrinsics plus the stored span /

@@ -352,13 +352,30 @@ async fn tempo_search(
 
 async fn tempo_trace_by_id(
     id: String,
+    accept: Option<String>,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
     let t = std::time::Instant::now();
-    let r = tempo::handle_trace_by_id(&engine, &id).await;
+    // Grafana fetches traces with `Accept: application/protobuf` and decodes the
+    // body as OTLP protobuf regardless of Content-Type; serve that when asked.
+    let wants_proto = accept
+        .as_deref()
+        .is_some_and(|a| a.contains("application/protobuf") || a.contains("application/x-protobuf"));
+    let response = if wants_proto {
+        tempo::handle_trace_by_id_otlp(&engine, &id).await.map(|bytes| {
+            warp::http::Response::builder()
+                .header("content-type", "application/protobuf")
+                .body(bytes.into())
+                .unwrap_or_default()
+        })
+    } else {
+        tempo::handle_trace_by_id(&engine, &id)
+            .await
+            .map(|body| warp::reply::json(&body).into_response())
+    };
     rec("tempo", "traces", t);
-    match r {
-        Ok(body) => Ok(warp::reply::json(&body).into_response()),
+    match response {
+        Ok(resp) => Ok(resp),
         Err(error) => Ok(error_response(error)),
     }
 }
@@ -507,10 +524,12 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .and_then(tempo_search);
     let tempo_trace_v2 = warp::path!("tempo" / "api" / "v2" / "traces" / String)
         .and(warp::get())
+        .and(warp::header::optional::<String>("accept"))
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
     let tempo_trace_v1 = warp::path!("tempo" / "api" / "traces" / String)
         .and(warp::get())
+        .and(warp::header::optional::<String>("accept"))
         .and(with_engine(Arc::clone(&engine)))
         .and_then(tempo_trace_by_id);
     let tempo_tags_v2 = warp::path!("tempo" / "api" / "v2" / "search" / "tags")
