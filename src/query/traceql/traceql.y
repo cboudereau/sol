@@ -42,7 +42,17 @@ FOp -> FieldOp:
   ;
 
 Field -> Result<Field, ()>:
-    "IDENTIFIER" { Ok(Field::Intrinsic($lexer.span_str($1.map_err(|_| ())?.span()).to_string())) }
+    IdentPath {
+        // A bare single identifier is an intrinsic (name, duration, status, …);
+        // a bare *dotted* path (e.g. Grafana's `service.name`) is an unscoped
+        // attribute — Tempo accepts it without a leading dot or scope.
+        let p = $1?;
+        if p.contains('.') {
+            Ok(Field::Attr { scope: AttrScope::Unscoped, path: p })
+        } else {
+            Ok(Field::Intrinsic(p))
+        }
+    }
   | "TRUE"  { Ok(Field::Bool(true)) }
   | "FALSE" { Ok(Field::Bool(false)) }
   | "STRING" { Ok(Field::Str(unquote($lexer.span_str($1.map_err(|_| ())?.span())))) }

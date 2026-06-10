@@ -78,6 +78,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bare_dotted_attr_is_unscoped() {
+        // Grafana's Tempo search emits a bare `service.name` (no leading dot or
+        // scope); it must parse as an unscoped attribute, not a parse error.
+        let fe = filter(r#"{ service.name = "client" }"#);
+        let FieldExpr::Cmp { lhs, rhs, .. } = fe else {
+            panic!("expected a comparison")
+        };
+        assert_eq!(
+            *lhs,
+            Field::Attr {
+                scope: AttrScope::Unscoped,
+                path: "service.name".into()
+            }
+        );
+        assert_eq!(*rhs, Field::Str("client".into()));
+        // A bare single identifier stays an intrinsic.
+        let fe = filter(r#"{ name = "x" }"#);
+        let FieldExpr::Cmp { lhs, .. } = fe else {
+            panic!("expected a comparison")
+        };
+        assert_eq!(*lhs, Field::Intrinsic("name".into()));
+    }
+
+    #[test]
     fn test_parse_parity_cases() {
         // The current ad-hoc surface: { a="x" && b!="y" } with intrinsics + attrs.
         let fe = filter(r#"{ name="GET" && span.http.status_code != "500" }"#);

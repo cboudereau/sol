@@ -325,28 +325,25 @@ async fn latest_selected_df(
 }
 
 /// Instant `<agg> [by (...)]` over the latest samples, as a `DataFrame` (P4).
+/// Matrix range (ns) of a range expression (`rate(m[5m])`, `<agg>_over_time(m[d])`)
+/// — the lookback window used to evaluate it at a single instant.
+fn matrix_range_ns(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Call(c) => match c.args.args.first().map(std::convert::AsRef::as_ref) {
+            Some(Expr::MatrixSelector(ms)) => Some(range_to_ns(ms.range)),
+            _ => None,
+        },
+        Expr::Paren(p) => matrix_range_ns(&p.expr),
+        _ => None,
+    }
+}
+
 async fn lower_aggregate_instant_df(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
     time_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
-    let vs = match agg.expr.as_ref() {
-        Expr::VectorSelector(vs) => vs,
-        Expr::Paren(p) => match p.expr.as_ref() {
-            Expr::VectorSelector(vs) => vs,
-            _ => {
-                return Err(to_err(
-                    "aggregate inner must be a vector selector (instant)".to_string(),
-                ));
-            }
-        },
-        _ => {
-            return Err(to_err(
-                "aggregate inner must be a vector selector (instant)".to_string(),
-            ));
-        }
-    };
     let op = agg_name(agg.op).map_err(to_err)?;
     let by = match &agg.modifier {
         Some(LabelModifier::Include(labels)) => labels.labels.clone(),
@@ -357,17 +354,39 @@ async fn lower_aggregate_instant_df(
         }
         None => Vec::new(),
     };
-    let inner = latest_selected_df(engine, vs, time_ns).await?;
-    let v = agg_value_expr(op, col("v")).alias("v");
-    if by.is_empty() {
-        Ok(inner.aggregate(vec![], vec![v])?)
-    } else {
-        let group: Vec<datafusion::logical_expr::Expr> = by
-            .iter()
-            .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
-            .collect();
-        Ok(inner.aggregate(group, vec![v])?)
+    // Bare selector inner (`sum(metric)`): latest sample per series, then aggregate.
+    let selector = match agg.expr.as_ref() {
+        Expr::VectorSelector(vs) => Some(vs),
+        Expr::Paren(p) => match p.expr.as_ref() {
+            Expr::VectorSelector(vs) => Some(vs),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(vs) = selector {
+        let inner = latest_selected_df(engine, vs, time_ns).await?;
+        let v = agg_value_expr(op, col("v")).alias("v");
+        return if by.is_empty() {
+            Ok(inner.aggregate(vec![], vec![v])?)
+        } else {
+            let group: Vec<datafusion::logical_expr::Expr> = by
+                .iter()
+                .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
+                .collect();
+            Ok(inner.aggregate(group, vec![v])?)
+        };
     }
+    // Range-expression inner (`avg(rate(metric[5m]))`, common on gauge panels):
+    // evaluate `<agg>(range)` over the [T-range, T] window with the range engine,
+    // then take the value at T (latest sample per group) — an instant scalar/vector.
+    let range = matrix_range_ns(agg.expr.as_ref()).ok_or_else(|| {
+        to_err("instant aggregate inner must be a selector or a range function (v1)".to_string())
+    })?;
+    let start = time_ns.saturating_sub(range);
+    let ranged = lower_range_aggregate_df(engine, agg, start, time_ns, "metrics").await?;
+    let part: Vec<datafusion::logical_expr::Expr> =
+        by.iter().map(|k| col(sql_ident(k))).collect();
+    super::plan::frame::latest_per_series(ranged, part, "time_unix_nano")
 }
 
 /// Lower an instant PromQL expression to a `DataFrame`: latest-per-series
@@ -381,6 +400,22 @@ async fn lower_instant_df(
         Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
         Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
         Expr::Aggregate(agg) => lower_aggregate_instant_df(engine, agg, time_ns).await,
+        // Bare range function at an instant (`rate(metric[5m])`): evaluate over the
+        // [T-range, T] window via the range engine, then keep the value at T.
+        Expr::Call(_) => {
+            let range = matrix_range_ns(expr).ok_or_else(|| {
+                to_err("instant range function expects a range vector like m[5m] (v1)".to_string())
+            })?;
+            let start = time_ns.saturating_sub(range);
+            let series = lower_range_df(engine, expr, start, time_ns, "metrics").await?;
+            // rate/over_time project to (service_name, attributes, time, v) — a
+            // series is identified by those, so partition the latest-pick on them.
+            let part = vec![
+                datafusion::prelude::col("service_name"),
+                datafusion::prelude::col("attributes"),
+            ];
+            super::plan::frame::latest_per_series(series, part, "time_unix_nano")
+        }
         _ => Err(to_err(
             "unsupported PromQL expression for instant query (v1)".to_string(),
         )),
@@ -2158,6 +2193,28 @@ mod tests {
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_instant_aggregate_over_rate() {
+        // Gauge-panel shape: an *instant* `avg(rate(metric[5m]))` must evaluate
+        // (over the [T-5m, T] window) instead of erroring "aggregate inner must
+        // be a vector selector".
+        let engine = counter_engine().await;
+        let resp = handle_instant(&engine, "avg(rate(http_total[5m]))", 3_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.data.result.len(),
+            1,
+            "one aggregated instant value: {:?}",
+            resp.data.result
+        );
+        // bare instant rate is also accepted (not just inside an aggregate).
+        let bare = handle_instant(&engine, "rate(http_total[5m])", 3_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(bare.data.result.len(), 1, "one rate series: {:?}", bare.data.result);
     }
 
     #[tokio::test]
