@@ -245,6 +245,7 @@ pub async fn build_search(
             col("parent_span_id"),
             col("attributes"),
             col("status_code"),
+            col("resource_attributes"),
         ])?
         .sort(vec![col("start_time_unix_nano").sort(false, false)])?
         .limit(0, Some((limit as usize).saturating_mul(64)))?;
@@ -281,17 +282,115 @@ fn otlp_attributes(json: &str) -> Vec<Value> {
         return Vec::new();
     };
     map.into_iter()
-        .map(|(key, v)| {
-            let value = match v {
-                Value::String(s) => json!({ "stringValue": s }),
-                Value::Bool(b) => json!({ "boolValue": b }),
-                Value::Number(n) if n.is_i64() => {
-                    json!({ "intValue": n.as_i64().unwrap_or(0).to_string() })
-                }
-                Value::Number(n) => json!({ "doubleValue": n.as_f64().unwrap_or(0.0) }),
-                other => json!({ "stringValue": other.to_string() }),
+        .map(|(key, v)| json!({ "key": key, "value": json_to_otlp_value(&v) }))
+        .collect()
+}
+
+/// A stored JSON attribute value → its OTLP `AnyValue` JSON form.
+fn json_to_otlp_value(v: &Value) -> Value {
+    match v {
+        Value::String(s) => json!({ "stringValue": s }),
+        Value::Bool(b) => json!({ "boolValue": b }),
+        Value::Number(n) if n.is_i64() => {
+            json!({ "intValue": n.as_i64().unwrap_or(0).to_string() })
+        }
+        Value::Number(n) => json!({ "doubleValue": n.as_f64().unwrap_or(0.0) }),
+        other => json!({ "stringValue": other.to_string() }),
+    }
+}
+
+/// Where a search-result attribute's value is sourced from.
+enum AttrSource {
+    /// The promoted `service_name` column (TraceQL `service.name`).
+    Service,
+    /// A key in the span `attributes` JSON (`span.`/unscoped).
+    Span(String),
+    /// A key in the `resource_attributes` JSON (`resource.`).
+    Resource(String),
+}
+
+/// An attribute the query referenced — surfaced (uniformly) on every result
+/// span. Tempo only returns the attributes the TraceQL touched; returning *all*
+/// span attributes (with per-span-varying key sets) makes Grafana's table frame
+/// builder throw `Cannot read properties of undefined (reading '0')`.
+struct MatchedAttr {
+    out_key: String,
+    source: AttrSource,
+}
+
+fn add_matched_field(f: &tast::Field, out: &mut Vec<MatchedAttr>) {
+    use tast::{AttrScope, Field};
+    let Field::Attr { scope, path } = f else { return };
+    let (out_key, source) = if path == "service.name" {
+        ("service.name".to_string(), AttrSource::Service)
+    } else {
+        match scope {
+            AttrScope::Resource => (path.clone(), AttrSource::Resource(path.clone())),
+            AttrScope::Span | AttrScope::Unscoped => (path.clone(), AttrSource::Span(path.clone())),
+            _ => return,
+        }
+    };
+    if !out.iter().any(|m| m.out_key == out_key) {
+        out.push(MatchedAttr { out_key, source });
+    }
+}
+
+fn collect_matched_attrs(fe: &tast::FieldExpr, out: &mut Vec<MatchedAttr>) {
+    use tast::FieldExpr;
+    match fe {
+        FieldExpr::Cmp { lhs, rhs, .. } => {
+            add_matched_field(lhs, out);
+            add_matched_field(rhs, out);
+        }
+        FieldExpr::Field(f) => add_matched_field(f, out),
+        FieldExpr::And(a, b) | FieldExpr::Or(a, b) => {
+            collect_matched_attrs(a, out);
+            collect_matched_attrs(b, out);
+        }
+    }
+}
+
+/// The attributes a search query referenced (empty for intrinsic-only / `{}`).
+fn search_matched_attrs(traceql: &str) -> Vec<MatchedAttr> {
+    let mut out = Vec::new();
+    if let Ok(tast::SpansetExpr::Filter(Some(fe))) = super::traceql::parse(traceql) {
+        collect_matched_attrs(&fe, &mut out);
+    }
+    out
+}
+
+/// Build a result span's `attributes`: only the matched keys, the SAME set on
+/// every span (uniform) so Grafana's table renders. Absent values become an
+/// empty string (the span is in a matched trace but may lack the span-level key).
+fn project_span_attrs(
+    matched: &[MatchedAttr],
+    service: &str,
+    attrs_json: Option<&str>,
+    res_json: Option<&str>,
+) -> Vec<Value> {
+    if matched.is_empty() {
+        return Vec::new();
+    }
+    let parse = |j: Option<&str>| {
+        j.and_then(|s| serde_json::from_str::<serde_json::Map<String, Value>>(s).ok())
+    };
+    let span_map = parse(attrs_json);
+    let res_map = parse(res_json);
+    matched
+        .iter()
+        .map(|m| {
+            let value = match &m.source {
+                AttrSource::Service => json!({ "stringValue": service }),
+                AttrSource::Span(p) => span_map
+                    .as_ref()
+                    .and_then(|mm| mm.get(p))
+                    .map_or_else(|| json!({ "stringValue": "" }), json_to_otlp_value),
+                AttrSource::Resource(p) => res_map
+                    .as_ref()
+                    .and_then(|mm| mm.get(p))
+                    .map_or_else(|| json!({ "stringValue": "" }), json_to_otlp_value),
             };
-            json!({ "key": key, "value": value })
+            json!({ "key": m.out_key, "value": value })
         })
         .collect()
 }
@@ -348,7 +447,9 @@ pub struct TempoSpan {
     /// Span duration (ns) as a string.
     #[serde(rename = "durationNanos")]
     pub duration_nanos: String,
-    /// Matched attributes (empty for resource/intrinsic-only matches).
+    /// Matched attributes — only the keys the query referenced, uniform across
+    /// spans (omitted entirely for intrinsic-only / `{}` matches, like Tempo).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attributes: Vec<serde_json::Value>,
 }
 
@@ -412,6 +513,9 @@ pub async fn handle_search(
 
     let df = build_search(engine, traceql, start_ns, end_ns, limit).await?;
     let batches = engine.collect(df).await?;
+    // Only the query-referenced attributes are surfaced on result spans (uniform
+    // across spans, like Tempo) — see project_span_attrs.
+    let matched = search_matched_attrs(traceql);
 
     // Per-trace accumulator: root fields + the matched spans (for spanSet).
     struct Acc {
@@ -443,6 +547,8 @@ pub async fn handle_search(
         let attrs = attrs.as_string::<i32>();
         let status = cast(batch.column(8), &DataType::Int32)?;
         let status = status.as_primitive::<datafusion::arrow::datatypes::Int32Type>();
+        let res_attrs = cast(batch.column(9), &DataType::Utf8)?;
+        let res_attrs = res_attrs.as_string::<i32>();
         for i in 0..batch.num_rows() {
             if hex.is_null(i) {
                 continue;
@@ -470,11 +576,12 @@ pub async fn handle_search(
                 },
                 start_time_unix_nano: start_ns.to_string(),
                 duration_nanos: duration_ns.to_string(),
-                attributes: if attrs.is_null(i) {
-                    Vec::new()
-                } else {
-                    otlp_attributes(attrs.value(i))
-                },
+                attributes: project_span_attrs(
+                    &matched,
+                    &service,
+                    (!attrs.is_null(i)).then(|| attrs.value(i)),
+                    (!res_attrs.is_null(i)).then(|| res_attrs.value(i)),
+                ),
             };
 
             let entry = traces.entry(id).or_insert_with(|| Acc {
@@ -670,6 +777,27 @@ pub async fn handle_tag_values(engine: &super::QueryEngine, tag: &str) -> crate:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_search_attrs_are_matched_only_and_uniform() {
+        // resource.service.name → just `service.name`, from the service column —
+        // NOT the span's full attribute set (which crashed Grafana's table).
+        let m = search_matched_attrs(r#"{resource.service.name="client"}"#);
+        let a = project_span_attrs(&m, "client", Some(r#"{"http.method":"GET","x":"y"}"#), None);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0]["key"], "service.name");
+        assert_eq!(a[0]["value"]["stringValue"], "client");
+
+        // span attribute → only that key (uniform), value looked up from the JSON.
+        let m = search_matched_attrs(r#"{span.http.status_code=500}"#);
+        let a = project_span_attrs(&m, "client", Some(r#"{"http.status_code":"500","o":"p"}"#), None);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0]["key"], "http.status_code");
+
+        // intrinsic-only / no attribute refs → attributes omitted (like Tempo).
+        let m = search_matched_attrs(r#"{duration > 0ms}"#);
+        assert!(project_span_attrs(&m, "client", Some(r#"{"a":"b"}"#), None).is_empty());
+    }
 
     #[test]
     fn test_field_value_is_bound_literal_not_injected() {
@@ -900,14 +1028,18 @@ mod tests {
         assert_eq!(t.span_sets[0].matched, t.span_set.matched);
         // spanSet carries both spans, with their attributes as OTLP KeyValue
         assert_eq!(t.span_set.matched, 2, "both spans in the span set");
+        // Search surfaces ONLY the query-matched attribute (`service.name` here),
+        // uniformly on every span — not each span's full, per-span-varying
+        // attribute set, which made Grafana's table frame builder throw
+        // "Cannot read properties of undefined (reading '0')".
         let j = serde_json::to_string(&t.span_set).unwrap();
         assert!(
-            j.contains(r#"{"key":"http.method","value":{"stringValue":"GET"}}"#),
-            "json: {j}"
+            j.contains(r#"{"key":"service.name","value":{"stringValue":"client"}}"#),
+            "matched attr surfaced: {j}"
         );
         assert!(
-            j.contains(r#"{"key":"db.system","value":{"stringValue":"pg"}}"#),
-            "json: {j}"
+            !j.contains("http.method") && !j.contains("db.system"),
+            "unmatched span attributes are NOT surfaced: {j}"
         );
     }
 
