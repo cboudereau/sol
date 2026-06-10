@@ -40,7 +40,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 3 },
       "id": 11,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, api) (rate(sol_query_request_duration_seconds_bucket{service_name=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 {{api}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, api) (rate(sol_query_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{api}}", "refId": "A" } ],
       "title": "Query latency p95 by API",
       "type": "timeseries"
     },
@@ -52,7 +52,7 @@
       "id": 12,
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "mean" ], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
       "pluginVersion": "10.3.3",
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(sol_query_cache_requests_total{cache=\"result\", result=\"hit\", service_name=~\"$instance\"}[$__rate_interval])) / clamp_min(sum(rate(sol_query_cache_requests_total{cache=\"result\", service_name=~\"$instance\"}[$__rate_interval])), 1)", "legendFormat": "result cache hit", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(sol_query_cache_requests_total{cache=\"result\", result=\"hit\", service_name=~\"$service_name\"}[$__rate_interval])) / clamp_min(sum(rate(sol_query_cache_requests_total{cache=\"result\", service_name=~\"$service_name\"}[$__rate_interval])), 1)", "legendFormat": "result cache hit", "refId": "A" } ],
       "title": "Result-cache hit ratio",
       "type": "stat"
     },
@@ -62,7 +62,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 3 },
       "id": 13,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (api, status) (rate(sol_query_requests_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{api}} / {{status}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (api, status) (rate(sol_query_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{api}} / {{status}}", "refId": "A" } ],
       "title": "Requests/s by API & status",
       "type": "timeseries"
     },
@@ -75,7 +75,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
       "id": 21,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_bytes_scanned_bucket{service_name=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_bytes_scanned_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
       "title": "Bytes scanned p95 by signal",
       "type": "timeseries"
     },
@@ -86,7 +86,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
       "id": 22,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_files_opened_bucket{service_name=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_files_opened_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
       "title": "Files opened p95 by signal",
       "type": "timeseries"
     },
@@ -98,8 +98,8 @@
       "id": 23,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_cache_memory_bytes{service_name=~\"$instance\"})", "legendFormat": "cache memory", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_inflight{service_name=~\"$instance\"})", "legendFormat": "in-flight queries", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_cache_memory_bytes{service_name=~\"$service_name\"})", "legendFormat": "cache memory", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_inflight{service_name=~\"$service_name\"})", "legendFormat": "in-flight queries", "refId": "B" }
       ],
       "title": "Cache memory (NFR5) & in-flight",
       "type": "timeseries"
@@ -113,7 +113,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
       "id": 31,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (op) (rate(sol_objectstore_requests_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{op}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (op) (rate(sol_objectstore_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{op}}", "refId": "A" } ],
       "title": "Object-store requests/s by op",
       "type": "timeseries"
     },
@@ -124,7 +124,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
       "id": 32,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (service_name) (rate(sol_objectstore_throttled_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{service_name}} 503", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (service_name) (rate(sol_objectstore_throttled_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{service_name}} 503", "refId": "A" } ],
       "title": "S3 503 SlowDown/s",
       "type": "timeseries"
     },
@@ -135,7 +135,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
       "id": 33,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, op) (rate(sol_objectstore_request_duration_seconds_bucket{service_name=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 {{op}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, op) (rate(sol_objectstore_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{op}}", "refId": "A" } ],
       "title": "Object-store latency p95 by op",
       "type": "timeseries"
     },
@@ -148,7 +148,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
       "id": 41,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (reason) (rate(sol_query_rejected_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (reason) (rate(sol_query_rejected_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A" } ],
       "title": "Guardrail rejects/s by reason",
       "type": "timeseries"
     },
@@ -159,7 +159,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
       "id": 42,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (lang, construct) (rate(sol_query_unsupported_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{lang}}: {{construct}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (lang, construct) (rate(sol_query_unsupported_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{lang}}: {{construct}}", "refId": "A" } ],
       "title": "Unsupported constructs/s",
       "type": "timeseries"
     },
@@ -173,8 +173,8 @@
       "id": 51,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_input_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "input {{signal}}", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_output_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "output {{signal}}", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_input_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "input {{signal}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_output_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "output {{signal}}", "refId": "B" }
       ],
       "title": "Compaction files in vs out /s",
       "type": "timeseries"
@@ -186,7 +186,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 39 },
       "id": 52,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_compactor_duration_seconds_bucket{service_name=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_compactor_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
       "title": "Compaction duration p95",
       "type": "timeseries"
     },
@@ -198,7 +198,7 @@
       "id": 54,
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
       "pluginVersion": "10.3.3",
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(sol_compactor_lag_seconds{service_name=~\"$instance\"})", "legendFormat": "max lag", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(sol_compactor_lag_seconds{service_name=~\"$service_name\"})", "legendFormat": "max lag", "refId": "A" } ],
       "title": "Compactor lag (sealed boundary)",
       "type": "stat"
     },
@@ -210,8 +210,8 @@
       "id": 53,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (resolution) (rate(sol_compactor_rollup_rows_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "rollup {{resolution}} rows/s", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_retention_deleted_total{service_name=~\"$instance\"}[$__rate_interval]))", "legendFormat": "deleted {{signal}} files/s", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (resolution) (rate(sol_compactor_rollup_rows_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "rollup {{resolution}} rows/s", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_retention_deleted_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "deleted {{signal}} files/s", "refId": "B" }
       ],
       "title": "Rollup rows/s & retention deletions/s",
       "type": "timeseries"
@@ -240,14 +240,15 @@
       {
         "current": { "selected": true, "text": [ "All" ], "value": [ "$__all" ] },
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(sol_query_requests_total, service_name)",
+        "definition": "label_values({__name__=~\"sol_(query|compactor)_.*\"}, service_name)",
         "hide": 0,
         "includeAll": true,
-        "label": "Instance",
+        "allValue": ".*",
+        "label": "Service name",
         "multi": true,
-        "name": "instance",
+        "name": "service_name",
         "options": [],
-        "query": { "qryType": 1, "query": "label_values(sol_query_requests_total, service_name)" },
+        "query": { "qryType": 1, "query": "label_values({__name__=~\"sol_(query|compactor)_.*\"}, service_name)" },
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,

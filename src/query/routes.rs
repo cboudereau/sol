@@ -601,6 +601,15 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
         .or(tempo_echo)
         .or(sql)
         .or(ready)
+        // Track concurrent requests: an RAII guard increments `query_inflight`
+        // when the request is accepted and decrements it once the reply is built
+        // (or the route rejects), so the gauge reflects live load.
+        .with(warp::wrap_fn(|filter| {
+            warp::any()
+                .map(super::telemetry::InflightGuard::new)
+                .and(filter)
+                .map(|_guard: super::telemetry::InflightGuard, reply| reply)
+        }))
         .boxed()
 }
 

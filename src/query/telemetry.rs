@@ -41,10 +41,12 @@ pub fn record_request(
     histogram!("query_files_opened", "api" => api, "signal" => signal).record(files_opened as f64);
 }
 
-/// Record a cache lookup outcome (`result=hit|miss`).
+/// Record a result-cache lookup outcome. The dashboard's hit-ratio panel filters
+/// `sol_query_cache_requests_total{cache="result", result="hit|miss"}`, so both
+/// labels are required for it to match.
 pub fn record_cache(hit: bool) {
     let result = if hit { "hit" } else { "miss" };
-    counter!("query_cache_requests_total", "result" => result).increment(1);
+    counter!("query_cache_requests_total", "cache" => "result", "result" => result).increment(1);
 }
 
 /// Set the current cache memory footprint (bytes).
@@ -61,6 +63,34 @@ pub fn inc_inflight() {
 /// Decrement the in-flight query gauge.
 pub fn dec_inflight() {
     gauge!("query_inflight").decrement(1.0);
+}
+
+/// RAII guard tracking one in-flight request: increments `query_inflight` on
+/// creation, decrements it on drop. Held for the lifetime of a request (via the
+/// routes wrapper) so the gauge reflects concurrent load even when a handler
+/// returns early or errors.
+pub struct InflightGuard;
+
+impl InflightGuard {
+    /// Mark a request as in-flight (increments the gauge); the count is released
+    /// when the returned guard is dropped.
+    #[must_use]
+    pub fn new() -> Self {
+        inc_inflight();
+        Self
+    }
+}
+
+impl Default for InflightGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        dec_inflight();
+    }
 }
 
 /// Record an object-store request, flagging throttles (HTTP 503, NFR10).
@@ -181,8 +211,12 @@ mod tests {
                 && k.key()
                     .labels()
                     .any(|l| l.key() == "result" && l.value() == "hit")
+                // the dashboard filters on cache="result"; it must be present
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "cache" && l.value() == "result")
         });
-        assert_eq!(hits.count(), 1, "hit counter emitted");
+        assert_eq!(hits.count(), 1, "hit counter emitted with cache=result");
         let misses = s.iter().filter(|(k, _, _, _)| {
             k.kind() == MetricKind::Counter
                 && k.key().name() == "query_cache_requests_total"
