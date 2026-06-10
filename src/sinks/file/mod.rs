@@ -664,12 +664,15 @@ impl BatchFileSink {
         match self.encoder.encode_files(events) {
             Ok(files) => {
                 let total_byte_size: usize = files.iter().map(|f| f.len()).sum();
+                // One uniqueness token per flush — distinct writers (and repeat
+                // flushes inside the same second) never target the same file.
+                let token = uuid::Uuid::new_v4().to_string();
                 let mut failed = false;
                 for (i, file_bytes) in files.iter().enumerate() {
                     let file_path = if files.len() == 1 {
-                        path.clone()
+                        parquet_batch_path(&path, &token, None)
                     } else {
-                        parquet_path_with_suffix(&path, i)
+                        parquet_batch_path(&path, &token, Some(i))
                     };
                     let bytes_path = BytesPath::new(file_path.clone());
                     match open_file(bytes_path, false).await {
@@ -739,15 +742,25 @@ impl BatchFileSink {
     }
 }
 
-/// Insert a numeric suffix before the `.parquet` extension:
-/// `foo.parquet` → `foo-0.parquet`.
+/// Build a unique batch filename by inserting a per-flush uniqueness `token`
+/// (and, for multi-file batches, an `index`) before the `.parquet` extension:
+/// `foo.parquet` → `foo-<token>.parquet` / `foo-<token>-<index>.parquet`.
+///
+/// The token is what prevents two writers that resolve the same timestamped
+/// path — e.g. replicated collectors sharing a Parquet volume, or one writer
+/// flushing twice within the same `%H-%M-%S` second — from opening the same
+/// file in append mode and concatenating two complete Parquet bodies into one
+/// unreadable file (the trailing footer's row-group offsets no longer match).
 #[cfg(feature = "codecs-parquet")]
-fn parquet_path_with_suffix(path: &[u8], index: usize) -> Bytes {
+fn parquet_batch_path(path: &[u8], token: &str, index: Option<usize>) -> Bytes {
     let s = String::from_utf8_lossy(path);
-    let suffixed = if let Some(stem) = s.strip_suffix(".parquet") {
-        format!("{stem}-{index}.parquet")
-    } else {
-        format!("{s}-{index}")
+    let (stem, ext) = match s.strip_suffix(".parquet") {
+        Some(stem) => (stem, ".parquet"),
+        None => (s.as_ref(), ""),
+    };
+    let suffixed = match index {
+        Some(i) => format!("{stem}-{token}-{i}{ext}"),
+        None => format!("{stem}-{token}{ext}"),
     };
     Bytes::from(suffixed)
 }
@@ -1272,15 +1285,40 @@ mod tests {
 
     #[cfg(feature = "codecs-parquet")]
     #[test]
-    fn path_suffix_with_extension() {
-        let path = super::parquet_path_with_suffix(b"data/metrics/2026-01-01.parquet", 2);
-        assert_eq!(&path[..], b"data/metrics/2026-01-01-2.parquet");
+    fn batch_path_inserts_token_before_extension() {
+        // Single-file batch: token goes right before `.parquet`.
+        let path = super::parquet_batch_path(b"data/metrics/2026-01-01.parquet", "abc123", None);
+        assert_eq!(&path[..], b"data/metrics/2026-01-01-abc123.parquet");
+        // Multi-file batch: token then index.
+        let path = super::parquet_batch_path(b"data/metrics/2026-01-01.parquet", "abc123", Some(2));
+        assert_eq!(&path[..], b"data/metrics/2026-01-01-abc123-2.parquet");
     }
 
     #[cfg(feature = "codecs-parquet")]
     #[test]
-    fn path_suffix_without_extension() {
-        let path = super::parquet_path_with_suffix(b"data/metrics/file", 0);
-        assert_eq!(&path[..], b"data/metrics/file-0");
+    fn batch_path_without_extension() {
+        let path = super::parquet_batch_path(b"data/metrics/file", "tok", Some(0));
+        assert_eq!(&path[..], b"data/metrics/file-tok-0");
+        let path = super::parquet_batch_path(b"data/metrics/file", "tok", None);
+        assert_eq!(&path[..], b"data/metrics/file-tok");
+    }
+
+    #[cfg(feature = "codecs-parquet")]
+    #[test]
+    fn batch_path_tokens_differ_so_concurrent_writers_never_collide() {
+        // Two flushes resolving the same timestamped path must produce distinct
+        // files — the property that stops replicated collectors corrupting one
+        // shared Parquet file via append-mode concatenation.
+        let a = super::parquet_batch_path(
+            b"traces/dt=2026-06-10/14-30-15.parquet",
+            &uuid::Uuid::new_v4().to_string(),
+            None,
+        );
+        let b = super::parquet_batch_path(
+            b"traces/dt=2026-06-10/14-30-15.parquet",
+            &uuid::Uuid::new_v4().to_string(),
+            None,
+        );
+        assert_ne!(a, b);
     }
 }
