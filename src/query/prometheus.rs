@@ -76,21 +76,18 @@ fn name_pred_expr(name: &str) -> datafusion::logical_expr::Expr {
 
 /// Build the PromQL `series` query as a `DataFrame` (P4): distinct
 /// `(normalized __name__, service_name)` matching an optional `match[]` selector.
-pub async fn build_series(
-    engine: &super::QueryEngine,
+/// Apply a Prometheus `match[]` selector (metric name + label matchers) to the
+/// metrics table. Shared by `/series` and `/label/:name/values` so both honor
+/// the selector — e.g. a `$host` variable query `label_values(m{service_name=
+/// "X"}, host)` must scope `host` to that service, not return every host.
+fn apply_match_selector(
+    mut df: datafusion::dataframe::DataFrame,
     matcher: Option<&str>,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
-    use datafusion::prelude::col;
-    let mut df = engine.table("metrics").await?;
     if let Some(sel) = matcher.map(str::trim).filter(|s| !s.is_empty()) {
         let expr = parser::parse(sel).map_err(to_err)?;
-        let vs = match &expr {
-            Expr::VectorSelector(vs) => vs,
-            _ => {
-                return Err(to_err(
-                    "series match[] must be a metric selector".to_string(),
-                ));
-            }
+        let Expr::VectorSelector(vs) = &expr else {
+            return Err(to_err("match[] must be a metric selector".to_string()));
         };
         if let Some(name) = vs.name.as_deref() {
             df = df.filter(name_pred_expr(name))?;
@@ -101,6 +98,17 @@ pub async fn build_series(
             }
         }
     }
+    Ok(df)
+}
+
+/// Build the `/series` result: distinct `(name, service_name)` pairs, optionally
+/// narrowed by a `match[]` selector.
+pub async fn build_series(
+    engine: &super::QueryEngine,
+    matcher: Option<&str>,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let df = apply_match_selector(engine.table("metrics").await?, matcher)?;
     Ok(df
         .select(vec![prom_name_expr().alias("name"), col("service_name")])?
         .distinct()?)
@@ -695,6 +703,7 @@ pub async fn build_label_values(
     label: &str,
     start_ns: i64,
     end_ns: i64,
+    matcher: Option<&str>,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::functions::expr_fn::concat;
     use datafusion::prelude::{col, lit};
@@ -702,28 +711,19 @@ pub async fn build_label_values(
     // processes rows in range (and gets time-stats pruning) instead of all
     // history — an absent window is `[0, i64::MAX]`, i.e. unchanged behaviour.
     let window = || prom_time_between(start_ns, end_ns);
+    // Scope to the `match[]` selector too — a `$host` variable query like
+    // `label_values(up{service_name="X"}, host)` must restrict `host` to that
+    // service, not list every host in the store.
+    let scan = |pred: datafusion::prelude::Expr| async move {
+        apply_match_selector(engine.table("metrics").await?.filter(pred)?, matcher)
+    };
     if label == "__name__" {
-        let names = engine
-            .table("metrics")
-            .await?
-            .filter(window())?
-            .select(vec![prom_name_expr().alias("v")])?;
+        let names = scan(window()).await?.select(vec![prom_name_expr().alias("v")])?;
         let variant = |suffix: &str| concat(vec![prom_name_expr(), lit(suffix.to_string())]);
-        let bkt = engine
-            .table("metrics")
-            .await?
-            .filter(window().and(col("bucket_counts").is_not_null()))?
-            .select(vec![variant("_bucket").alias("v")])?;
-        let cnt = engine
-            .table("metrics")
-            .await?
-            .filter(window().and(col("bucket_counts").is_not_null()))?
-            .select(vec![variant("_count").alias("v")])?;
-        let sm = engine
-            .table("metrics")
-            .await?
-            .filter(window().and(col("bucket_counts").is_not_null()))?
-            .select(vec![variant("_sum").alias("v")])?;
+        let with_buckets = || window().and(col("bucket_counts").is_not_null());
+        let bkt = scan(with_buckets()).await?.select(vec![variant("_bucket").alias("v")])?;
+        let cnt = scan(with_buckets()).await?.select(vec![variant("_count").alias("v")])?;
+        let sm = scan(with_buckets()).await?.select(vec![variant("_sum").alias("v")])?;
         return Ok(names
             .union(bkt)?
             .union(cnt)?
@@ -733,10 +733,8 @@ pub async fn build_label_values(
             .sort(vec![col("v").sort(true, false)])?);
     }
     let lhs = label_lhs_expr(label);
-    Ok(engine
-        .table("metrics")
+    Ok(scan(window().and(lhs.clone().is_not_null()))
         .await?
-        .filter(window().and(lhs.clone().is_not_null()))?
         .select(vec![lhs.alias("v")])?
         .distinct()?
         .sort(vec![col("v").sort(true, false)])?)
@@ -748,8 +746,9 @@ pub async fn handle_label_values(
     label: &str,
     start_ns: i64,
     end_ns: i64,
+    matcher: Option<&str>,
 ) -> crate::Result<serde_json::Value> {
-    let df = build_label_values(engine, label, start_ns, end_ns).await?;
+    let df = build_label_values(engine, label, start_ns, end_ns, matcher).await?;
     let values = string_column_df(engine, df).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
@@ -2193,6 +2192,87 @@ mod tests {
             ..QuerierOptions::default()
         };
         crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    // Two services (`sol-collector` on hosts a,b; `other` on host c) each
+    // exposing `up`, used to prove label-value queries honor a `match[]` scope.
+    async fn host_engine() -> crate::query::QueryEngine {
+        use crate::config::query::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["sol-collector", "sol-collector", "other"])),
+                Arc::new(StringArray::from(vec!["up", "up", "up"])),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000, 3_000_000_000])
+                        .with_timezone("UTC"),
+                ),
+                Arc::new(StringArray::from(vec![
+                    r#"{"host":"a"}"#,
+                    r#"{"host":"b"}"#,
+                    r#"{"host":"c"}"#,
+                ])),
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])),
+                Arc::new(StringArray::from(vec!["up", "up", "up"])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_label_values_honors_match_selector() {
+        // A `$host` variable scoped to one service must only list that service's
+        // hosts — `label_values(up{service_name="sol-collector"}, host)` → [a,b],
+        // not the global [a,b,c]. Mirrors Grafana's match[]-scoped label query.
+        let engine = host_engine().await;
+        let scoped = handle_label_values(
+            &engine,
+            "host",
+            0,
+            i64::MAX,
+            Some(r#"up{service_name="sol-collector"}"#),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scoped["data"], serde_json::json!(["a", "b"]), "scoped: {scoped}");
+
+        // No selector → every host.
+        let all = handle_label_values(&engine, "host", 0, i64::MAX, None).await.unwrap();
+        assert_eq!(all["data"], serde_json::json!(["a", "b", "c"]), "unscoped: {all}");
     }
 
     #[tokio::test]

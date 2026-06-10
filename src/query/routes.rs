@@ -176,6 +176,8 @@ async fn prom_range(
 struct PromLabelParams {
     start: Option<String>,
     end: Option<String>,
+    #[serde(rename = "match[]", default)]
+    matcher: Option<String>,
 }
 
 async fn prom_label_values(
@@ -187,7 +189,7 @@ async fn prom_label_values(
     // as the range query; an absent window means "all history" (unchanged).
     let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
-    match prometheus::handle_label_values(&engine, &label, start_ns, end_ns).await {
+    match prometheus::handle_label_values(&engine, &label, start_ns, end_ns, params.matcher.as_deref()).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
