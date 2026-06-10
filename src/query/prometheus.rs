@@ -441,6 +441,124 @@ fn agg_name(op: token::TokenType) -> Result<&'static str, String> {
     }
 }
 
+/// PromQL aggregation grouping: `by(labels)` keeps only those labels in the
+/// result; `without(labels)` keeps every label except those (and `__name__`);
+/// no modifier collapses all series into one empty-labelled group. Operating on
+/// the exploded label map (see [`LabelCols::labels`]) lets `without` work even
+/// though the source labels live inside the `attributes` JSON.
+enum AggGrouping {
+    By(Vec<String>),
+    Without(Vec<String>),
+    All,
+}
+
+impl AggGrouping {
+    fn from(modifier: &Option<LabelModifier>) -> Self {
+        match modifier {
+            Some(LabelModifier::Include(l)) => AggGrouping::By(l.labels.clone()),
+            Some(LabelModifier::Exclude(l)) => AggGrouping::Without(l.labels.clone()),
+            None => AggGrouping::All,
+        }
+    }
+    /// The labels carried by a series' result group (the grouping projection).
+    fn result_labels(&self, labels: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        match self {
+            AggGrouping::By(set) => labels
+                .iter()
+                .filter(|(k, _)| set.iter().any(|s| s == *k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            AggGrouping::Without(set) => labels
+                .iter()
+                .filter(|(k, _)| k.as_str() != "__name__" && !set.iter().any(|s| s == *k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            AggGrouping::All => BTreeMap::new(),
+        }
+    }
+    fn key(&self, labels: &BTreeMap<String, String>) -> String {
+        format!("{:?}", self.result_labels(labels))
+    }
+}
+
+/// Reduce a group of values for a simple aggregation operator.
+#[allow(clippy::cast_precision_loss)] // group counts are tiny; f64 is exact here
+fn agg_reduce(op: &str, values: &[f64]) -> f64 {
+    match op {
+        "sum" => values.iter().sum(),
+        "min" => values.iter().copied().fold(f64::INFINITY, f64::min),
+        "max" => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        "count" => values.len() as f64,
+        "avg" if values.is_empty() => f64::NAN,
+        "avg" => values.iter().sum::<f64>() / values.len() as f64,
+        _ => f64::NAN,
+    }
+}
+
+/// Aggregate an instant vector in Rust. Composes over nested expressions
+/// (`count(count(…) by (cpu))`) and supports `by`/`without` — neither of which
+/// the single-level SQL aggregate path can express.
+fn aggregate_instant_vector(
+    op: &str,
+    grouping: &AggGrouping,
+    items: Vec<(BTreeMap<String, String>, f64)>,
+) -> Vec<(BTreeMap<String, String>, f64)> {
+    let mut groups: BTreeMap<String, (BTreeMap<String, String>, Vec<f64>)> = BTreeMap::new();
+    for (labels, v) in items {
+        groups
+            .entry(grouping.key(&labels))
+            .or_insert_with(|| (grouping.result_labels(&labels), Vec::new()))
+            .1
+            .push(v);
+    }
+    groups
+        .into_values()
+        .map(|(labels, vs)| (labels, agg_reduce(op, &vs)))
+        .collect()
+}
+
+/// Aggregate range series in Rust: group series by the grouping projection, then
+/// reduce per timestamp across the series in each group. Timestamps are keyed by
+/// nanoseconds for stable ordering; series in a group come from one range query
+/// so their grid timestamps align.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // ns↔s grid keys
+fn aggregate_range_series(op: &str, grouping: &AggGrouping, series: RangeSeries) -> RangeSeries {
+    let mut groups: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>)> =
+        BTreeMap::new();
+    for (_k, (labels, points)) in series {
+        let entry = groups
+            .entry(grouping.key(&labels))
+            .or_insert_with(|| (grouping.result_labels(&labels), BTreeMap::new()));
+        for (t, v) in points {
+            entry.1.entry((t * 1e9).round() as i64).or_default().push(v);
+        }
+    }
+    let mut out: RangeSeries = BTreeMap::new();
+    for (labels, buckets) in groups.into_values() {
+        let pts: Vec<(f64, f64)> = buckets
+            .into_iter()
+            .map(|(tk, vs)| (tk as f64 / 1e9, agg_reduce(op, &vs)))
+            .collect();
+        out.insert(format!("{labels:?}"), (labels, pts));
+    }
+    out
+}
+
+/// Apply `clamp_min`/`clamp_max` (value floored/capped at `bound`) to a value.
+fn clamp_value(is_min: bool, x: f64, bound: f64) -> f64 {
+    if is_min { x.max(bound) } else { x.min(bound) }
+}
+
+/// Fold an instant value to a scalar, per PromQL `scalar()`: a scalar passes
+/// through, a one-element vector yields its value, anything else is NaN.
+fn instant_to_scalar(v: InstantVal) -> f64 {
+    match v {
+        InstantVal::Scalar(x) => x,
+        InstantVal::Vector(items) if items.len() == 1 => items[0].1,
+        InstantVal::Vector(_) => f64::NAN,
+    }
+}
+
 /// Serialize a unix-seconds timestamp as an integer JSON number when it has no
 /// fractional part (Mimir/Prometheus emit integer seconds), else as a float
 /// (C-P5). The field deserializes back into `f64` either way.
@@ -1903,6 +2021,63 @@ async fn eval_range_window(
             let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table)).await?;
             combine_range(b.op, l, r, &b.modifier).map_err(to_err)
         }
+        // `scalar(v)` folds to a constant over the window (e.g. a CPU count as a
+        // divisor): evaluate it as an instant at the window end. This also lets a
+        // non-range inner like `count(count(…) by (cpu))` work in a range query.
+        Expr::Call(c) if c.func.name == "scalar" => {
+            let arg = c
+                .args
+                .args
+                .first()
+                .ok_or_else(|| to_err("scalar() requires one argument".to_string()))?;
+            let v = Box::pin(eval_instant(engine, arg, e)).await?;
+            Ok(RangeVal::Scalar(instant_to_scalar(v)))
+        }
+        // `clamp_min`/`clamp_max`: floor/cap every point of every series.
+        Expr::Call(c) if matches!(c.func.name, "clamp_min" | "clamp_max") => {
+            let is_min = c.func.name == "clamp_min";
+            let vec_arg = c
+                .args
+                .args
+                .first()
+                .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
+            let bound_arg = c
+                .args
+                .args
+                .get(1)
+                .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
+            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table)).await?;
+            let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e)).await?);
+            Ok(match v {
+                RangeVal::Scalar(x) => RangeVal::Scalar(clamp_value(is_min, x, bound)),
+                RangeVal::Vector(mut m) => {
+                    for (_labels, pts) in m.values_mut() {
+                        for p in pts.iter_mut() {
+                            p.1 = clamp_value(is_min, p.1, bound);
+                        }
+                    }
+                    RangeVal::Vector(m)
+                }
+            })
+        }
+        // Aggregations evaluated compositionally in Rust — supports nesting and
+        // `by`/`without` (the SQL aggregate path only does single-level `by`).
+        // Yield to the `_` arm's special detectors (bucket heatmap / histogram
+        // quantile), whose `sum by (le) …` shape is also a simple aggregate.
+        Expr::Aggregate(agg)
+            if agg_name(agg.op).is_ok()
+                && detect_bucket_heatmap(expr).is_none()
+                && detect_hist_quantile(expr).is_none() =>
+        {
+            let op = agg_name(agg.op).map_err(to_err)?;
+            let grouping = AggGrouping::from(&agg.modifier);
+            let inner = Box::pin(eval_range_window(engine, &agg.expr, s, e, table)).await?;
+            let series = match inner {
+                RangeVal::Vector(m) => m,
+                RangeVal::Scalar(_) => RangeSeries::new(),
+            };
+            Ok(RangeVal::Vector(aggregate_range_series(op, &grouping, series)))
+        }
         _ => {
             if let Some(spec) = detect_hist_quantile(expr) {
                 let resp = handle_hist_quantile_range(engine, &spec, s, e).await?;
@@ -2072,11 +2247,47 @@ async fn eval_instant(
                 .first()
                 .ok_or_else(|| to_err("scalar() requires one argument".to_string()))?;
             let v = Box::pin(eval_instant(engine, arg, time_ns)).await?;
-            Ok(InstantVal::Scalar(match v {
-                InstantVal::Scalar(x) => x,
-                InstantVal::Vector(items) if items.len() == 1 => items[0].1,
-                InstantVal::Vector(_) => f64::NAN,
-            }))
+            Ok(InstantVal::Scalar(instant_to_scalar(v)))
+        }
+        // `clamp_min(v, m)` / `clamp_max(v, m)`: floor/cap each sample at the
+        // scalar bound `m`. Used by the RAM Used gauge's `clamp_min(…, 0)`.
+        Expr::Call(c) if matches!(c.func.name, "clamp_min" | "clamp_max") => {
+            let is_min = c.func.name == "clamp_min";
+            let vec_arg = c
+                .args
+                .args
+                .first()
+                .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
+            let bound_arg = c
+                .args
+                .args
+                .get(1)
+                .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
+            let v = Box::pin(eval_instant(engine, vec_arg, time_ns)).await?;
+            let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, time_ns)).await?);
+            Ok(match v {
+                InstantVal::Scalar(x) => InstantVal::Scalar(clamp_value(is_min, x, bound)),
+                InstantVal::Vector(mut items) => {
+                    for it in &mut items {
+                        it.1 = clamp_value(is_min, it.1, bound);
+                    }
+                    InstantVal::Vector(items)
+                }
+            })
+        }
+        // Aggregations are evaluated compositionally in Rust (the inner is any
+        // expression, not just a selector): handles nesting + `by`/`without`.
+        Expr::Aggregate(agg) if agg_name(agg.op).is_ok() => {
+            let op = agg_name(agg.op).map_err(to_err)?;
+            let grouping = AggGrouping::from(&agg.modifier);
+            let inner = Box::pin(eval_instant(engine, &agg.expr, time_ns)).await?;
+            let items = match inner {
+                InstantVal::Vector(v) => v,
+                InstantVal::Scalar(s) => vec![(BTreeMap::new(), s)],
+            };
+            Ok(InstantVal::Vector(aggregate_instant_vector(
+                op, &grouping, items,
+            )))
         }
         _ => {
             if let Some((phi, vs)) = histogram_quantile_parts(expr) {
@@ -2300,6 +2511,149 @@ mod tests {
             .unwrap();
         assert_eq!(resp.data.result.len(), 1, "scalar → one value: {:?}", resp.data.result);
         assert_eq!(resp.data.result[0].value.1, "120", "60 * 2");
+    }
+
+    // Four series of `m` over (cpu ∈ {0,1}) × (mode ∈ {user,system}) at one
+    // service, two timestamps — the shape the Node Exporter CPU panels query.
+    async fn cpu_engine() -> crate::query::QueryEngine {
+        use crate::config::query::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        // (cpu, mode, value) at t=1s, repeated at t=2s with the same values.
+        let dims = [("0", "user", 1.0), ("0", "system", 2.0), ("1", "user", 3.0), ("1", "system", 4.0)];
+        let (mut svc, mut name, mut t, mut attrs, mut val, mut pn) =
+            (vec![], vec![], vec![], vec![], vec![], vec![]);
+        for ts in [1_000_000_000i64, 2_000_000_000] {
+            for (cpu, mode, v) in dims {
+                svc.push("svc");
+                name.push("m");
+                t.push(ts);
+                attrs.push(format!(r#"{{"cpu":"{cpu}","mode":"{mode}"}}"#));
+                val.push(v);
+                pn.push("m");
+            }
+        }
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(svc)),
+                Arc::new(StringArray::from(name)),
+                Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
+                Arc::new(StringArray::from(attrs)),
+                Arc::new(Float64Array::from(val)),
+                Arc::new(StringArray::from(pn)),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::query::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_instant_nested_count_aggregate() {
+        // CPU Cores panel: count(count(m) by (cpu)) → number of cpus (2). Requires
+        // an aggregate whose inner is itself an aggregate (not a bare selector).
+        let engine = cpu_engine().await;
+        let r = handle_instant(&engine, "count(count(m) by (cpu))", 2_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(r.data.result.len(), 1, "{:?}", r.data.result);
+        assert_eq!(r.data.result[0].value.1, "2");
+    }
+
+    #[tokio::test]
+    async fn test_instant_without_keeps_complement() {
+        // sum without(mode) (m): groups drop `mode` (and __name__), keep cpu →
+        // cpu0: 1+2=3, cpu1: 3+4=7.
+        let engine = cpu_engine().await;
+        let r = handle_instant(&engine, "sum without(mode) (m)", 2_000_000_000)
+            .await
+            .unwrap();
+        let mut got: Vec<(String, String)> = r
+            .data
+            .result
+            .iter()
+            .map(|s| (s.metric.get("cpu").cloned().unwrap_or_default(), s.value.1.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(got, vec![("0".into(), "3".into()), ("1".into(), "7".into())]);
+        assert!(r.data.result.iter().all(|s| !s.metric.contains_key("mode")), "mode dropped");
+    }
+
+    #[tokio::test]
+    async fn test_instant_clamp_min_floors_values() {
+        // RAM Used panel uses clamp_min(…, 0); here clamp_min(m, 2) floors at 2.
+        let engine = cpu_engine().await;
+        let r = handle_instant(&engine, "clamp_min(m, 2)", 2_000_000_000).await.unwrap();
+        let mut vals: Vec<&str> = r.data.result.iter().map(|s| s.value.1.as_str()).collect();
+        vals.sort_unstable();
+        assert_eq!(vals, ["2", "2", "3", "4"]); // 1→2, 2→2, 3,4 unchanged
+    }
+
+    #[tokio::test]
+    async fn test_range_without_aggregation_and_scalar_divisor() {
+        // CPU Basic shape: sum without(mode) (m) over a range → per-cpu series.
+        let engine = cpu_engine().await;
+        let r = handle_range(&engine, "sum without(mode) (m)", 1_000_000_000, 2_000_000_000, 1_000_000_000)
+            .await
+            .unwrap();
+        let mut cpus: Vec<&str> = r
+            .data
+            .result
+            .iter()
+            .map(|s| s.metric.get("cpu").map(String::as_str).unwrap_or_default())
+            .collect();
+        cpus.sort_unstable();
+        assert_eq!(cpus, ["0", "1"], "one series per cpu: {:?}", r.data.result);
+        // Every point on each series is the user+system sum (3 / 7).
+        for s in &r.data.result {
+            let want = if s.metric.get("cpu").map(String::as_str) == Some("0") { "3" } else { "7" };
+            assert!(s.values.iter().all(|(_, v)| v == want), "cpu sum: {:?}", s.values);
+        }
+
+        // CPU panel shape: scalar(count(count(m) by (cpu))) folds to the cpu count.
+        let r = handle_range(
+            &engine,
+            "sum(m) / scalar(count(count(m) by (cpu)))",
+            1_000_000_000,
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .await
+        .unwrap();
+        // sum(m) = 10 over all four series; /2 cpus = 5.
+        assert!(!r.data.result.is_empty());
+        assert!(r.data.result[0].values.iter().all(|(_, v)| v == "5"), "{:?}", r.data.result[0].values);
     }
 
     #[tokio::test]
