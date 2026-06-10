@@ -31,6 +31,7 @@ services:
     command: ["--config", "/etc/sol/sol-collector.yaml"]
     volumes:
       - ./sol/sol-collector.yaml:/etc/sol/sol-collector.yaml:ro
+      - parquet-data:/data/parquet:rw
     networks:
       - bridge
     depends_on:
@@ -121,7 +122,7 @@ services:
       # https://github.com/dotnet/runtime/issues/68967
       # https://www.meziantou.net/round-robin-dns-support-in-dotnet-httpclient.htm
       # https://learn.microsoft.com/en-us/aspnet/core/grpc/loadbalancing?view=aspnetcore-8.0#configure-grpc-client-side-load-balancing
-      replicas: 1
+      replicas: 2
       resources:
         limits:
           memory: 300M

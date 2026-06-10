@@ -77,6 +77,17 @@ transforms:
       max_items: 1000
 
 sinks:
+  parquet_traces:
+    type: file
+    inputs: ["tail_sampling"]
+    path: "/data/parquet/traces/dt=%Y-%m-%d/%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
   otlp_tempo:
     type: opentelemetry
     inputs: ["tail_sampling"]

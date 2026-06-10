@@ -103,17 +103,6 @@ sinks:
       max_events: 5000
       timeout_secs: 30
 
-  parquet_traces:
-    type: file
-    inputs: ["otlp.traces"]
-    path: "/data/parquet/traces/dt=%Y-%m-%d/%H-%M-%S.parquet"
-    batch_encoding:
-      codec: parquet
-      compression: zstd
-    batch:
-      max_events: 5000
-      timeout_secs: 30
-
   # task 14b: one Parquet sink per metric subtype → metrics/<subtype>/dt=…
   # Each sink's batch is single-subtype, so the codec emits one narrow file.
   parquet_metrics_gauge:
