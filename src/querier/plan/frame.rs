@@ -160,7 +160,7 @@ mod tests {
     use std::sync::Arc;
 
     /// A 3-sample counter (http_total, service=client) at t=1,2,3s → 10,30,60.
-    async fn counter_engine() -> crate::query::QueryEngine {
+    async fn counter_engine() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
         let dir = tmp.path().join("metrics").join("dt=2026-06-01");
@@ -209,10 +209,10 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
-    async fn base(engine: &crate::query::QueryEngine) -> DataFrame {
+    async fn base(engine: &crate::querier::QueryEngine) -> DataFrame {
         engine
             .table("metrics")
             .await
@@ -229,7 +229,7 @@ mod tests {
     }
 
     /// Collect the `v` column sorted by time — the parity comparison vector.
-    async fn values_by_time(engine: &crate::query::QueryEngine, df: DataFrame) -> Vec<f64> {
+    async fn values_by_time(engine: &crate::querier::QueryEngine, df: DataFrame) -> Vec<f64> {
         let df = df
             .sort(vec![col("time_unix_nano").sort(true, false)])
             .unwrap();

@@ -2355,7 +2355,7 @@ mod tests {
     }
 
     // A 3-sample counter fixture (http_total, service=client) at t=1s,2s,3s.
-    async fn counter_engine() -> crate::query::QueryEngine {
+    async fn counter_engine() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -2417,12 +2417,12 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
     // Two services (`sol-collector` on hosts a,b; `other` on host c) each
     // exposing `up`, used to prove label-value queries honor a `match[]` scope.
-    async fn host_engine() -> crate::query::QueryEngine {
+    async fn host_engine() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -2476,7 +2476,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
     #[tokio::test]
@@ -2515,7 +2515,7 @@ mod tests {
 
     // Four series of `m` over (cpu ∈ {0,1}) × (mode ∈ {user,system}) at one
     // service, two timestamps — the shape the Node Exporter CPU panels query.
-    async fn cpu_engine() -> crate::query::QueryEngine {
+    async fn cpu_engine() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -2576,7 +2576,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
     #[tokio::test]
@@ -2794,7 +2794,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
 
         let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000)
             .await
@@ -2914,7 +2914,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
         assert!(engine.has_table("metrics_5m"), "tier registered");
 
         // 5-minute step over a 2-day range → splits per day AND selects the M5 tier.
@@ -3017,7 +3017,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
         let resp = handle_range(
             &engine,
             "topk(1, sum by (sc) (rate(reqs[5m])))",
@@ -3124,7 +3124,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
         // base `_bucket` query (normalized name http_server_request_duration_seconds)
         let resp = handle_range(
             &engine,
@@ -3220,7 +3220,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
         let resp = handle_range(
             &engine,
             "sum(rate(http_server_request_duration_seconds_bucket[1m])) by (le)",

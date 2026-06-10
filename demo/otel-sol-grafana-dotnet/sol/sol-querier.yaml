@@ -1,12 +1,12 @@
-# Sol query-backend node for the demo.
+# Sol querier-backend node for the demo.
 #
 # Reads the Parquet the gateway writes (read-only) and serves the
 # Prometheus / Tempo / Loki + SQL APIs on :9009, so Grafana can query Sol
 # side-by-side with Mimir/Tempo/Loki. Its own internal metrics are forwarded
-# to Mimir as service.name = sol/query, so the `SOL Query Backend` dashboard's
+# to Mimir as service.name = sol/querier, so the `SOL Querier Backend` dashboard's
 # instance template variable resolves.
 
-# Read-side query server (query-backend feature). Presence of `querier:`
+# Read-side query server (querier-backend feature). Presence of `querier:`
 # starts the HTTP query component (no `role` switch).
 querier:
   address: "0.0.0.0:9009"
@@ -26,14 +26,14 @@ sources:
     type: internal_metrics
     scrape_interval_secs: 15
     resource_attributes:
-      service.name: sol/query
-      service.namespace: query
+      service.name: sol/querier
+      service.namespace: querier
   host_metrics:
     type: host_metrics
     scrape_interval_secs: 15
     namespace: ""
     resource_attributes:
-      service.name: sol-query
+      service.name: sol-querier
 
 transforms:
   promote_host_metrics_attrs:

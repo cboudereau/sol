@@ -27,8 +27,8 @@ pub mod ast;
     unused_parens
 )]
 mod grammar {
-    lrlex::lrlex_mod!("query/logql/logql.l");
-    lrpar::lrpar_mod!("query/logql/logql.y");
+    lrlex::lrlex_mod!("querier/logql/logql.l");
+    lrpar::lrpar_mod!("querier/logql/logql.y");
     // Re-export just the entry points (the generated modules are private).
     pub(super) use logql_l::lexerdef;
     pub(super) use logql_y::parse;

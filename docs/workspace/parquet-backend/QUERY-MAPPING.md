@@ -23,7 +23,7 @@
 | Group `by (l)` / `without (l)` | `GROUP BY <cols / json_extract>` |
 | `trace_id` literal | `trace_id = X'<hex>'` (fixed-len binary, **bloom-accelerated**) |
 
-> JSON extraction uses the `datafusion-functions-json` UDFs (added under the `query-backend` feature). Attribute filters do not push down — accepted v1 ([rabbit hole 4](./DESIGN.md#rabbit-holes)); hot-attribute promotion is a future optimisation.
+> JSON extraction uses the `datafusion-functions-json` UDFs (added under the `querier-backend` feature). Attribute filters do not push down — accepted v1 ([rabbit hole 4](./DESIGN.md#rabbit-holes)); hot-attribute promotion is a future optimisation.
 
 ---
 

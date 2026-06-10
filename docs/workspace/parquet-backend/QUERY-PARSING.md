@@ -10,8 +10,8 @@ approach is chosen.
 | Language | Sol today | Upstream parser | Rust crate |
 |---|---|---|---|
 | PromQL | [`promql-parser`](https://crates.io/crates/promql-parser) (real AST) | Prometheus `promql/parser` (goyacc) | ✅ mature |
-| LogQL | **ad-hoc string slicing** (`src/query/loki.rs`) | Loki `pkg/logql/syntax` (goyacc) | ❌ none mature |
-| TraceQL | **ad-hoc string slicing** (`src/query/tempo.rs`) | Tempo `pkg/traceql` (goyacc) | ❌ none mature |
+| LogQL | **ad-hoc string slicing** (`src/querier/loki.rs`) | Loki `pkg/logql/syntax` (goyacc) | ❌ none mature |
+| TraceQL | **ad-hoc string slicing** (`src/querier/tempo.rs`) | Tempo `pkg/traceql` (goyacc) | ❌ none mature |
 
 Sol's `loki.rs`/`tempo.rs` find the `{…}` selector and split on a fixed set of
 operators. That covers the demo's pcap subset (label matchers, line filters, the
@@ -35,7 +35,7 @@ hand-written lexer and a post-parse type-check pass.
 `lrpar`) with a `promql.y` LALR grammar and a `.l` lexer spec, generated in
 `build.rs`. Its AST (`Expr::{VectorSelector, MatrixSelector, Call, Aggregate,
 Binary, Unary, …}`) mirrors Prometheus's node-for-node, which is why Sol can lower
-it cleanly (`src/query/prometheus.rs`).
+it cleanly (`src/querier/prometheus.rs`).
 
 **The lesson:** the upstream `.y` grammar is the spec. The faithful Rust path is to
 port that grammar to a Rust LR generator, keeping the AST shape aligned so it

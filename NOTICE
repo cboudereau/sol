@@ -1,6 +1,6 @@
 Sol — Single Observability Layer
 Dual-licensed (see LICENSE):
-  - Sol-original code (files tagged SPDX AGPL-3.0-only, notably src/query/**):
+  - Sol-original code (files tagged SPDX AGPL-3.0-only, notably src/querier/**):
     GNU Affero General Public License v3.0 (LICENSE-AGPL-3.0).
   - Vector-derived code: Mozilla Public License 2.0 (LICENSE-MPL-2.0).
 

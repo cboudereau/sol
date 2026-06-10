@@ -50,7 +50,7 @@ Binary operators (`+`, `-`, `*`, `/`, `>`, `bool`) are translated to SQL arithme
 
 ## Consequences
 
-- Add `promql-parser` as a dependency behind a feature flag (e.g., `query-backend`).
+- Add `promql-parser` as a dependency behind a feature flag (e.g., `querier-backend`).
 - The translator is a match on the parsed AST — one arm per supported function. Unsupported functions return an error variant.
 - PromQL staleness rules (5-minute lookback, stale NaN markers) are NOT implemented in v1. Queries return the latest data point in the requested range. This is acceptable for dashboard use cases but not for alerting.
 - Counter reset detection in `rate()` is simplified: if `value[t] < value[t-1]`, assume reset and use `value[t]` as the delta. Full PromQL reset handling (with staleness) is deferred.

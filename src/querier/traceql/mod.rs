@@ -27,8 +27,8 @@ pub mod ast;
     unused_parens
 )]
 mod grammar {
-    lrlex::lrlex_mod!("query/traceql/traceql.l");
-    lrpar::lrpar_mod!("query/traceql/traceql.y");
+    lrlex::lrlex_mod!("querier/traceql/traceql.l");
+    lrpar::lrpar_mod!("querier/traceql/traceql.y");
     pub(super) use traceql_l::lexerdef;
     pub(super) use traceql_y::parse;
 }

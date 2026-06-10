@@ -17,7 +17,7 @@ Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
 | H1 regex matchers unanchored | ✅ fixed | `e5ee66178` — `^(?:RE)$` (PromQL + LogQL labels) |
 | H2 gc relies on fs mtime | ⬜ deferred | needs a compactor-written marker (larger); mtime caveat documented |
 | H3 frontend lookback=0 + dead merge_* | ⬜ deferred | larger refactor; impact narrow (multi-day ranges crossing UTC midnight) |
-| H4 query-backend config not hot-reloaded | ⬜ documented | restart-required noted in deployment-roles ADR; full reload deferred |
+| H4 querier-backend config not hot-reloaded | ⬜ documented | restart-required noted in deployment-roles ADR; full reload deferred |
 | M1 rate/increase/irate ignore `[d]` window | ⬜ deferred | Mimir-parity, larger |
 | M2 rate ÷0 on duplicate timestamps | ✅ fixed | `e5ee66178` |
 | M3 distinct_json_keys unbounded | ✅ fixed | `bcd2ccf95` — `LIMIT 10_000` |
@@ -39,25 +39,25 @@ Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
 - ✅ **B1 — SQL endpoint runs arbitrary statements.** `handle_sql` → `engine.sql` →
   `ctx.sql()` with no `SQLOptions`. `COPY … TO '/path'` writes any file;
   `CREATE EXTERNAL TABLE … LOCATION '…'` reads any file (bypassing catalog +
-  guardrail); `DROP`/`CREATE VIEW` mutate the catalog. `src/query/sql.rs:85`,
-  `src/query/catalog.rs` (`ctx.sql`). Fix: user path via
+  guardrail); `DROP`/`CREATE VIEW` mutate the catalog. `src/querier/sql.rs:85`,
+  `src/querier/catalog.rs` (`ctx.sql`). Fix: user path via
   `ctx.sql_with_options(sql, SQLOptions::new().with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false))`.
 - 🔁 **B2 — NFR9 byte guardrail unsound/bypassable.** `estimate_scan_bytes` =
   `sql.to_lowercase().contains(signal)` × whole-dir size: 0 bytes for any query
   without those substrings (B1's external-table read is "free"), ignores
-  `WHERE`/`LIMIT`/pruning, false-positives on column names. `src/query/sql.rs:24-34`.
+  `WHERE`/`LIMIT`/pruning, false-positives on column names. `src/querier/sql.rs:24-34`.
   Fix: enforce limits in DataFusion (memory pool / inspect `ExecutionPlan`); pair
   with B1 to restrict reachable tables.
 - ✅ **B3 — Cache config is dead + NFR5 byte ceiling unenforced.**
   `QueryEngine::new` hardcodes `MokaQueryCache::new()`; `ttl_secs`/`max_entries`/
   `max_bytes` inert. No byte weigher → entry-count cap only; `set_cache_memory`
-  never called. `src/query/catalog.rs:354`, `src/query/cache.rs:74`. Fix:
+  never called. `src/querier/catalog.rs:354`, `src/querier/cache.rs:74`. Fix:
   `with_params(max_entries, ttl)` + a `.weigher(bytes)` bounded by `max_bytes`.
   (Planned.)
 - ✅ **B4 — Rollup is coupled to raw lifecycle (rollup ≠ compactor rule).** FIXED:
   `generate_rollup` now reads `resolve_files(dir)` survivors (compacted +
   non-superseded raw, rollups excluded), so it can always (re)build a day's
-  rollup from the compacted daily — independent of raw GC. `src/query/rollup.rs`.
+  rollup from the compacted daily — independent of raw GC. `src/querier/rollup.rs`.
   Was: raw-only (`!rollup- && !compacted-`), unbuildable once raw was gone.
   **Not** a steady-state bug: `run_once` orders seal → rollup → gc, so a
   continuously-running compactor regenerates the rollup from raw in the same pass
@@ -79,8 +79,8 @@ Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
   `run_once` calls `generate_rollup` for every sealed metric partition × tier
   each pass, unconditionally re-reading + overwriting — ~`retention_days × tiers`
   (≈90) full regenerations every interval, though sealed days never change. Seal
-  has a `has_new` guard; rollup has none. `src/query/rollup.rs`,
-  `src/query/compaction.rs` `run_once`. Fix: skip a partition whose
+  has a `has_new` guard; rollup has none. `src/querier/rollup.rs`,
+  `src/querier/compaction.rs` `run_once`. Fix: skip a partition whose
   `rollup-<tier>` is newer than its source (pairs with B4 — read survivors, then
   compare mtimes). NB rollup does NOT need leveled/multi-pass compaction: one
   file per tier per sealed day, bounded by `retention_days`; no small-file
@@ -91,22 +91,22 @@ Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
 - ⬜ **H1 — Regex matchers not anchored.** `=~`/`!~` emit bare
   `regexp_like(x,'<v>')` (DataFusion = substring) while Prometheus/Loki fully
   anchor `^(?:…)$`; e.g. `service_name=~"prod"` wrongly matches `prod-1`.
-  `src/query/prometheus.rs:75-76`, `src/query/loki.rs:84-85`. (Loki `|~` line
+  `src/querier/prometheus.rs:75-76`, `src/querier/loki.rs:84-85`. (Loki `|~` line
   filters are correctly unanchored — leave them.) Fix: wrap label-matcher regex
   in `^(?:…)$`.
 - ⬜ **H2 — `gc_superseded` trusts filesystem mtime.** Orphan-free guarantee
   assumes superseder newer than inputs, but `cp -p`/backup-restore/clock-skew/
   NTP-step break it → premature raw deletion. Also `delete_grace_secs=60` should
   be ≥ `refresh_interval + max_query_secs` (long scans open files lazily at
-  execution). `src/query/compaction.rs` `gc_superseded`. Fix: gate on a
+  execution). `src/querier/compaction.rs` `gc_superseded`. Fix: gate on a
   compactor-written marker, not raw mtime; raise/document the grace bound.
 - ⬜ **H3 — Frontend sharding half-wired.** `handle_range` calls
   `split(start,end,0,…)` (lookback hardcoded **0**) → `rate`/`increase`/
   `*_over_time` under-compute at every UTC midnight on multi-day queries; and
   `merge_series`/`merge_topk`/`merge_histogram_quantile` + per-shard `cacheable`
   cache are dead code (handle_range re-merges inline) → historical-shard cache
-  never runs, tests give false confidence. `src/query/prometheus.rs:1037-1082`,
-  `src/query/frontend.rs`. Fix: route through frontend (real lookback + cache),
+  never runs, tests give false confidence. `src/querier/prometheus.rs:1037-1082`,
+  `src/querier/frontend.rs`. Fix: route through frontend (real lookback + cache),
   or delete the unused pieces and fix lookback inline.
 - ⬜ **H4 — Config reload ignores query backend.** `controller.reload()` only
   re-creates `api_server`; `querier`/`compactor` changes are a silent no-op until
@@ -117,33 +117,33 @@ Status legend: ⬜ open · ✅ fixed · 🔁 partially addressed.
 
 - ⬜ **M1 — `rate`/`increase`/`irate` ignore `[d]`.** All map to one per-sample-
   delta SQL → not Mimir-equivalent (per-second avg over window); `increase`
-  returns a rate, not a count. `src/query/prometheus.rs` `rate_sql`/`lower_call`.
+  returns a rate, not a count. `src/querier/prometheus.rs` `rate_sql`/`lower_call`.
 - ⬜ **M2 — `rate_sql` ÷0 on duplicate timestamps** → `inf`/`NaN` into JSON (the
-  heatmap path guards `dt>0`, rate doesn't). `src/query/prometheus.rs:430-433`.
+  heatmap path guards `dt>0`, rate doesn't). `src/querier/prometheus.rs:430-433`.
 - ⬜ **M3 — `distinct_json_keys` unbounded** on high-cardinality span
-  `attributes` (label/tag discovery DoS). `src/query/prometheus.rs:343`,
-  `src/query/tempo.rs` tags. Fix: `LIMIT` the distinct scan.
+  `attributes` (label/tag discovery DoS). `src/querier/prometheus.rs:343`,
+  `src/querier/tempo.rs` tags. Fix: `LIMIT` the distinct scan.
 - ⬜ **M4 — `__name__` regex/`!=` matchers silently dropped** (`matcher_pred`
-  returns `None` for `__name__`). `src/query/prometheus.rs:60-63`.
+  returns `None` for `__name__`). `src/querier/prometheus.rs:60-63`.
 - ⬜ **M5 — `seal_partition` supersede-set from a second dir scan** (TOCTOU vs the
   read-set): a late raw could be marked superseded but never merged → data loss
-  (sealed-day, narrow window). `src/query/compaction.rs` `seal_partition`.
+  (sealed-day, narrow window). `src/querier/compaction.rs` `seal_partition`.
 - ⬜ **M6 — Error responses leak raw engine internals** to clients.
-  `src/query/routes.rs:45,75-78`. Fix: log full error, return generic message.
+  `src/querier/routes.rs:45,75-78`. Fix: log full error, return generic message.
 
 ## LOW
 
 - ⬜ **L1 — bare `querier:` (null) → `None` but `querier: {}` → server on default
   port** (presence footgun). Doc + maybe warn. `src/config/builder.rs`.
 - ⬜ **L2 — non-integer `topk(2.9,…)` truncates silently** (Prometheus errors).
-  `src/query/prometheus.rs:472-480`.
+  `src/querier/prometheus.rs:472-480`.
 - ⬜ **L3 — `histogram_quantile` first-bucket lower bound hardcoded `0.0`** (wrong
-  for negative observations). `src/query/prometheus.rs:1137`.
+  for negative observations). `src/querier/prometheus.rs:1137`.
 - ⬜ **L4 — `run_once` `?` aborts the whole pass on one corrupt partition**
   (self-heals next interval but can wedge GC → unbounded disk).
-  `src/query/compaction.rs` `run_once`. Fix: per-partition error isolation.
+  `src/querier/compaction.rs` `run_once`. Fix: per-partition error isolation.
 - ⬜ **L5 — `gc_retention` leaves empty `<subtype>/` dirs** after leaf removal
-  (cosmetic). `src/query/compaction.rs` `gc_retention`.
+  (cosmetic). `src/querier/compaction.rs` `gc_retention`.
 
 ## Refuted (investigated, NOT a bug)
 

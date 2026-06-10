@@ -16,7 +16,7 @@ The gateway flushes one small Parquet file per batch per signal (the demo: a fil
 ### Where does compaction run?
 | Option | Pros | Cons |
 |---|---|---|
-| A. Background task inside the querier (`src/query/`) | Fewer moving parts | Couples compaction to query lifecycle; complicates the stateless-querier rule ([NFR8](../DESIGN.md#nfr8)) |
+| A. Background task inside the querier (`src/querier/`) | Fewer moving parts | Couples compaction to query lifecycle; complicates the stateless-querier rule ([NFR8](../DESIGN.md#nfr8)) |
 | B. Make the gateway write big sorted files | "No compaction" | Forces gateway buffering → memory + freshness regression; can't global-sort or roll up; multi-gateway still fragments |
 | C. **Standalone Parquet→Parquet compactor component** (DataFusion), singleton role | Gateway stays dumb/low-latency; clean role isolation; reuses file sink + querier catalog; schedulable | One more deployable (mitigated: same binary, a role/cron) |
 

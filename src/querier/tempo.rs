@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     // --- end-to-end over a 2-span trace fixture ---
-    async fn trace_engine() -> crate::query::QueryEngine {
+    async fn trace_engine() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{
             FixedSizeBinaryArray, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
@@ -1170,7 +1170,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
     #[tokio::test]

@@ -845,7 +845,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
 
         let resp = handle_query_range(
             &engine,
@@ -913,7 +913,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        let engine = crate::query::QueryEngine::new(&opts).await.unwrap();
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
 
         // Label names: promoted column + normalized resource-attribute keys.
         let labels = handle_labels(&engine).await.unwrap();
@@ -937,7 +937,7 @@ mod tests {
         );
     }
 
-    async fn logs_engine_with_attrs() -> crate::query::QueryEngine {
+    async fn logs_engine_with_attrs() -> crate::querier::QueryEngine {
         use crate::config::query::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -982,7 +982,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        crate::query::QueryEngine::new(&opts).await.unwrap()
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
     #[tokio::test]

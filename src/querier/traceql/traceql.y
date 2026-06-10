@@ -84,7 +84,7 @@ IdentPath -> Result<String, ()>:
     }
   ;
 %%
-use crate::query::traceql::ast::{AttrScope, Field, FieldExpr, FieldOp, SpansetExpr, SpansetOp};
+use crate::querier::traceql::ast::{AttrScope, Field, FieldExpr, FieldOp, SpansetExpr, SpansetOp};
 
 /// Build a spanset-combining expression.
 fn sop(
@@ -101,5 +101,5 @@ fn unquote(s: &str) -> String {
         .strip_prefix('"')
         .and_then(|x| x.strip_suffix('"'))
         .unwrap_or(s);
-    crate::query::loki::unescape_dquoted(inner)
+    crate::querier::loki::unescape_dquoted(inner)
 }

@@ -28,9 +28,9 @@ So the query backend does not fit `SourceConfig` / `SinkConfig` / `TransformConf
 **Option B — a dedicated top-level config block with an embedded server, modelled on `src/api/`.**
 
 Concretely:
-- A new module `src/query/` (feature-gated, see [datafusion-table-discovery](./datafusion-table-discovery.md) for the feature flag).
-- A `query::Options` config struct, added as `#[cfg(feature = "query-backend")] pub query: query::Options` on the top-level `Config` (mirrors `api: api::Options` at [config/mod.rs:149](../../../../src/config/mod.rs)).
-- A `query::Server` with a `start(opts, handle) -> Result<Server>` constructor, launched from a `setup_query(&self, handle)` method on `ApplicationConfig` in [app.rs](../../../../src/app.rs), exactly as `setup_api` launches `api::Server` ([app.rs:134](../../../../src/app.rs)).
+- A new module `src/querier/` (feature-gated, see [datafusion-table-discovery](./datafusion-table-discovery.md) for the feature flag).
+- A `querier::Options` config struct, added as `#[cfg(feature = "querier-backend")] pub query: querier::Options` on the top-level `Config` (mirrors `api: api::Options` at [config/mod.rs:149](../../../../src/config/mod.rs)).
+- A `querier::Server` with a `start(opts, handle) -> Result<Server>` constructor, launched from a `setup_query(&self, handle)` method on `ApplicationConfig` in [app.rs](../../../../src/app.rs), exactly as `setup_api` launches `api::Server` ([app.rs:134](../../../../src/app.rs)).
 - The server holds the Tokio task handle and a shutdown trigger; it is stored on the topology controller alongside `api_server` ([topology/controller.rs:42](../../../../src/topology/controller.rs)) and torn down the same way.
 
 Rationale:
@@ -43,4 +43,4 @@ Rationale:
 - Startup/shutdown plumbing is added in `app.rs` and `topology/controller.rs` parallel to the `api` server — these are the only two pipeline-integration touch points.
 - HTTP routing uses **warp** filters (the framework already used by `src/api/server.rs` and the OTLP HTTP source), so no new HTTP framework dependency.
 - Because it is decoupled from the topology graph, the query backend has no acknowledgement or backpressure contract to satisfy — it only reads finalized Parquet files (consistent with the write-ahead-log non-goal in [DESIGN.md](../DESIGN.md#non-goals)).
-- The three APIs (Prometheus/Tempo/Loki) are mounted as sub-routers on the single `query::Server` listener, distinguished by path prefix (`/prometheus`, `/api`, `/loki`).
+- The three APIs (Prometheus/Tempo/Loki) are mounted as sub-routers on the single `querier::Server` listener, distinguished by path prefix (`/prometheus`, `/api`, `/loki`).

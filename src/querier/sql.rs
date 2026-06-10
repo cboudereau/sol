@@ -122,7 +122,7 @@ mod tests {
     }
 
     // logs + traces + metrics sharing trace_id 3bc5…/service "client".
-    async fn tri_engine(max_scan_bytes: u64) -> (crate::query::QueryEngine, tempfile::TempDir) {
+    async fn tri_engine(max_scan_bytes: u64) -> (crate::querier::QueryEngine, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let tid = hx("3bc59070ba6c121cad3d88a3f889b303");
@@ -231,7 +231,7 @@ mod tests {
             },
             ..QuerierOptions::default()
         };
-        (crate::query::QueryEngine::new(&opts).await.unwrap(), tmp)
+        (crate::querier::QueryEngine::new(&opts).await.unwrap(), tmp)
     }
 
     #[tokio::test]

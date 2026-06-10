@@ -243,30 +243,30 @@ docker compose exec duckdb duckdb -c "
 "
 ```
 
-## Profiling the query backend (sol-query)
+## Profiling the query backend (sol-querier)
 
-The `sol-query` service serves the Prometheus/Tempo/Loki + SQL APIs over the Parquet. A few ways to profile it, from cheapest to deepest.
+The `sol-querier` service serves the Prometheus/Tempo/Loki + SQL APIs over the Parquet. A few ways to profile it, from cheapest to deepest.
 
 ### Aggregate latency (no setup)
 
-The **SOL Query Backend** dashboard plots `sol_query_request_duration_seconds` / `sol_query_inflight` / cache hit-rate — start here to see *which* API or signal is slow.
+The **SOL Querier Backend** dashboard plots `sol_query_request_duration_seconds` / `sol_query_inflight` / cache hit-rate — start here to see *which* API or signal is slow.
 
 ### Per-query engine cost — `EXPLAIN ANALYZE`
 
 The SQL endpoint passes SQL straight to DataFusion, so `EXPLAIN ANALYZE` gives per-operator timing:
 
 ```bash
-docker compose exec curl curl -s sol-query:9009/api/v1/sql -XPOST \
+docker compose exec curl curl -s sol-querier:9009/api/v1/sql -XPOST \
   -d '{"sql":"EXPLAIN ANALYZE SELECT name, count(*) FROM metrics GROUP BY name"}'
 ```
 
 ### CPU flamegraph and async profiling (local run)
 
-Snapshot the Parquet and point a local `sol-query` at it:
+Snapshot the Parquet and point a local `sol-querier` at it:
 
 ```bash
 docker compose cp duckdb:/data/parquet ./parquet-snapshot
-cat > sol-query-local.yaml <<'EOF'
+cat > sol-querier-local.yaml <<'EOF'
 querier:
   address: "127.0.0.1:9009"
   storage: { path: "./parquet-snapshot" }
@@ -287,7 +287,7 @@ while :; do curl -s localhost:9009/prometheus/api/v1/query_range \
 cargo install flamegraph
 echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
-  cargo flamegraph --features query-backend --bin sol -- --config demo/otel-sol-grafana-dotnet/sol-query-local.yaml
+  cargo flamegraph --features querier-backend --bin sol -- --config demo/otel-sol-grafana-dotnet/sol-querier-local.yaml
 # run the load loop ~30-60s, then Ctrl-C -> flamegraph.svg
 ```
 
@@ -296,7 +296,7 @@ CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
 ```bash
 cargo install --locked tokio-console
 RUSTFLAGS="--cfg tokio_unstable" \
-  cargo run --features query-backend,tokio-console --bin sol -- --config demo/otel-sol-grafana-dotnet/sol-query-local.yaml
+  cargo run --features querier-backend,tokio-console --bin sol -- --config demo/otel-sol-grafana-dotnet/sol-querier-local.yaml
 # in another terminal (connects to 127.0.0.1:6669):
 tokio-console
 ```
@@ -306,7 +306,7 @@ tokio-console
 Host `perf` can sample the container process directly (image must keep release debug symbols):
 
 ```bash
-PID=$(docker inspect -f '{{.State.Pid}}' "$(docker compose ps -q sol-query)")
+PID=$(docker inspect -f '{{.State.Pid}}' "$(docker compose ps -q sol-querier)")
 sudo perf record -F 99 -g -p "$PID" -- sleep 30   # drive load meanwhile
 sudo perf script | inferno-collapse-perf | inferno-flamegraph > flame.svg
 ```

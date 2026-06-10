@@ -28,7 +28,7 @@ SPDX-License-Identifier = "Apache-2.0"
 # 3) Sol-original code — the new observability backend & OTLP features. AGPL-3.0.
 [[annotations]]
 path = [
-  "src/query/**",
+  "src/querier/**",
   "src/config/query.rs",
   "src/vrl_migrate/**",
   "src/transforms/servicegraph/**",

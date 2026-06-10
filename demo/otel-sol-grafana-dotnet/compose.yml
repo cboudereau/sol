@@ -180,11 +180,11 @@ services:
 
   # Sol-as-backend: serves Prometheus/Tempo/Loki + SQL over the gateway's
   # Parquet (read-only), alongside Mimir/Tempo/Loki for side-by-side compare.
-  sol-query:
+  sol-querier:
     image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
-    command: ["--config", "/etc/sol/sol-query.yaml"]
+    command: ["--config", "/etc/sol/sol-querier.yaml"]
     volumes:
-      - ./sol/sol-query.yaml:/etc/sol/sol-query.yaml:ro
+      - ./sol/sol-querier.yaml:/etc/sol/sol-querier.yaml:ro
       - parquet-data:/data/parquet:ro
     # DataFusion scans open many Parquet files at once; the default 1024 soft
     # limit (EMFILE in the accept loop) is far too low for thousands of files.

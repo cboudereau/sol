@@ -3,7 +3,7 @@
 //! Sol query backend — serves Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
 //!
 //! Built incrementally per `docs/workspace/parquet-backend/TASKS.md`.
-//! Gated behind the `query-backend` feature; absent from default builds.
+//! Gated behind the `querier-backend` feature; absent from default builds.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
 use crate::config::query::{CompactorOptions, QuerierOptions};
 
-/// Handle to a running Sol query-backend component (querier or compactor).
+/// Handle to a running Sol querier-backend component (querier or compactor).
 ///
 /// Gracefully shuts down when dropped — the `oneshot` sender closing ends the
 /// server task. Mirrors [`crate::api::Server`].
@@ -182,10 +182,10 @@ mod no_sql_invariant_tests {
     /// passthrough for the user endpoint), never a `format!` literal.
     #[test]
     fn test_no_format_sql_in_core() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/query");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/querier");
         let mut files = Vec::new();
         rs_files(&root, &mut files);
-        assert!(!files.is_empty(), "expected to scan query source files");
+        assert!(!files.is_empty(), "expected to scan querier source files");
 
         for f in &files {
             if f.file_name().unwrap() == "sql.rs" {

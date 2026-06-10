@@ -1,9 +1,9 @@
 # query-parsers — Design Doc
 
 > **Status: implemented (Sessions 1–4, 2026-06-05).** LogQL and TraceQL parsers
-> ship on grmtools in `src/query/logql/` and `src/query/traceql/`, wired into
+> ship on grmtools in `src/querier/logql/` and `src/querier/traceql/`, wired into
 > `translate_query_range`/`handle_volume`/`series`/`index` and `translate_search`
-> at parity. `query::` suite 153/153, clippy `-D warnings` clean. The shipped
+> at parity. `querier::` suite 153/153, clippy `-D warnings` clean. The shipped
 > parse/lower coverage and remaining gaps are in the **Coverage matrix** at the
 > end of this document. Decision: [ADR 0042](../adrs/0042-logql-traceql-parser-strategy.md).
 
@@ -13,7 +13,7 @@ Sol's query backend translates LogQL and TraceQL to SQL over Parquet (DataFusion
 PromQL already uses a real parser — [`promql-parser`](https://crates.io/crates/promql-parser),
 which is itself a grmtools (`lrpar`/`lrlex`) port of Prometheus's goyacc grammar —
 so its surface is broad and faithful. LogQL and TraceQL, by contrast, are parsed
-by **ad-hoc string slicing** in `src/query/loki.rs` and `src/query/tempo.rs`:
+by **ad-hoc string slicing** in `src/querier/loki.rs` and `src/querier/tempo.rs`:
 find the `{…}`, split on a fixed operator set. That covers only the demo pcap
 subset and cannot express the full grammars.
 
@@ -70,7 +70,7 @@ parsed-but-unsupported → clear error rule as FR3.
 
 ### <a id="fr5"></a>FR5 — Behavioural parity (regression safety)
 Every query the current ad-hoc parser handles must continue to produce equivalent
-results after the swap. The existing `query::loki` and `query::tempo` tests are the
+results after the swap. The existing `querier::loki` and `querier::tempo` tests are the
 parity contract and must stay green unchanged (or change only where a string-level
 SQL assertion is replaced by a result-level assertion of equal meaning).
 
@@ -111,8 +111,8 @@ negligible latency relative to SQL execution. No grammar ambiguity that forces
 super-linear parsing.
 
 ### <a id="nfr5"></a>NFR5 — Backward-compatible API
-Route handlers (`src/query/routes.rs`) and public function signatures are unchanged.
-The full `query::` test suite stays green throughout.
+Route handlers (`src/querier/routes.rs`) and public function signatures are unchanged.
+The full `querier::` test suite stays green throughout.
 
 ## Non-goals
 
@@ -171,13 +171,13 @@ flowchart LR
 ### Module layout
 
 ```
-src/query/logql/
+src/querier/logql/
   mod.rs        # public re-exports; thin wrappers keep translate_*/handle_* signatures
   lexer.l       # grmtools lrlex spec (port of Loki lex.go token rules)
   grammar.y     # grmtools lrpar grammar (port of pkg/logql/syntax/expr.y)
   ast.rs        # LogSelectorExpr, SampleExpr, pipeline stages, matchers
   lower.rs      # AST → SQL (reuses esc/label_lhs/prom_attr + matrix builders)
-src/query/traceql/
+src/querier/traceql/
   mod.rs
   lexer.l       # port of Tempo lexer.go (incl. attribute-path / duration modes)
   grammar.y     # port of pkg/traceql/expr.y

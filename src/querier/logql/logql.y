@@ -188,7 +188,7 @@ OffsetOpt -> Result<Option<String>, ()>:
   | "OFFSET" "NUMLIT" { Ok(Some($lexer.span_str($2.map_err(|_| ())?.span()).to_string())) }
   ;
 %%
-use crate::query::logql::ast::{
+use crate::querier::logql::ast::{
     BinOp, CmpOp, Grouping, LabelFilter, LabelMatcher, LineOp, LogPipeline, LogQlExpr, LogRange,
     MatchOp, SampleExpr, Selector, Stage,
 };
@@ -208,5 +208,5 @@ fn unquote(s: &str) -> String {
         .strip_prefix('"')
         .and_then(|x| x.strip_suffix('"'))
         .unwrap_or(s);
-    crate::query::loki::unescape_dquoted(inner)
+    crate::querier::loki::unescape_dquoted(inner)
 }

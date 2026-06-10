@@ -3,7 +3,7 @@
 # Seals sealed-day Parquet partitions into compacted + sorted files, generates
 # metric rollup tiers (5m/1h/1d), and runs retention GC over the shared Parquet
 # volume (read-write). No HTTP server. Its own metrics are forwarded to Mimir as
-# service.name = sol/compactor so the SOL Query Backend dashboard's sol_compactor_*
+# service.name = sol/compactor so the SOL Querier Backend dashboard's sol_compactor_*
 # panels populate.
 
 # Presence of `compactor:` starts the singleton compactor loop (no `role`).

@@ -57,7 +57,7 @@ docs/{adrs,designs,workspace,        Sol-original documentation     → AGPL-3.0
 docs/ARCHITECTURE.md, specs/,        Vector-inherited docs          → MPL-2.0
   tutorials/, README.md, ...
 demo/, .claude/, .devcontainer/  Sol-authored tooling             → MPL-2.0 (fallback)
-src/query/, src/vrl_migrate/, src/transforms/{servicegraph,
+src/querier/, src/vrl_migrate/, src/transforms/{servicegraph,
   span_metrics,tail_sampling}/, src/sinks/opentelemetry/{grpc,
   http,load_balancing}.rs, src/sources/source_otel.rs            → AGPL-3.0-only
 lib/sol-core/src/event/otel_*.rs, otlp.rs                        → AGPL-3.0-only
@@ -81,7 +81,7 @@ lib/sol-core/src/event/otel_json.rs
 lib/sol-core/src/event/otel_metric.rs
 lib/sol-core/src/event/otlp.rs
 src/config/query.rs
-src/query/*.rs                 (13 files)
+src/querier/*.rs                 (13 files)
 src/sinks/opentelemetry/grpc.rs
 src/sinks/opentelemetry/http.rs
 src/sinks/opentelemetry/load_balancing.rs

@@ -684,7 +684,7 @@ mod tests {
             vec![Arc::new(StringArray::from(vec!["svc", "svc", "svc"]))],
         )
         .unwrap();
-        crate::query::compaction::write_with_provenance(
+        crate::querier::compaction::write_with_provenance(
             &dir.join("compacted-2026-06-01.parquet"),
             schema,
             &[batch],

@@ -301,7 +301,7 @@ File discovery is based on the naming convention defined in the [parquet-multisi
 
 In the default single-node deployment the querier runs **in-process** with the Sol ingest pipeline (the compactor is a separate component/role, [FR7](#fr7)/[NFR8](#nfr8)), so query work competes with ingestion for CPU and memory and must not starve it. On a single-node demo deployment (~100 events/s), with the dashboard issuing ~130 queries every 15s:
 
-- **Memory**: total query-backend footprint (DataFusion working set + Parquet/metadata cache + query-result cache) ≤ **256 MB** steady-state by default, and configurable. Inspired by InfluxDB's "cache = 20% of available memory" lever, but bounded by an absolute default rather than a percentage, because Sol co-hosts ingestion. Caches are the tunable knob: larger cache → lower latency → more memory.
+- **Memory**: total querier-backend footprint (DataFusion working set + Parquet/metadata cache + query-result cache) ≤ **256 MB** steady-state by default, and configurable. Inspired by InfluxDB's "cache = 20% of available memory" lever, but bounded by an absolute default rather than a percentage, because Sol co-hosts ingestion. Caches are the tunable knob: larger cache → lower latency → more memory.
 - **CPU**: a dashboard refresh burst must not sustain >1 core-second of query CPU per refresh on demo data. The DataFusion `SessionContext` uses a **bounded** Tokio/Rayon worker pool (configurable, default = `min(4, available_parallelism)`), so query bursts cannot consume all cores and stall ingestion.
 - **The small-files problem is the primary cost driver** (see InfluxDB comparison): per-query file listing + open + footer parse scales with file count. Compaction (FR7) and sort order keep file count and per-query scan cost bounded.
 
@@ -548,7 +548,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 ### Decisions
 
-- [Query backend process integration](./adrs/query-backend-process-integration.md) — how the server embeds in the Sol process (mirrors `src/api/`)
+- [Query backend process integration](./adrs/querier-backend-process-integration.md) — how the server embeds in the Sol process (mirrors `src/api/`)
 - [DataFusion table registration and Parquet file discovery](./adrs/datafusion-table-discovery.md) — `ListingTable` per signal, periodic re-listing, dependency gating
 - [File layout and compaction strategy](./adrs/file-layout-and-compaction-strategy.md) — sort order, lightweight compaction, cache budget (the NFR5/NFR6 cost/latency balance)
 - [Deployment roles and horizontal read scaling](./adrs/deployment-roles-and-read-scaling.md) — querier / query-frontend / singleton compactor; dual-runtime isolation (NFR8)
@@ -568,10 +568,10 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 ## Cross-cutting Concerns
 
-- **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs — only the URL changes (e.g. `http://sol-query:9009/prometheus`). No custom plugins.
-- **Demo integration (parallel, dual-write)**: in `demo/otel-sol-grafana-dotnet/`, the gateway **dual-writes** every signal — OTLP → Mimir/Tempo/Loki **and** Parquet → Sol — so both backends hold identical data. A `sol-query` service serves the APIs over the shared `parquet-data` volume. Grafana gets **parallel** `Sol-Prometheus`/`Sol-Tempo`/`Sol-Loki` datasources next to the existing ones, and every demo dashboard uses a **datasource template variable** so a user flips Sol ↔ Grafana backend from a dropdown (side-by-side parity + latency comparison). Tasked in [TASKS.md](./TASKS.md) tasks 14–15.
+- **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs — only the URL changes (e.g. `http://sol-querier:9009/prometheus`). No custom plugins.
+- **Demo integration (parallel, dual-write)**: in `demo/otel-sol-grafana-dotnet/`, the gateway **dual-writes** every signal — OTLP → Mimir/Tempo/Loki **and** Parquet → Sol — so both backends hold identical data. A `sol-querier` service serves the APIs over the shared `parquet-data` volume. Grafana gets **parallel** `Sol-Prometheus`/`Sol-Tempo`/`Sol-Loki` datasources next to the existing ones, and every demo dashboard uses a **datasource template variable** so a user flips Sol ↔ Grafana backend from a dropdown (side-by-side parity + latency comparison). Tasked in [TASKS.md](./TASKS.md) tasks 14–15.
 - **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../../designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
-- **Observability of the query backend (Sol monitoring Sol)**: the backend emits internal metrics that flow through the same pipeline (`internal_metrics` source → Mimir), exactly like the existing `sol_component_*` / `sol_tail_sampling_*` metrics. The catalog (dashboarded in `demo/.../grafana/.../Sol/SOL Query Backend.json`):
+- **Observability of the query backend (Sol monitoring Sol)**: the backend emits internal metrics that flow through the same pipeline (`internal_metrics` source → Mimir), exactly like the existing `sol_component_*` / `sol_tail_sampling_*` metrics. The catalog (dashboarded in `demo/.../grafana/.../Sol/SOL Querier Backend.json`):
 
   | Metric | Type | Labels | Watches (NFR) |
   |---|---|---|---|

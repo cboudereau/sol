@@ -2,7 +2,7 @@
 
 Design: [DESIGN.md](./DESIGN.md)
 
-ADRs (8): [process integration](./adrs/query-backend-process-integration.md) · [DataFusion table discovery](./adrs/datafusion-table-discovery.md) · [file layout & compaction](./adrs/file-layout-and-compaction-strategy.md) · [deployment roles & read scaling](./adrs/deployment-roles-and-read-scaling.md) · [long-range metrics](./adrs/long-range-metrics-strategy.md) · [compaction consistency](./adrs/compaction-consistency.md) · [PromQL parsing](./adrs/promql-parsing-strategy.md) · [query caching](./adrs/query-caching-strategy.md)
+ADRs (8): [process integration](./adrs/querier-backend-process-integration.md) · [DataFusion table discovery](./adrs/datafusion-table-discovery.md) · [file layout & compaction](./adrs/file-layout-and-compaction-strategy.md) · [deployment roles & read scaling](./adrs/deployment-roles-and-read-scaling.md) · [long-range metrics](./adrs/long-range-metrics-strategy.md) · [compaction consistency](./adrs/compaction-consistency.md) · [PromQL parsing](./adrs/promql-parsing-strategy.md) · [query caching](./adrs/query-caching-strategy.md)
 
 ## Analysis
 
@@ -18,17 +18,17 @@ These resolve the previously-uphill tasks **analytically** (no spike): the model
 
 ### Build / test / lint commands
 
-The query backend lives behind a new `query-backend` Cargo feature gating `src/query/` and the `datafusion` / `object_store` dependencies (see [DataFusion table discovery ADR](./adrs/datafusion-table-discovery.md)).
+The query backend lives behind a new `querier-backend` Cargo feature gating `src/querier/` and the `datafusion` / `object_store` dependencies (see [DataFusion table discovery ADR](./adrs/datafusion-table-discovery.md)).
 
 | Action | Command |
 |---|---|
-| Build | `cargo build --no-default-features --features query-backend` |
-| Test (module) | `cargo test --no-default-features --features query-backend query::` |
-| Test (single) | `cargo test --no-default-features --features query-backend <test_name>` |
-| Lint | `cargo clippy --no-default-features --features query-backend -- -D warnings` |
+| Build | `cargo build --no-default-features --features querier-backend` |
+| Test (module) | `cargo test --no-default-features --features querier-backend querier::` |
+| Test (single) | `cargo test --no-default-features --features querier-backend <test_name>` |
+| Lint | `cargo clippy --no-default-features --features querier-backend -- -D warnings` |
 | Format check | `cargo fmt -- --check` |
 
-> The `query-backend` feature must transitively enable whatever core/event/codec features `src/query/` needs (event types, `codecs/parquet` schema constants). Wire those into the feature definition in Session 1.
+> The `querier-backend` feature must transitively enable whatever core/event/codec features `src/querier/` needs (event types, `codecs/parquet` schema constants). Wire those into the feature definition in Session 1.
 
 ### Demo verification (session-end `verify`)
 
@@ -36,14 +36,14 @@ The demo (`demo/otel-sol-grafana-dotnet/`) runs Sol from a configurable image: `
 
 ```
 # build local Sol image with the query backend, then:
-SOL_IMAGE=sol:query-backend docker compose up
+SOL_IMAGE=sol:querier-backend docker compose up
 ```
 
 Add a `query:` block to `sol/sol-gateway.yaml` (or a dedicated query role) pointing at the Parquet path the file sink writes (`/data/parquet/...`), then run the session `verify` against Grafana. This is how NFR6 latency / NFR5 resources are measured end-to-end.
 
 ### Baseline state
 
-- Current `main` (parquet write side merged, [#28](https://github.com/cboudereau/sol/pull/28)) is the green baseline. The `query-backend` feature does **not exist yet** — the first action of Session 1 is to add it and confirm the existing tree still builds with it enabled.
+- Current `main` (parquet write side merged, [#28](https://github.com/cboudereau/sol/pull/28)) is the green baseline. The `querier-backend` feature does **not exist yet** — the first action of Session 1 is to add it and confirm the existing tree still builds with it enabled.
 - `cargo check -p codecs --features parquet` is the cheapest proof the codec (this workspace's schema contract) compiles; run it before starting.
 
 ### Known-failing tests
@@ -207,7 +207,7 @@ classDiagram
 | `SqlEndpoint` | [FR9](./DESIGN.md#fr9) | raw DataFusion SQL + cross-signal JOINs (`trace_id`; `service_name`+time); HTTP+JSON v1 |
 | `ObjectStore` retry/backoff + paginated LIST | [NFR10](./DESIGN.md#nfr10) | `503 SlowDown` exponential backoff+jitter; prefix-sharded reads; bounded LIST (shared across querier + compactor) |
 | File-sink layout (write-side) | [FR7](./DESIGN.md#fr7) | per-signal/subtype dirs + `dt=` partition + sort-on-write (`src/sinks/file` + demo config) — task 14 |
-| Demo artifacts (compose + Grafana provisioning) | [NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6) | `sol-query` service, parallel `Sol-*` datasources, backend-switch dashboard variable — task 15 (no Rust types) |
+| Demo artifacts (compose + Grafana provisioning) | [NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6) | `sol-querier` service, parallel `Sol-*` datasources, backend-switch dashboard variable — task 15 (no Rust types) |
 
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
@@ -230,21 +230,21 @@ classDiagram
 
 ## Tasks
 
-### 1. `query-backend` feature + module skeleton ([FR1](./DESIGN.md#fr1), [NFR1](./DESIGN.md#nfr1))
-**Goal**: A compilable, feature-gated `src/query/` module and the `query:` config block, wired into app startup like `api`.
+### 1. `querier-backend` feature + module skeleton ([FR1](./DESIGN.md#fr1), [NFR1](./DESIGN.md#nfr1))
+**Goal**: A compilable, feature-gated `src/querier/` module and the `query:` config block, wired into app startup like `api`.
 **Types**: `QueryOptions`, `QueryServer` (skeleton) — see domain model
 **Constraints**:
-- [ADR: process integration](./adrs/query-backend-process-integration.md) — config block + `setup_query` in `app.rs`, server held on `topology/controller.rs`, **not** a source/sink/transform
-- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — add `datafusion` + `object_store` only under `query-backend`; default build untouched
+- [ADR: process integration](./adrs/querier-backend-process-integration.md) — config block + `setup_query` in `app.rs`, server held on `topology/controller.rs`, **not** a source/sink/transform
+- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — add `datafusion` + `object_store` only under `querier-backend`; default build untouched
 - New external dependencies (`datafusion`, `object_store`, `promql-parser`) are **pre-approved by this ADR** — adding them is within the constitution; adding any other crate is not
 - **Front-load verified (2026-06)**: versions pinned `datafusion = "53"` (v53.1.0, incl. `datafusion-functions-nested` for UNNEST), `object_store = "0.13"` (`fs`,`tokio`,`aws`), `promql-parser = "0.9"` — all resolve from crates.io. Parquet file-read interop is version-stable ([datafusion-table-discovery ADR](./adrs/datafusion-table-discovery.md)); the build confirms read-back on a codec fixture.
 - [NFR9](./DESIGN.md#nfr9): `QueryOptions` carries per-signal guardrails — max query range (traces/logs 30d, metrics 13mo default / 2y opt-in), max bytes scanned (~1GB), max concurrent queries; enforced at validation by the API handlers (tasks 3–5, 7) and frontend (task 11)
 **Tests**:
 - `test_query_options_deserializes_from_yaml` — `query: { address, storage: { path } }` parses
 - `test_default_build_excludes_query_backend` — module is absent without the feature (compile-gate check)
-**Verify**: `cargo build --no-default-features --features query-backend && cargo build` (default still builds)
+**Verify**: `cargo build --no-default-features --features querier-backend && cargo build` (default still builds)
 **Acceptance criteria**:
-- [x] `query-backend` feature exists in `Cargo.toml` and gates `src/query/` + the new deps
+- [x] `querier-backend` feature exists in `Cargo.toml` and gates `src/querier/` + the new deps
 - [x] `QueryOptions` is a `configurable_component`-style config struct deserializable from YAML (`test_query_options_deserializes_from_yaml` ✅)
 - [x] `setup_query` starts a `QueryServer` from `app.rs` mirroring `setup_api`; server stored on the topology controller (`query_server` field)
 - [x] Default `cargo build` (no feature) is unchanged and green (`cargo check` clean; the 2nd "test" is the default-build gate, verified via the checkpoint command rather than a unit test)
@@ -267,7 +267,7 @@ classDiagram
 - `test_catalog_refresh_picks_up_new_file` — add a file after registration, refresh, count increases
 - `test_catalog_empty_dir_is_not_an_error` — registering against an empty/absent dir succeeds with 0 rows
 - `test_logs_schema_matches_codec_columns` — schema column names/types equal the codec's log schema
-**Verify**: `cargo test --no-default-features --features query-backend query::catalog`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::catalog`
 **Acceptance criteria**:
 - [x] Tables queryable by SQL after `register` — **3 union tables** (`logs`, `traces`, `metrics`); the 7 per-subtype metric tables land with 14b (metrics is a superset-union table meanwhile, per the ADR fallback). `SELECT count(*)` works on all three.
 - [x] `refresh()` is idempotent and surfaces new files (`test_catalog_refresh_picks_up_new_file` ✅)
@@ -288,13 +288,13 @@ classDiagram
 - `test_logql_line_filter_to_like` — `|= "error"` → `body LIKE '%error%'`
 - `test_loki_query_range_response_shape` — handler returns valid `streams` JSON for a fixture
 - `test_loki_response_deserializes_as_grafana_expects` — round-trips through the Loki response schema
-**Verify**: `cargo test --no-default-features --features query-backend query::loki`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::loki`
 > **Discovery (2026-06): JSON extraction + task split.** DataFusion core has **no built-in `json_extract`** for the JSON-string `attributes`/`resource_attributes` columns. Rather than add `datafusion-functions-json` (a new dependency — outside-constitution), non-promoted labels translate to **`json_get_str(<col>, '<key>')`, a Sol scalar UDF backed by `serde_json`** (already in the tree) — within-constitution (helper using existing deps). Applies to all attribute filtering (logs/metrics/traces). Split: **3a** translator + response (done); **3b** the `json_get_str` UDF registration + Loki handler + the shared warp HTTP route (the QueryServer skeleton needs warp serving, shared by tasks 3/4/5/7).
 **Acceptance criteria**:
 - [x] LogQL label + line filters translate to correct SQL (`test_logql_label_matchers_to_where`, `test_logql_line_filter_to_like`, `test_logql_escapes_quotes` ✅; SQL-injection-escaped per NFR9)
 - [x] Response validates against the Loki HTTP API schema (`test_loki_query_range_response_shape`, `test_loki_response_deserializes` ✅ — streams shape per API-SPEC §2)
 - [x] _3b:_ `json_get_str` serde_json UDF + `handle_query_range` handler — end-to-end fixture test green (`test_loki_handle_query_range_end_to_end`: LogQL→SQL→UDF→DataFusion→streams JSON; time bound via `CAST(time_unix_nano AS BIGINT)`)
-- [x] _3c:_ `GET /loki/api/v1/query_range` mounted on the QueryServer's warp HTTP listener — **shared warp serving infra** in `src/query/routes.rs` (hyper accept loop mirroring `api::Server`; `make_routes(Arc<QueryEngine>)`; periodic catalog refresh; `/ready` probe). `test_loki_route_serves_streams_json` (warp::test → 200 + streams JSON) + `test_ready_probe` ✅. Tasks 4/5/7/13 add their filters here.
+- [x] _3c:_ `GET /loki/api/v1/query_range` mounted on the QueryServer's warp HTTP listener — **shared warp serving infra** in `src/querier/routes.rs` (hyper accept loop mirroring `api::Server`; `make_routes(Arc<QueryEngine>)`; periodic catalog refresh; `/ready` probe). `test_loki_route_serves_streams_json` (warp::test → 200 + streams JSON) + `test_ready_probe` ✅. Tasks 4/5/7/13 add their filters here.
 **Depends on**: task 2
 **Time-box**: ~90 min · **Hill**: 3a downhill ✅; 3b downhill (warp serving + serde_json UDF)
 
@@ -312,7 +312,7 @@ classDiagram
 - `test_promql_unsupported_fn_returns_error` — e.g. `predict_linear(...)` → `UnsupportedFn`
 - `test_label_values_distinct` / `test_series_existence`
 - `test_prom_vector_response_shape`
-**Verify**: `cargo test --features query-backend query::prometheus`
+**Verify**: `cargo test --features querier-backend querier::prometheus`
 **Acceptance criteria**:
 - [x] Gauge instant queries return correct latest values
 - [x] `label/:name/values` and `series` return distinct results
@@ -335,7 +335,7 @@ classDiagram
 - `test_topk_orders_and_limits`
 - `test_max_over_time_window`
 - `test_prom_matrix_response_shape`
-**Verify**: `cargo test --no-default-features --features query-backend query::prometheus::range`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::prometheus::range`
 **Acceptance criteria**:
 - [x] `rate`, `sum by`, `topk`, `max_over_time` produce correct values on fixtures
 - [x] Counter resets handled per ADR
@@ -352,7 +352,7 @@ classDiagram
 **Tests**:
 - `test_histogram_quantile_p95_interpolation` — known buckets → known p95 within tolerance
 - `test_histogram_quantile_handles_empty_buckets`
-**Verify**: `cargo test --no-default-features --features query-backend query::prometheus::histogram`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::prometheus::histogram`
 **Acceptance criteria**:
 - [x] p50/p95/p99 computed within tolerance on a fixture histogram
 - [x] Empty/zero-count buckets do not panic or divide by zero
@@ -373,7 +373,7 @@ classDiagram
 - `test_trace_by_id_hex_to_binary_literal`
 - `test_tag_values_distinct`
 - `test_tempo_search_response_shape`
-**Verify**: `cargo test --no-default-features --features query-backend query::tempo`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::tempo`
 **Acceptance criteria**:
 - [x] Trace search, trace-by-id, tag list, and tag values all serve fixtures
 - [x] `trace_id` hex string correctly converted to a binary literal for point lookup
@@ -392,7 +392,7 @@ classDiagram
 - `test_cache_hit_returns_without_executing` — second identical query within TTL does not hit DataFusion (spy/counter)
 - `test_cache_ttl_expiry`
 - `test_cache_lru_eviction_at_capacity`
-**Verify**: `cargo test --no-default-features --features query-backend query::cache`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::cache`
 **Acceptance criteria**:
 - [x] Repeat queries within TTL served from cache
 - [x] Time-range bucketing collides adjacent dashboard refreshes
@@ -412,11 +412,11 @@ classDiagram
 - `test_cache_hit_miss_counters`
 - `test_objectstore_throttle_counter` (503 path)
 - `test_guardrail_reject_counter` / `test_unsupported_construct_counter`
-**Verify**: `cargo test --no-default-features --features query-backend query::telemetry`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::telemetry`
 **Acceptance criteria**:
 - [x] Telemetry infra + `sol_query_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
 - [x] Histograms expose `_bucket` (Grafana `histogram_quantile`)
-- [x] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Query Backend` dashboard renders fully once those land (verified at task 15)
+- [x] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Querier Backend` dashboard renders fully once those land (verified at task 15)
 **Depends on**: task 8 (cache)
 **Time-box**: ~60 min · **Hill**: downhill
 
@@ -438,7 +438,7 @@ classDiagram
 - `test_staging_then_finalize_atomic` — partial/aborted compaction leaves no visible compacted file
 - `test_compaction_merges_to_fewer_sorted_files` / `test_compaction_is_idempotent`
 - `test_retention_gc_deletes_past_policy` — configurable TTL, not the query-interval numbers
-**Verify**: `cargo test --no-default-features --features query-backend query::compaction`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::compaction`
 **Acceptance criteria**:
 - [x] Only sealed partitions compacted; active day scanned raw
 - [x] Compacted footer carries `level` + `supersedes`; querier resolves by level and reads each datum exactly once
@@ -463,7 +463,7 @@ classDiagram
 - `test_histogram_quantile_merge_sums_buckets` — split+merge equals unsplit within tolerance
 - `test_topk_partial_merge`
 - `test_historical_shard_cached_permanently` — re-query advancing `end`: only the live shard misses
-**Verify**: `cargo test --no-default-features --features query-backend query::frontend`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::frontend`
 **Acceptance criteria**:
 - [x] Long range split into aligned shards; results match the unsplit query (rate, topk, histogram_quantile)
 - [x] Historical shards served from cache on refresh; only the in-progress shard recomputed
@@ -484,7 +484,7 @@ classDiagram
 - `test_rate_over_rollup_matches_raw` within tolerance
 - `test_select_tier_by_range_and_step`
 - `test_missing_tier_falls_back_to_raw`
-**Verify**: `cargo test --no-default-features --features query-backend query::rollup`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::rollup`
 **Acceptance criteria**:
 - [x] Rollups generated by the compactor for metric tables only
 - [x] `histogram_quantile` / `rate` over rollups match raw within tolerance
@@ -508,7 +508,7 @@ classDiagram
 - `test_join_metrics_traces_on_service_and_time_window`
 - `test_sql_guardrail_rejects_oversize_scan`
 - `test_sql_result_json_consumable_by_grafana`
-**Verify**: `cargo test --no-default-features --features query-backend query::sql`
+**Verify**: `cargo test --no-default-features --features querier-backend querier::sql`
 **Acceptance criteria**:
 - [x] `SELECT` works over all seven signal tables (logs/traces/metrics registered; metric subtypes unioned per task 2)
 - [x] logs ⨝ traces on `trace_id`; metrics ⨝ traces on `service_name` + time window
@@ -532,7 +532,7 @@ classDiagram
 **Verify**: `cargo test --features codecs-parquet sinks::file::`
 > **Discovery (implementation, 2026-06) — task split.** The file sink's `encode_files` returns **opaque, untagged** `Vec<Vec<u8>>` blobs (`src/sinks/file/mod.rs:664`, written via `parquet_path_with_suffix(&path, i)`). The sink therefore **cannot route blobs to per-subtype directories or sort rows without changing the shipped codec API** (`encode_files` signature + per-type sort) — contradicting this task's "sink-only, not the codec" note. Within-constitution decision (signature adjustment is allowed, but it touches the integrated write-side codec, so split + flag at the Session-1 checkpoint):
 > - **14a (done, config-only)**: dt= partitioning + per-signal dirs via strftime path templates.
-> - **14b (deferred)**: codec `encode_files` → tag each blob with signal/subtype + sort rows by (`service_name`,`name`,`time_unix_nano`); sink routes to `metrics/<subtype>/dt=…/`. Until 14b, the catalog (task 2) uses the **`metrics/` union table** ([datafusion-table-discovery ADR Option C](./adrs/datafusion-table-discovery.md)); sort is a pruning *hint* (query correctness holds without it, FR7).
+> - **14b (done)**: rather than tagging codec blobs, per-metric-subtype routing is achieved with a gateway `route` transform → per-subtype file sinks (`metrics/<subtype>/dt=…/`), and the codec sorts rows by (`service_name`,`name`,`time_unix_nano`) on write (`sort_dp_rows`). The catalog (task 2) registers each table over an explicit, recursively-walked file list (reads the nested layout, skips superseded raw via `resolve_files`); the `metrics/` union table ([datafusion-table-discovery ADR Option C](./adrs/datafusion-table-discovery.md)) was the pre-14b interim, and sort remains a pruning *hint* (query correctness holds without it, FR7).
 
 **Acceptance criteria**:
 - [x] Per-signal directories (`logs/`, `traces/`, `metrics/`) with `dt=YYYY-MM-DD/` sub-partitions — demo `sol-gateway.yaml` paths updated (strftime templating; sink supports it)
@@ -540,30 +540,30 @@ classDiagram
 - [x] _14b:_ Per-metric-subtype directories — done via a gateway `route` transform → per-subtype file sinks (`metrics/<subtype>/dt=…`); no codec blob-tagging needed. The querier registers each table over an explicit, recursively-walked file list, so it reads the nested layout and (via `resolve_files`) skips superseded raw.
 - [x] _14b:_ Rows sorted within each written file by the sort key — codec `sort_dp_rows` orders every metric Parquet by `(service_name, name, time_unix_nano)` on write.
 **Depends on**: (none — write side)
-**Time-box**: ~60 min · **Hill**: 14a downhill ✅; 14b deferred (codec API change — flagged for checkpoint review)
+**Time-box**: ~60 min · **Hill**: 14a downhill ✅; 14b done ✅ (per-subtype routing via gateway `route` transform + codec sort on write — no codec blob-tagging needed)
 
-### 15. Demo integration: sol-query service + parallel Grafana datasources + end-to-end ([NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
+### 15. Demo integration: sol-querier service + parallel Grafana datasources + end-to-end ([NFR2](./DESIGN.md#nfr2), [NFR6](./DESIGN.md#nfr6), [NFR8](./DESIGN.md#nfr8))
 **Goal**: Make the demo run Sol-as-backend **alongside** Mimir/Tempo/Loki, so Grafana renders Sol's APIs side-by-side and NFR6/NFR5/NFR10 are measured end-to-end.
 **Types**: demo deployment artifacts (compose + Grafana provisioning) — no Rust types
 **Constraints**:
 - **Dual-write (forward to both backends)**: the demo `sol-gateway.yaml` already fans every signal to **both** the real backends (OTLP → Mimir/Tempo/Loki) **and** Parquet (→ Sol). This task **preserves** that — both backends receive identical data so dashboards compare like-for-like. compose feeds both paths from the one gateway; no data is moved off the real backends.
-- A `sol-query` compose service: the locally-built Sol image (`SOL_IMAGE`), `--config sol-query.yaml` (a `query:` block over `parquet-data:/data/parquet:ro`), `internal_metrics` `service.name: sol/query` (so the dashboard `$instance` resolves)
-- **Parallel** Grafana datasources: add `Sol-Prometheus` / `Sol-Tempo` / `Sol-Loki` (uids `sol-prometheus`…) pointing at `http://sol-query:9009/prometheus`, `:/`, `:/loki` — **keep** the existing Mimir/Tempo/Loki for side-by-side ([NFR2](./DESIGN.md#nfr2))
-- **Backend-switch dashboard variable**: every demo dashboard exposes a `$datasource` (per signal type) template variable so a user flips **Sol ↔ Grafana backend** from the dropdown with no panel edits. `SOL Pipeline.json` + `SOL Query Backend.json` already use it; audit the rest (`Node Exporter`, app dashboards) and add the variable where missing, repointing panel `datasource` to `${datasource}`. For multi-signal dashboards use one variable per type (`$prom_ds`, `$loki_ds`, `$tempo_ds`).
-- Provision the existing `SOL Query Backend.json` dashboard; API contracts satisfy [API-SPEC.md](./API-SPEC.md) so stock datasources work unmodified
+- A `sol-querier` compose service: the locally-built Sol image (`SOL_IMAGE`), `--config sol-querier.yaml` (a `query:` block over `parquet-data:/data/parquet:ro`), `internal_metrics` `service.name: sol/query` (so the dashboard `$instance` resolves)
+- **Parallel** Grafana datasources: add `Sol-Prometheus` / `Sol-Tempo` / `Sol-Loki` (uids `sol-prometheus`…) pointing at `http://sol-querier:9009/prometheus`, `:/`, `:/loki` — **keep** the existing Mimir/Tempo/Loki for side-by-side ([NFR2](./DESIGN.md#nfr2))
+- **Backend-switch dashboard variable**: every demo dashboard exposes a `$datasource` (per signal type) template variable so a user flips **Sol ↔ Grafana backend** from the dropdown with no panel edits. `SOL Pipeline.json` + `SOL Querier Backend.json` already use it; audit the rest (`Node Exporter`, app dashboards) and add the variable where missing, repointing panel `datasource` to `${datasource}`. For multi-signal dashboards use one variable per type (`$prom_ds`, `$loki_ds`, `$tempo_ds`).
+- Provision the existing `SOL Querier Backend.json` dashboard; API contracts satisfy [API-SPEC.md](./API-SPEC.md) so stock datasources work unmodified
 **Tests** (integration/manual, not unit):
 - `test_sol_query_yaml_parses` — the demo query config validates
 - `test_dashboards_use_datasource_variable` — every demo dashboard panel references `${...}` datasource var, not a hard-coded uid
 - Grafana "Save & Test" passes for all three `Sol-*` datasources (discovery probes, [API-SPEC §4](./API-SPEC.md))
 - A panel returns matching results from `Sol-Prometheus` vs `Mimir` for a `rate()`/`histogram_quantile` query (parity)
-**Verify**: `SOL_IMAGE=sol:query-backend docker compose up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Query Backend` dashboard renders; NFR6 latency measured
+**Verify**: `SOL_IMAGE=sol:querier-backend docker compose up` → Grafana → flip the dashboard datasource var Sol↔Mimir and confirm both render; `SOL Querier Backend` dashboard renders; NFR6 latency measured
 **Acceptance criteria**:
 - [x] Gateway forwards every signal to **both** real backends and Parquet (same data queryable via Mimir and Sol-Prometheus) — existing `sol-gateway.yaml` dual-forward preserved
-- [x] Three `Sol-*` datasources provisioned in parallel (`grafana/provisioning/datasources/sol.yml` → `sol-query:9009`); **Save & Test ⏳ manual** (needs live Grafana)
+- [x] Three `Sol-*` datasources provisioned in parallel (`grafana/provisioning/datasources/sol.yml` → `sol-querier:9009`); **Save & Test ⏳ manual** (needs live Grafana)
 - [x] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits — all 4 dashboards verified (Node Exporter repointed: 0 hard-coded backend uids)
-- [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Query Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose up` (not runnable in this environment)
+- [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Querier Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose up` (not runnable in this environment)
 
-**Static verification done here:** `sol validate --no-environment sol-query.yaml` → ✅ (RC=0, `test_sol_query_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-query` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
+**Static verification done here:** `sol validate --no-environment sol-querier.yaml` → ✅ (RC=0, `test_sol_query_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-querier` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
 **Depends on**: tasks 3, 4, 5, 6, 7 (APIs), 9 (telemetry), 10 (compaction), 14 (layout)
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -572,61 +572,61 @@ classDiagram
 ### Session 1 — Foundation: feature, server, catalog, write-layout (~3.25H)
 Tasks: 1, 14, 2
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::catalog && cargo test --features codecs-parquet sinks::file:: && cargo build`
+**Checkpoint**: `cargo test --no-default-features --features querier-backend querier::catalog && cargo test --features codecs-parquet sinks::file:: && cargo build`
 **Commit point**: yes — commit after checkpoint passes
 > Front-load in task 1: pin a DataFusion version compatible with the codec's `parquet 56.2.0` and confirm it reads the codec output (TIMESTAMP(NANOS), `FIXED_LEN_BYTE_ARRAY` trace_id, JSON-string columns); confirm `promql-parser` is available. These are the only "could-surprise" items — resolve them before building on DataFusion.
 
 ### Session 2 — Loki + Prometheus instant (~3H)
 Tasks: 3, 4
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --features query-backend query:: && cargo clippy --features query-backend -- -D warnings` (cargo test takes a single filter; `--no-default-features` omitted — query-backend composes with defaults)
+**Checkpoint**: `cargo test --features querier-backend querier:: && cargo clippy --features querier-backend -- -D warnings` (cargo test takes a single filter; `--no-default-features` omitted — querier-backend composes with defaults)
 **Commit point**: yes
 
 ### Session 3 — Prometheus range + histogram_quantile (~3H)
 Tasks: 5, 6
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::prometheus`
+**Checkpoint**: `cargo test --no-default-features --features querier-backend querier::prometheus`
 **Commit point**: yes
 > Task 6 is now `downhill` (approach fixed by [QUERY-MAPPING.md §2.3](./QUERY-MAPPING.md) + Rust-native fallback). The UNNEST cost-constant is the one thing measured during the task; if it exceeds budget, take the documented fallback — no plan change.
 
 ### Session 4 — Tempo + caching + observability (~3.5H)
 Tasks: 7, 8, 9
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::tempo query::cache query::telemetry && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --no-default-features --features querier-backend querier::tempo querier::cache querier::telemetry && cargo clippy --no-default-features --features querier-backend -- -D warnings`
 **Commit point**: yes
 > Task 9 stands up the telemetry infra + querier-side metrics; the compactor/frontend metrics are emitted by tasks 10/11 (built on this infra), so 9 lands before them.
 
 ### Session 5 — Compaction + query-frontend splitting (~3H)
 Tasks: 10, 11
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::compaction query::frontend && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --no-default-features --features querier-backend querier::compaction querier::frontend && cargo clippy --no-default-features --features querier-backend -- -D warnings`
 **Commit point**: yes
 > Both `downhill`: compaction consistency fixed in the [compaction-consistency ADR](./adrs/compaction-consistency.md); frontend merge rules in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md). End of session: `verify` — measure NFR6 latency + NFR5 memory **before vs after** compaction on the demo data.
 
 ### Session 6 — Rollups + SQL endpoint (~2.5H)
 Tasks: 12, 13
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
-**Checkpoint**: `cargo test --no-default-features --features query-backend query::rollup query::sql && cargo clippy --no-default-features --features query-backend -- -D warnings`
+**Checkpoint**: `cargo test --no-default-features --features querier-backend querier::rollup querier::sql && cargo clippy --no-default-features --features querier-backend -- -D warnings`
 **Commit point**: yes
 > Rollup necessity + row-reduction quantified in [COMPLEXITY.md §7](./COMPLEXITY.md). End of session: verify a synthetic long-range (13mo–2y) metric range meets NFR6 via splitting + rollups vs. raw scan (the measured-constant step).
 
 ### Session 7 — Demo integration & end-to-end (capstone) (~1.5H)
 Tasks: 15
 **Skills**: `rust-software-engineer`, `verify`
-**Checkpoint**: `SOL_IMAGE=sol:query-backend docker compose up` → Grafana: all `Sol-*` datasources pass Save & Test; flip a dashboard's datasource var Sol↔Mimir (both render); `SOL Query Backend` dashboard renders; a `rate()` panel matches Mimir within tolerance
+**Checkpoint**: `SOL_IMAGE=sol:querier-backend docker compose up` → Grafana: all `Sol-*` datasources pass Save & Test; flip a dashboard's datasource var Sol↔Mimir (both render); `SOL Querier Backend` dashboard renders; a `rate()` panel matches Mimir within tolerance
 **Commit point**: yes
 > Capstone: the gateway dual-writes (real backends + Parquet), Sol serves the three APIs over the shared Parquet, and Grafana switches between Sol and the reference backends via the datasource variable — proving NFR2 parity and measuring NFR6/NFR5/NFR10 end-to-end.
 
 ## Quality gates (post-session review)
 - [ ] Acceptance criteria: all green above
 - [ ] Code review ([code-review](../../../.claude) skill): implementation matches [DESIGN.md](./DESIGN.md) intent and the eight ADRs
-- [ ] Code organization: `src/query/` module structure, one submodule per API + translator + catalog + cache + compaction + frontend; roles (querier/frontend/compactor) cleanly separated
+- [ ] Code organization: `src/querier/` module structure, one submodule per API + translator + catalog + cache + compaction + frontend; roles (querier/frontend/compactor) cleanly separated
 - [ ] Read scalability ([NFR8](./DESIGN.md#nfr8)): queriers hold no authoritative state; compactor is a strict singleton; cache works behind the shared-backend trait
 - [ ] Object-store limits ([NFR10](./DESIGN.md#nfr10)): `503 SlowDown` retried with backoff; reads prefix-sharded; LIST paginated; a dashboard refresh stays under the per-prefix GET ceiling post-compaction (verified against the demo/synthetic run)
-- [ ] Demo end-to-end ([NFR2](./DESIGN.md#nfr2), tasks 14–15): gateway dual-writes to both backends; `sol-query` serves the shared Parquet; parallel `Sol-*` datasources + backend-switch dashboard variable; a metric query matches Mimir via Sol within tolerance
+- [ ] Demo end-to-end ([NFR2](./DESIGN.md#nfr2), tasks 14–15): gateway dual-writes to both backends; `sol-querier` serves the shared Parquet; parallel `Sol-*` datasources + backend-switch dashboard variable; a metric query matches Mimir via Sol within tolerance
 - [ ] Code quality: translators are pure functions (AST → SQL), no duplication across the three response builders
 - [ ] Security review: no SQL injection from label/tag values into generated SQL (parameterize or escape); dependency audit on the new `datafusion`/`object_store`/`promql-parser` trees; no secrets in storage config logging
 - [ ] Observability: `sol_query_*` metrics present; query latency + cache hit rate visible
-- [ ] Performance / cost ([NFR6](./DESIGN.md#nfr6), [NFR5](./DESIGN.md#nfr5)): full demo dashboard refresh < 2s cold / < 500ms cached; per-query latency targets met; query-backend memory ≤ 256 MB default; bounded worker pool does not starve ingestion; file-open count bounded by compaction
+- [ ] Performance / cost ([NFR6](./DESIGN.md#nfr6), [NFR5](./DESIGN.md#nfr5)): full demo dashboard refresh < 2s cold / < 500ms cached; per-query latency targets met; querier-backend memory ≤ 256 MB default; bounded worker pool does not starve ingestion; file-open count bounded by compaction
 - [ ] Long-range ([NFR7](./DESIGN.md#nfr7), [FR8](./DESIGN.md#fr8), [FR6](./DESIGN.md#fr6)): 2y metric query interval meets NFR6 via splitting + rollups; historical shards cached immutably; sealed days served from compacted+rollup, active day from raw; retention GC honours the configured policy; split/rollup results match raw within tolerance
 - [ ] Query guardrails ([NFR9](./DESIGN.md#nfr9)): per-signal max range (traces/logs 30d, metrics 13mo / 2y opt-in) and max-bytes-scanned enforced at validation; breach returns a clear Grafana-compatible error, never silent truncation

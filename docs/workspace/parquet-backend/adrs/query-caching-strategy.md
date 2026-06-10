@@ -43,7 +43,7 @@ Expected hit rate: for the pcap dashboard pattern (same queries repeating every 
 
 ## Consequences
 
-- Add `moka` (concurrent LRU cache) as a dependency behind the `query-backend` feature flag. It is already production-proven (used by GreptimeDB for similar caching).
+- Add `moka` (concurrent LRU cache) as a dependency behind the `querier-backend` feature flag. It is already production-proven (used by GreptimeDB for similar caching).
 - Cache is per-process. In a multi-node deployment, each node has its own cache (acceptable for v1; Redis backend addresses this later).
 - Stale data risk: cached results may be up to 15s stale. For dashboard use cases (which already have a 15s refresh interval), this is imperceptible. For alerting use cases (out of scope per non-goals), caching should be bypassed.
 - Memory overhead: 1000 cached results × ~10KB average = ~10MB. Negligible.

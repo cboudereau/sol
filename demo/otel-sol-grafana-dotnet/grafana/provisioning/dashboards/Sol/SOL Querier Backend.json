@@ -219,7 +219,7 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": [ "sol", "query-backend", "observability" ],
+  "tags": [ "sol", "querier-backend", "observability" ],
   "templating": {
     "list": [
       {
@@ -260,8 +260,8 @@
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "",
-  "title": "SOL Query Backend",
-  "uid": "sol-query-backend",
+  "title": "SOL Querier Backend",
+  "uid": "sol-querier-backend",
   "version": 1,
   "weekStart": ""
 }

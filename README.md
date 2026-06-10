@@ -131,7 +131,7 @@ Sol is a fork of [Datadog Vector](https://github.com/vectordotdev/vector). The t
 
 Sol is **dual-licensed** (see [LICENSE](LICENSE)):
 
-- **Sol-original code** — files tagged `SPDX-License-Identifier: AGPL-3.0-only`, notably the query backend in `src/query/**` — is licensed under the [GNU Affero General Public License v3.0](LICENSE-AGPL-3.0).
+- **Sol-original code** — files tagged `SPDX-License-Identifier: AGPL-3.0-only`, notably the query backend in `src/querier/**` — is licensed under the [GNU Affero General Public License v3.0](LICENSE-AGPL-3.0).
 - **Vector-derived code** remains under the [Mozilla Public License 2.0](LICENSE-MPL-2.0), as required by that license.
 
 Running a modified Sol as a network/SaaS service triggers AGPL-3.0 §13 (you must offer users your modified source). For uses that cannot comply with the AGPL, a separate commercial license is available — contact the copyright holder.

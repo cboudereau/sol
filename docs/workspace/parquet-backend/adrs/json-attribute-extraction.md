@@ -30,9 +30,9 @@ Two ways to provide it:
 ## Decision
 
 **Option B** — depend on `datafusion-functions-json` `0.53.1` (optional, gated by
-the `query-backend` feature) and register it via
+the `querier-backend` feature) and register it via
 `datafusion_functions_json::register_all(&mut ctx)` in `QueryEngine::new`. The
-custom UDF (`src/query/udf.rs`) is removed.
+custom UDF (`src/querier/udf.rs`) is removed.
 
 This is consistent with [NFR1](../DESIGN.md#nfr1): the crate is a **DataFusion
 extension** from the DataFusion ecosystem (datafusion-contrib), not a separate

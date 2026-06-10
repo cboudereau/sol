@@ -9,7 +9,7 @@
 //! - [`CompactorOptions`] (`compactor:`) — the singleton seal → rollup →
 //!   retention loop. No HTTP server.
 //!
-//! An instance may configure either or both. Gated behind the `query-backend`
+//! An instance may configure either or both. Gated behind the `querier-backend`
 //! feature. See `docs/workspace/parquet-backend/`.
 
 use std::net::{Ipv4Addr, SocketAddr};

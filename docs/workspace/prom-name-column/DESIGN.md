@@ -6,8 +6,8 @@ relates to [parquet-backend](../parquet-backend/DESIGN.md)
 ## Context
 
 Metric-name filtering in the Parquet query backend is done with the
-`prom_metric_name(name, unit, is_monotonic)` **scalar UDF** (`src/query/udf.rs`,
-called via `prom_name_expr()` in `src/query/prometheus.rs`). Because the filter
+`prom_metric_name(name, unit, is_monotonic)` **scalar UDF** (`src/querier/udf.rs`,
+called via `prom_name_expr()` in `src/querier/prometheus.rs`). Because the filter
 predicate is a UDF over raw columns, DataFusion cannot derive Parquet row-group
 min/max pruning from it: every metric query decodes **all rows of all metric
 files** and evaluates the UDF per row.
@@ -42,7 +42,7 @@ removed** — the read path no longer normalizes anything; it reads the stored
 function; acceptable — see non-goals.)
 
 ### <a id="fr3"></a>FR3 — Read filters use the `prom_name` column (only)
-The metrics-table schema (`src/query/catalog.rs`) declares `prom_name`, and the
+The metrics-table schema (`src/querier/catalog.rs`) declares `prom_name`, and the
 read path filters on it as a **plain column equality** (`col("prom_name") =
 lit(name)`) — no UDF, no fallback predicate. Affected sites: `prom_name_expr`
 (→ `col("prom_name")`), `name_pred_expr`, the `__name__` `label_values` path,
@@ -76,7 +76,7 @@ latency class (~0.1 s for the 14 M-row dataset), not the full-scan class (~1.8 s
 ### <a id="nfr2"></a>NFR2 — Result parity
 Query results (instant, range, `label_values(__name__)`, `series`, histogram
 quantiles) are identical to the pre-change UDF behavior, including for the
-synthesized `_count`/`_sum`/`_bucket` component series. `query::` stays green.
+synthesized `_count`/`_sum`/`_bucket` component series. `querier::` stays green.
 
 ### <a id="nfr3"></a>NFR3 — Schema is the codec↔catalog contract
 The `prom_name` column must be added to **both** the codec schemas
@@ -113,7 +113,7 @@ object_store / promql-parser / moka).
 - **Moving the normalizer across crates.** `lib/codecs` cannot depend on the
   `sol` crate. Cap: move only the pure `prom_metric_name`/`unit_suffix` fns to a
   crate both can use (`lib/sol-core`, which already owns `OtelMetric`); leave the
-  DataFusion UDF wrapper in `src/query/udf.rs`. Do not refactor unrelated udf code.
+  DataFusion UDF wrapper in `src/querier/udf.rs`. Do not refactor unrelated udf code.
 - **Compaction/rollup carrying the new column.** Rollup/compaction read→rewrite
   metric batches; `prom_name` must survive the round-trip and the re-sort. Cap:
   it is just another column in the Arrow batch — verify it round-trips; only the
@@ -130,7 +130,7 @@ flowchart LR
     PN & RAW --> SORT[sort by service_name, prom_name, time]
     SORT --> PARQUET[(metrics/subtype/dt=.../*.parquet)]
   end
-  subgraph read [Read path - src/query]
+  subgraph read [Read path - src/querier]
     Q[PromQL name X] --> F["col prom_name = X (prunable, no UDF)"]
     F --> SCAN[ParquetExec row-group pruning]
     PARQUET --> SCAN
@@ -145,7 +145,7 @@ subtype schema, populated at write from the shared normalizer. Raw columns kept.
 
 **Normalizer location.** Move `prom_metric_name` + `unit_suffix` to `lib/sol-core`
 (alongside `OtelMetric`); the **codec** calls it at write time. The DataFusion
-`prom_metric_name_udf` wrapper in `src/query/udf.rs` and its catalog
+`prom_metric_name_udf` wrapper in `src/querier/udf.rs` and its catalog
 registration (`catalog.rs`) are **deleted**.
 
 Decisions:

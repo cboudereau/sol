@@ -5,7 +5,7 @@ use sol_lib::{config::GlobalOptions, configurable::configurable_component};
 
 #[cfg(feature = "api")]
 use super::api;
-#[cfg(feature = "query-backend")]
+#[cfg(feature = "querier-backend")]
 use super::query;
 use super::{
     BoxedSink, BoxedSource, BoxedTransform, ComponentKey, Config, EnrichmentTableOuter,
@@ -26,12 +26,12 @@ pub struct ConfigBuilder {
     #[serde(default)]
     pub api: api::Options,
 
-    #[cfg(feature = "query-backend")]
+    #[cfg(feature = "querier-backend")]
     #[configurable(derived)]
     #[serde(default)]
     pub querier: Option<query::QuerierOptions>,
 
-    #[cfg(feature = "query-backend")]
+    #[cfg(feature = "querier-backend")]
     #[configurable(derived)]
     #[serde(default)]
     pub compactor: Option<query::CompactorOptions>,
@@ -94,9 +94,9 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
-            #[cfg(feature = "query-backend")]
+            #[cfg(feature = "querier-backend")]
             querier,
-            #[cfg(feature = "query-backend")]
+            #[cfg(feature = "querier-backend")]
             compactor,
             schema,
             healthchecks,
@@ -130,9 +130,9 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
-            #[cfg(feature = "query-backend")]
+            #[cfg(feature = "querier-backend")]
             querier,
-            #[cfg(feature = "query-backend")]
+            #[cfg(feature = "querier-backend")]
             compactor,
             schema,
             healthchecks,
@@ -235,7 +235,7 @@ impl ConfigBuilder {
 
         // Query backend has no field-level merge; later config wins (last-writer),
         // but a later file that omits a section must not clear an earlier one.
-        #[cfg(feature = "query-backend")]
+        #[cfg(feature = "querier-backend")]
         {
             if with.querier.is_some() {
                 self.querier = with.querier;

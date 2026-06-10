@@ -70,14 +70,14 @@ gone; `sql()` may remain only for `sql_user` (the user endpoint).
 
 ### <a id="fr5"></a>FR5 — Behavioural parity
 Every query the string lowering handles produces equivalent results after migration.
-`query::` tests stay green; SQL-text assertions are rewritten to plan-structure or
+`querier::` tests stay green; SQL-text assertions are rewritten to plan-structure or
 result-level assertions of equal meaning. HTTP handlers/routes and the response JSON
 are unchanged. Window primitives are validated in isolation against the current SQL's
 outputs before rewiring (the de-risking gate).
 
 ### <a id="fr6"></a>FR6 — No SQL in core (the invariant) + primitive catalog
 A CI-checkable invariant: outside `sql.rs` (user endpoint) and test fixtures, there
-are **no `format!`-built SQL strings** in `src/query/`. The design documents the
+are **no `format!`-built SQL strings** in `src/querier/`. The design documents the
 9-primitive catalog and which functions map to which primitive (the coverage map).
 
 ### <a id="fr7"></a>FR7 — Canonical nanosecond units, converted only at the boundary
@@ -175,23 +175,23 @@ flowchart TB
 ### Module layout
 
 ```
-src/query/units.rs       # NEW — TimeNs, DurationNs newtypes; parse_duration_ns;
+src/querier/units.rs       # NEW — TimeNs, DurationNs newtypes; parse_duration_ns;
                          #   ingress (sec→ns) + egress (ns→sec) funnels
-src/query/plan/          # NEW — the 9 primitives over DataFusion Expr/DataFrame:
+src/querier/plan/          # NEW — the 9 primitives over DataFusion Expr/DataFrame:
   predicate.rs           #   P1, P2  (lhs/op/value → Expr; UDF-call helpers)
   frame.rs               #   P5, P6, P7  (window helpers: latest, rate, over_time)
   agg.rs                 #   P4, P8  (distinct / group-by)
   ids.rs                 #   P9  (encode / FixedSizeBinary literal)
-src/query/catalog.rs     # QueryEngine::collect(plan) + plan-based cache key
-src/query/{prometheus,loki,tempo}.rs
+src/querier/catalog.rs     # QueryEngine::collect(plan) + plan-based cache key
+src/querier/{prometheus,loki,tempo}.rs
                          # build_*/handle_* compose plan primitives; no format! SQL
                          #   (all translate_*/*_sql/lower_* SQL builders removed)
-src/query/{compaction,rollup}.rs
+src/querier/{compaction,rollup}.rs
                          # write-side: sort-merge + downsample on the DataFrame API too
 ```
 
-The FR6 invariant is enforced by `query::no_sql_invariant_tests::test_no_format_sql_in_core`,
-which scans `src/query/` and fails on any `format!`-built SQL (`SELECT/FROM/WHERE/GROUP BY/JOIN`)
+The FR6 invariant is enforced by `querier::no_sql_invariant_tests::test_no_format_sql_in_core`,
+which scans `src/querier/` and fails on any `format!`-built SQL (`SELECT/FROM/WHERE/GROUP BY/JOIN`)
 or `.sql(&format!…)` outside `sql.rs` (the user-SQL endpoint) and `#[cfg(test)]` fixtures.
 The only remaining `.sql()` is `QueryEngine::sql` — a borrowed `&str` passthrough.
 
