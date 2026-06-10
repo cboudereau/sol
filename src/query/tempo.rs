@@ -41,9 +41,13 @@ fn duration_nanos(raw: &str) -> Option<i64> {
 use datafusion::logical_expr::expr_fn::cast;
 use datafusion::prelude::{DataFrame, Expr, col, lit};
 
-/// JSON attribute LHS as an `Expr` (`json_get_str(column, key)`).
+/// JSON attribute LHS as an `Expr`. Uses `json_as_text` (not `json_get_str`) so a
+/// stored numeric attribute (e.g. `http.response.status_code` is JSON `500`, not
+/// `"500"`) stringifies to `"500"` and matches — `json_get_str` returns NULL for
+/// non-string JSON values, so `span.http.response.status_code=500` found nothing.
+/// Numeric range comparisons still work: the text `"500"` casts to `Float64`.
 fn json_attr(column: &str, key: &str) -> Expr {
-    datafusion_functions_json::udfs::json_get_str_udf().call(vec![col(column), lit(key)])
+    datafusion_functions_json::udfs::json_as_text_udf().call(vec![col(column), lit(key)])
 }
 
 /// LHS `Expr` for a raw TraceQL tag string: promoted intrinsic columns, or JSON
