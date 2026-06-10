@@ -107,7 +107,7 @@ fn parse_time_ns(s: &Option<String>) -> i64 {
 /// Record a served query for the self-monitoring dashboard (NFR6): request
 /// count + duration, labelled by `api`/`signal`. Scan bytes/files instrumentation
 /// is deferred (passed 0); the latency/throughput panels + the dashboard's
-/// `instance` variable (keyed on `sol_query_requests_total`) need this called.
+/// `service_name` variable (keyed on `sol_querier_requests_total`) need this called.
 fn rec(api: &str, signal: &str, t: std::time::Instant) {
     super::telemetry::record_request(api, signal, t.elapsed(), 0, 0);
 }

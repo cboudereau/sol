@@ -575,14 +575,14 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
   | Metric | Type | Labels | Watches (NFR) |
   |---|---|---|---|
-  | `sol_query_requests_total` | counter | `api,signal,status` | throughput / error rate |
-  | `sol_query_request_duration_seconds` | histogram | `api,signal` | [NFR6](#nfr6) latency budget (p50/p95/p99) |
-  | `sol_query_bytes_scanned` | histogram | `signal` | [NFR5](#nfr5)/[NFR9](#nfr9) scan budget |
-  | `sol_query_files_opened` | histogram | `signal` | small-files / compaction effect ([FR7](#fr7)) |
-  | `sol_query_cache_requests_total` | counter | `cache(result\|metadata\|shard),result(hit\|miss)` | [FR5](#fr5)/[FR8](#fr8) hit rate |
-  | `sol_query_cache_memory_bytes`, `sol_query_inflight` | gauge | — | [NFR5](#nfr5) budget / concurrency |
-  | `sol_query_rejected_total` | counter | `reason(range\|bytes\|concurrency)` | [NFR9](#nfr9) guardrails |
-  | `sol_query_unsupported_total` | counter | `lang,construct` | ⛔/⚠️ usage ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) |
+  | `sol_querier_requests_total` | counter | `api,signal,status` | throughput / error rate |
+  | `sol_querier_request_duration_seconds` | histogram | `api,signal` | [NFR6](#nfr6) latency budget (p50/p95/p99) |
+  | `sol_querier_bytes_scanned` | histogram | `signal` | [NFR5](#nfr5)/[NFR9](#nfr9) scan budget |
+  | `sol_querier_files_opened` | histogram | `signal` | small-files / compaction effect ([FR7](#fr7)) |
+  | `sol_querier_cache_requests_total` | counter | `cache(result\|metadata\|shard),result(hit\|miss)` | [FR5](#fr5)/[FR8](#fr8) hit rate |
+  | `sol_querier_cache_memory_bytes`, `sol_querier_inflight` | gauge | — | [NFR5](#nfr5) budget / concurrency |
+  | `sol_querier_rejected_total` | counter | `reason(range\|bytes\|concurrency)` | [NFR9](#nfr9) guardrails |
+  | `sol_querier_unsupported_total` | counter | `lang,construct` | ⛔/⚠️ usage ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) |
   | `sol_objectstore_requests_total` | counter | `op(get\|list\|put),status` | [NFR10](#nfr10) request rate |
   | `sol_objectstore_throttled_total` | counter | — | [NFR10](#nfr10) `503 SlowDown` |
   | `sol_objectstore_request_duration_seconds` | histogram | `op` | object-store latency |

@@ -13,7 +13,7 @@
       }
     ]
   },
-  "description": "Monitor the SOL query backend (DataFusion over Parquet serving Prometheus/Tempo/Loki APIs): API latency vs NFR6, cache hit rate, scan cost, S3 request limits (NFR10), guardrails (NFR9), and compaction (FR7). Metrics use the sol_query_* / sol_objectstore_* / sol_compactor_* namespaces emitted by the query backend (planned — see docs/workspace/parquet-backend).",
+  "description": "Monitor the SOL query backend (DataFusion over Parquet serving Prometheus/Tempo/Loki APIs): API latency vs NFR6, cache hit rate, scan cost, S3 request limits (NFR10), guardrails (NFR9), and compaction (FR7). Metrics use the sol_querier_* / sol_objectstore_* / sol_compactor_* namespaces emitted by the query backend (planned — see docs/workspace/parquet-backend).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -25,7 +25,7 @@
       "id": 1,
       "options": {
         "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false },
-        "content": "SOL <b>query backend</b> self-monitoring. Metrics: <code>sol_query_*</code> (querier), <code>sol_objectstore_*</code> (S3), <code>sol_compactor_*</code> (compaction), scraped by <code>internal_metrics</code>. Latency thresholds reflect the <b>NFR6</b> budget; memory the <b>NFR5</b> budget; throttles the <b>NFR10</b> S3 limits.",
+        "content": "SOL <b>query backend</b> self-monitoring. Metrics: <code>sol_querier_*</code> (querier), <code>sol_objectstore_*</code> (S3), <code>sol_compactor_*</code> (compaction), scraped by <code>internal_metrics</code>. Latency thresholds reflect the <b>NFR6</b> budget; memory the <b>NFR5</b> budget; throttles the <b>NFR10</b> S3 limits.",
         "mode": "html"
       },
       "pluginVersion": "10.3.3",
@@ -40,7 +40,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 3 },
       "id": 11,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, api) (rate(sol_query_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{api}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, api) (rate(sol_querier_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{api}}", "refId": "A" } ],
       "title": "Query latency p95 by API",
       "type": "timeseries"
     },
@@ -52,7 +52,7 @@
       "id": 12,
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "mean" ], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
       "pluginVersion": "10.3.3",
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(sol_query_cache_requests_total{cache=\"result\", result=\"hit\", service_name=~\"$service_name\"}[$__rate_interval])) / clamp_min(sum(rate(sol_query_cache_requests_total{cache=\"result\", service_name=~\"$service_name\"}[$__rate_interval])), 1)", "legendFormat": "result cache hit", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(sol_querier_cache_requests_total{cache=\"result\", result=\"hit\", service_name=~\"$service_name\"}[$__rate_interval])) / clamp_min(sum(rate(sol_querier_cache_requests_total{cache=\"result\", service_name=~\"$service_name\"}[$__rate_interval])), 1)", "legendFormat": "result cache hit", "refId": "A" } ],
       "title": "Result-cache hit ratio",
       "type": "stat"
     },
@@ -62,7 +62,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 3 },
       "id": 13,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (api, status) (rate(sol_query_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{api}} / {{status}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (api, status) (rate(sol_querier_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{api}} / {{status}}", "refId": "A" } ],
       "title": "Requests/s by API & status",
       "type": "timeseries"
     },
@@ -75,7 +75,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
       "id": 21,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_bytes_scanned_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_querier_bytes_scanned_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
       "title": "Bytes scanned p95 by signal",
       "type": "timeseries"
     },
@@ -86,7 +86,7 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
       "id": 22,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_query_files_opened_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_querier_files_opened_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
       "title": "Files opened p95 by signal",
       "type": "timeseries"
     },
@@ -98,8 +98,8 @@
       "id": 23,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_cache_memory_bytes{service_name=~\"$service_name\"})", "legendFormat": "cache memory", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_query_inflight{service_name=~\"$service_name\"})", "legendFormat": "in-flight queries", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_querier_cache_memory_bytes{service_name=~\"$service_name\"})", "legendFormat": "cache memory", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_querier_inflight{service_name=~\"$service_name\"})", "legendFormat": "in-flight queries", "refId": "B" }
       ],
       "title": "Cache memory (NFR5) & in-flight",
       "type": "timeseries"
@@ -148,7 +148,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
       "id": 41,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (reason) (rate(sol_query_rejected_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (reason) (rate(sol_querier_rejected_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A" } ],
       "title": "Guardrail rejects/s by reason",
       "type": "timeseries"
     },
@@ -159,7 +159,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
       "id": 42,
       "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (lang, construct) (rate(sol_query_unsupported_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{lang}}: {{construct}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (lang, construct) (rate(sol_querier_unsupported_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{lang}}: {{construct}}", "refId": "A" } ],
       "title": "Unsupported constructs/s",
       "type": "timeseries"
     },
@@ -240,7 +240,7 @@
       {
         "current": { "selected": true, "text": [ "All" ], "value": [ "$__all" ] },
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values({__name__=~\"sol_(query|compactor)_.*\"}, service_name)",
+        "definition": "label_values({__name__=~\"sol_(querier|compactor)_.*\"}, service_name)",
         "hide": 0,
         "includeAll": true,
         "allValue": ".*",
@@ -248,7 +248,7 @@
         "multi": true,
         "name": "service_name",
         "options": [],
-        "query": { "qryType": 1, "query": "label_values({__name__=~\"sol_(query|compactor)_.*\"}, service_name)" },
+        "query": { "qryType": 1, "query": "label_values({__name__=~\"sol_(querier|compactor)_.*\"}, service_name)" },
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,

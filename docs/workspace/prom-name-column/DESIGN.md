@@ -155,7 +155,7 @@ Decisions:
 
 ## Cross-cutting Concerns
 
-- **Observability.** `sol_query_*` scan-bytes/latency already emitted; expect a
+- **Observability.** `sol_querier_*` scan-bytes/latency already emitted; expect a
   drop for selective metric queries. No new metrics required.
 - **Migration.** None. Clean cutover ([FR6](#fr6)) — the Parquet store is
   regenerated so every file carries `prom_name`. Pre-change files are not

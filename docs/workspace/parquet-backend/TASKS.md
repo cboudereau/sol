@@ -404,8 +404,8 @@ classDiagram
 **Goal**: Stand up the telemetry infrastructure and emit the **querier-side** metrics so Sol monitors its own backend. The compactor (`sol_compactor_*`) and frontend metrics are emitted by **their own tasks** (10, 11) via this infra — so this task does not depend on them.
 **Types**: internal_events for the query backend (follow `src/internal_events/` conventions)
 **Constraints**:
-- Emit the querier-side catalog from [DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns): `sol_query_*` (request count/duration/bytes-scanned/files-opened histograms, cache hit/miss + memory, guardrail rejects, unsupported-construct counter) and `sol_objectstore_*` (requests/throttles/latency). `sol_compactor_*` is registered here but **emitted by task 10**; frontend shard metrics **by task 11**.
-- Reuse Sol's internal-event/metric registration; `sol_query_*` / `sol_objectstore_*` / `sol_compactor_*` namespaces; flow through `internal_metrics` → pipeline (Sol monitoring Sol)
+- Emit the querier-side catalog from [DESIGN.md §cross-cutting](./DESIGN.md#cross-cutting-concerns): `sol_querier_*` (request count/duration/bytes-scanned/files-opened histograms, cache hit/miss + memory, guardrail rejects, unsupported-construct counter) and `sol_objectstore_*` (requests/throttles/latency). `sol_compactor_*` is registered here but **emitted by task 10**; frontend shard metrics **by task 11**.
+- Reuse Sol's internal-event/metric registration; `sol_querier_*` / `sol_objectstore_*` / `sol_compactor_*` namespaces; flow through `internal_metrics` → pipeline (Sol monitoring Sol)
 - Histograms use Prometheus `_bucket`/`_sum`/`_count` so `histogram_quantile` works in the dashboard
 **Tests**:
 - `test_request_duration_histogram_emitted` (by api/signal)
@@ -414,7 +414,7 @@ classDiagram
 - `test_guardrail_reject_counter` / `test_unsupported_construct_counter`
 **Verify**: `cargo test --no-default-features --features querier-backend querier::telemetry`
 **Acceptance criteria**:
-- [x] Telemetry infra + `sol_query_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
+- [x] Telemetry infra + `sol_querier_*` / `sol_objectstore_*` / cache metrics emitted; labels match the dashboard queries
 - [x] Histograms expose `_bucket` (Grafana `histogram_quantile`)
 - [x] `sol_compactor_*` / frontend metrics are wired by tasks 10/11; the `SOL Querier Backend` dashboard renders fully once those land (verified at task 15)
 **Depends on**: task 8 (cache)
@@ -552,7 +552,7 @@ classDiagram
 - **Backend-switch dashboard variable**: every demo dashboard exposes a `$datasource` (per signal type) template variable so a user flips **Sol ↔ Grafana backend** from the dropdown with no panel edits. `SOL Pipeline.json` + `SOL Querier Backend.json` already use it; audit the rest (`Node Exporter`, app dashboards) and add the variable where missing, repointing panel `datasource` to `${datasource}`. For multi-signal dashboards use one variable per type (`$prom_ds`, `$loki_ds`, `$tempo_ds`).
 - Provision the existing `SOL Querier Backend.json` dashboard; API contracts satisfy [API-SPEC.md](./API-SPEC.md) so stock datasources work unmodified
 **Tests** (integration/manual, not unit):
-- `test_sol_query_yaml_parses` — the demo query config validates
+- `test_sol_querier_yaml_parses` — the demo query config validates
 - `test_dashboards_use_datasource_variable` — every demo dashboard panel references `${...}` datasource var, not a hard-coded uid
 - Grafana "Save & Test" passes for all three `Sol-*` datasources (discovery probes, [API-SPEC §4](./API-SPEC.md))
 - A panel returns matching results from `Sol-Prometheus` vs `Mimir` for a `rate()`/`histogram_quantile` query (parity)
@@ -563,7 +563,7 @@ classDiagram
 - [x] Every demo dashboard has a datasource variable; switching it repoints panels Sol ↔ Grafana backend with no edits — all 4 dashboards verified (Node Exporter repointed: 0 hard-coded backend uids)
 - [ ] ⏳ **Manual (live stack):** a metric query matches Mimir within tolerance via Sol (parity); `SOL Querier Backend` dashboard renders; NFR6 latency measured — requires `SOL_IMAGE=… docker compose up` (not runnable in this environment)
 
-**Static verification done here:** `sol validate --no-environment sol-querier.yaml` → ✅ (RC=0, `test_sol_query_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-querier` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
+**Static verification done here:** `sol validate --no-environment sol-querier.yaml` → ✅ (RC=0, `test_sol_querier_yaml_parses`); dashboard datasource-variable audit → ✅ (`test_dashboards_use_datasource_variable`); `sol-querier` compose service + config keys validated against the schema. The parity / Save&Test / latency criteria are the documented integration/manual tests and remain for a live run.
 **Depends on**: tasks 3, 4, 5, 6, 7 (APIs), 9 (telemetry), 10 (compaction), 14 (layout)
 **Time-box**: ~90 min · **Hill**: downhill
 
@@ -626,7 +626,7 @@ Tasks: 15
 - [ ] Demo end-to-end ([NFR2](./DESIGN.md#nfr2), tasks 14–15): gateway dual-writes to both backends; `sol-querier` serves the shared Parquet; parallel `Sol-*` datasources + backend-switch dashboard variable; a metric query matches Mimir via Sol within tolerance
 - [ ] Code quality: translators are pure functions (AST → SQL), no duplication across the three response builders
 - [ ] Security review: no SQL injection from label/tag values into generated SQL (parameterize or escape); dependency audit on the new `datafusion`/`object_store`/`promql-parser` trees; no secrets in storage config logging
-- [ ] Observability: `sol_query_*` metrics present; query latency + cache hit rate visible
+- [ ] Observability: `sol_querier_*` metrics present; query latency + cache hit rate visible
 - [ ] Performance / cost ([NFR6](./DESIGN.md#nfr6), [NFR5](./DESIGN.md#nfr5)): full demo dashboard refresh < 2s cold / < 500ms cached; per-query latency targets met; querier-backend memory ≤ 256 MB default; bounded worker pool does not starve ingestion; file-open count bounded by compaction
 - [ ] Long-range ([NFR7](./DESIGN.md#nfr7), [FR8](./DESIGN.md#fr8), [FR6](./DESIGN.md#fr6)): 2y metric query interval meets NFR6 via splitting + rollups; historical shards cached immutably; sealed days served from compacted+rollup, active day from raw; retention GC honours the configured policy; split/rollup results match raw within tolerance
 - [ ] Query guardrails ([NFR9](./DESIGN.md#nfr9)): per-signal max range (traces/logs 30d, metrics 13mo / 2y opt-in) and max-bytes-scanned enforced at validation; breach returns a clear Grafana-compatible error, never silent truncation

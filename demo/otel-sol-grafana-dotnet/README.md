@@ -249,7 +249,7 @@ The `sol-querier` service serves the Prometheus/Tempo/Loki + SQL APIs over the P
 
 ### Aggregate latency (no setup)
 
-The **SOL Querier Backend** dashboard plots `sol_query_request_duration_seconds` / `sol_query_inflight` / cache hit-rate — start here to see *which* API or signal is slow.
+The **SOL Querier Backend** dashboard plots `sol_querier_request_duration_seconds` / `sol_querier_inflight` / cache hit-rate — start here to see *which* API or signal is slow.
 
 ### Per-query engine cost — `EXPLAIN ANALYZE`
 
