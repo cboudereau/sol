@@ -2063,6 +2063,21 @@ async fn eval_instant(
             let r = Box::pin(eval_instant(engine, &b.rhs, time_ns)).await?;
             combine_instant(b.op, l, r, &b.modifier).map_err(to_err)
         }
+        // `scalar(v)` collapses an instant vector to a scalar: the sole element's
+        // value if the vector has exactly one element, else NaN (PromQL spec).
+        Expr::Call(c) if c.func.name == "scalar" => {
+            let arg = c
+                .args
+                .args
+                .first()
+                .ok_or_else(|| to_err("scalar() requires one argument".to_string()))?;
+            let v = Box::pin(eval_instant(engine, arg, time_ns)).await?;
+            Ok(InstantVal::Scalar(match v {
+                InstantVal::Scalar(x) => x,
+                InstantVal::Vector(items) if items.len() == 1 => items[0].1,
+                InstantVal::Vector(_) => f64::NAN,
+            }))
+        }
         _ => {
             if let Some((phi, vs)) = histogram_quantile_parts(expr) {
                 let resp = handle_histogram(engine, phi, vs, time_ns).await?;
@@ -2273,6 +2288,18 @@ mod tests {
         // No selector → every host.
         let all = handle_label_values(&engine, "host", 0, i64::MAX, None).await.unwrap();
         assert_eq!(all["data"], serde_json::json!(["a", "b", "c"]), "unscoped: {all}");
+    }
+
+    #[tokio::test]
+    async fn test_instant_scalar_function_unwraps_single_series() {
+        // `scalar(v)` on a one-element vector yields that value (then composes
+        // in arithmetic) — the Sys Load gauge shape `scalar(node_load1{…}) * …`.
+        let engine = counter_engine().await;
+        let resp = handle_instant(&engine, "scalar(http_total) * 2", 3_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "scalar → one value: {:?}", resp.data.result);
+        assert_eq!(resp.data.result[0].value.1, "120", "60 * 2");
     }
 
     #[tokio::test]
