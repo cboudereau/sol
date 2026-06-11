@@ -67,10 +67,40 @@ impl AggGrouping {
         }
     }
 
-    /// Stable string key for the result group (debug-format of the projection).
-    pub(super) fn key(&self, labels: &BTreeMap<String, String>) -> String {
-        format!("{:?}", self.result_labels(labels))
+    /// Encode this grouping as the `(mode, labels)` UDF argument pair: `mode` is
+    /// `by`/`without`/`all`; `labels` is the `\x1f`-joined label list (empty for
+    /// `all`). Inverse of [`grouping_from_args`] — keeps the on-wire encoding in
+    /// one place so plan builders never construct it by hand.
+    pub(super) fn encode(&self) -> (&'static str, String) {
+        match self {
+            AggGrouping::By(l) => ("by", l.join(&SEP.to_string())),
+            AggGrouping::Without(l) => ("without", l.join(&SEP.to_string())),
+            AggGrouping::All => ("all", String::new()),
+        }
     }
+}
+
+/// `prom_group_key(attributes, promoted, mode, labels)` as an `Expr` for a **leaf**
+/// inner (a selector / range function carrying `attributes` + a promoted column).
+pub(super) fn prom_group_key_call(
+    attributes: datafusion::logical_expr::Expr,
+    promoted: datafusion::logical_expr::Expr,
+    grouping: &AggGrouping,
+) -> datafusion::logical_expr::Expr {
+    use datafusion::prelude::lit;
+    let (mode, labels) = grouping.encode();
+    prom_group_key_udf().call(vec![attributes, promoted, lit(mode), lit(labels)])
+}
+
+/// `prom_group_key_reproject(inner_key, mode, labels)` as an `Expr` for a **nested**
+/// inner (another aggregate that already carries a `prom_group_key` column).
+pub(super) fn prom_group_key_reproject_call(
+    inner_key: datafusion::logical_expr::Expr,
+    grouping: &AggGrouping,
+) -> datafusion::logical_expr::Expr {
+    use datafusion::prelude::lit;
+    let (mode, labels) = grouping.encode();
+    prom_group_key_reproject_udf().call(vec![inner_key, lit(mode), lit(labels)])
 }
 
 /// Canonical, reversible group-key string. See module docs for the format.
@@ -388,6 +418,18 @@ mod tests {
             prom_group_key_reproject_udf().name(),
             "prom_group_key_reproject"
         );
+    }
+
+    #[test]
+    fn test_grouping_encode_roundtrips_through_args() {
+        // encode() is the inverse of grouping_from_args(): a grouping survives the
+        // (mode, labels) UDF-arg encoding used by the plan builders.
+        let l = labels(&[("cpu", "0"), ("mode", "user"), ("le", "1"), ("__name__", "m")]);
+        for g in [by(&["cpu", "mode"]), without(&["le"]), AggGrouping::All] {
+            let (mode, label_list) = g.encode();
+            let decoded = grouping_from_args(mode, &label_list).unwrap();
+            assert_eq!(decoded.result_labels(&l), g.result_labels(&l));
+        }
     }
 
     #[test]

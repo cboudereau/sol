@@ -117,9 +117,9 @@ classDiagram
 **Tests** (the existing parity tests are the contract — must stay green): `test_instant_nested_count_aggregate`, `test_instant_without_keeps_complement`, `test_range_without_aggregation_and_scalar_divisor`, `test_instant_aggregate_over_rate`, `test_max_over_time_executes_with_range_frame`. Plus new: `test_aggregation_grouped_in_plan` (logical plan contains an `Aggregate` node, not a Rust reduce) and **`test_mixed_nesting_by_over_without`** — `sum by (cpu) (sum without (mode) (m))` returns one series per cpu with the correct sums (exercises reprojection; uses `cpu_engine`).
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] All listed parity tests green through the plan path.
-- [ ] `aggregate_instant_vector`/`aggregate_range_series`/`AggGrouping`/`agg_reduce` deleted.
-- [ ] `no_sql_invariant_tests::test_no_format_sql_in_core` green.
+- [x] All listed parity tests green through the plan path.
+- [x] `aggregate_instant_vector`/`aggregate_range_series`/`agg_reduce` deleted (plus the SQL single-level by-path `lower_aggregate_instant_df`/`lower_range_aggregate_df`, replaced by `lower_aggregate_instant`/`lower_aggregate_range`); `AggGrouping` kept in `group_key.rs` per spec.
+- [x] `no_sql_invariant_tests::test_no_format_sql_in_core` green.
 **Depends on**: 1 · **Time-box**: ~90 min · `downhill`
 
 ### 3. Push `topk`/`bottomk` into a window plan ([FR2](./DESIGN.md#fr2))

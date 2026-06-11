@@ -192,8 +192,66 @@ fn range_to_ns(range: Duration) -> i64 {
     i64::try_from(range.as_nanos()).unwrap_or(i64::MAX)
 }
 
-/// `<agg> [by (...)]` over a range expression, as a `DataFrame` (P8).
-async fn lower_range_aggregate_df(
+/// Internal column the inner `prom_group_key` is renamed to before re-projection,
+/// so the outer aggregate can alias its own group key back to `prom_group_key`
+/// without colliding with the inner column of the same name (DataFusion rejects
+/// an aggregate whose group alias shadows an input column).
+const INNER_GROUP_KEY: &str = "prom_group_key_inner";
+
+/// Whether an already-lowered inner frame is a **nested** aggregate (carries a
+/// `prom_group_key` column) rather than a **leaf** (carries label columns). Called
+/// before [`rename_inner_group_key`], so it tests the original column name.
+fn inner_is_nested(inner: &datafusion::dataframe::DataFrame) -> bool {
+    inner
+        .schema()
+        .has_column(&datafusion::common::Column::from_name("prom_group_key"))
+}
+
+/// The group-key column for an aggregate's already-lowered inner frame, *after*
+/// [`rename_inner_group_key`] has run — so a nested inner is detected by the
+/// presence of [`INNER_GROUP_KEY`].
+///
+/// A **leaf** inner (selector / `rate` / `over_time`) carries `attributes` +
+/// `service_name`, so the key is `prom_group_key(attributes, service_name, …)`. A
+/// **nested** inner re-projects its key via `prom_group_key_reproject(…)` — both
+/// share the `GroupKey` core, which is what makes mixed nesting (e.g.
+/// `sum by (cpu) (sum without (mode) (m))`) correct.
+fn agg_group_key_expr(
+    inner: &datafusion::dataframe::DataFrame,
+    grouping: &AggGrouping,
+) -> datafusion::logical_expr::Expr {
+    use super::group_key::{prom_group_key_call, prom_group_key_reproject_call};
+    use datafusion::prelude::col;
+    if inner
+        .schema()
+        .has_column(&datafusion::common::Column::from_name(INNER_GROUP_KEY))
+    {
+        prom_group_key_reproject_call(col(INNER_GROUP_KEY), grouping)
+    } else {
+        prom_group_key_call(col("attributes"), col("service_name"), grouping)
+    }
+}
+
+/// Rename a nested inner's `prom_group_key` column to [`INNER_GROUP_KEY`] so the
+/// outer aggregate can alias its re-projected key back to `prom_group_key`. A leaf
+/// inner (no such column) passes through unchanged.
+fn rename_inner_group_key(
+    inner: datafusion::dataframe::DataFrame,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    if inner_is_nested(&inner) {
+        Ok(inner.with_column_renamed("prom_group_key", INNER_GROUP_KEY)?)
+    } else {
+        Ok(inner)
+    }
+}
+
+/// Lower an aggregate over a **range** expression to the canonical aggregate frame
+/// `[prom_group_key, time_unix_nano, v]` via `GROUP BY prom_group_key, time` +
+/// `agg(v)` ([ADR: aggregation-pushdown]). Nested aggregates chain through the
+/// same path over the uniform frame.
+///
+/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+async fn lower_aggregate_range(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
     start_ns: i64,
@@ -202,33 +260,36 @@ async fn lower_range_aggregate_df(
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let op = agg_name(agg.op).map_err(to_err)?;
-    let by = match &agg.modifier {
-        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        Some(LabelModifier::Exclude(_)) => {
-            return Err(to_err(
-                "`without (...)` aggregation not supported (v1)".to_string(),
-            ));
-        }
-        None => Vec::new(),
-    };
-    let inner = Box::pin(lower_range_df(
-        engine,
-        agg.expr.as_ref(),
-        start_ns,
-        end_ns,
-        table,
-    ))
-    .await?;
+    let grouping = AggGrouping::from(&agg.modifier);
+    let inner =
+        Box::pin(lower_aggregate_inner_range(engine, agg.expr.as_ref(), start_ns, end_ns, table))
+            .await?;
+    let inner = rename_inner_group_key(inner)?;
+    let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
     let v = agg_value_expr(op, col("v")).alias("v");
-    if by.is_empty() {
-        Ok(inner.aggregate(vec![col("time_unix_nano")], vec![v])?)
-    } else {
-        let mut group: Vec<datafusion::logical_expr::Expr> = by
-            .iter()
-            .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
-            .collect();
-        group.push(col("time_unix_nano"));
-        Ok(inner.aggregate(group, vec![v])?)
+    Ok(inner.aggregate(vec![key, col("time_unix_nano")], vec![v])?)
+}
+
+/// Lower the **inner** of a range aggregate to a frame carrying `v` +
+/// `time_unix_nano` plus either label columns (leaf) or a `prom_group_key`
+/// column (nested aggregate), ready for [`agg_group_key_expr`].
+async fn lower_aggregate_inner_range(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    match expr {
+        Expr::Paren(p) => {
+            Box::pin(lower_aggregate_inner_range(engine, &p.expr, start_ns, end_ns, table)).await
+        }
+        Expr::Aggregate(inner) => {
+            Box::pin(lower_aggregate_range(engine, inner, start_ns, end_ns, table)).await
+        }
+        // A leaf range inner (bare selector / rate / *_over_time): carries
+        // `attributes` + `service_name`, the leaf group-key inputs.
+        _ => lower_range_df(engine, expr, start_ns, end_ns, table).await,
     }
 }
 
@@ -281,7 +342,7 @@ async fn lower_range_df(
         }
         Expr::Paren(p) => Box::pin(lower_range_df(engine, &p.expr, start_ns, end_ns, table)).await,
         Expr::Aggregate(agg) => {
-            lower_range_aggregate_df(engine, agg, start_ns, end_ns, table).await
+            Box::pin(lower_aggregate_range(engine, agg, start_ns, end_ns, table)).await
         }
         Expr::VectorSelector(vs) => Ok(metric_base_df(engine, vs, start_ns, end_ns, table)
             .await?
@@ -346,55 +407,68 @@ fn matrix_range_ns(expr: &Expr) -> Option<i64> {
     }
 }
 
-async fn lower_aggregate_instant_df(
+/// Lower an aggregate at an **instant** to the canonical aggregate frame
+/// `[prom_group_key, v]` via `GROUP BY prom_group_key` + `agg(v)`
+/// ([ADR: aggregation-pushdown]). The inner is one of:
+/// - a **leaf selector** (`sum(m)`): the latest sample per series, then aggregate;
+/// - a **range function** (`avg(rate(m[5m]))`): the range aggregate over the
+///   `[T-range, T]` window, then the value at `T` (latest per group);
+/// - a **nested aggregate** (`count(count(m) by (cpu))`): recurse, then re-project.
+///
+/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+async fn lower_aggregate_instant(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
     time_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let op = agg_name(agg.op).map_err(to_err)?;
-    let by = match &agg.modifier {
-        Some(LabelModifier::Include(labels)) => labels.labels.clone(),
-        Some(LabelModifier::Exclude(_)) => {
-            return Err(to_err(
-                "`without (...)` aggregation not supported (v1)".to_string(),
-            ));
-        }
-        None => Vec::new(),
-    };
-    // Bare selector inner (`sum(metric)`): latest sample per series, then aggregate.
-    let selector = match agg.expr.as_ref() {
-        Expr::VectorSelector(vs) => Some(vs),
-        Expr::Paren(p) => match p.expr.as_ref() {
-            Expr::VectorSelector(vs) => Some(vs),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(vs) = selector {
-        let inner = latest_selected_df(engine, vs, time_ns).await?;
-        let v = agg_value_expr(op, col("v")).alias("v");
-        return if by.is_empty() {
-            Ok(inner.aggregate(vec![], vec![v])?)
-        } else {
-            let group: Vec<datafusion::logical_expr::Expr> = by
-                .iter()
-                .map(|k| label_lhs_expr(k).alias(sql_ident(k)))
-                .collect();
-            Ok(inner.aggregate(group, vec![v])?)
-        };
+    let grouping = AggGrouping::from(&agg.modifier);
+    let v = agg_value_expr(op, col("v")).alias("v");
+
+    // Nested aggregate inner: recurse to the canonical frame, then re-project.
+    if let Some(inner_agg) = aggregate_inner(agg.expr.as_ref()) {
+        let inner = Box::pin(lower_aggregate_instant(engine, inner_agg, time_ns)).await?;
+        let inner = rename_inner_group_key(inner)?;
+        let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
+        return Ok(inner.aggregate(vec![key], vec![v])?);
     }
-    // Range-expression inner (`avg(rate(metric[5m]))`, common on gauge panels):
-    // evaluate `<agg>(range)` over the [T-range, T] window with the range engine,
-    // then take the value at T (latest sample per group) — an instant scalar/vector.
+
+    // Leaf selector inner (`sum(m)`): latest sample per series, then aggregate.
+    if let Some(vs) = aggregate_inner_selector(agg.expr.as_ref()) {
+        let inner = latest_selected_df(engine, vs, time_ns).await?;
+        let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
+        return Ok(inner.aggregate(vec![key], vec![v])?);
+    }
+
+    // Range-function inner (`avg(rate(m[5m]))`, common on gauge panels): evaluate
+    // `<agg>(range)` over the [T-range, T] window, then take the value at T (latest
+    // per group) — the canonical frame collapses to `[prom_group_key, v]`.
     let range = matrix_range_ns(agg.expr.as_ref()).ok_or_else(|| {
         to_err("instant aggregate inner must be a selector or a range function (v1)".to_string())
     })?;
     let start = time_ns.saturating_sub(range);
-    let ranged = lower_range_aggregate_df(engine, agg, start, time_ns, "metrics").await?;
-    let part: Vec<datafusion::logical_expr::Expr> =
-        by.iter().map(|k| col(sql_ident(k))).collect();
-    super::plan::frame::latest_per_series(ranged, part, "time_unix_nano")
+    let ranged = lower_aggregate_range(engine, agg, start, time_ns, "metrics").await?;
+    super::plan::frame::latest_per_series(ranged, vec![col("prom_group_key")], "time_unix_nano")
+}
+
+/// The inner aggregate of `expr`, unwrapping parens (`Some` only if the inner is
+/// itself an aggregate — the nested-aggregate case).
+fn aggregate_inner(expr: &Expr) -> Option<&AggregateExpr> {
+    match expr {
+        Expr::Aggregate(a) => Some(a),
+        Expr::Paren(p) => aggregate_inner(&p.expr),
+        _ => None,
+    }
+}
+
+/// The inner vector selector of `expr`, unwrapping parens (the leaf-selector case).
+fn aggregate_inner_selector(expr: &Expr) -> Option<&VectorSelector> {
+    match expr {
+        Expr::VectorSelector(vs) => Some(vs),
+        Expr::Paren(p) => aggregate_inner_selector(&p.expr),
+        _ => None,
+    }
 }
 
 /// Lower an instant PromQL expression to a `DataFrame`: latest-per-series
@@ -407,7 +481,7 @@ async fn lower_instant_df(
     match expr {
         Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
         Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
-        Expr::Aggregate(agg) => lower_aggregate_instant_df(engine, agg, time_ns).await,
+        Expr::Aggregate(agg) => lower_aggregate_instant(engine, agg, time_ns).await,
         // Bare range function at an instant (`rate(metric[5m])`): evaluate over the
         // [T-range, T] window via the range engine, then keep the value at T.
         Expr::Call(_) => {
@@ -442,69 +516,6 @@ fn agg_name(op: token::TokenType) -> Result<&'static str, String> {
 }
 
 use super::group_key::AggGrouping;
-
-/// Reduce a group of values for a simple aggregation operator.
-#[allow(clippy::cast_precision_loss)] // group counts are tiny; f64 is exact here
-fn agg_reduce(op: &str, values: &[f64]) -> f64 {
-    match op {
-        "sum" => values.iter().sum(),
-        "min" => values.iter().copied().fold(f64::INFINITY, f64::min),
-        "max" => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        "count" => values.len() as f64,
-        "avg" if values.is_empty() => f64::NAN,
-        "avg" => values.iter().sum::<f64>() / values.len() as f64,
-        _ => f64::NAN,
-    }
-}
-
-/// Aggregate an instant vector in Rust. Composes over nested expressions
-/// (`count(count(…) by (cpu))`) and supports `by`/`without` — neither of which
-/// the single-level SQL aggregate path can express.
-fn aggregate_instant_vector(
-    op: &str,
-    grouping: &AggGrouping,
-    items: Vec<(BTreeMap<String, String>, f64)>,
-) -> Vec<(BTreeMap<String, String>, f64)> {
-    let mut groups: BTreeMap<String, (BTreeMap<String, String>, Vec<f64>)> = BTreeMap::new();
-    for (labels, v) in items {
-        groups
-            .entry(grouping.key(&labels))
-            .or_insert_with(|| (grouping.result_labels(&labels), Vec::new()))
-            .1
-            .push(v);
-    }
-    groups
-        .into_values()
-        .map(|(labels, vs)| (labels, agg_reduce(op, &vs)))
-        .collect()
-}
-
-/// Aggregate range series in Rust: group series by the grouping projection, then
-/// reduce per timestamp across the series in each group. Timestamps are keyed by
-/// nanoseconds for stable ordering; series in a group come from one range query
-/// so their grid timestamps align.
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // ns↔s grid keys
-fn aggregate_range_series(op: &str, grouping: &AggGrouping, series: RangeSeries) -> RangeSeries {
-    let mut groups: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>)> =
-        BTreeMap::new();
-    for (_k, (labels, points)) in series {
-        let entry = groups
-            .entry(grouping.key(&labels))
-            .or_insert_with(|| (grouping.result_labels(&labels), BTreeMap::new()));
-        for (t, v) in points {
-            entry.1.entry((t * 1e9).round() as i64).or_default().push(v);
-        }
-    }
-    let mut out: RangeSeries = BTreeMap::new();
-    for (labels, buckets) in groups.into_values() {
-        let pts: Vec<(f64, f64)> = buckets
-            .into_iter()
-            .map(|(tk, vs)| (tk as f64 / 1e9, agg_reduce(op, &vs)))
-            .collect();
-        out.insert(format!("{labels:?}"), (labels, pts));
-    }
-    out
-}
 
 /// Apply `clamp_min`/`clamp_max` (value floored/capped at `bound`) to a value.
 fn clamp_value(is_min: bool, x: f64, bound: f64) -> f64 {
@@ -687,6 +698,45 @@ impl LabelCols {
             }
         }
         m
+    }
+}
+
+/// Per-batch label accessor that abstracts over the two result shapes: a grouped
+/// aggregate result (a `prom_group_key` column, parsed once per row = once per
+/// output group via [`super::group_key::GroupKey::parse`]) and a raw selector
+/// result (label/`attributes` columns via [`LabelCols`]).
+enum SeriesLabels {
+    /// Aggregated frame: the cast `prom_group_key` string column.
+    Grouped(datafusion::arrow::array::ArrayRef),
+    /// Raw selector frame: promoted + exploded `attributes` label columns.
+    Raw(LabelCols),
+}
+
+impl SeriesLabels {
+    fn build(batch: &datafusion::arrow::record_batch::RecordBatch) -> crate::Result<Self> {
+        use datafusion::arrow::compute::cast;
+        use datafusion::arrow::datatypes::DataType;
+        if let Ok(idx) = batch.schema().index_of("prom_group_key") {
+            let key = cast(batch.column(idx), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
+            Ok(SeriesLabels::Grouped(key))
+        } else {
+            Ok(SeriesLabels::Raw(LabelCols::build(batch)?))
+        }
+    }
+
+    fn labels(&self, i: usize) -> BTreeMap<String, String> {
+        use datafusion::arrow::array::{Array, AsArray};
+        match self {
+            SeriesLabels::Grouped(arr) => {
+                let a = arr.as_string::<i32>();
+                if a.is_null(i) {
+                    BTreeMap::new()
+                } else {
+                    super::group_key::GroupKey::parse(a.value(i))
+                }
+            }
+            SeriesLabels::Raw(cols) => cols.labels(i),
+        }
     }
 }
 
@@ -965,6 +1015,10 @@ async fn range_series_from_df(
 
 /// Group result batches (`v` + `time_unix_nano` + label columns) into per-series
 /// point lists keyed by the (ordered) label set.
+///
+/// A grouped result carries a `prom_group_key` column (the canonical aggregate
+/// frame): its labels are recovered via [`SeriesLabels::parse`] once per group.
+/// A raw selector carries label columns instead, handled by [`LabelCols`].
 fn group_range_series(
     batches: &[datafusion::arrow::record_batch::RecordBatch],
 ) -> crate::Result<RangeSeries> {
@@ -983,13 +1037,13 @@ fn group_range_series(
             .map_err(|e| to_err(e.to_string()))?;
         let t = cast(batch.column(t_idx), &DataType::Int64)?;
         let t = t.as_primitive::<Int64Type>();
-        let cols = LabelCols::build(batch)?;
+        let labels = SeriesLabels::build(batch)?;
 
         for i in 0..batch.num_rows() {
             if v.is_null(i) || t.is_null(i) {
                 continue;
             }
-            let metric = cols.labels(i);
+            let metric = labels.labels(i);
             #[allow(clippy::cast_precision_loss)]
             let ts_s = t.value(i) as f64 / 1_000_000_000.0;
             let key = format!("{metric:?}");
@@ -2022,8 +2076,8 @@ async fn eval_range_window(
                 }
             })
         }
-        // Aggregations evaluated compositionally in Rust — supports nesting and
-        // `by`/`without` (the SQL aggregate path only does single-level `by`).
+        // Aggregations pushed into DataFusion (`GROUP BY prom_group_key, time` +
+        // `agg(v)`, chained for nesting) — handles `by`/`without`/nested uniformly.
         // Yield to the `_` arm's special detectors (bucket heatmap / histogram
         // quantile), whose `sum by (le) …` shape is also a simple aggregate.
         Expr::Aggregate(agg)
@@ -2031,14 +2085,8 @@ async fn eval_range_window(
                 && detect_bucket_heatmap(expr).is_none()
                 && detect_hist_quantile(expr).is_none() =>
         {
-            let op = agg_name(agg.op).map_err(to_err)?;
-            let grouping = AggGrouping::from(&agg.modifier);
-            let inner = Box::pin(eval_range_window(engine, &agg.expr, s, e, table)).await?;
-            let series = match inner {
-                RangeVal::Vector(m) => m,
-                RangeVal::Scalar(_) => RangeSeries::new(),
-            };
-            Ok(RangeVal::Vector(aggregate_range_series(op, &grouping, series)))
+            let df = lower_aggregate_range(engine, agg, s, e, table).await?;
+            Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
         }
         _ => {
             if let Some(spec) = detect_hist_quantile(expr) {
@@ -2078,12 +2126,12 @@ async fn instant_vector_from_df(
         let v_idx = schema.index_of("v").map_err(|e| to_err(e.to_string()))?;
         let v = cast(batch.column(v_idx), &DataType::Float64)?;
         let v = v.as_primitive::<Float64Type>();
-        let cols = LabelCols::build(batch)?;
+        let labels = SeriesLabels::build(batch)?;
         for i in 0..batch.num_rows() {
             if v.is_null(i) {
                 continue;
             }
-            out.push((cols.labels(i), v.value(i)));
+            out.push((labels.labels(i), v.value(i)));
         }
     }
     Ok(out)
@@ -2237,19 +2285,14 @@ async fn eval_instant(
                 }
             })
         }
-        // Aggregations are evaluated compositionally in Rust (the inner is any
-        // expression, not just a selector): handles nesting + `by`/`without`.
+        // Aggregations are pushed into DataFusion as `GROUP BY prom_group_key` +
+        // `agg(v)`, chained for nesting; the canonical frame is materialized back
+        // into labels per output group ([ADR: aggregation-pushdown]).
         Expr::Aggregate(agg) if agg_name(agg.op).is_ok() => {
-            let op = agg_name(agg.op).map_err(to_err)?;
-            let grouping = AggGrouping::from(&agg.modifier);
-            let inner = Box::pin(eval_instant(engine, &agg.expr, time_ns)).await?;
-            let items = match inner {
-                InstantVal::Vector(v) => v,
-                InstantVal::Scalar(s) => vec![(BTreeMap::new(), s)],
-            };
-            Ok(InstantVal::Vector(aggregate_instant_vector(
-                op, &grouping, items,
-            )))
+            let df = lower_aggregate_instant(engine, agg, time_ns).await?;
+            Ok(InstantVal::Vector(
+                instant_vector_from_df(engine, df).await?,
+            ))
         }
         _ => {
             if let Some((phi, vs)) = histogram_quantile_parts(expr) {
@@ -3021,6 +3064,63 @@ mod tests {
                 (2.0, "30".to_string()),
                 (3.0, "60".to_string())
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_grouped_in_plan() {
+        // The aggregate must be pushed into DataFusion: the lowered logical plan
+        // for `sum by (cpu) (m)` contains an `Aggregate` node (not a Rust reduce).
+        let engine = cpu_engine().await;
+        let expr = parser::parse("sum by (cpu) (m)").unwrap();
+        let Expr::Aggregate(agg) = &expr else {
+            panic!("expected an aggregate expr");
+        };
+        let df = lower_aggregate_instant(&engine, agg, 2_000_000_000)
+            .await
+            .unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(plan.contains("Aggregate:"), "grouping in-plan: {plan}");
+        // and it groups on the prom_group_key column, not a Rust loop.
+        assert!(plan.contains("prom_group_key"), "group key in-plan: {plan}");
+    }
+
+    #[tokio::test]
+    async fn test_mixed_nesting_by_over_without() {
+        // sum by (cpu) (sum without (mode) (m)): the inner drops `mode` (keeping
+        // cpu), the outer re-projects to `by (cpu)`. Exercises reprojection.
+        // cpu0: (1+2)=3, cpu1: (3+4)=7 — one series per cpu.
+        let engine = cpu_engine().await;
+        let r = handle_instant(
+            &engine,
+            "sum by (cpu) (sum without (mode) (m))",
+            2_000_000_000,
+        )
+        .await
+        .unwrap();
+        let mut got: Vec<(String, String)> = r
+            .data
+            .result
+            .iter()
+            .map(|s| {
+                (
+                    s.metric.get("cpu").cloned().unwrap_or_default(),
+                    s.value.1.clone(),
+                )
+            })
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("0".into(), "3".into()), ("1".into(), "7".into())],
+            "{:?}",
+            r.data.result
+        );
+        // only cpu survives the outer by(cpu).
+        assert!(
+            r.data.result.iter().all(|s| !s.metric.contains_key("mode")),
+            "mode dropped: {:?}",
+            r.data.result
         );
     }
 
