@@ -353,6 +353,44 @@ async fn lower_range_df(
     }
 }
 
+/// Apply `topk(k, …)` / `bottomk` to an already-lowered range frame as a window
+/// plan ([`super::plan::frame::lower_topk`]), then drop the window scratch
+/// columns. Partition by the frame's series identity: `prom_group_key` for a
+/// grouped (aggregate) frame, else the raw label columns (`prom_part`).
+fn lower_topk_df(
+    df: datafusion::dataframe::DataFrame,
+    k: i64,
+    is_topk: bool,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let has = |n: &str| {
+        df.schema()
+            .has_column(&datafusion::common::Column::from_name(n))
+    };
+    // Series identity: the grouped frame's `prom_group_key`, else whichever raw
+    // label columns the lowered frame actually carries (`rate`/`over_time` drop
+    // `name`; a bare selector keeps it).
+    let part: Vec<datafusion::logical_expr::Expr> = if has("prom_group_key") {
+        vec![col("prom_group_key")]
+    } else {
+        ["name", "service_name", "attributes"]
+            .into_iter()
+            .filter(|n| has(n))
+            .map(col)
+            .collect()
+    };
+    // The output columns we keep (everything the lowered frame carried, minus the
+    // window scratch columns `peak`/`series_rank`).
+    let keep: Vec<datafusion::logical_expr::Expr> = df
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| col(f.name()))
+        .collect();
+    let ranked = super::plan::frame::lower_topk(df, part, "v", k, is_topk)?;
+    Ok(ranked.select(keep)?)
+}
+
 /// Latest sample per series at/before `time_ns`, as a `DataFrame` (P5): the
 /// instant-query base (`metric_base` filtered `<= time_ns`, then `rn = 1`).
 async fn latest_selected_df(
@@ -1880,25 +1918,6 @@ fn matrix_to_series(resp: PromMatrixResponse) -> RangeSeries {
     out
 }
 
-/// Keep the top/bottom-N series by peak value (used for `topk` nested inside a
-/// larger expression; the top-level case is handled in [`handle_range`]).
-fn topk_series(series: RangeSeries, n: i64, is_topk: bool) -> RangeSeries {
-    let mut v: Vec<(String, (BTreeMap<String, String>, Vec<(f64, f64)>))> =
-        series.into_iter().collect();
-    let score = |p: &[(f64, f64)]| p.iter().map(|x| x.1).fold(f64::MIN, f64::max);
-    v.sort_by(|a, b| {
-        let (sa, sb) = (score(&a.1.1), score(&b.1.1));
-        if is_topk {
-            sb.partial_cmp(&sa)
-        } else {
-            sa.partial_cmp(&sb)
-        }
-        .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    v.truncate(usize::try_from(n.max(0)).unwrap_or(usize::MAX));
-    v.into_iter().collect()
-}
-
 fn scalar_op_scalar(op: token::TokenType, a: f64, b: f64) -> f64 {
     // Scalar/scalar comparisons require `bool` in PromQL; we always yield 0/1.
     apply_binop(op, a, b, true, a).unwrap_or(f64::NAN)
@@ -2096,11 +2115,12 @@ async fn eval_range_window(
                 let resp = handle_bucket_heatmap(engine, &spec, s, e).await?;
                 Ok(RangeVal::Vector(matrix_to_series(resp)))
             } else if let Some((n, is_topk, inner)) = topk_parts(expr) {
-                let v = Box::pin(eval_range_window(engine, inner, s, e, table)).await?;
-                Ok(match v {
-                    RangeVal::Scalar(x) => RangeVal::Scalar(x),
-                    RangeVal::Vector(m) => RangeVal::Vector(topk_series(m, n, is_topk)),
-                })
+                // topk/bottomk is relational: lower the inner to a DataFrame and
+                // rank whole series by peak via a window (`DENSE_RANK … <= k`),
+                // superseding the Rust sort-truncate.
+                let df = lower_range_df(engine, inner, s, e, table).await?;
+                let df = lower_topk_df(df, n, is_topk)?;
+                Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
             } else {
                 let df = lower_range_df(engine, expr, s, e, table).await?;
                 Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
@@ -3041,6 +3061,26 @@ mod tests {
         );
         assert_eq!(resp.data.result[0].metric["sc"], "a", "the higher series");
         assert_eq!(resp.data.result[0].values, vec![(2.0, "20".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_topk_uses_window_plan() {
+        // topk must lower to a window plan (DENSE_RANK over the series peak),
+        // not the removed Rust sort-truncate: the logical plan carries a
+        // WindowAggr with dense_rank — no `topk_series` on the path.
+        let engine = counter_engine().await;
+        let inner = parser::parse("rate(http_total[5m])").unwrap();
+        let df = lower_range_df(&engine, &inner, 0, 10_000_000_000, "metrics")
+            .await
+            .unwrap();
+        let df = lower_topk_df(df, 1, true).unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(plan.contains("WindowAggr:"), "windowed topk: {plan}");
+        assert!(plan.contains("dense_rank"), "ranks via dense_rank: {plan}");
+        assert!(
+            plan.contains("series_rank"),
+            "filters on the rank column: {plan}"
+        );
     }
 
     #[tokio::test]

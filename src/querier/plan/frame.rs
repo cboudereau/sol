@@ -15,6 +15,7 @@ use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::functions_window::lead_lag::lag;
+use datafusion::functions_window::rank::dense_rank;
 use datafusion::functions_window::row_number::row_number;
 use datafusion::logical_expr::expr::WindowFunction;
 use datafusion::logical_expr::expr_fn::cast;
@@ -60,6 +61,44 @@ pub fn latest_per_series(
         .build()?
         .alias("rn");
     Ok(df.window(vec![rn])?.filter(col("rn").eq(lit(1_u64)))?)
+}
+
+/// `topk(k, …)` / `bottomk(k, …)` lowered to a window plan, replacing the Rust
+/// sort-and-truncate. PromQL `topk` keeps the top-`k` **whole series** (all their
+/// points), ranked by each series' representative (peak) value — the semantics of
+/// the superseded `topk_series`. We reproduce that relationally:
+/// 1. `peak = MAX(v) OVER (PARTITION BY part)` — the per-series score on every row;
+/// 2. `series_rank = DENSE_RANK() OVER (ORDER BY peak DESC[topk]/ASC[bottomk], part)`
+///    — distinct series get distinct ranks (the full key is in the `ORDER BY`, so
+///    every row of a series shares one rank); ties on peak break by key, stable;
+/// 3. keep rows with `series_rank <= k`.
+///
+/// The `peak`/`series_rank` columns are left in place for the caller to project
+/// away. `k <= 0` yields an empty result (matches `truncate(0)`).
+///
+/// # Errors
+/// Propagates DataFusion plan-construction errors.
+pub fn lower_topk(
+    df: DataFrame,
+    part: Vec<Expr>,
+    v_col: &str,
+    k: i64,
+    is_topk: bool,
+) -> crate::Result<DataFrame> {
+    use datafusion::functions_aggregate::min_max::max_udaf;
+    let max_win: Expr = WindowFunction::new(max_udaf(), vec![col(v_col)]).into();
+    let peak = max_win.partition_by(part.clone()).build()?.alias("peak");
+    let with_peak = df.window(vec![peak])?;
+    // Order series by peak, breaking ties on the partition key so each distinct
+    // series lands on its own dense rank (and all its rows share that rank).
+    // `sort(asc, …)`: topk ranks highest-peak first → descending → asc = false.
+    let mut order = vec![col("peak").sort(!is_topk, false)];
+    order.extend(part.into_iter().map(|e| e.sort(true, false)));
+    let rank = dense_rank().order_by(order).build()?.alias("series_rank");
+    let kept = u64::try_from(k.max(0)).unwrap_or(u64::MAX);
+    Ok(with_peak
+        .window(vec![rank])?
+        .filter(col("series_rank").lt_eq(lit(kept)))?)
 }
 
 /// P6 — `rate`: per-sample delta via `LAG` over the series window, counter-reset

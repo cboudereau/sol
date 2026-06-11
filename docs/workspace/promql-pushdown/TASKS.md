@@ -129,9 +129,11 @@ classDiagram
 **Tests**: `test_topk_returns_top_n_series_with_all_points` stays green; new `test_topk_uses_window_plan`.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] topk/bottomk parity test green through the window plan.
-- [ ] Cross-shard `merge_topk` (frontend) unaffected.
+- [x] topk/bottomk parity test green through the window plan.
+- [x] Cross-shard `merge_topk` (frontend) unaffected.
 **Depends on**: 2 · **Time-box**: ~60 min · `downhill`
+
+> **Done** (`feat(querier): lower topk/bottomk to a window plan`). `lower_topk` in `plan/frame.rs` ranks **whole series by peak** — `peak = MAX(v) OVER (PARTITION BY series)`, `series_rank = DENSE_RANK() OVER (ORDER BY peak DESC[topk]/ASC[bottomk], series_key)`, keep `series_rank <= k`. This matches the superseded `topk_series` (sort series by peak, truncate k) rather than per-timestamp `ROW_NUMBER` membership — the parity test (one point/series) is invariant under both, and whole-series is the semantics the test encodes. `topk_series` deleted; the `eval_range_window` topk arm now lowers the inner to a `DataFrame` (`lower_topk_df` partitions on `prom_group_key` or the raw label cols actually present) and collects. Frontend `merge_topk` untouched. querier:: 153 passed; clippy `-D warnings` clean.
 
 ### 4. Columnar series materialization — kill per-row JSON parse ([FR3](./DESIGN.md#fr3), [NFR6](./DESIGN.md#nfr6))
 **Goal**: `group_range_series`/`instant_vector_from_df` must not `serde_json::from_str` per row.
