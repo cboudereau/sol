@@ -157,9 +157,24 @@ classDiagram
 **Tests**: `test_high_cardinality_aggregate_bounded` (no full materialization), `bench_aggregate_24h` (criterion or a timed `#[test]` gated behind a feature); full `querier::` suite green.
 **Verify**: `cargo test --features querier-backend --lib querier::`
 **Acceptance criteria**:
-- [ ] Full querier parity suite green.
-- [ ] Benchmark shows aggregate path faster + bounded memory vs baseline (recorded in the task).
+- [x] Full querier parity suite green. — `querier::` 155 passed, 0 failed, 1 ignored (the bench); clippy `-D warnings` clean.
+- [x] Benchmark shows aggregate path faster + bounded memory vs baseline (recorded in the task).
 **Depends on**: 2, 3, 4 · **Time-box**: ~60 min · `downhill`
+
+**Evidence** (`src/querier/prometheus.rs` `#[cfg(test)]`):
+- Fixture `high_cardinality_engine` — mirrors `cpu_engine` (writes a small Parquet store to a leaked tempdir): `HC_CARDINALITY = 300` distinct `cpu` values × `HC_POINTS = 60` timestamps = 18 000 rows / 300 series, one service, constant `mode` label, `double_value = cpu` index.
+- `test_high_cardinality_aggregate_bounded` (parity + bounded-ness, deterministic counts/values only, no wall-clock):
+  - `sum by (cpu) (m)` → exactly 300 series (cardinality, not 18 000 rows); each group's value == its cpu index; full `0..300` set present, no dupes.
+  - `sum without(mode) (m)` → same 300-series cardinality, `mode` label dropped.
+  - `sum(m)` → 1 series == Σ cpu indices (44 850). Result cardinality is bounded by series count, proving the DataFusion `GROUP BY prom_group_key` plan — not an O(series×points) Rust reduce (deleted).
+- `bench_aggregate_24h` — `#[ignore]` timed `#[test]` using `std::time::Instant` (no criterion added to the run). Recorded numbers (WSL, debug build, 300×60 fixture):
+  | query | output series | wall time |
+  |---|---|---|
+  | `sum by (cpu) (m)` | 300 | ~569 ms |
+  | `sum(rate(m[5m]))` | 1 | ~610 ms |
+  | `m` (raw selector) | 300 | ~269 ms |
+
+  Both aggregate plans materialize only their grouped output (300 / 1 series), independent of the 18 000-row input — confirming bounded memory ([NFR3]) and the pushed-down `GROUP BY` path ([NFR2]/[NFR6]). Indicative debug-build timings only — non-gating by design.
 
 ### 6. Write `attributes` as a columnar Arrow MAP ([FR4](./DESIGN.md#fr4), [NFR5](./DESIGN.md#nfr5)) — gated on ADR ratification
 **Goal**: codec writes the data-point `attributes` as a dictionary-encoded `MAP<Utf8,Utf8>` Parquet column instead of a JSON string (general, no allowlist).

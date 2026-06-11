@@ -3701,4 +3701,170 @@ mod tests {
             ]
         );
     }
+
+    /// High-cardinality synthetic store: `CARDINALITY` distinct `cpu` values, one
+    /// service, `POINTS` timestamps each. One series per cpu (the `mode` label is
+    /// constant), value = `cpu` index so `sum by (cpu)` is exactly the cpu index.
+    /// Mirrors `cpu_engine` (writes a small Parquet store to a leaked tempdir) but
+    /// at a scale that would blow an O(series×points) in-memory Rust reduce — the
+    /// deleted baseline — while the DataFusion `GROUP BY prom_group_key` plan
+    /// stays bounded.
+    const HC_CARDINALITY: i64 = 300;
+    const HC_POINTS: i64 = 60;
+
+    async fn high_cardinality_engine() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let n = (HC_CARDINALITY * HC_POINTS) as usize;
+        let (mut svc, mut name, mut t, mut attrs, mut val, mut pn) = (
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+        );
+        for p in 0..HC_POINTS {
+            let ts = (p + 1) * 1_000_000_000;
+            for cpu in 0..HC_CARDINALITY {
+                svc.push("svc");
+                name.push("m");
+                t.push(ts);
+                attrs.push(format!(r#"{{"cpu":"{cpu}","mode":"user"}}"#));
+                val.push(cpu as f64);
+                pn.push("m");
+            }
+        }
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(svc)),
+                Arc::new(StringArray::from(name)),
+                Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
+                Arc::new(StringArray::from(attrs)),
+                Arc::new(Float64Array::from(val)),
+                Arc::new(StringArray::from(pn)),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_high_cardinality_aggregate_bounded() {
+        // [NFR2]/[NFR3] regression guard: the migrated aggregate path runs through
+        // the DataFusion `GROUP BY prom_group_key` plan (the O(series×points) Rust
+        // reduce is deleted). Over HC_CARDINALITY series × HC_POINTS points, prove:
+        //   * `sum by (cpu) (m)` yields exactly HC_CARDINALITY series (parity), each
+        //     value = its cpu index (sum of one series == the series' value);
+        //   * `sum without(mode) (m)` collapses the constant `mode` to the same set.
+        // Deterministic counts/values only — no wall-clock assertion.
+        let engine = high_cardinality_engine().await;
+        let at = HC_POINTS * 1_000_000_000;
+
+        let by = handle_instant(&engine, "sum by (cpu) (m)", at).await.unwrap();
+        assert_eq!(
+            by.data.result.len(),
+            HC_CARDINALITY as usize,
+            "one series per distinct cpu (bounded by cardinality, not row count)"
+        );
+        // Each group is a single series, so its sum equals that cpu's value (index).
+        let mut got: Vec<i64> = by
+            .data
+            .result
+            .iter()
+            .map(|s| {
+                let cpu: i64 = s.metric["cpu"].parse().unwrap();
+                let v: i64 = s.value.1.parse::<f64>().unwrap() as i64;
+                assert_eq!(v, cpu, "sum of the single cpu={cpu} series is its value");
+                cpu
+            })
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, (0..HC_CARDINALITY).collect::<Vec<_>>(), "all cpus present, no dupes");
+
+        // `without(mode)` (mode constant) yields the same per-cpu cardinality.
+        let without = handle_instant(&engine, "sum without(mode) (m)", at).await.unwrap();
+        assert_eq!(without.data.result.len(), HC_CARDINALITY as usize);
+        assert!(
+            without.data.result.iter().all(|s| !s.metric.contains_key("mode")),
+            "mode dropped by without()"
+        );
+
+        // Grand total `sum(m)` collapses to one series = Σ cpu indices.
+        let total = handle_instant(&engine, "sum(m)", at).await.unwrap();
+        assert_eq!(total.data.result.len(), 1, "grand total is one series");
+        let expected: f64 = (0..HC_CARDINALITY).map(|c| c as f64).sum();
+        assert_eq!(total.data.result[0].value.1, format!("{expected}"));
+    }
+
+    /// Lightweight, non-gating benchmark. Run with
+    /// `cargo test --features querier-backend --lib querier::bench_aggregate_24h -- --ignored --nocapture`
+    /// to capture timings; ignored by default so it never flakes CI. Uses
+    /// `std::time::Instant` only (no criterion dependency added to the run).
+    #[tokio::test]
+    #[ignore = "timing benchmark — run manually with --ignored --nocapture"]
+    async fn bench_aggregate_24h() {
+        use std::time::Instant;
+        let engine = high_cardinality_engine().await;
+        let start = 1_000_000_000i64;
+        let end = HC_POINTS * 1_000_000_000;
+        let step = 1_000_000_000i64;
+
+        let t0 = Instant::now();
+        let agg = handle_range(&engine, "sum by (cpu) (m)", start, end, step).await.unwrap();
+        let d_agg = t0.elapsed();
+
+        let t1 = Instant::now();
+        let rate = handle_range(&engine, "sum(rate(m[5m]))", start, end, step).await.unwrap();
+        let d_rate = t1.elapsed();
+
+        let t2 = Instant::now();
+        let raw = handle_range(&engine, "m", start, end, step).await.unwrap();
+        let d_raw = t2.elapsed();
+
+        eprintln!(
+            "bench_aggregate_24h: {} series × {} points\n  sum by (cpu)    -> {:>4} series in {:?}\n  sum(rate(m[5m])) -> {:>4} series in {:?}\n  raw selector     -> {:>4} series in {:?}",
+            HC_CARDINALITY,
+            HC_POINTS,
+            agg.data.result.len(),
+            d_agg,
+            rate.data.result.len(),
+            d_rate,
+            raw.data.result.len(),
+            d_raw,
+        );
+    }
 }
