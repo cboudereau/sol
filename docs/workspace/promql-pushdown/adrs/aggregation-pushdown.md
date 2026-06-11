@@ -22,7 +22,11 @@ The superseded ADR evaluated `by`/`without`/nested aggregation **in Rust** becau
 
 ## Decision
 
-**Option B.** A scalar UDF computes a canonical group-key string per row ([group-key-format](./group-key-format.md)); the evaluator lowers `sum/min/max/avg/count` to `df.aggregate([prom_group_key(...)], [agg(v)])`. Nested aggregation is **chained `.aggregate()`** — the recursive lowerer returns a `DataFrame` with the canonical schema (`prom_group_key`-or-label columns + `v` + `time_unix_nano`), so an aggregate's inner is any sub-plan. `topk`/`bottomk` lower to a `ROW_NUMBER() OVER (PARTITION BY ts ORDER BY v) <= k` window filter. The Rust helpers `aggregate_instant_vector`, `aggregate_range_series`, `AggGrouping`, `agg_reduce` are deleted. Result labels are recovered by parsing the group-key **once per output group**.
+**Option B.** A scalar UDF computes a canonical group-key string ([group-key-format](./group-key-format.md)); the evaluator lowers `sum/min/max/avg/count` to `df.aggregate([prom_group_key(...)], [agg(v)])`. Every aggregated node emits the **uniform canonical frame** `[prom_group_key, v, (time_unix_nano)]`, so nested aggregation is **chained `.aggregate()`**:
+- a **leaf** inner (selector/`rate`/`over_time`, carrying `attributes` + promoted columns) → group key via `prom_group_key(attributes, promoted, mode, labels)`;
+- a **nested** inner (already carrying `prom_group_key`) → group key via `prom_group_key_reproject(inner_key, mode, labels)` (parse → re-project; the format is reversible).
+
+This makes **mixed nesting** correct — `sum by (cpu) (sum without (mode) (m))` re-projects the inner's all-except-`mode` key down to `cpu`, which an opaque key could not recover. `topk`/`bottomk` lower to a `ROW_NUMBER() OVER (PARTITION BY ts ORDER BY v) <= k` window filter. The Rust helpers `aggregate_instant_vector`, `aggregate_range_series`, `AggGrouping`, `agg_reduce` are deleted. Result labels are recovered by parsing the group-key **once per output group**.
 
 ## Consequences
 

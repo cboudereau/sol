@@ -25,6 +25,15 @@ The [aggregation-pushdown](./aggregation-pushdown.md) plan groups on a single st
 - The set unions promoted label columns (`service_name`, materialized label columns) with the `attributes` JSON keys (normalized via the existing `udf::normalize`), promoted columns winning on collision — identical to today's `LabelCols::labels` semantics, so parity holds.
 - The reverse (`parse_group_key`) is applied once per output group to build the response `BTreeMap`.
 
+### Reprojection — the canonical aggregate frame (handles mixed nesting)
+
+Every **aggregated** relational node emits a uniform frame: `[prom_group_key: Utf8, v: Float64, (time_unix_nano)]`. The `prom_group_key` column **is** the kept-label set, and because the format is reversible, an *outer* aggregate re-projects it without ever touching the raw `attributes` JSON:
+
+- `prom_group_key(attributes, promoted_cols, mode, labels)` — for a **leaf** inner (selector / `rate` / `over_time`, which carries `attributes` + promoted columns).
+- `prom_group_key_reproject(inner_key, mode, labels)` — for a **nested** inner (another aggregate, which already carries a `prom_group_key` column): `parse(inner_key) → build(parsed, grouping)`. Both share the `GroupKey::{build,parse}` core.
+
+This makes **mixed nesting** expressible and correct, e.g. `sum by (cpu) (sum without (mode) (m))`: the inner emits a `prom_group_key` for all-labels-except-`mode` (including `cpu`); the outer applies `prom_group_key_reproject(inner_key, by, [cpu])` and groups on the result. Without reprojection, an outer `by(cpu)` could not recover `cpu` from an opaque inner key — this is the gap the primitive closes.
+
 ## Consequences
 
 - **Easier:** building the key is a single pass in the UDF; reconstructing labels is per-group, not per-row ([FR3](../DESIGN.md#fr3)); deterministic grouping ([NFR2](../DESIGN.md#nfr2) parity).

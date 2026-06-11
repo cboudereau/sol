@@ -79,6 +79,7 @@ classDiagram
 | Function | Input → Output | Invariant / Rule |
 |---|---|---|
 | `prom_group_key` | `(attrs json, promoted cols, mode, labels) → Utf8 key` | deterministic; sorted; `by`=kept∩present, `without`=all−set−`__name__`; promoted wins on collision ([group-key-format](./adrs/group-key-format.md)) |
+| `prom_group_key_reproject` | `(inner_key, mode, labels) → Utf8 key` | `= build(parse(inner_key), grouping)`; enables mixed nesting (`by` over `without`) |
 | `GroupKey::parse` | `String → BTreeMap` | exact inverse of `build` (round-trip test) |
 | `lower_aggregate` | `AggregateExpr → DataFrame(canonical schema)` | result = same values as the deleted Rust path ([NFR2](./DESIGN.md#nfr2)); no `format!` SQL ([NFR4](./DESIGN.md#nfr4)) |
 | `group_range_series` | `RecordBatch[] → RangeSeries` | label map built ≤ once per distinct group/blob, never per row ([FR3](./DESIGN.md#fr3)) |
@@ -86,31 +87,34 @@ classDiagram
 
 ## Tasks
 
-### 1. `prom_group_key` UDF + `GroupKey` format ([FR1](./DESIGN.md#fr1))
-**Goal**: the keystone — a deterministic canonical group-key string the plan can `GROUP BY` and reverse per group.
-**Types**: `prom_group_key` ScalarUDF, `GroupKey::{build,parse}`.
+### 1. `prom_group_key` UDF + `GroupKey` format + reprojection ([FR1](./DESIGN.md#fr1))
+**Goal**: the keystone — a deterministic, reversible canonical group-key string the plan can `GROUP BY`, reverse per group, and **re-project** for an outer grouping (so nested aggregates compose).
+**Types**: `prom_group_key` + `prom_group_key_reproject` ScalarUDFs, `GroupKey::{build,parse}`.
 **Constraints**:
 - [ADR: group-key-format](./adrs/group-key-format.md) — sorted `k=v` joined by `\x1f`, values escaped; `by`=kept∩present, `without`=all−set−`__name__`, none=`""`; promoted cols union JSON keys (normalized via `udf::normalize`), promoted wins.
+- **Reprojection**: `prom_group_key_reproject(inner_key, mode, labels) = build(parse(inner_key), grouping)` — re-keys an already-built key for an outer aggregate (the canonical aggregate frame is `[prom_group_key, v, (time)]`).
 - [NFR1](./DESIGN.md#nfr1) — `create_udf` pattern from `udf.rs:53`; no new dep.
 **Tests** (red→green):
 - `test_group_key_build_parse_roundtrip` — `parse(build(labels, g)) == projected(labels, g)` for by/without/none.
 - `test_group_key_by_keeps_only_listed` / `test_group_key_without_drops_set_and_name` / `test_group_key_promoted_wins_on_collision`.
 - `test_prom_group_key_udf_over_arrow` — UDF over a `StringArray` of attributes + promoted col → expected keys.
+- `test_group_key_reproject` — `reproject(build(labels, without[mode]), by[cpu]) == build(labels, by[cpu])` (the mixed-nesting primitive).
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
 - [ ] `GroupKey::build`/`parse` round-trip for by/without/none.
-- [ ] UDF registered on the shared `SessionContext` and callable in a plan.
+- [ ] `prom_group_key_reproject` re-keys a built key correctly (test above green).
+- [ ] Both UDFs registered on the shared `SessionContext` and callable in a plan.
 - [ ] No new dependency added.
-**Depends on**: (none) · **Time-box**: ~75 min · `downhill`
+**Depends on**: (none) · **Time-box**: ~90 min · `downhill`
 
 ### 2. Push instant + range aggregation into DataFusion ([FR2](./DESIGN.md#fr2), [NFR3](./DESIGN.md#nfr3))
 **Goal**: replace the Rust in-memory aggregate composition with `GROUP BY prom_group_key` + chained `.aggregate()`.
 **Types**: `lower_aggregate` (used by `eval_instant`/`eval_range_window`); delete `aggregate_instant_vector`, `aggregate_range_series`, `AggGrouping`, `agg_reduce`.
 **Constraints**:
-- [ADR: aggregation-pushdown](./adrs/aggregation-pushdown.md) — `df.aggregate([prom_group_key(...)],[agg(v)])`; nested = chained `.aggregate()`; recursive lowerer returns canonical-schema `DataFrame`.
+- [ADR: aggregation-pushdown](./adrs/aggregation-pushdown.md) — `df.aggregate([prom_group_key(...)],[agg(v)])`; nested = chained `.aggregate()` over the uniform canonical frame `[prom_group_key, v, (time)]`; leaf inner uses `prom_group_key(attributes,…)`, nested inner uses `prom_group_key_reproject(inner_key,…)`.
 - [NFR4](./DESIGN.md#nfr4) — `Expr`/`DataFrame` only, no `format!` SQL (invariant test must stay green).
 - [NFR2](./DESIGN.md#nfr2) — identical results to the deleted path.
-**Tests** (the existing parity tests are the contract — must stay green): `test_instant_nested_count_aggregate`, `test_instant_without_keeps_complement`, `test_range_without_aggregation_and_scalar_divisor`, `test_instant_aggregate_over_rate`, `test_max_over_time_executes_with_range_frame`. Plus new `test_aggregation_grouped_in_plan` asserting the logical plan contains an `Aggregate` node (not a Rust reduce).
+**Tests** (the existing parity tests are the contract — must stay green): `test_instant_nested_count_aggregate`, `test_instant_without_keeps_complement`, `test_range_without_aggregation_and_scalar_divisor`, `test_instant_aggregate_over_rate`, `test_max_over_time_executes_with_range_frame`. Plus new: `test_aggregation_grouped_in_plan` (logical plan contains an `Aggregate` node, not a Rust reduce) and **`test_mixed_nesting_by_over_without`** — `sum by (cpu) (sum without (mode) (m))` returns one series per cpu with the correct sums (exercises reprojection; uses `cpu_engine`).
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
 - [ ] All listed parity tests green through the plan path.
