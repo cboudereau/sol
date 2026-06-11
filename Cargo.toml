@@ -575,7 +575,7 @@ api = [
 ]
 
 # Read-side query backend: serve Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
-# Gates src/query/ and src/config/query.rs. See docs/workspace/parquet-backend/.
+# Gates src/querier/ and src/config/{querier,compactor}.rs. See docs/workspace/parquet-backend/.
 querier-backend = [
   "dep:datafusion",
   "dep:datafusion-functions-json",

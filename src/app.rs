@@ -49,9 +49,9 @@ pub struct ApplicationConfig {
     #[cfg(feature = "api")]
     pub api: config::api::Options,
     #[cfg(feature = "querier-backend")]
-    pub querier: Option<config::query::QuerierOptions>,
+    pub querier: Option<config::querier::QuerierOptions>,
     #[cfg(feature = "querier-backend")]
-    pub compactor: Option<config::query::CompactorOptions>,
+    pub compactor: Option<config::compactor::CompactorOptions>,
     pub extra_context: ExtraContext,
 }
 

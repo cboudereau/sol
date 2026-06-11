@@ -1078,7 +1078,7 @@ mod tests {
 
     // --- end-to-end over a 2-span trace fixture ---
     async fn trace_engine() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{
             FixedSizeBinaryArray, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
         };

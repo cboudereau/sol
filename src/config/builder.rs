@@ -6,7 +6,7 @@ use sol_lib::{config::GlobalOptions, configurable::configurable_component};
 #[cfg(feature = "api")]
 use super::api;
 #[cfg(feature = "querier-backend")]
-use super::query;
+use super::{compactor, querier};
 use super::{
     BoxedSink, BoxedSource, BoxedTransform, ComponentKey, Config, EnrichmentTableOuter,
     HealthcheckOptions, SinkOuter, SourceOuter, TestDefinition, TransformOuter, compiler, schema,
@@ -29,12 +29,12 @@ pub struct ConfigBuilder {
     #[cfg(feature = "querier-backend")]
     #[configurable(derived)]
     #[serde(default)]
-    pub querier: Option<query::QuerierOptions>,
+    pub querier: Option<querier::QuerierOptions>,
 
     #[cfg(feature = "querier-backend")]
     #[configurable(derived)]
     #[serde(default)]
-    pub compactor: Option<query::CompactorOptions>,
+    pub compactor: Option<compactor::CompactorOptions>,
 
     #[configurable(derived)]
     #[configurable(metadata(docs::hidden))]

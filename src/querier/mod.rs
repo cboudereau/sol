@@ -31,7 +31,7 @@ mod udf;
 pub mod units;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
 
-use crate::config::query::{CompactorOptions, QuerierOptions};
+use crate::config::{compactor::CompactorOptions, querier::QuerierOptions};
 
 /// Handle to a running Sol querier-backend component (querier or compactor).
 ///

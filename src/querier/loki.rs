@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_loki_handle_query_range_end_to_end() {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -869,7 +869,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_loki_labels_end_to_end() {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -938,7 +938,7 @@ mod tests {
     }
 
     async fn logs_engine_with_attrs() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;

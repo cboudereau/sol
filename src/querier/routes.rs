@@ -616,7 +616,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::query::{QuerierOptions, StorageConfig};
+    use crate::config::querier::{QuerierOptions, StorageConfig};
     use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use datafusion::arrow::record_batch::RecordBatch;

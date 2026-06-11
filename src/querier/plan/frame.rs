@@ -161,7 +161,7 @@ mod tests {
 
     /// A 3-sample counter (http_total, service=client) at t=1,2,3s → 10,30,60.
     async fn counter_engine() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
         let dir = tmp.path().join("metrics").join("dt=2026-06-01");
         std::fs::create_dir_all(&dir).unwrap();

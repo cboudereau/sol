@@ -22,7 +22,7 @@ use datafusion::datasource::listing::{
 use datafusion::execution::context::SessionContext;
 use datafusion::prelude::SessionConfig;
 
-use crate::config::query::QuerierOptions;
+use crate::config::querier::QuerierOptions;
 
 /// A logical table registered in the query engine, backed by one signal directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -490,7 +490,7 @@ mod tests {
 
     fn engine_opts(root: PathBuf) -> QuerierOptions {
         QuerierOptions {
-            storage: crate::config::query::StorageConfig {
+            storage: crate::config::querier::StorageConfig {
                 path: root,
                 url: None,
             },

@@ -29,7 +29,8 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
   "src/querier/**",
-  "src/config/query.rs",
+  "src/config/querier.rs",
+  "src/config/compactor.rs",
   "src/vrl_migrate/**",
   "src/transforms/servicegraph/**",
   "src/transforms/span_metrics/**",

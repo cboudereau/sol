@@ -80,7 +80,8 @@ lib/sol-core/src/event/otel_fields.rs
 lib/sol-core/src/event/otel_json.rs
 lib/sol-core/src/event/otel_metric.rs
 lib/sol-core/src/event/otlp.rs
-src/config/query.rs
+src/config/querier.rs
+src/config/compactor.rs
 src/querier/*.rs                 (13 files)
 src/sinks/opentelemetry/grpc.rs
 src/sinks/opentelemetry/http.rs

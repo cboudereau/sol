@@ -2356,7 +2356,7 @@ mod tests {
 
     // A 3-sample counter fixture (http_total, service=client) at t=1s,2s,3s.
     async fn counter_engine() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -2423,7 +2423,7 @@ mod tests {
     // Two services (`sol-collector` on hosts a,b; `other` on host c) each
     // exposing `up`, used to prove label-value queries honor a `match[]` scope.
     async fn host_engine() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -2516,7 +2516,7 @@ mod tests {
     // Four series of `m` over (cpu ∈ {0,1}) × (mode ∈ {user,system}) at one
     // service, two timestamps — the shape the Node Exporter CPU panels query.
     async fn cpu_engine() -> crate::querier::QueryEngine {
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -2730,7 +2730,7 @@ mod tests {
     async fn test_instant_normalizes_name_and_explodes_attributes() {
         // C-P1: a bare instant selector must return the normalized __name__ and
         // explode the attributes JSON into per-label series (not collapse them).
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -2848,7 +2848,7 @@ mod tests {
         // never rolled up. Routing the *whole* range to the tier silently drops
         // the live tail (the symptom: rate panels miss recent data while the raw
         // histogram path shows it). The live (unsealed) shard must read raw.
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -2957,7 +2957,7 @@ mod tests {
     async fn test_topk_returns_top_n_series_with_all_points() {
         // topk must keep the top-N *series* (all their points + labels), not N
         // scattered rows. Two series (sc=a high, sc=b low); topk(1) → sc=a only.
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -3066,7 +3066,7 @@ mod tests {
     async fn test_histogram_quantile_range_from_otlp_arrays() {
         // #4: the dashboard's `histogram_quantile(φ, sum(rate(<base>_bucket[d])) by (le))`
         // is served from the native OTLP array histogram (no classic _bucket series).
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -3154,7 +3154,7 @@ mod tests {
     async fn test_bucket_heatmap_explodes_le_series() {
         // #4 heatmap: sum(rate(<base>_bucket[d])) by (le) → per-le cumulative
         // bucket rate series, exploded from the OTLP arrays.
-        use crate::config::query::{QuerierOptions, StorageConfig};
+        use crate::config::querier::{QuerierOptions, StorageConfig};
         use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;

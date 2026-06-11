@@ -97,7 +97,7 @@ pub async fn handle_sql(engine: &super::QueryEngine, sql: &str) -> crate::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::query::{GuardrailsConfig, QuerierOptions, StorageConfig};
+    use crate::config::querier::{GuardrailsConfig, QuerierOptions, StorageConfig};
     use datafusion::arrow::array::{
         FixedSizeBinaryArray, Int64Array, StringArray, TimestampNanosecondArray,
     };
