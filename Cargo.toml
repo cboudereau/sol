@@ -5,7 +5,7 @@ authors = ["Clément Boudereau"]
 edition = "2024"
 description = "Sol — Single Observability Layer. A high-performance observability data pipeline."
 homepage = "https://github.com/cboudereau/sol"
-# Dual-licensed by file: Sol-original code (SPDX AGPL-3.0-only, notably src/query/**)
+# Dual-licensed by file: Sol-original code (SPDX AGPL-3.0-only, notably src/querier/**)
 # under AGPL-3.0; Vector-derived code under MPL-2.0. See LICENSE.
 license = "AGPL-3.0-only AND MPL-2.0"
 readme = "README.md"
