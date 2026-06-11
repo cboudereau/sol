@@ -53,15 +53,15 @@ classDiagram
         +group_range_series(batches) RangeSeries
         +instant_vector_from_df(df) Vec~(labels,v)~
     }
-    class HotLabelColumns {
+    class AttributesMapColumn {
         <<codec>>
-        +allowlist : Vec~String~
-        +write(dp_attributes) Column[]
+        +write(dp_attributes) Map~Utf8,Utf8~
+        +read_key(map, key) Utf8
     }
     PromGroupKeyUdf ..> GroupKey : emits
     AggregationPlan ..> PromGroupKeyUdf : GROUP BY
     SeriesMaterializer ..> GroupKey : parse per group
-    AggregationPlan ..> HotLabelColumns : prefers column over JSON
+    PromGroupKeyUdf ..> AttributesMapColumn : reads columnar (endgame)
 ```
 
 ### Requirement traceability
@@ -72,7 +72,7 @@ classDiagram
 | `lower_aggregate` (instant+range) | [FR2](./DESIGN.md#fr2) | `GROUP BY prom_group_key` + agg; chained for nesting |
 | `lower_topk` | [FR2](./DESIGN.md#fr2) | `ROW_NUMBER` window filter |
 | `group_range_series` / `instant_vector_from_df` (reworked) | [FR3](./DESIGN.md#fr3) | parse per group / memoized per blob; no per-row `serde_json` |
-| hot-label columns (codec) | [FR4](./DESIGN.md#fr4) | bounded allowlist; [materialized-label-columns](./adrs/materialized-label-columns.md) |
+| `attributes` MAP column (codec) | [FR4](./DESIGN.md#fr4) | dictionary-encoded `MAP<Utf8,Utf8>`, general; [materialized-label-columns](./adrs/materialized-label-columns.md) Approach A |
 | boundary contract (no new type) | [FR5](./DESIGN.md#fr5) | [relational-nonrelational-boundary](./adrs/relational-nonrelational-boundary.md) |
 
 ### Transformations
@@ -83,7 +83,7 @@ classDiagram
 | `GroupKey::parse` | `String → BTreeMap` | exact inverse of `build` (round-trip test) |
 | `lower_aggregate` | `AggregateExpr → DataFrame(canonical schema)` | result = same values as the deleted Rust path ([NFR2](./DESIGN.md#nfr2)); no `format!` SQL ([NFR4](./DESIGN.md#nfr4)) |
 | `group_range_series` | `RecordBatch[] → RangeSeries` | label map built ≤ once per distinct group/blob, never per row ([FR3](./DESIGN.md#fr3)) |
-| hot-label write | `data-point attributes → OPTIONAL UTF8 columns` | one column per allowlisted label; null when absent; clean cutover ([NFR5](./DESIGN.md#nfr5)) |
+| attributes-MAP write | `data-point attributes → MAP<Utf8,Utf8>` | dictionary-encoded; columnar key access (no JSON parse); clean cutover ([NFR5](./DESIGN.md#nfr5)) |
 
 ## Tasks
 
@@ -157,28 +157,30 @@ classDiagram
 - [ ] Benchmark shows aggregate path faster + bounded memory vs baseline (recorded in the task).
 **Depends on**: 2, 3, 4 · **Time-box**: ~60 min · `downhill`
 
-### 6. Materialize hot-label columns at write time ([FR4](./DESIGN.md#fr4), [NFR5](./DESIGN.md#nfr5)) — gated on ADR ratification
-**Goal**: codec writes the allowlisted hot labels as `OPTIONAL UTF8` columns (mirror `prom_name`).
-**Types**: extend `common_metric_schema_fields()`; populate from `OtelAttributes::get_string`; `HotLabelColumns` allowlist constant.
+### 6. Write `attributes` as a columnar Arrow MAP ([FR4](./DESIGN.md#fr4), [NFR5](./DESIGN.md#nfr5)) — gated on ADR ratification
+**Goal**: codec writes the data-point `attributes` as a dictionary-encoded `MAP<Utf8,Utf8>` Parquet column instead of a JSON string (general, no allowlist).
+**Types**: change the `attributes` field in `common_metric_schema_fields()` from `BYTE_ARRAY (UTF8)` to a `MAP` group; populate from `OtelAttributes` entries (the `kv_attrs_to_json_opt` site).
 **Constraints**:
-- [ADR: materialized-label-columns](./adrs/materialized-label-columns.md) — **`proposed`; human must ratify the allowlist + clean cutover before this task runs.**
+- [ADR: materialized-label-columns](./adrs/materialized-label-columns.md) Approach A — **`proposed`; human ratifies the clean cutover + the go before this task runs.**
+- **First, verify the read primitive** (load-bearing unknown): how DataFusion reads a Parquet `MAP` for key extraction — `datafusion-functions-nested` map access vs a small UDF over the `MapArray`. Pin it before writing.
 - [NFR5](./DESIGN.md#nfr5) — clean cutover, no backfill.
-**Tests**: extend codec schema/value tests (`parquet.rs:4756+`) — `test_metric_writes_hot_label_columns`, updated `test_*_schema_column_count`.
+**Tests**: codec schema/value tests (`parquet.rs:4756+`) — `test_attributes_written_as_map`, updated `test_*_schema_column_count`; round-trip read of a MAP attribute.
 **Verify**: `cargo test -p codecs --lib --features parquet`
 **Acceptance criteria**:
-- [ ] Allowlisted labels appear as columns in all 5 metric subtype schemas; null when absent.
-- [ ] Schema-count tests updated.
-**Depends on**: 5; ADR `accepted` · **Time-box**: ~75 min · `downhill` (after ratification)
+- [ ] `attributes` is a `MAP` column in all 5 metric subtype schemas (dictionary-encoded), populated from data-point attributes.
+- [ ] DataFusion can extract a key from the MAP (primitive verified + used).
+- [ ] Schema tests updated.
+**Depends on**: 5; ADR `accepted` · **Time-box**: ~90 min · `downhill` (after ratification)
 
-### 7. Read-side uses materialized columns + boundary doc ([FR4](./DESIGN.md#fr4), [FR5](./DESIGN.md#fr5))
-**Goal**: `prom_group_key`/label predicates prefer the materialized column when the label is allowlisted (prunable), else `prom_attr` JSON fallback; document the boundary contract.
-**Constraints**: [ADR: materialized-label-columns](./adrs/materialized-label-columns.md), [relational-nonrelational-boundary](./adrs/relational-nonrelational-boundary.md). [NFR2](./DESIGN.md#nfr2).
-**Tests**: `test_group_key_prefers_materialized_column`, `test_label_filter_prunes_on_materialized_column`; full querier suite green over a regenerated fixture.
+### 7. Read-side reads attributes columnar — kill the last JSON parse ([FR4](./DESIGN.md#fr4), [FR5](./DESIGN.md#fr5))
+**Goal**: `prom_group_key`/`prom_attr` read the `MAP` column columnar — **no `serde_json::from_str` anywhere** in the label path; document the boundary contract.
+**Constraints**: [ADR: materialized-label-columns](./adrs/materialized-label-columns.md) Approach A, [relational-nonrelational-boundary](./adrs/relational-nonrelational-boundary.md). [NFR2](./DESIGN.md#nfr2) — identical labels/values out.
+**Tests**: `test_group_key_reads_map_column`, `test_prom_attr_reads_map_column`; full querier suite green over MAP-attribute fixtures; `test_no_serde_json_in_label_path` confirms no per-row JSON parse remains.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] Grouping/filtering on an allowlisted label uses the column (verified via plan/EXPLAIN in a test).
-- [ ] Non-allowlisted labels still resolve via JSON.
-**Depends on**: 6 · **Time-box**: ~75 min · `downhill`
+- [ ] Grouping/filtering reads the MAP column (verified via plan/EXPLAIN in a test); no JSON parse in the label path.
+- [ ] Full querier parity suite green over MAP-attribute fixtures.
+**Depends on**: 6 · **Time-box**: ~90 min · `downhill`
 
 ## Sessions
 
@@ -194,7 +196,7 @@ Tasks: 4, 5
 **Checkpoint**: `cargo test --features querier-backend --lib querier::`
 **Commit point**: yes
 
-### Session 3 — Endgame: materialized hot-label columns (write-side, clean cutover) (~3H) — gated on [materialized-label-columns](./adrs/materialized-label-columns.md) `accepted`
+### Session 3 — Endgame: columnar attributes (Arrow MAP, write-side, clean cutover) (~3.5H) — gated on [materialized-label-columns](./adrs/materialized-label-columns.md) `accepted`
 Tasks: 6, 7
 **Skills**: `rust-software-engineer`, `tdd`, `rust-build`
 **Checkpoint**: `cargo test -p codecs --lib --features parquet && cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`

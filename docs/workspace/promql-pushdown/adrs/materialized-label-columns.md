@@ -1,33 +1,33 @@
 ---
 status: proposed
 ---
-# Materialized hot-label columns (endgame, clean cutover)
+# Columnar attributes — Arrow MAP (general); per-key columns deferred
 
 Addresses: [FR4](../DESIGN.md#fr4), [FR3](../DESIGN.md#fr3), [NFR5](../DESIGN.md#nfr5), [NFR6](../DESIGN.md#nfr6)
 
-> **`proposed`** — the agent recommends the approach; the **human ratifies the hot-label set + the cutover** (the two hard-to-reverse choices) before this moves to `accepted`.
+> **`proposed`** — Approach A is chosen by user direction (replacing the rejected allowlist); the **clean cutover** and the **go for Session 3** await ratification at the S2→S3 checkpoint.
 
 ## Problem
 
-Even with [aggregation-pushdown](./aggregation-pushdown.md), the `prom_group_key` UDF (and raw-selector materialization) still parses the `attributes` JSON per row, and grouping/filtering on a JSON-embedded label can never use Parquet row-group stats or bloom filters. The endgame is to materialize hot labels as **real columns** (like `prom_name`) so the key/filter is a prunable column op. The hard question: **which** labels, given attribute keys vary per metric and are unbounded?
+Even after [aggregation-pushdown](./aggregation-pushdown.md), the `prom_group_key` UDF and raw-selector materialization still parse the `attributes` **JSON string** per row, and a label buried in JSON can't use Parquet stats. The endgame is to store labels columnar so access is parse-free. The constraint: the optimization must be **general and production-ready**, not tuned to one workload's labels.
 
 ## Options
 
-| Option | Pros | Cons |
-|---|---|---|
-| A. Materialize **all** attribute keys as columns | No JSON parse ever | Unbounded distinct keys → schema explosion / thousands of sparse columns; non-viable |
-| B. **Bounded, configured allowlist of hot labels** (e.g. `cpu`, `mode`, `le`, `host`, `http_route`, …); rest stay in `attributes` JSON | Prunable columns for the labels dashboards actually group/filter on; bounded schema; `prom_name` precedent | Deployment-specific list; a metric lacking a label → null column (cheap in Parquet) |
-| C. Keep everything in JSON; rely only on the UDF transition | No write-side change | No pruning/bloom on labels; per-row parse remains for the UDF/raw path |
+| Option | How | Kills per-row JSON parse? | Per-label prune/bloom? | Generality / cost |
+|---|---|---|---|---|
+| A. **`attributes` as Arrow `MAP<Utf8,Utf8>`** (dictionary-encoded) | codec writes a Parquet `MAP` column instead of a JSON string; read-side reads it columnar | **Yes — for every label** + dictionary compression | No (MAP is one column; stats mix keys) | **General**, light: no per-deployment config; one schema change |
+| B. Dynamic per-key columns (InfluxDB IOx) | every label key seen for a metric → its own column; schema evolves per metric | Yes | **Yes** (per-label row-group min/max + bloom) | General but **heavy**: schema evolution, mixed-metric files → wide/sparse schemas, reader schema-union |
+| C. Fixed hot-label allowlist | hardcode `cpu, mode, le, …` as columns | partial | only allowlisted | **Rejected** — workload-specific, demo-fitted, needs a regen per new hot label |
 
 ## Decision (proposed)
 
-**Option B — a bounded configured allowlist.** The codec writes each allowlisted label as an `OPTIONAL UTF8` column in `common_metric_schema_fields()` (extracted from the data-point `attributes` via `OtelAttributes::get_string`), mirroring the `prom_name` materialization (schema field + write-path population + tests). The read side: `prom_group_key` and label predicates use the materialized column when the label is allowlisted (prunable), else fall back to `prom_attr(attributes, key)`. The allowlist is a codec/config constant to start (the dashboard's hot labels), revisited as needed.
+**Approach A — store `attributes` as a dictionary-encoded Arrow `MAP<Utf8,Utf8>` column.** It is general (no allowlist, no per-deployment tuning), kills the per-row JSON parse for **every** label, and compresses better (dictionary). The codec serializes the data-point attributes to a `MAP` instead of a JSON string (the `resource_attributes`/`scope_attributes`/exemplars JSON blobs are out of scope — only the queried `attributes` column). Read-side: `prom_group_key`/`prom_attr` read the `MAP` columnar (a map-access expression or a small UDF over the map array), **never** `serde_json::from_str`. Clean cutover — regenerate the store; old JSON-attribute files are not read ([NFR5](../DESIGN.md#nfr5)).
 
-**Open for human ratification:**
-1. **The allowlist contents** (which labels) — start set proposed: `cpu`, `mode`, `le`, `host`, `host_name`, `job`, `http_route`, `http_response_status_code`. Adjust to the real dashboard workload.
-2. **Clean cutover** ([NFR5](../DESIGN.md#nfr5)): regenerate the Parquet store; old files (no materialized columns) are not read/backfilled — identical to prom-name-column. Confirm acceptable (it is, since not in prod).
+**Deferred — Approach B (per-key columns).** The full pruning endgame (per-label row-group stats + bloom filters) targets **high-cardinality label-*value* filtering** — a use case that is **not a measured bottleneck** here (the measured pains are grouping/materialization, which A fully addresses). Building per-key dynamic columns now is speculative complexity (YAGNI). Documented as the future option, to be revisited **only** when label-value filtering is measured as a cost.
+
+**Open for ratification:** the clean cutover (regenerate store, no backfill — same as prom-name-column) and the go to run Session 3.
 
 ## Consequences
 
-- **Easier:** grouping/filtering on hot labels becomes a prunable column op (row-group stats + bloom filters), the JSON parse disappears for those labels ([FR3](../DESIGN.md#fr3)/[NFR6](../DESIGN.md#nfr6)), and the sort key can extend to a hot label for better locality.
-- **Harder:** write-side schema change + clean cutover (store regen); the allowlist is a maintained constant; a label promoted later requires another regen. This is why it's the **last** session and gated on ratification — FR1–FR3 deliver the perf wins without it.
+- **Easier:** label access is parse-free and columnar for all labels (kills the residual of [FR3](../DESIGN.md#fr3)/[NFR6](../DESIGN.md#nfr6)); dictionary compression shrinks the store; no workload-specific config to maintain; the read primitive is uniform (no JSON vs column branching).
+- **Harder / to verify:** a write-side schema change + clean cutover (store regen). The load-bearing unknown is **how DataFusion reads a Parquet `MAP` for key extraction** — confirm `datafusion-functions-nested` map access vs a small UDF over the `MapArray` (pinned in Task 6). MAP gives no per-label pruning; if label-value filtering ever needs it, that's Approach B (deferred), not a regression of A.
