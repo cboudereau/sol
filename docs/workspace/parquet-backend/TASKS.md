@@ -2,7 +2,7 @@
 
 Design: [DESIGN.md](./DESIGN.md)
 
-ADRs (8): [process integration](./adrs/querier-backend-process-integration.md) · [DataFusion table discovery](./adrs/datafusion-table-discovery.md) · [file layout & compaction](./adrs/file-layout-and-compaction-strategy.md) · [deployment roles & read scaling](./adrs/deployment-roles-and-read-scaling.md) · [long-range metrics](./adrs/long-range-metrics-strategy.md) · [compaction consistency](./adrs/compaction-consistency.md) · [PromQL parsing](./adrs/promql-parsing-strategy.md) · [query caching](./adrs/query-caching-strategy.md)
+ADRs (8): [process integration](./adrs/shared/querier-backend-process-integration.md) · [DataFusion table discovery](./adrs/querier/datafusion-table-discovery.md) · [file layout & compaction](./adrs/compactor/file-layout-and-compaction-strategy.md) · [deployment roles & read scaling](./adrs/shared/deployment-roles-and-read-scaling.md) · [long-range metrics](./adrs/compactor/long-range-metrics-strategy.md) · [compaction consistency](./adrs/compactor/compaction-consistency.md) · [PromQL parsing](./adrs/querier/promql-parsing-strategy.md) · [query caching](./adrs/querier/query-caching-strategy.md)
 
 ## Analysis
 
@@ -18,7 +18,7 @@ These resolve the previously-uphill tasks **analytically** (no spike): the model
 
 ### Build / test / lint commands
 
-The query backend lives behind a new `querier-backend` Cargo feature gating `src/querier/` and the `datafusion` / `object_store` dependencies (see [DataFusion table discovery ADR](./adrs/datafusion-table-discovery.md)).
+The query backend lives behind a new `querier-backend` Cargo feature gating `src/querier/` and the `datafusion` / `object_store` dependencies (see [DataFusion table discovery ADR](./adrs/querier/datafusion-table-discovery.md)).
 
 | Action | Command |
 |---|---|
@@ -192,15 +192,15 @@ classDiagram
 | `ParquetCatalog` | [FR4](./DESIGN.md#fr4), [NFR4](./DESIGN.md#nfr4) | Registers + periodically re-lists `ListingTable`s |
 | `SignalTable` | [FR4](./DESIGN.md#fr4) | Seven tables; explicit Arrow schema = codec contract |
 | `QueryEngine` | [FR4](./DESIGN.md#fr4), [NFR1](./DESIGN.md#nfr1) | Thin wrapper over DataFusion `SessionContext` |
-| `QueryCache` / `MokaQueryCache` | [FR5](./DESIGN.md#fr5), [NFR6](./DESIGN.md#nfr6) | Trait + in-memory default ([caching ADR](./adrs/query-caching-strategy.md)) |
+| `QueryCache` / `MokaQueryCache` | [FR5](./DESIGN.md#fr5), [NFR6](./DESIGN.md#nfr6) | Trait + in-memory default ([caching ADR](./adrs/querier/query-caching-strategy.md)) |
 | `CacheKey` | [FR5](./DESIGN.md#fr5) | `hash(query, floor(start/15s), floor(end/15s))` |
 | `LogqlTranslator` | [FR3](./DESIGN.md#fr3) | LogQL subset → SQL |
-| `PromqlTranslator` | [FR1](./DESIGN.md#fr1) | promql-parser AST → SQL ([PromQL ADR](./adrs/promql-parsing-strategy.md)) |
+| `PromqlTranslator` | [FR1](./DESIGN.md#fr1) | promql-parser AST → SQL ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md)) |
 | `TraceqlTranslator` | [FR2](./DESIGN.md#fr2) | TraceQL subset → SQL |
 | `PromResponse` / `TempoResponse` / `LokiResponse` | [NFR2](./DESIGN.md#nfr2) | Grafana-compatible JSON shapes |
-| `Compactor` | [FR7](./DESIGN.md#fr7), [NFR5](./DESIGN.md#nfr5), [NFR6](./DESIGN.md#nfr6) | Standalone Parquet→Parquet component, singleton role; sealed-day merge + footer provenance + rollups + retention GC ([compaction-consistency ADR](./adrs/compaction-consistency.md)) |
+| `Compactor` | [FR7](./DESIGN.md#fr7), [NFR5](./DESIGN.md#nfr5), [NFR6](./DESIGN.md#nfr6) | Standalone Parquet→Parquet component, singleton role; sealed-day merge + footer provenance + rollups + retention GC ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md)) |
 | `CacheBudget` | [NFR5](./DESIGN.md#nfr5) | Bounded total memory for Parquet-metadata + result caches |
-| `QueryFrontend` | [FR8](./DESIGN.md#fr8), [NFR8](./DESIGN.md#nfr8) | Time-range split + merge + shared cache ([long-range ADR](./adrs/long-range-metrics-strategy.md), [roles ADR](./adrs/deployment-roles-and-read-scaling.md)) |
+| `QueryFrontend` | [FR8](./DESIGN.md#fr8), [NFR8](./DESIGN.md#nfr8) | Time-range split + merge + shared cache ([long-range ADR](./adrs/compactor/long-range-metrics-strategy.md), [roles ADR](./adrs/shared/deployment-roles-and-read-scaling.md)) |
 | `RollupTier` | [FR6](./DESIGN.md#fr6), [NFR7](./DESIGN.md#nfr7) | Downsampled metric resolutions (5m/1h/1d) for the cold tail |
 | `DeploymentRole` | [NFR8](./DESIGN.md#nfr8) | enum Querier (stateless, scale-out) / QueryFrontend / Compactor (singleton) |
 | `QueryGuardrails` | [NFR9](./DESIGN.md#nfr9) | per-signal max range (traces/logs 30d, metrics 13mo / 2y opt-in) + max bytes scanned (~1GB) + max concurrent/series; reject at validation |
@@ -215,13 +215,13 @@ classDiagram
 | `SignalTable::arrow_schema` | `&self → SchemaRef` | Column names/types must match the codec output in [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) exactly; mismatch is a hard error |
 | `ParquetCatalog::refresh` | `&SessionContext → Result` | Idempotent; re-registers tables from current file listing; never panics on an empty/absent directory |
 | `LogqlTranslator::translate` | `LogqlExpr × TimeRange → Sql` | `{k="v"}` → `WHERE k='v'`; `\|= "t"` → `body LIKE '%t%'`; `=~` → regex match; always bounded by `time_unix_nano BETWEEN start AND end`; `limit` applied |
-| `PromqlTranslator::translate` | `promql Expr × TimeRange → Result<Sql, UnsupportedFn>` | Supported fns ([PromQL ADR](./adrs/promql-parsing-strategy.md)) translate; any other fn → `UnsupportedFn` error (never a panic, never wrong SQL) |
+| `PromqlTranslator::translate` | `promql Expr × TimeRange → Result<Sql, UnsupportedFn>` | Supported fns ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md)) translate; any other fn → `UnsupportedFn` error (never a panic, never wrong SQL) |
 | `rate(v[d])` | window over sum/gauge → per-sec rate | `PARTITION BY attributes ORDER BY time_unix_nano`; counter reset (`v[t]<v[t-1]`) ⇒ use `v[t]` as delta |
 | `histogram_quantile(q, v)` | histogram rows → quantile | CTE + UNNEST(JSON `bucket_counts`/`explicit_bounds`) + cumulative window + linear interpolation |
 | `TraceqlTranslator::translate` | `TraceqlFilter → Sql` | `resource.service.name`/`name`/`status` → top-level columns; `span.X`/`.X` → `json_extract(attributes,'$.X')`; trace-by-id → `WHERE trace_id = X'..'` |
 | `CacheKey::from` | `query × TimeRange → CacheKey` | Time bounds floored to 15s buckets so adjacent dashboard refreshes collide |
 | `record_batches_to_*_json` | `Vec<RecordBatch> → Grafana JSON` | Output must validate against the Prometheus/Tempo/Loki HTTP API response schema ([NFR2](./DESIGN.md#nfr2)) |
-| `Compactor::seal_partition` | `sealed dt-partition → 1 compacted file (+ rollups)` | Only partitions older than `now − grace`; merge → sorted Parquet; write footer `level` + `supersedes`(provenance) atomically (staging → finalize); rollups store bucket counts + counter values; idempotent; singleton ([compaction-consistency ADR](./adrs/compaction-consistency.md)) |
+| `Compactor::seal_partition` | `sealed dt-partition → 1 compacted file (+ rollups)` | Only partitions older than `now − grace`; merge → sorted Parquet; write footer `level` + `supersedes`(provenance) atomically (staging → finalize); rollups store bucket counts + counter values; idempotent; singleton ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md)) |
 | `Querier::resolve_files` | `(table, range) → file set` | Read compacted footers; pick highest `level` per sub-range; **skip superseded inputs**; never double-read; deletion of inputs is GC, not correctness |
 | `QueryFrontend::split` | `metric query_range → Vec<shard>` | Per-day shards aligned to UTC midnight + `step`; range-vector shards overlap by lookback window |
 | `QueryFrontend::merge` | `Vec<shard result> → result` | `topk` = partial-then-merge; `histogram_quantile` = sum bucket counts across shards then compute; never average per-shard quantiles |
@@ -234,10 +234,10 @@ classDiagram
 **Goal**: A compilable, feature-gated `src/querier/` module and the `query:` config block, wired into app startup like `api`.
 **Types**: `QueryOptions`, `QueryServer` (skeleton) — see domain model
 **Constraints**:
-- [ADR: process integration](./adrs/querier-backend-process-integration.md) — config block + `setup_query` in `app.rs`, server held on `topology/controller.rs`, **not** a source/sink/transform
-- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — add `datafusion` + `object_store` only under `querier-backend`; default build untouched
+- [ADR: process integration](./adrs/shared/querier-backend-process-integration.md) — config block + `setup_query` in `app.rs`, server held on `topology/controller.rs`, **not** a source/sink/transform
+- [ADR: DataFusion table discovery](./adrs/querier/datafusion-table-discovery.md) — add `datafusion` + `object_store` only under `querier-backend`; default build untouched
 - New external dependencies (`datafusion`, `object_store`, `promql-parser`) are **pre-approved by this ADR** — adding them is within the constitution; adding any other crate is not
-- **Front-load verified (2026-06)**: versions pinned `datafusion = "53"` (v53.1.0, incl. `datafusion-functions-nested` for UNNEST), `object_store = "0.13"` (`fs`,`tokio`,`aws`), `promql-parser = "0.9"` — all resolve from crates.io. Parquet file-read interop is version-stable ([datafusion-table-discovery ADR](./adrs/datafusion-table-discovery.md)); the build confirms read-back on a codec fixture.
+- **Front-load verified (2026-06)**: versions pinned `datafusion = "53"` (v53.1.0, incl. `datafusion-functions-nested` for UNNEST), `object_store = "0.13"` (`fs`,`tokio`,`aws`), `promql-parser = "0.9"` — all resolve from crates.io. Parquet file-read interop is version-stable ([datafusion-table-discovery ADR](./adrs/querier/datafusion-table-discovery.md)); the build confirms read-back on a codec fixture.
 - [NFR9](./DESIGN.md#nfr9): `QueryOptions` carries per-signal guardrails — max query range (traces/logs 30d, metrics 13mo default / 2y opt-in), max bytes scanned (~1GB), max concurrent queries; enforced at validation by the API handlers (tasks 3–5, 7) and frontend (task 11)
 **Tests**:
 - `test_query_options_deserializes_from_yaml` — `query: { address, storage: { path } }` parses
@@ -255,10 +255,10 @@ classDiagram
 **Goal**: Register the seven Parquet signal tables in a DataFusion `SessionContext` from a storage root, with periodic refresh.
 **Types**: `SignalTable`, `ParquetCatalog`, `QueryEngine`
 **Constraints**:
-- [ADR: DataFusion table discovery](./adrs/datafusion-table-discovery.md) — one `ListingTable` per signal **directory** (`logs/`, `traces/`, per-subtype metric dirs; or single `metrics/` union fallback), explicit Arrow schema, periodic re-list (default 15s). Requires the sink to write per-subtype metric dirs — a documented write-side dependency
+- [ADR: DataFusion table discovery](./adrs/querier/datafusion-table-discovery.md) — one `ListingTable` per signal **directory** (`logs/`, `traces/`, per-subtype metric dirs; or single `metrics/` union fallback), explicit Arrow schema, periodic re-list (default 15s). Requires the sink to write per-subtype metric dirs — a documented write-side dependency
 - Invariant: `SignalTable::arrow_schema()` columns match [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) exactly (names, types, nullability)
 - Predicate pushdown enabled for `service_name`, `name`, timestamp columns
-- `Querier::resolve_files` honours **footer supersession** ([compaction-consistency ADR](./adrs/compaction-consistency.md)): when both raw and compacted files are present, pick the highest `level` per sub-range and skip superseded inputs (each datum read once). Pre-compaction (no compacted files yet) this is a no-op.
+- `Querier::resolve_files` honours **footer supersession** ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md)): when both raw and compacted files are present, pick the highest `level` per sub-range and skip superseded inputs (each datum read once). Pre-compaction (no compacted files yet) this is a no-op.
 - [NFR5](./DESIGN.md#nfr5): bound the DataFusion worker pool (default `min(4, available_parallelism)`) and the Parquet metadata cache so the backend does not starve ingestion
 - [NFR10](./DESIGN.md#nfr10): file discovery uses **paginated LIST** (1000/page) and the `object_store` client must retry `503 SlowDown` with exponential backoff+jitter; prefix-sharded reads (`dt=`/per-signal) spread the per-prefix GET-rate ceiling
 **Tests**:
@@ -302,7 +302,7 @@ classDiagram
 **Goal**: `POST /prometheus/api/v1/query`, `GET /prometheus/api/v1/label/:name/values`, `GET /prometheus/api/v1/series` for the simple (gauge instant + discovery) tier.
 **Types**: `PromqlTranslator` (instant selectors only), `PromResponse`
 **Constraints**:
-- [ADR: PromQL parsing](./adrs/promql-parsing-strategy.md) — parse with `promql-parser`; unsupported function → `UnsupportedFn` error JSON, never a panic
+- [ADR: PromQL parsing](./adrs/querier/promql-parsing-strategy.md) — parse with `promql-parser`; unsupported function → `UnsupportedFn` error JSON, never a panic
 - Transformation: instant vector selector `m{l=v}` → `WHERE name='m' AND <label preds>` returning the latest point in range; `sum by`/`max by` → `GROUP BY json_extract(attributes,'$.l')`
 - Label discovery → `SELECT DISTINCT json_extract(attributes, key)` (and top-level columns); series existence → `SELECT DISTINCT` of identifying columns
 - [NFR2](./DESIGN.md#nfr2): `resultType="vector"` JSON; label/series endpoints return `{status, data:[...]}`
@@ -325,9 +325,9 @@ classDiagram
 **Goal**: `POST /prometheus/api/v1/query_range` for the P0 windowed-aggregation functions over sum/gauge tables.
 **Types**: `PromqlTranslator` (range + window functions), `PromResponse` (`matrix`)
 **Constraints**:
-- Transformation `rate(v[d])`: `LAG()` window `PARTITION BY attributes ORDER BY time_unix_nano`; counter reset (`v[t] < v[t-1]`) ⇒ delta = `v[t]` (simplified, per [PromQL ADR](./adrs/promql-parsing-strategy.md))
+- Transformation `rate(v[d])`: `LAG()` window `PARTITION BY attributes ORDER BY time_unix_nano`; counter reset (`v[t] < v[t-1]`) ⇒ delta = `v[t]` (simplified, per [PromQL ADR](./adrs/querier/promql-parsing-strategy.md))
 - `max_over_time(v[d])` → `MAX() OVER (... ROWS/RANGE ...)`; `topk(n, v)` → `ORDER BY value DESC LIMIT n`
-- PromQL staleness/lookback rules are **out of scope** v1 ([PromQL ADR](./adrs/promql-parsing-strategy.md))
+- PromQL staleness/lookback rules are **out of scope** v1 ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md))
 - See the worked `rate()` SQL in [DESIGN.md §PromQL→SQL](./DESIGN.md#design)
 **Tests**:
 - `test_rate_translates_to_lag_window`
@@ -385,7 +385,7 @@ classDiagram
 **Goal**: Wrap the query path in a `QueryCache` (moka LRU default) keyed by query + 15s time bucket.
 **Types**: `QueryCache` trait, `MokaQueryCache`, `CacheKey`
 **Constraints**:
-- [ADR: query caching](./adrs/query-caching-strategy.md) — trait with in-memory `moka` default, TTL 15s, max 1000, LRU eviction, no active invalidation; Redis backend deferred behind the trait
+- [ADR: query caching](./adrs/querier/query-caching-strategy.md) — trait with in-memory `moka` default, TTL 15s, max 1000, LRU eviction, no active invalidation; Redis backend deferred behind the trait
 - Transformation `CacheKey`: `hash(query, floor(start/15s), floor(end/15s))`
 **Tests**:
 - `test_cache_key_buckets_to_15s`
@@ -424,8 +424,8 @@ classDiagram
 **Goal**: A standalone `Parquet → compacted Parquet` component (singleton role) that bounds the small-files problem without slowing the gateway, with catalog-free read/compact consistency.
 **Types**: `Compactor` (singleton), `DeploymentRole`, `CacheBudget`
 **Constraints**:
-- [ADR: compaction-consistency](./adrs/compaction-consistency.md) — DataFusion sort-merge; shares the querier's schemas/catalog; **only seals partitions older than `now − grace`** (never the active day); **footer** `level` + `supersedes` written atomically via staging→finalize; coverage by provenance (late data orthogonal)
-- [ADR: deployment roles](./adrs/deployment-roles-and-read-scaling.md) — singleton; the only writer of compacted files; queriers stay stateless
+- [ADR: compaction-consistency](./adrs/compactor/compaction-consistency.md) — DataFusion sort-merge; shares the querier's schemas/catalog; **only seals partitions older than `now − grace`** (never the active day); **footer** `level` + `supersedes` written atomically via staging→finalize; coverage by provenance (late data orthogonal)
+- [ADR: deployment roles](./adrs/shared/deployment-roles-and-read-scaling.md) — singleton; the only writer of compacted files; queriers stay stateless
 - Transformations `Compactor::seal_partition` + querier-side `Querier::resolve_files` (extends task 2): querier picks highest `level`, **skips superseded inputs**, never double-reads; input deletion is GC
 - Layout: day-partitioned path `dt=YYYY-MM-DD/`; merged output globally sorted (`service_name`, `name`, `time_unix_nano`)
 - Retention is a **separate configurable policy** (per-signal TTL), enforced by GC here — independent of the [NFR7](./DESIGN.md#nfr7) query-interval numbers (retention ≥ query interval)
@@ -453,10 +453,10 @@ classDiagram
 **Goal**: Make long metric ranges cheap and cacheable by splitting `query_range` into per-day shards, executing across stateless queriers, and merging correctly.
 **Types**: `QueryFrontend`, `DeploymentRole`
 **Constraints**:
-- [ADR: long-range metrics](./adrs/long-range-metrics-strategy.md) — per-day shards aligned to UTC midnight + `step`; completed historical shards cached **permanently** (immutable); only the in-progress shard uncacheable
-- [ADR: deployment roles](./adrs/deployment-roles-and-read-scaling.md) — queriers stateless; frontend owns split/merge + shared cache; single-node default = in-process
+- [ADR: long-range metrics](./adrs/compactor/long-range-metrics-strategy.md) — per-day shards aligned to UTC midnight + `step`; completed historical shards cached **permanently** (immutable); only the in-progress shard uncacheable
+- [ADR: deployment roles](./adrs/shared/deployment-roles-and-read-scaling.md) — queriers stateless; frontend owns split/merge + shared cache; single-node default = in-process
 - Transformations `split` / `merge`: range-vector shards overlap by lookback window; `topk` = partial-then-merge; `histogram_quantile` = sum bucket counts across shards then compute (never average quantiles)
-- Fixes the whole-range cache-key defect ([caching ADR amendment](./adrs/query-caching-strategy.md))
+- Fixes the whole-range cache-key defect ([caching ADR amendment](./adrs/querier/query-caching-strategy.md))
 **Tests**:
 - `test_split_aligns_to_utc_midnight_and_step`
 - `test_rate_shards_overlap_by_lookback` — boundary `rate()` equals unsplit result
@@ -470,13 +470,13 @@ classDiagram
 - [x] Traces/logs short queries bypass splitting
 - [x] Emits frontend metrics (split count, shard-cache hit/miss) via the task-9 telemetry infra
 **Depends on**: tasks 5, 6, 8, 9 (telemetry infra)
-**Time-box**: ~90 min · **Hill**: **downhill** — merge algorithm specified in [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md) (overlap-by-lookback; topk partial-then-merge; sum-buckets-then-quantile); cache-immutability validated in [COMPLEXITY.md §4](./COMPLEXITY.md)
+**Time-box**: ~90 min · **Hill**: **downhill** — merge algorithm specified in [long-range-metrics ADR](./adrs/compactor/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md) (overlap-by-lookback; topk partial-then-merge; sum-buckets-then-quantile); cache-immutability validated in [COMPLEXITY.md §4](./COMPLEXITY.md)
 
 ### 12. Metric rollup tiers (downsampling) ([FR6](./DESIGN.md#fr6), [NFR6](./DESIGN.md#nfr6), [NFR7](./DESIGN.md#nfr7))
 **Goal**: Serve the metrics cold tail (beyond the recent window) from pre-aggregated resolutions so 13mo-default / 2y-opt-in ranges meet NFR6.
 **Types**: `RollupTier`, extends `Compactor`
 **Constraints**:
-- [ADR: long-range metrics](./adrs/long-range-metrics-strategy.md) — compactor produces 5m/1h/1d rollups; rollups store **bucket counts** + **counter values** (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct after merge
+- [ADR: long-range metrics](./adrs/compactor/long-range-metrics-strategy.md) — compactor produces 5m/1h/1d rollups; rollups store **bucket counts** + **counter values** (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct after merge
 - `QueryFrontend::select_tier`: recent → raw; long tail → coarsest tier with resolution ≤ `step`; fall back to raw if tier absent
 - Raw real-time computation (tasks 5–6) remains the correctness baseline
 **Tests**:
@@ -490,7 +490,7 @@ classDiagram
 - [x] `histogram_quantile` / `rate` over rollups match raw within tolerance
 - [x] Frontend selects the tier from `(range, step)`; falls back to raw when absent
 **Depends on**: tasks 10, 11
-**Time-box**: ~90 min · **Hill**: **downhill** — rollup correctness rule fixed ([long-range-metrics ADR](./adrs/long-range-metrics-strategy.md): store bucket counts + counter values, not quantiles); necessity + row-reduction quantified in [COMPLEXITY.md §7](./COMPLEXITY.md) (M2); tolerance measured during the task
+**Time-box**: ~90 min · **Hill**: **downhill** — rollup correctness rule fixed ([long-range-metrics ADR](./adrs/compactor/long-range-metrics-strategy.md): store bucket counts + counter values, not quantiles); necessity + row-reduction quantified in [COMPLEXITY.md §7](./COMPLEXITY.md) (M2); tolerance measured during the task
 
 > **Per-signal scope note**: tasks 11–12 apply to **metrics only** (13mo default, 2y opt-in). Traces and logs (≤30d) are bounded-window tables registered plainly in task 2 — they skip rollups (splitting optional) ([NFR7](./DESIGN.md#nfr7)).
 
@@ -500,7 +500,7 @@ classDiagram
 **Constraints**:
 - `POST /api/v1/sql`; JSON results (+ optional Arrow stream for large results); stateless ([NFR8](./DESIGN.md#nfr8))
 - Cross-signal JOIN keys: `trace_id` (logs ⨝ traces), `service_name` + time window (metrics ⨝ traces/logs)
-- Subject to [NFR9](./DESIGN.md#nfr9) guardrails (max bytes scanned / range / concurrency); reads compacted+rollup via `resolve_files` ([compaction-consistency ADR](./adrs/compaction-consistency.md))
+- Subject to [NFR9](./DESIGN.md#nfr9) guardrails (max bytes scanned / range / concurrency); reads compacted+rollup via `resolve_files` ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md))
 - Postgres-wire / Arrow Flight SQL **deferred** (separate ADR)
 **Tests**:
 - `test_sql_select_over_each_signal_table`
@@ -521,8 +521,8 @@ classDiagram
 **Goal**: Make the gateway write the layout the query backend needs — per-signal/subtype directories, day-partitioned, locally sorted — so tables register cleanly and day-pruning works. **This is a write-side change (`src/sinks/file` + demo `sol-gateway.yaml`), the documented cross-workspace dependency.**
 **Types**: file-sink path templating (extends the existing `file` sink batch path)
 **Constraints**:
-- [ADR: datafusion-table-discovery](./adrs/datafusion-table-discovery.md) — emit `…/logs/dt=YYYY-MM-DD/`, `…/traces/dt=…/`, `…/metrics/gauge/dt=…/`, `…/metrics/sum/dt=…/`, … (one dir per signal/subtype) so each maps to a clean `ListingTable`
-- [ADR: file-layout-and-compaction](./adrs/file-layout-and-compaction-strategy.md) — sort within each batch by `service_name`, `name`, `time_unix_nano` (write-side hint)
+- [ADR: datafusion-table-discovery](./adrs/querier/datafusion-table-discovery.md) — emit `…/logs/dt=YYYY-MM-DD/`, `…/traces/dt=…/`, `…/metrics/gauge/dt=…/`, `…/metrics/sum/dt=…/`, … (one dir per signal/subtype) so each maps to a clean `ListingTable`
+- [ADR: file-layout-and-compaction](./adrs/compactor/file-layout-and-compaction-strategy.md) — sort within each batch by `service_name`, `name`, `time_unix_nano` (write-side hint)
 - Path template uses event-batch flush time for `dt=`; late/cross-midnight data is bounded (compaction re-buckets) — do not block the gateway to sort globally
 - The codec already emits one blob per subtype ([parquet-multisignal](../../designs/20260527_parquet-multisignal.md)); this task only changes the **sink path/sort**, not the codec
 **Tests**:
@@ -532,7 +532,7 @@ classDiagram
 **Verify**: `cargo test --features codecs-parquet sinks::file::`
 > **Discovery (implementation, 2026-06) — task split.** The file sink's `encode_files` returns **opaque, untagged** `Vec<Vec<u8>>` blobs (`src/sinks/file/mod.rs:664`, written via `parquet_path_with_suffix(&path, i)`). The sink therefore **cannot route blobs to per-subtype directories or sort rows without changing the shipped codec API** (`encode_files` signature + per-type sort) — contradicting this task's "sink-only, not the codec" note. Within-constitution decision (signature adjustment is allowed, but it touches the integrated write-side codec, so split + flag at the Session-1 checkpoint):
 > - **14a (done, config-only)**: dt= partitioning + per-signal dirs via strftime path templates.
-> - **14b (done)**: rather than tagging codec blobs, per-metric-subtype routing is achieved with a gateway `route` transform → per-subtype file sinks (`metrics/<subtype>/dt=…/`), and the codec sorts rows by (`service_name`,`name`,`time_unix_nano`) on write (`sort_dp_rows`). The catalog (task 2) registers each table over an explicit, recursively-walked file list (reads the nested layout, skips superseded raw via `resolve_files`); the `metrics/` union table ([datafusion-table-discovery ADR Option C](./adrs/datafusion-table-discovery.md)) was the pre-14b interim, and sort remains a pruning *hint* (query correctness holds without it, FR7).
+> - **14b (done)**: rather than tagging codec blobs, per-metric-subtype routing is achieved with a gateway `route` transform → per-subtype file sinks (`metrics/<subtype>/dt=…/`), and the codec sorts rows by (`service_name`,`name`,`time_unix_nano`) on write (`sort_dp_rows`). The catalog (task 2) registers each table over an explicit, recursively-walked file list (reads the nested layout, skips superseded raw via `resolve_files`); the `metrics/` union table ([datafusion-table-discovery ADR Option C](./adrs/querier/datafusion-table-discovery.md)) was the pre-14b interim, and sort remains a pruning *hint* (query correctness holds without it, FR7).
 
 **Acceptance criteria**:
 - [x] Per-signal directories (`logs/`, `traces/`, `metrics/`) with `dt=YYYY-MM-DD/` sub-partitions — demo `sol-gateway.yaml` paths updated (strftime templating; sink supports it)
@@ -601,7 +601,7 @@ Tasks: 10, 11
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`, `test-code-coverage`
 **Checkpoint**: `cargo test --no-default-features --features querier-backend querier::compaction querier::frontend && cargo clippy --no-default-features --features querier-backend -- -D warnings`
 **Commit point**: yes
-> Both `downhill`: compaction consistency fixed in the [compaction-consistency ADR](./adrs/compaction-consistency.md); frontend merge rules in the [long-range-metrics ADR](./adrs/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md). End of session: `verify` — measure NFR6 latency + NFR5 memory **before vs after** compaction on the demo data.
+> Both `downhill`: compaction consistency fixed in the [compaction-consistency ADR](./adrs/compactor/compaction-consistency.md); frontend merge rules in the [long-range-metrics ADR](./adrs/compactor/long-range-metrics-strategy.md) + [QUERY-MAPPING.md](./QUERY-MAPPING.md). End of session: `verify` — measure NFR6 latency + NFR5 memory **before vs after** compaction on the demo data.
 
 ### Session 6 — Rollups + SQL endpoint (~2.5H)
 Tasks: 12, 13

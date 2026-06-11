@@ -3,7 +3,7 @@ status: draft
 ---
 # PromQL aggregate evaluation: in-memory composition vs. pushed-down SQL
 
-Addresses: [FR1](../DESIGN.md#fr1) (Prometheus-compatible API), [FR4](../DESIGN.md#fr4) (DataFusion engine), [NFR5](../DESIGN.md#nfr5) (memory budget), [NFR6](../DESIGN.md#nfr6) (latency). Refines the [expr-lowering design](../../../designs/20260608_expr-lowering.md) (PromQL → `Expr`/`DataFrame`, no `format!` SQL).
+Addresses: [FR1](../../DESIGN.md#fr1) (Prometheus-compatible API), [FR4](../../DESIGN.md#fr4) (DataFusion engine), [NFR5](../../DESIGN.md#nfr5) (memory budget), [NFR6](../../DESIGN.md#nfr6) (latency). Refines the [expr-lowering design](../../../../designs/20260608_expr-lowering.md) (PromQL → `Expr`/`DataFrame`, no `format!` SQL).
 
 ## Problem
 
@@ -48,13 +48,13 @@ The inner result is **fully materialised in querier memory before the reduce**. 
 ### What bounds it today
 
 - The materialised set is the **post-filter** series, not raw rows: the leaf selector runs in DataFusion with predicate pushdown + `prom_name` column pruning, so only matching series/points are collected.
-- **[NFR9](../DESIGN.md#nfr9) guardrails** (`max_bytes_scanned`, per-signal `max_range`, `max_concurrent_queries`) cap the leaf scan and concurrency → an indirect bound on what an aggregate can materialise (a query that would scan too much is rejected 422 before the reduce).
+- **[NFR9](../../DESIGN.md#nfr9) guardrails** (`max_bytes_scanned`, per-signal `max_range`, `max_concurrent_queries`) cap the leaf scan and concurrency → an indirect bound on what an aggregate can materialise (a query that would scan too much is rejected 422 before the reduce).
 - The **15s result cache** ([caching ADR](./query-caching-strategy.md)) amortises repeated dashboard aggregates.
 - The dashboard's flagship metrics are low-cardinality (host-scoped node metrics); `histogram_quantile` and bucket heatmaps keep their dedicated Rust-native paths (not this generic reduce).
 
 ### Known limitation & future escape
 
-This is recorded as a **known limitation**, not a regression: high-cardinality aggregation can pressure querier memory ([NFR5](../DESIGN.md#nfr5)). If it becomes a bottleneck, the escape is a **hybrid**: push the *first* (innermost, leaf-level) aggregation back into DataFusion's `aggregate` for the simple `by`-over-selector case (vectorised, spillable), and keep the Rust composition only for the outer levels (`without`, nesting, `clamp`/`scalar`). A streaming/chunked reduce is a smaller follow-up. Neither is needed at the dashboard's scale, so both are deferred.
+This is recorded as a **known limitation**, not a regression: high-cardinality aggregation can pressure querier memory ([NFR5](../../DESIGN.md#nfr5)). If it becomes a bottleneck, the escape is a **hybrid**: push the *first* (innermost, leaf-level) aggregation back into DataFusion's `aggregate` for the simple `by`-over-selector case (vectorised, spillable), and keep the Rust composition only for the outer levels (`without`, nesting, `clamp`/`scalar`). A streaming/chunked reduce is a smaller follow-up. Neither is needed at the dashboard's scale, so both are deferred.
 
 ### Correctness note
 

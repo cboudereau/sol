@@ -3,7 +3,7 @@ status: draft
 ---
 # PromQL parsing strategy
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../../DESIGN.md#fr1), [NFR1](../../DESIGN.md#nfr1)
 
 ## Problem
 

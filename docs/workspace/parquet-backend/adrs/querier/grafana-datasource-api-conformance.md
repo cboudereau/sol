@@ -3,12 +3,12 @@ status: draft
 ---
 # Grafana datasource API conformance — what contract Sol targets
 
-Addresses: [NFR2](../DESIGN.md#nfr2), [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3)
+Addresses: [NFR2](../../DESIGN.md#nfr2), [FR1](../../DESIGN.md#fr1), [FR2](../../DESIGN.md#fr2), [FR3](../../DESIGN.md#fr3)
 
 ## Problem
 
 Sol serves the Prometheus, Tempo, and Loki HTTP APIs so Grafana's stock
-datasources render against it unchanged ([NFR2](../DESIGN.md#nfr2)). To do that
+datasources render against it unchanged ([NFR2](../../DESIGN.md#nfr2)). To do that
 correctly we need an authoritative definition of each response shape. Which
 spec do we build (and test) against? The prose API docs are incomplete: real
 Grafana failures (`Cannot read properties of undefined (reading '0')`,
@@ -44,7 +44,7 @@ sources, per backend:
 **Validation is empirical, not static:** the demo runs the real Mimir/Tempo/Loki
 beside Sol, so conformance is checked by **issuing the same request to both and
 structurally diffing the JSON** (the real backend's shape is what Grafana
-accepts). See [CONFORMANCE.md](../CONFORMANCE.md) for the per-endpoint pass.
+accepts). See [CONFORMANCE.md](../../CONFORMANCE.md) for the per-endpoint pass.
 
 ### Shape decisions the prose docs don't surface (the gotchas)
 
@@ -74,8 +74,8 @@ accepts). See [CONFORMANCE.md](../CONFORMANCE.md) for the per-endpoint pass.
 - Conformance is a **living** property: a Grafana upgrade can change which JSON
   fields the frontend reads, so the paired-diff pass must be **re-run on Grafana
   / backend version bumps**, not assumed from a frozen spec.
-- Gaps are tracked in [CONFORMANCE.md](../CONFORMANCE.md) and the
-  [code-review backlog](../CODE-REVIEW-BACKLOG.md) (`C-P*`/`C-T*`/`C-L*`).
+- Gaps are tracked in [CONFORMANCE.md](../../CONFORMANCE.md) and the
+  [code-review backlog](../../CODE-REVIEW-BACKLOG.md) (`C-P*`/`C-T*`/`C-L*`).
 - Sol need not implement the *entire* upstream API — only the endpoints + fields
   the Grafana datasources actually call/read. The demo's side-by-side
   `$datasource` toggle (Sol ↔ real backend) is the standing regression harness.

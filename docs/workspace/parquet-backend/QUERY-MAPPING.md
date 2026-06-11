@@ -96,7 +96,7 @@ Target tables: `gauge`, `sum`, `histogram`, `exp_histogram`, `summary`. Query in
 
 | PromQL | SQL | Decision |
 |---|---|---|
-| `rate/irate/increase/delta/idelta(v[d])` | `LAG()` window `PARTITION BY series ORDER BY time`; counter-reset rule ([PromQL ADR](./adrs/promql-parsing-strategy.md)) | ✅ |
+| `rate/irate/increase/delta/idelta(v[d])` | `LAG()` window `PARTITION BY series ORDER BY time`; counter-reset rule ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md)) | ✅ |
 | `*_over_time` (`avg/min/max/sum/count/last/present/stddev/stdvar/quantile`) | windowed aggregate `OVER (… ROWS …)` | ✅ |
 | `histogram_quantile(φ, …)` | CTE + `UNNEST` bucket arrays + cumulative window + interpolation; or **rollup tier** for long tail | ⚠️ ([rabbit hole 5](./DESIGN.md#rabbit-holes); raw-native fallback) |
 | `label_replace/label_join` | `regexp_replace` / `concat` into output labels | ✅ |

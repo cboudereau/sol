@@ -3,7 +3,7 @@ status: draft
 ---
 # Query caching strategy
 
-Addresses: [FR5](../DESIGN.md#fr5), [NFR6](../DESIGN.md#nfr6) (response-time budget; supersedes the earlier NFR3 framing)
+Addresses: [FR5](../../DESIGN.md#fr5), [NFR6](../../DESIGN.md#nfr6) (response-time budget; supersedes the earlier NFR3 framing)
 
 ## Problem
 
@@ -17,7 +17,7 @@ How should query results be cached?
 |---|---|---|
 | A. In-memory LRU cache (no external dependency) | Zero operational overhead. Fast lookup. No network latency. Embedded in Sol process. | Not shared across query nodes. Memory-bounded. Lost on restart. |
 | B. Redis / Memcached external cache | Shared across nodes. Survives restarts. Proven at scale (Grafana Mimir uses memcached). | External dependency. Network latency per cache lookup. Operational burden. |
-| C. No caching — rely on DataFusion's built-in optimizations | Simplest. No stale data risk. | Cannot meet the [NFR6](../DESIGN.md#nfr6) latency budget for histogram quantile queries. Dashboard experience degrades. |
+| C. No caching — rely on DataFusion's built-in optimizations | Simplest. No stale data risk. | Cannot meet the [NFR6](../../DESIGN.md#nfr6) latency budget for histogram quantile queries. Dashboard experience degrades. |
 | D. Hybrid: in-memory LRU default, optional Redis backend | Best of A and B. Start simple, scale when needed. | More code to maintain (two cache backends). |
 
 ## Decision
@@ -31,7 +31,7 @@ Rationale:
 
 Cache key: `hash(query_string, floor(start / 15s), floor(end / 15s))`
 
-> **Amended for long ranges** (see [long-range-metrics-strategy](./long-range-metrics-strategy.md)): whole-range 15s bucketing misses on every refresh once the range is long (the `end` always moves). For metric `query_range`, caching is applied **per time-split shard** ([FR8](../DESIGN.md#fr8)): completed historical shards are immutable and cached permanently; only the in-progress shard is uncacheable. The whole-range key above remains correct for short, non-split queries (traces/logs, instant). For multi-node deployments the cache moves behind a **shared** backend (Redis / object-store) owned by the query-frontend ([deployment-roles ADR](./deployment-roles-and-read-scaling.md)); the per-process LRU stays the single-node default.
+> **Amended for long ranges** (see [long-range-metrics-strategy](../compactor/long-range-metrics-strategy.md)): whole-range 15s bucketing misses on every refresh once the range is long (the `end` always moves). For metric `query_range`, caching is applied **per time-split shard** ([FR8](../../DESIGN.md#fr8)): completed historical shards are immutable and cached permanently; only the in-progress shard is uncacheable. The whole-range key above remains correct for short, non-split queries (traces/logs, instant). For multi-node deployments the cache moves behind a **shared** backend (Redis / object-store) owned by the query-frontend ([deployment-roles ADR](../shared/deployment-roles-and-read-scaling.md)); the per-process LRU stays the single-node default.
 
 Cache behavior:
 - TTL: 15 seconds (one dashboard refresh cycle)
