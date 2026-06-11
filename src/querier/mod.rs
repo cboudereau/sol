@@ -17,6 +17,7 @@ mod cache;
 mod catalog;
 pub mod compaction;
 pub mod frontend;
+mod group_key;
 pub mod logql;
 pub mod loki;
 pub mod plan;

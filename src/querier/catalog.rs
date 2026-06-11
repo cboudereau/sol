@@ -363,6 +363,10 @@ impl QueryEngine {
         // prom_attr(attributes, 'name'): OTLP→Prometheus normalized attribute
         // lookup so the Prometheus API matches dashboards (ADR 0039 / query-side).
         ctx.register_udf(super::udf::prom_attr_udf());
+        // prom_group_key / prom_group_key_reproject: canonical, reversible group
+        // keys for aggregation pushdown (promql-pushdown T1). Called from plans.
+        ctx.register_udf(super::group_key::prom_group_key_udf());
+        ctx.register_udf(super::group_key::prom_group_key_reproject_udf());
         // Metric-name normalization is materialized into the `prom_name` column at
         // write time (codec), so no read-time `prom_metric_name` UDF is registered.
         let catalog = ParquetCatalog::new(opts.storage.path.clone());

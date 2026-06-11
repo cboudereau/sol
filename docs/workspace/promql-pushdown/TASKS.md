@@ -101,10 +101,10 @@ classDiagram
 - `test_group_key_reproject` — `reproject(build(labels, without[mode]), by[cpu]) == build(labels, by[cpu])` (the mixed-nesting primitive).
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] `GroupKey::build`/`parse` round-trip for by/without/none.
-- [ ] `prom_group_key_reproject` re-keys a built key correctly (test above green).
-- [ ] Both UDFs registered on the shared `SessionContext` and callable in a plan.
-- [ ] No new dependency added.
+- [x] `GroupKey::build`/`parse` round-trip for by/without/none.
+- [x] `prom_group_key_reproject` re-keys a built key correctly (test above green).
+- [x] Both UDFs registered on the shared `SessionContext` and callable in a plan.
+- [x] No new dependency added.
 **Depends on**: (none) · **Time-box**: ~90 min · `downhill`
 
 ### 2. Push instant + range aggregation into DataFusion ([FR2](./DESIGN.md#fr2), [NFR3](./DESIGN.md#nfr3))

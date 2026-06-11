@@ -441,45 +441,7 @@ fn agg_name(op: token::TokenType) -> Result<&'static str, String> {
     }
 }
 
-/// PromQL aggregation grouping: `by(labels)` keeps only those labels in the
-/// result; `without(labels)` keeps every label except those (and `__name__`);
-/// no modifier collapses all series into one empty-labelled group. Operating on
-/// the exploded label map (see [`LabelCols::labels`]) lets `without` work even
-/// though the source labels live inside the `attributes` JSON.
-enum AggGrouping {
-    By(Vec<String>),
-    Without(Vec<String>),
-    All,
-}
-
-impl AggGrouping {
-    fn from(modifier: &Option<LabelModifier>) -> Self {
-        match modifier {
-            Some(LabelModifier::Include(l)) => AggGrouping::By(l.labels.clone()),
-            Some(LabelModifier::Exclude(l)) => AggGrouping::Without(l.labels.clone()),
-            None => AggGrouping::All,
-        }
-    }
-    /// The labels carried by a series' result group (the grouping projection).
-    fn result_labels(&self, labels: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-        match self {
-            AggGrouping::By(set) => labels
-                .iter()
-                .filter(|(k, _)| set.iter().any(|s| s == *k))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            AggGrouping::Without(set) => labels
-                .iter()
-                .filter(|(k, _)| k.as_str() != "__name__" && !set.iter().any(|s| s == *k))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            AggGrouping::All => BTreeMap::new(),
-        }
-    }
-    fn key(&self, labels: &BTreeMap<String, String>) -> String {
-        format!("{:?}", self.result_labels(labels))
-    }
-}
+use super::group_key::AggGrouping;
 
 /// Reduce a group of values for a simple aggregation operator.
 #[allow(clippy::cast_precision_loss)] // group counts are tiny; f64 is exact here
