@@ -145,9 +145,11 @@ classDiagram
 **Tests**: `test_instant_normalizes_name_and_explodes_attributes`, `test_bare_selector_range_returns_raw_matrix` stay green; new `test_materialization_parses_each_blob_once` (a counter/instrumented parse asserts parse-count ≤ distinct series, not row count).
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] No per-row `serde_json::from_str` in the materialization path (parse count ≤ distinct series).
-- [ ] All label/series tests green.
+- [x] No per-row `serde_json::from_str` in the materialization path (parse count ≤ distinct series).
+- [x] All label/series tests green.
 **Depends on**: 1 · **Time-box**: ~75 min · `downhill`
+
+> **Done** (`perf(querier): memoize attribute-label parse per distinct blob (promql-pushdown T4)`). The single JSON parse site is now the free fn `parse_attr_labels` (normalize keys via `udf::normalize`, stringify values — byte-identical to the old inline logic); `LabelCols` carries a `RefCell<HashMap<String /*raw attrs*/, Arc<BTreeMap<String,String>>>>` memo, so `labels(i)` parses each distinct blob once and merges the cached attr map under the per-row promoted columns (promoted still wins via `entry().or_insert`). Grouped (`prom_group_key`) path untouched. New `test_materialization_parses_each_blob_once` instruments a `#[cfg(test)]` thread-local parse counter and asserts parses ≤ distinct blobs over 6 rows / 2 blobs. querier:: 154 passed; clippy `-D warnings` clean.
 
 ### 5. Micro-benchmark + parity sweep ([NFR2](./DESIGN.md#nfr2), [NFR3](./DESIGN.md#nfr3), [NFR6](./DESIGN.md#nfr6))
 **Goal**: prove the win and lock parity before the write-side change.

@@ -668,6 +668,36 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(e)
 }
 
+// Test-only counter of `attributes`-JSON parses, incremented inside
+// `parse_attr_labels`. Used by `test_materialization_parses_each_blob_once`
+// to prove the memoized path parses each distinct blob at most once (≤ distinct
+// series), never once per row.
+#[cfg(test)]
+thread_local! {
+    static ATTR_PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Parse one raw `attributes` JSON object into normalized label pairs (keys via
+/// [`super::udf::normalize`], values stringified as in the original per-row path).
+/// A non-object / invalid blob yields no labels. This is the single JSON-parse
+/// site for the raw-selector materialization path; [`LabelCols`] memoizes its
+/// result per distinct blob so a blob is parsed at most once.
+fn parse_attr_labels(raw: &str) -> BTreeMap<String, String> {
+    #[cfg(test)]
+    ATTR_PARSE_COUNT.with(|c| c.set(c.get() + 1));
+    let mut m = BTreeMap::new();
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw) {
+        for (k, v) in map {
+            let val = match v {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            m.insert(super::udf::normalize(&k), val);
+        }
+    }
+    m
+}
+
 /// Per-batch accessor that turns a metrics result row into Prometheus labels
 /// (C-P1): promoted string columns become labels, `prom_name` → the normalized
 /// `__name__`, and the `attributes` JSON column is exploded into normalized
@@ -677,6 +707,13 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
 struct LabelCols {
     promoted: Vec<(String, datafusion::arrow::array::ArrayRef)>,
     attrs: Option<datafusion::arrow::array::ArrayRef>,
+    /// Memo of parsed+normalized attribute labels keyed by the raw `attributes`
+    /// string. A raw 24h selector repeats a few hundred distinct blobs across
+    /// ~330K rows; this turns per-row JSON parsing into one parse per distinct
+    /// blob + a hash lookup per row ([FR3]).
+    attr_memo: std::cell::RefCell<
+        std::collections::HashMap<String, std::sync::Arc<BTreeMap<String, String>>>,
+    >,
 }
 
 impl LabelCols {
@@ -707,7 +744,32 @@ impl LabelCols {
             let arr = cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
             promoted.push((key, arr));
         }
-        Ok(Self { promoted, attrs })
+        Ok(Self {
+            promoted,
+            attrs,
+            attr_memo: std::cell::RefCell::new(std::collections::HashMap::new()),
+        })
+    }
+
+    /// Parsed+normalized attribute labels for the raw `attributes` blob at row
+    /// `i`, parsing each distinct blob at most once via [`Self::attr_memo`].
+    fn attr_labels(&self, arr: &dyn datafusion::arrow::array::Array, i: usize) -> Option<
+        std::sync::Arc<BTreeMap<String, String>>,
+    > {
+        use datafusion::arrow::array::{Array, AsArray};
+        let a = arr.as_string::<i32>();
+        if a.is_null(i) {
+            return None;
+        }
+        let raw = a.value(i);
+        if let Some(hit) = self.attr_memo.borrow().get(raw) {
+            return Some(std::sync::Arc::clone(hit));
+        }
+        let parsed = std::sync::Arc::new(parse_attr_labels(raw));
+        self.attr_memo
+            .borrow_mut()
+            .insert(raw.to_string(), std::sync::Arc::clone(&parsed));
+        Some(parsed)
     }
 
     fn labels(&self, i: usize) -> BTreeMap<String, String> {
@@ -719,20 +781,12 @@ impl LabelCols {
                 m.insert(key.clone(), a.value(i).to_string());
             }
         }
-        if let Some(arr) = &self.attrs {
-            let a = arr.as_string::<i32>();
-            if !a.is_null(i)
-                && let Ok(serde_json::Value::Object(map)) =
-                    serde_json::from_str::<serde_json::Value>(a.value(i))
-            {
-                for (k, v) in map {
-                    let val = match v {
-                        serde_json::Value::String(s) => s,
-                        other => other.to_string(),
-                    };
-                    // Promoted columns win over attributes on a key collision.
-                    m.entry(super::udf::normalize(&k)).or_insert(val);
-                }
+        if let Some(arr) = &self.attrs
+            && let Some(attr) = self.attr_labels(arr.as_ref(), i)
+        {
+            for (k, v) in attr.iter() {
+                // Promoted columns win over attributes on a key collision.
+                m.entry(k.clone()).or_insert_with(|| v.clone());
             }
         }
         m
@@ -2732,6 +2786,53 @@ mod tests {
             ],
             "raw samples over the range"
         );
+    }
+
+    #[test]
+    fn test_materialization_parses_each_blob_once() {
+        // FR3: the raw-selector materialization path must parse each *distinct*
+        // `attributes` blob at most once (≤ distinct series), never once per row.
+        // Build a LabelCols over N rows with D distinct blobs and assert the
+        // instrumented parse count is ≤ D after materializing every row.
+        use datafusion::arrow::array::StringArray;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        // 2 distinct blobs repeated across 6 rows (3 each).
+        let blob_a = r#"{"http.route":"/a","code":"200"}"#;
+        let blob_b = r#"{"http.route":"/b","code":"500"}"#;
+        let rows = [blob_a, blob_b, blob_a, blob_b, blob_a, blob_b];
+        let distinct = 2usize;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("attributes", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["client"; rows.len()])),
+                Arc::new(StringArray::from(rows.to_vec())),
+            ],
+        )
+        .unwrap();
+
+        ATTR_PARSE_COUNT.with(|c| c.set(0));
+        let cols = LabelCols::build(&batch).unwrap();
+        for i in 0..batch.num_rows() {
+            let m = cols.labels(i);
+            // Promoted column present + both exploded attributes (sanity on parity).
+            assert_eq!(m["service_name"], "client");
+            assert!(m.contains_key("http_route") && m.contains_key("code"));
+        }
+        let parses = ATTR_PARSE_COUNT.with(std::cell::Cell::get);
+        assert!(
+            parses <= distinct,
+            "parsed {parses} times for {distinct} distinct blobs over {} rows — memoization broken",
+            rows.len()
+        );
+        assert!(parses > 0, "must parse the distinct blobs at least once");
     }
 
     #[tokio::test]
