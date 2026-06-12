@@ -1578,7 +1578,7 @@ pub async fn handle_range(
         // Sealed windows read the rollup tier; the trailing window — which the
         // tier never covers — reads raw `metrics`.
         let table: &str = if e <= sealed_ns { &tier } else { "metrics" };
-        match eval_range_window(engine, eval_expr, s, e, table).await? {
+        match eval_range_window(engine, eval_expr, s, e, table, step_ns).await? {
             RangeVal::Vector(part) => {
                 for (key, (metric, points)) in part {
                     merged
@@ -2080,19 +2080,105 @@ fn combine_range(
     })
 }
 
+/// Fold one contributing series value at a grid timestamp into the aggregate's
+/// running accumulator. `n` is the count of series already folded in for this
+/// timestamp (so `n == 0` is the first contributor — `min`/`max` must seed from
+/// `v`, not from the `0.0` initial accumulator). `avg` divides the summed
+/// accumulator by `n` at the end (see [`aggregate_range_series`]).
+fn reduce_step(op: &str, acc: f64, n: u64, v: f64) -> f64 {
+    match op {
+        "min" if n == 0 => v,
+        "max" if n == 0 => v,
+        "min" => acc.min(v),
+        "max" => acc.max(v),
+        "count" => acc + 1.0,
+        // sum and avg both accumulate the sum; avg divides by `n` afterwards.
+        _ => acc + v,
+    }
+}
+
+/// Reduce already-evaluated inner range series across series, per **grid**
+/// timestamp ([ADR: aggregation-pushdown] "Amendment"). Each inner series is
+/// resampled onto the `[s, e]` grid at `step_ns` (carry-forward within
+/// staleness) so every live series contributes at every grid step; series are
+/// then grouped by the `AggGrouping` canonical key and reduced
+/// (sum/min/max/avg/count) at each grid timestamp.
+///
+/// `step_ns <= 0` (raw-sample step) skips grid alignment and reduces over the
+/// raw points as-is — the aggregate then groups by the literal sample timestamp,
+/// matching the pre-grid behaviour for the rare no-step path.
+///
+/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+#[allow(clippy::cast_precision_loss)] // ns→s for the grid; sub-ms precision irrelevant
+fn aggregate_range_series(
+    op: &str,
+    grouping: &AggGrouping,
+    inner: RangeSeries,
+    s: i64,
+    e: i64,
+    step_ns: i64,
+) -> RangeSeries {
+    let grid = step_ns > 0 && (e - s) / step_ns <= MAX_GRID_POINTS;
+    let staleness = step_ns.max(STALENESS_NS);
+    // group key → (result labels, ts(bits) → (acc, count)).
+    let mut groups: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<u64, (f64, u64)>)> =
+        BTreeMap::new();
+    for (_k, (labels, points)) in inner {
+        let aligned = if grid {
+            resample_to_grid(&points, s, e, step_ns, staleness)
+        } else {
+            points
+        };
+        let result_labels = grouping.result_labels(&labels);
+        let gk = super::group_key::GroupKey::build(&labels, grouping);
+        let entry = groups
+            .entry(gk)
+            .or_insert_with(|| (result_labels, BTreeMap::new()));
+        for (t, v) in aligned {
+            let cell = entry.1.entry(t.to_bits()).or_insert((0.0, 0));
+            cell.0 = reduce_step(op, cell.0, cell.1, v);
+            cell.1 += 1;
+        }
+    }
+    let mut out: RangeSeries = BTreeMap::new();
+    for (gk, (labels, by_ts)) in groups {
+        let mut pts: Vec<(f64, f64)> = by_ts
+            .into_iter()
+            .map(|(tbits, (acc, n))| {
+                let t = f64::from_bits(tbits);
+                #[allow(clippy::cast_precision_loss)]
+                let v = if op == "avg" { acc / n as f64 } else { acc };
+                (t, v)
+            })
+            .collect();
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        out.insert(gk, (labels, pts));
+    }
+    out
+}
+
 /// Evaluate a range sub-expression over one `[s, e]` window against `table`.
+///
+/// `step_ns` is the query step: the range cross-series aggregate uses it to
+/// grid-align each inner series **before** reducing, so series scraped at
+/// offset instants all contribute at every grid timestamp (Sol↔Mimir parity —
+/// [ADR: aggregation-pushdown] "Amendment"). `step_ns <= 0` means no grid
+/// (raw-sample step), in which case the aggregate reduces over the raw points.
+///
+/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
 async fn eval_range_window(
     engine: &super::QueryEngine,
     expr: &Expr,
     s: i64,
     e: i64,
     table: &str,
+    step_ns: i64,
 ) -> crate::Result<RangeVal> {
     match expr {
         Expr::NumberLiteral(n) => Ok(RangeVal::Scalar(n.val)),
-        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table)).await,
+        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table, step_ns)).await,
         Expr::Unary(u) => {
-            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table)).await?;
+            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table, step_ns)).await?;
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(-x),
                 RangeVal::Vector(mut m) => {
@@ -2106,8 +2192,8 @@ async fn eval_range_window(
             })
         }
         Expr::Binary(b) => {
-            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table)).await?;
-            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table)).await?;
+            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table, step_ns)).await?;
+            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table, step_ns)).await?;
             combine_range(b.op, l, r, &b.modifier).map_err(to_err)
         }
         // `scalar(v)` folds to a constant over the window (e.g. a CPU count as a
@@ -2135,7 +2221,7 @@ async fn eval_range_window(
                 .args
                 .get(1)
                 .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
-            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table)).await?;
+            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table, step_ns)).await?;
             let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e)).await?);
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(clamp_value(is_min, x, bound)),
@@ -2149,17 +2235,34 @@ async fn eval_range_window(
                 }
             })
         }
-        // Aggregations pushed into DataFusion (`GROUP BY prom_group_key, time` +
-        // `agg(v)`, chained for nesting) — handles `by`/`without`/nested uniformly.
-        // Yield to the `_` arm's special detectors (bucket heatmap / histogram
-        // quantile), whose `sum by (le) …` shape is also a simple aggregate.
+        // Range cross-series aggregation: PromQL evaluates the inner (rate /
+        // *_over_time / selector) **per series at each step**, then reduces across
+        // series at that step. We therefore evaluate the inner to per-series point
+        // lists, grid-align each onto the `[s, e]` step grid (carry-forward within
+        // staleness), then group by `by`/`without`/all and reduce per **grid**
+        // timestamp ([ADR: aggregation-pushdown] "Amendment"). Grouping by the raw
+        // sample timestamp (the old DataFusion `GROUP BY …, time_unix_nano`) made
+        // offset-scraped series fall in different buckets, collapsing a cross-series
+        // `sum` to one series — the Sol↔Mimir under-sum. Yield to the `_` arm's
+        // special detectors (bucket heatmap / histogram quantile), whose
+        // `sum by (le) …` shape is also a simple aggregate.
         Expr::Aggregate(agg)
             if agg_name(agg.op).is_ok()
                 && detect_bucket_heatmap(expr).is_none()
                 && detect_hist_quantile(expr).is_none() =>
         {
-            let df = lower_aggregate_range(engine, agg, s, e, table).await?;
-            Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
+            let op = agg_name(agg.op).map_err(to_err)?;
+            let grouping = AggGrouping::from(&agg.modifier);
+            let inner =
+                Box::pin(eval_range_window(engine, agg.expr.as_ref(), s, e, table, step_ns)).await?;
+            let inner = match inner {
+                // A scalar inner has no series to reduce — pass it through.
+                RangeVal::Scalar(x) => return Ok(RangeVal::Scalar(x)),
+                RangeVal::Vector(v) => v,
+            };
+            Ok(RangeVal::Vector(aggregate_range_series(
+                op, &grouping, inner, s, e, step_ns,
+            )))
         }
         _ => {
             if let Some(spec) = detect_hist_quantile(expr) {
@@ -2179,6 +2282,8 @@ async fn eval_range_window(
                 let df = lower_range_df(engine, expr, s, e, table).await?;
                 Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
             }
+            // NB: `step_ns` is unused here — the leaf/topk lowerings emit raw
+            // per-series points; only the cross-series aggregate above grid-aligns.
         }
     }
 }
@@ -2850,6 +2955,149 @@ mod tests {
             s.values,
             vec![(2.0, "20".to_string()), (3.0, "30".to_string())]
         );
+    }
+
+    // Two monotonic counter series of `reqs` distinguished by `host` (a, b),
+    // scraped at *offset* instants: host a at t=0,30,60,90s; host b at
+    // t=15,45,75,105s. Both rise by 30 every 30s → a per-series rate of 1/s.
+    // The shape that exposed the Sol↔Mimir under-sum: a cross-series
+    // `sum(rate(reqs[2m]))` must equal a+b (~2/s), not collapse to one series.
+    async fn offset_counter_engine() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        const S: i64 = 1_000_000_000;
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let (mut svc, mut name, mut t, mut attrs, mut val, mut pn) =
+            (vec![], vec![], vec![], vec![], vec![], vec![]);
+        // host a at 0,30,60,90s; host b offset by 15s at 15,45,75,105s.
+        for (host, offset) in [("a", 0i64), ("b", 15)] {
+            for step in 0..4i64 {
+                svc.push("svc".to_string());
+                name.push("reqs".to_string());
+                t.push((offset + step * 30) * S);
+                attrs.push(format!(r#"{{"host":"{host}"}}"#));
+                #[allow(clippy::cast_precision_loss)]
+                val.push((step * 30) as f64); // 0,30,60,90 → +30 per 30s = 1/s
+                pn.push("reqs".to_string());
+            }
+        }
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(svc)),
+                Arc::new(StringArray::from(name)),
+                Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
+                Arc::new(StringArray::from(attrs)),
+                Arc::new(Float64Array::from(val)),
+                Arc::new(StringArray::from(pn)),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_range_sum_rate_over_offset_series_matches_sum_of_rates() {
+        // Sol↔Mimir parity contract: `sum(rate(reqs[2m]))` over two series scraped
+        // at offset instants must equal rate_a + rate_b at each grid step (~2/s),
+        // NOT collapse to one series (~1/s). The fix grid-aligns each inner series
+        // before the cross-series reduce; before it, the aggregate grouped by the
+        // raw sample timestamp, so each grid step saw only one host's point.
+        const S: i64 = 1_000_000_000;
+        let engine = offset_counter_engine().await;
+        let resp = handle_range(
+            &engine,
+            "sum(rate(reqs[2m]))",
+            0,
+            120 * S,
+            30 * S,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one summed series: {:?}", resp.data.result);
+        let s = &resp.data.result[0];
+        // Once both series are live the summed rate is ~2/s (a+b), not ~1/s.
+        // Take a grid step where both have established a rate (t >= 90s, after each
+        // series has at least two points carried onto the grid).
+        let late: Vec<f64> = s
+            .values
+            .iter()
+            .filter(|(t, _)| *t >= 90.0)
+            .map(|(_, v)| v.parse::<f64>().unwrap())
+            .collect();
+        assert!(!late.is_empty(), "grid has late points: {:?}", s.values);
+        for v in &late {
+            assert!(
+                (*v - 2.0).abs() < 0.2,
+                "summed rate ≈ 2/s (a+b), not one series ≈ 1/s: {:?}",
+                s.values
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_range_sum_by_host_rate_keeps_two_series() {
+        // Regression guard: `sum by(host)(rate(reqs[2m]))` over the same offset
+        // fixture still yields two correct per-host series (each ~1/s).
+        const S: i64 = 1_000_000_000;
+        let engine = offset_counter_engine().await;
+        let resp = handle_range(
+            &engine,
+            "sum by(host)(rate(reqs[2m]))",
+            0,
+            120 * S,
+            30 * S,
+        )
+        .await
+        .unwrap();
+        let mut hosts: Vec<&str> = resp
+            .data
+            .result
+            .iter()
+            .map(|s| s.metric.get("host").map(String::as_str).unwrap_or_default())
+            .collect();
+        hosts.sort_unstable();
+        assert_eq!(hosts, ["a", "b"], "one series per host: {:?}", resp.data.result);
+        for s in &resp.data.result {
+            // each per-host rate is ~1/s where established.
+            for (t, v) in &s.values {
+                if *t >= 90.0 {
+                    let x = v.parse::<f64>().unwrap();
+                    assert!((x - 1.0).abs() < 0.2, "per-host rate ≈ 1/s: {:?}", s.values);
+                }
+            }
+        }
     }
 
     #[tokio::test]
