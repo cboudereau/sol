@@ -92,18 +92,18 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  A[PromQL AST] --> B{node kind}
-  B -->|selector / rate / over_time| C[plan::frame + metric_base_df  → DataFrame]
-  B -->|aggregate by/without/nested| D[GROUP BY prom_group_key(...) + agg  → DataFrame]
-  B -->|topk/bottomk| E[ROW_NUMBER window filter  → DataFrame]
-  B -->|clamp/scalar-vector arith| F[scalar Expr on value col  → DataFrame]
-  B -->|histogram_quantile / vector-match / scalar fold| G[Rust shell over collected result]
-  C --> H[materialize: parse group-key per GROUP, not per row]
+  A["PromQL AST"] --> B{"node kind"}
+  B -->|selector / rate / over_time| C["plan::frame + metric_base_df → DataFrame"]
+  B -->|aggregate by/without/nested| D["GROUP BY prom_group_key(...) + agg → DataFrame"]
+  B -->|topk/bottomk| E["ROW_NUMBER window filter → DataFrame"]
+  B -->|clamp/scalar-vector arith| F["scalar Expr on value col → DataFrame"]
+  B -->|histogram_quantile / vector-match / scalar fold| G["Rust shell over collected result"]
+  C --> H["materialize: parse group-key per GROUP, not per row"]
   D --> H
   E --> H
   F --> H
   G --> H
-  H --> I[PromResponse / PromMatrixResponse]
+  H --> I["PromResponse / PromMatrixResponse"]
 ```
 
 ### Data model
