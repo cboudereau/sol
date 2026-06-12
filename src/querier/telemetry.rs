@@ -20,25 +20,30 @@ use std::time::Duration;
 
 use metrics::{counter, gauge, histogram};
 
-/// Record a served query: a request counter plus duration / bytes-scanned /
-/// files-opened histograms, labelled by `api` (prometheus/loki/tempo/sql) and
-/// `signal` (logs/metrics/traces).
-#[allow(clippy::cast_precision_loss)] // metric magnitudes are well under 2^53
-pub fn record_request(
-    api: &str,
-    signal: &str,
-    duration: Duration,
-    bytes_scanned: u64,
-    files_opened: u64,
-) {
+/// Record a served query: a request counter plus a duration histogram, labelled
+/// by `api` (prometheus/loki/tempo/sql) and `signal` (logs/metrics/traces).
+/// Scan volume (bytes/files) is recorded separately by [`record_scan`], keyed on
+/// `signal` only — it is observed from the executed physical plan, which a single
+/// served request may run several times (day-shard split, `histogram_quantile`).
+pub fn record_request(api: &str, signal: &str, duration: Duration) {
     let api = api.to_string();
     let signal = signal.to_string();
     counter!("querier_requests_total", "api" => api.clone(), "signal" => signal.clone()).increment(1);
-    histogram!("querier_request_duration_seconds", "api" => api.clone(), "signal" => signal.clone())
+    histogram!("querier_request_duration_seconds", "api" => api, "signal" => signal)
         .record(duration.as_secs_f64());
-    histogram!("querier_bytes_scanned", "api" => api.clone(), "signal" => signal.clone())
-        .record(bytes_scanned as f64);
-    histogram!("querier_files_opened", "api" => api, "signal" => signal).record(files_opened as f64);
+}
+
+/// Record the scan volume of one executed physical plan: bytes read from Parquet
+/// and the number of file groups opened, labelled by `signal`
+/// (logs/metrics/traces, or `sql` for a mixed cross-signal scan). Emitted per
+/// `collect`/`sql` execution, so a single served request may produce several
+/// observations (day-shard split, `histogram_quantile`); acceptable for the p95
+/// scan panels. A cache hit performs no scan and records nothing.
+#[allow(clippy::cast_precision_loss)] // metric magnitudes are well under 2^53
+pub fn record_scan(signal: &str, bytes_scanned: u64, files_opened: u64) {
+    let signal = signal.to_string();
+    histogram!("querier_bytes_scanned", "signal" => signal.clone()).record(bytes_scanned as f64);
+    histogram!("querier_files_opened", "signal" => signal).record(files_opened as f64);
 }
 
 /// Record a result-cache lookup outcome. The dashboard's hit-ratio panel filters
@@ -177,7 +182,7 @@ mod tests {
         let recorder = DebuggingRecorder::new();
         let snap = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || {
-            record_request("prometheus", "metrics", Duration::from_millis(12), 4096, 3);
+            record_request("prometheus", "metrics", Duration::from_millis(12));
         });
         let s = snap.snapshot().into_vec();
         let labels = has_metric(&s, MetricKind::Histogram, "querier_request_duration_seconds")
@@ -190,9 +195,29 @@ mod tests {
             labels.contains(&("signal".to_string(), "metrics".to_string())),
             "labels: {labels:?}"
         );
-        assert!(has_metric(&s, MetricKind::Histogram, "querier_bytes_scanned").is_some());
-        assert!(has_metric(&s, MetricKind::Histogram, "querier_files_opened").is_some());
         assert!(has_metric(&s, MetricKind::Counter, "querier_requests_total").is_some());
+    }
+
+    #[test]
+    fn test_record_scan_emits_bytes_and_files() {
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            record_scan("metrics", 8192, 2);
+        });
+        let s = snap.snapshot().into_vec();
+        let bytes = has_metric(&s, MetricKind::Histogram, "querier_bytes_scanned")
+            .expect("bytes_scanned histogram emitted");
+        assert!(
+            bytes.contains(&("signal".to_string(), "metrics".to_string())),
+            "labels: {bytes:?}"
+        );
+        let files = has_metric(&s, MetricKind::Histogram, "querier_files_opened")
+            .expect("files_opened histogram emitted");
+        assert!(
+            files.contains(&("signal".to_string(), "metrics".to_string())),
+            "labels: {files:?}"
+        );
     }
 
     #[test]

@@ -105,11 +105,13 @@ fn parse_time_ns(s: &Option<String>) -> i64 {
 }
 
 /// Record a served query for the self-monitoring dashboard (NFR6): request
-/// count + duration, labelled by `api`/`signal`. Scan bytes/files instrumentation
-/// is deferred (passed 0); the latency/throughput panels + the dashboard's
+/// count + duration, labelled by `api`/`signal`. Scan volume (bytes/files) is
+/// recorded separately, per executed physical plan, by `telemetry::record_scan`
+/// from inside the query engine (it sees the plan metrics; a request may run
+/// several plans). The latency/throughput panels + the dashboard's
 /// `service_name` variable (keyed on `sol_querier_requests_total`) need this called.
 fn rec(api: &str, signal: &str, t: std::time::Instant) {
-    super::telemetry::record_request(api, signal, t.elapsed(), 0, 0);
+    super::telemetry::record_request(api, signal, t.elapsed());
 }
 
 fn error_response(error: impl std::fmt::Display) -> warp::reply::Response {

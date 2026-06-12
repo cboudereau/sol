@@ -336,6 +336,78 @@ fn resolve_signal_files(root: &std::path::Path) -> crate::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Bytes read and file groups opened by an executed physical plan.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ScanStats {
+    bytes_scanned: u64,
+    files_opened: u64,
+}
+
+/// Sum the Parquet scan metrics across an executed physical plan tree.
+///
+/// `bytes_scanned` is the `bytes_scanned` counter DataFusion's Parquet data
+/// source records per node (`MetricsSet::sum_by_name("bytes_scanned")`). Only
+/// the leaf scan nodes expose it, so summing over the whole tree double-counts
+/// nothing. `files_opened` is approximated by the scan node's output partition
+/// count (one partition per file group) — a robust proxy that avoids downcasting
+/// the trait-object data source, which is fragile across DataFusion versions.
+/// Must run **after** execution so the counters hold real values.
+fn scan_stats_from_plan(
+    plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) -> ScanStats {
+    use datafusion::physical_plan::ExecutionPlanProperties;
+    let mut stats = ScanStats::default();
+    if let Some(value) = plan.metrics().and_then(|m| m.sum_by_name("bytes_scanned")) {
+        let bytes = value.as_usize() as u64;
+        if bytes > 0 {
+            stats.bytes_scanned += bytes;
+            // A node that reports bytes_scanned is a Parquet scan leaf; its
+            // output partition count is the number of file groups opened.
+            stats.files_opened += plan.output_partitioning().partition_count() as u64;
+        }
+    }
+    for child in plan.children() {
+        let child_stats = scan_stats_from_plan(child);
+        stats.bytes_scanned += child_stats.bytes_scanned;
+        stats.files_opened += child_stats.files_opened;
+    }
+    stats
+}
+
+/// Derive the dashboard `signal` label from a logical plan's table scans:
+/// `logs` / `traces` / `metrics` (rollup tiers `metrics_5m|1h|1d` collapse to
+/// `metrics`). A plan scanning a single signal is labelled with it; a
+/// cross-signal SQL plan touching more than one distinct signal is labelled
+/// `sql`; a plan with no recognised scan falls back to `metrics`.
+fn signal_of_plan(plan: &datafusion::logical_expr::LogicalPlan) -> &'static str {
+    use datafusion::logical_expr::LogicalPlan;
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    let mut signals = std::collections::BTreeSet::new();
+    let _ = plan.apply(|node| {
+        if let LogicalPlan::TableScan(scan) = node
+            && let Some(sig) = signal_of_table(scan.table_name.table())
+        {
+            signals.insert(sig);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    match signals.len() {
+        1 => signals.into_iter().next().unwrap_or("metrics"),
+        n if n > 1 => "sql",
+        _ => "metrics",
+    }
+}
+
+/// Map a registered table name to its signal label, collapsing rollup tiers.
+fn signal_of_table(name: &str) -> Option<&'static str> {
+    match name {
+        "logs" => Some("logs"),
+        "traces" => Some("traces"),
+        "metrics" | "metrics_5m" | "metrics_1h" | "metrics_1d" => Some("metrics"),
+        _ => None,
+    }
+}
+
 /// Thin wrapper over a DataFusion `SessionContext` with the signal catalog registered.
 /// Sole query-engine dependency (NFR1); worker pool bounded so queries do not starve
 /// ingestion (NFR5).
@@ -413,9 +485,29 @@ impl QueryEngine {
         }
         super::telemetry::record_cache(false);
         let df = self.ctx.sql(query).await?;
-        let batches = df.collect().await?;
+        let batches = self.execute_recording_scan(df).await?;
         self.cache.insert(key, std::sync::Arc::new(batches.clone()));
         super::telemetry::set_cache_memory(self.cache.weighted_size());
+        Ok(batches)
+    }
+
+    /// Execute a `DataFrame` via its physical plan, recording the per-signal
+    /// scan volume (bytes/files) observed from the executed plan metrics (NFR5).
+    /// Going through the physical plan (rather than `DataFrame::collect`) keeps
+    /// the executed plan in hand so its scan counters can be read afterwards.
+    async fn execute_recording_scan(
+        &self,
+        df: datafusion::dataframe::DataFrame,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        let signal = signal_of_plan(df.logical_plan());
+        let plan = df.create_physical_plan().await?;
+        let batches =
+            datafusion::physical_plan::collect(std::sync::Arc::clone(&plan), self.ctx.task_ctx())
+                .await?;
+        let stats = scan_stats_from_plan(&plan);
+        if stats.bytes_scanned > 0 || stats.files_opened > 0 {
+            super::telemetry::record_scan(signal, stats.bytes_scanned, stats.files_opened);
+        }
         Ok(batches)
     }
 
@@ -440,7 +532,7 @@ impl QueryEngine {
             return Ok((*hit).clone());
         }
         super::telemetry::record_cache(false);
-        let batches = df.collect().await?;
+        let batches = self.execute_recording_scan(df).await?;
         self.cache.insert(key, std::sync::Arc::new(batches.clone()));
         super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
@@ -468,7 +560,7 @@ impl QueryEngine {
             .with_allow_dml(false)
             .with_allow_statements(false);
         let df = self.ctx.sql_with_options(query, options).await?;
-        let batches = df.collect().await?;
+        let batches = self.execute_recording_scan(df).await?;
         self.cache.insert(key, std::sync::Arc::new(batches.clone()));
         super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
@@ -703,5 +795,64 @@ mod tests {
             .unwrap();
         // raw-a.parquet is superseded → only the 3 compacted rows, not 5.
         assert_eq!(count(&engine, "logs").await, 3);
+    }
+
+    #[test]
+    fn test_signal_of_table_collapses_rollup_tiers() {
+        assert_eq!(signal_of_table("logs"), Some("logs"));
+        assert_eq!(signal_of_table("traces"), Some("traces"));
+        assert_eq!(signal_of_table("metrics"), Some("metrics"));
+        assert_eq!(signal_of_table("metrics_1h"), Some("metrics"));
+        assert_eq!(signal_of_table("metrics_1d"), Some("metrics"));
+        assert_eq!(signal_of_table("unknown"), None);
+    }
+
+    #[test]
+    fn test_query_records_real_bytes_scanned() {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        // `with_local_recorder` installs a thread-local recorder, so run the whole
+        // build+query on one dedicated thread whose own current-thread runtime
+        // drives the async work — nesting a runtime inside `#[tokio::test]` panics.
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let logs_dir = tmp.path().join("logs").join("dt=2026-06-01");
+                    std::fs::create_dir_all(&logs_dir).unwrap();
+                    // Enough rows that the Parquet scan reports non-zero bytes.
+                    write_min_log_parquet(&logs_dir.join("f.parquet"), 1000);
+                    let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+                        .await
+                        .unwrap();
+                    engine.sql("SELECT service_name FROM logs").await.unwrap();
+                });
+            });
+        })
+        .join()
+        .unwrap();
+
+        let s = snap.snapshot().into_vec();
+        let bytes = s.iter().find_map(|(k, _, _, v)| {
+            (k.kind() == MetricKind::Histogram
+                && k.key().name() == "querier_bytes_scanned"
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "signal" && l.value() == "logs"))
+            .then_some(v)
+        });
+        let DebugValue::Histogram(samples) = bytes.expect("bytes_scanned histogram for logs signal")
+        else {
+            panic!("expected histogram value");
+        };
+        let total: f64 = samples.iter().map(|h| h.into_inner()).sum();
+        assert!(total > 0.0, "bytes_scanned must be > 0, samples: {samples:?}");
     }
 }
