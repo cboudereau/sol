@@ -1,7 +1,7 @@
 # prom-name-column — Design Doc
 
 Builds on: [designs/20260527_parquet-multisignal.md](../../designs/20260527_parquet-multisignal.md) ·
-relates to [parquet-backend](../parquet-backend/DESIGN.md)
+relates to [parquet-backend](../../workspace/parquet-backend/DESIGN.md)
 
 ## Context
 
@@ -149,9 +149,9 @@ subtype schema, populated at write from the shared normalizer. Raw columns kept.
 registration (`catalog.rs`) are **deleted**.
 
 Decisions:
-- [Materialize prom_name at write time](./adrs/prom-name-materialization.md)
-- [Canonical normalizer location](./adrs/normalizer-canonical-location.md)
-- [Clean cutover — no backward compatibility](./adrs/legacy-file-migration.md)
+- [Materialize prom_name at write time](../adrs/2026-06-12_prom-name-materialization.md)
+- [Canonical normalizer location](../adrs/2026-06-12_normalizer-canonical-location.md)
+- [Clean cutover — no backward compatibility](../adrs/2026-06-12_legacy-file-migration.md)
 
 ## Cross-cutting Concerns
 

@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Canonical normalizer location
 
-Addresses: [FR2](../DESIGN.md#fr2)
+Addresses: [FR2](../designs/2026-06-12_prom-name-column.md#fr2)
 
 ## Problem
 

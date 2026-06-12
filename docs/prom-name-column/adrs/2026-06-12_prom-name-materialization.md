@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Materialize `prom_name` at write time
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../designs/2026-06-12_prom-name-column.md#fr1), [NFR1](../designs/2026-06-12_prom-name-column.md#nfr1)
 
 ## Problem
 
@@ -35,9 +35,9 @@ Option B is rejected as infeasible (no inverse). Option A is the problem.
 
 - Selective metric queries prune row groups instead of full-scanning (NFR1).
 - The metric schema gains a column; codec and catalog schemas must both change
-  (see [normalizer-canonical-location](./normalizer-canonical-location.md) and
+  (see [normalizer-canonical-location](./2026-06-12_normalizer-canonical-location.md) and
   the schema-contract NFR).
 - No backward compatibility — clean cutover, store regenerated
-  ([legacy-file-migration](./legacy-file-migration.md)).
+  ([legacy-file-migration](./2026-06-12_legacy-file-migration.md)).
 - The DataFusion `prom_metric_name_udf` is **removed** (read uses the column);
   only the pure normalization fn survives in `sol-core` for the write path.

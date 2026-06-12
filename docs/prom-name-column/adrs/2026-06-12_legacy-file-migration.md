@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Clean cutover — no backward compatibility
 
-Addresses: [FR6](../DESIGN.md#fr6), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR6](../designs/2026-06-12_prom-name-column.md#fr6), [NFR2](../designs/2026-06-12_prom-name-column.md#nfr2)
 
 ## Problem
 
@@ -26,8 +26,8 @@ retro-compatibility right now"), we regenerate the Parquet store so every metric
 file carries `prom_name`, and the read path assumes the column is present. No
 fallback predicate, no mixed-data handling, no backfill job. This is what lets
 the DataFusion `prom_metric_name_udf` be **removed** entirely
-([prom-name-materialization](./prom-name-materialization.md),
-[normalizer-canonical-location](./normalizer-canonical-location.md)) rather than
+([prom-name-materialization](./2026-06-12_prom-name-materialization.md),
+[normalizer-canonical-location](./2026-06-12_normalizer-canonical-location.md)) rather than
 retained as a fallback — the read filter is a plain `col("prom_name") = lit(x)`.
 
 `prom_name` is declared **REQUIRED** (non-null) in both codec and catalog
