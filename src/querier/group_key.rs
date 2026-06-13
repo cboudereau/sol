@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+use datafusion::arrow::array::{Array, ArrayRef, MapArray, StringArray};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::{ColumnarValue, ScalarUDF, Volatility, create_udf};
@@ -199,12 +199,13 @@ fn grouping_from_args(mode: &str, labels: &str) -> DfResult<AggGrouping> {
 }
 
 /// Build the full label map for one row: promoted columns unioned with the
-/// `attributes` JSON keys (each normalized via [`super::udf::normalize`]),
+/// columnar `attributes` MAP keys (each normalized via [`super::udf::normalize`]),
 /// promoted columns winning on a key collision — identical to
-/// `LabelCols::labels`. `__name__` is supplied by the caller via the promoted
-/// columns (the `prom_name` column).
+/// `LabelCols::labels`, but read parse-free from the MAP (promql-pushdown T7).
+/// `__name__` is supplied by the caller via the promoted columns (the `prom_name`
+/// column).
 fn row_labels(
-    attributes: Option<&str>,
+    attributes: Option<&MapArray>,
     promoted: &[(String, &StringArray)],
     i: usize,
 ) -> BTreeMap<String, String> {
@@ -214,16 +215,10 @@ fn row_labels(
             m.insert(key.clone(), arr.value(i).to_string());
         }
     }
-    if let Some(attrs) = attributes
-        && let Ok(serde_json::Value::Object(map)) =
-            serde_json::from_str::<serde_json::Value>(attrs)
-    {
-        for (k, v) in map {
-            let val = match v {
-                serde_json::Value::String(s) => s,
-                other => other.to_string(),
-            };
-            m.entry(super::udf::normalize(&k)).or_insert(val);
+    if let Some(map) = attributes {
+        for (k, v) in super::udf::map_row_normalized_labels(map, i) {
+            // Promoted columns win over attributes on a key collision.
+            m.entry(k).or_insert(v);
         }
     }
     m
@@ -256,8 +251,18 @@ fn as_string_arrays<'a>(
 /// array. Split out so it is unit-testable without constructing a full
 /// `ScalarFunctionArgs`.
 fn eval_group_key(arrays: &[ArrayRef]) -> DfResult<ArrayRef> {
-    let cols = as_string_arrays(arrays, 4, "prom_group_key")?;
-    let (attrs, promoted_arr, mode_arr, labels_arr) = (cols[0], cols[1], cols[2], cols[3]);
+    if arrays.len() != 4 {
+        return Err(datafusion::error::DataFusionError::Execution(
+            "prom_group_key expects 4 arguments (Map, Utf8, Utf8, Utf8)".to_string(),
+        ));
+    }
+    let attrs = arrays[0].as_any().downcast_ref::<MapArray>().ok_or_else(|| {
+        datafusion::error::DataFusionError::Execution(
+            "prom_group_key expects a Map first argument".to_string(),
+        )
+    })?;
+    let rest = as_string_arrays(&arrays[1..], 3, "prom_group_key")?;
+    let (promoted_arr, mode_arr, labels_arr) = (rest[0], rest[1], rest[2]);
     let out: StringArray = (0..attrs.len())
         .map(|i| {
             let mode = if mode_arr.is_null(i) { "all" } else { mode_arr.value(i) };
@@ -265,7 +270,7 @@ fn eval_group_key(arrays: &[ArrayRef]) -> DfResult<ArrayRef> {
             let grouping = grouping_from_args(mode, labels).ok()?;
             let promoted: Vec<(String, &StringArray)> =
                 vec![("service_name".to_string(), promoted_arr)];
-            let attributes = if attrs.is_null(i) { None } else { Some(attrs.value(i)) };
+            let attributes = if attrs.is_null(i) { None } else { Some(attrs) };
             let labels_map = row_labels(attributes, &promoted, i);
             Some(GroupKey::build(&labels_map, &grouping))
         })
@@ -287,7 +292,12 @@ pub(super) fn prom_group_key_udf() -> ScalarUDF {
     };
     create_udf(
         "prom_group_key",
-        vec![DataType::Utf8, DataType::Utf8, DataType::Utf8, DataType::Utf8],
+        vec![
+            super::udf::attributes_map_type(),
+            DataType::Utf8,
+            DataType::Utf8,
+            DataType::Utf8,
+        ],
         DataType::Utf8,
         Volatility::Immutable,
         Arc::new(fun),
@@ -384,25 +394,28 @@ mod tests {
 
     #[test]
     fn test_group_key_promoted_wins_on_collision() {
-        // service_name present both as a promoted column and in attributes JSON;
-        // promoted must win.
-        let promoted_arr =
-            StringArray::from(vec![Some("promoted-svc")]);
+        // service_name present both as a promoted column and in the attributes MAP;
+        // promoted must win. The map is read columnar (no JSON).
+        let promoted_arr = StringArray::from(vec![Some("promoted-svc")]);
         let promoted: Vec<(String, &StringArray)> =
             vec![("service_name".to_string(), &promoted_arr)];
-        let attrs = r#"{"service.name":"attr-svc","cpu":"0"}"#;
-        let m = row_labels(Some(attrs), &promoted, 0);
+        let map = super::super::udf::tests::map_array_from(&[Some(&[
+            ("service.name", "attr-svc"),
+            ("cpu", "0"),
+        ])]);
+        let m = row_labels(Some(&map), &promoted, 0);
         assert_eq!(m.get("service_name").map(String::as_str), Some("promoted-svc"));
         assert_eq!(m.get("cpu").map(String::as_str), Some("0"));
     }
 
     #[test]
-    fn test_prom_group_key_udf_over_arrow() {
+    fn test_group_key_reads_map_column() {
+        // T7: prom_group_key builds the key from the columnar MAP — no JSON parse.
         // The UDF is registered (see catalog.rs); exercise its evaluation core
         // over an arrow batch directly.
-        let attrs: ArrayRef = Arc::new(StringArray::from(vec![
-            Some(r#"{"cpu":"0","mode":"idle"}"#),
-            Some(r#"{"cpu":"1","mode":"system"}"#),
+        let attrs: ArrayRef = Arc::new(super::super::udf::tests::map_array_from(&[
+            Some(&[("cpu", "0"), ("mode", "idle")]),
+            Some(&[("cpu", "1"), ("mode", "system")]),
         ]));
         let promoted: ArrayRef = Arc::new(StringArray::from(vec![Some("svc-a"), Some("svc-a")]));
         let mode: ArrayRef = Arc::new(StringArray::from(vec![Some("by"), Some("by")]));

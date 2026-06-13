@@ -98,6 +98,8 @@ pub async fn rollup_batches(
     use datafusion::prelude::{col, lit};
     let schema = batches[0].schema();
     let ctx = SessionContext::new();
+    // The attributes column is a Map (not partitionable); key on the series-key UDF.
+    ctx.register_udf(super::udf::prom_series_key_udf());
     ctx.register_table(
         "m",
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?),
@@ -105,9 +107,10 @@ pub async fn rollup_batches(
     // Keep the last raw sample per (series, time-bucket): partition by the series
     // key plus the bucket index `time / resolution`, take the latest by time (P5).
     let bucket = cast(col("time_unix_nano"), Int64) / lit(resolution_ns);
+    let series_key = super::udf::prom_series_key_udf().call(vec![col("attributes")]);
     let latest = super::plan::frame::latest_per_series(
         ctx.table("m").await?,
-        vec![col("name"), col("service_name"), col("attributes"), bucket],
+        vec![col("name"), col("service_name"), series_key, bucket],
         "time_unix_nano",
     )?;
     // Project the original columns back (drop the window `rn`), preserving schema.
@@ -214,7 +217,7 @@ mod tests {
         Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8, false),
             Field::new("service_name", DataType::Utf8, false),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new(
                 "time_unix_nano",
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
@@ -233,7 +236,7 @@ mod tests {
             vec![
                 Arc::new(StringArray::from(vec!["m"; n])),
                 Arc::new(StringArray::from(vec!["s"; n])),
-                Arc::new(StringArray::from(vec!["{}"; n])),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
                 Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                 Arc::new(Float64Array::from(vals.to_vec())),
                 Arc::new(StringArray::from(buckets.to_vec())),

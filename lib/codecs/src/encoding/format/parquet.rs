@@ -292,6 +292,93 @@ fn write_optional_fixed_bytes_column(
     Ok(())
 }
 
+/// Write a `MAP<Utf8,Utf8>` column (two leaf columns: `key`, `value`) from one
+/// optional entry-list per row.
+///
+/// `rows[i] == None`  → null map (def 0).
+/// `rows[i] == Some([])` → present-but-empty map (def 1, no entries).
+/// `rows[i] == Some([(k,v), …])` → one repeated `key_value` per entry.
+///
+/// Definition/repetition levels follow the canonical MAP shape
+/// (`optional map → repeated key_value → required key / optional value`):
+/// `key` max-def 2, `value` max-def 3; rep level 0 starts a new row, 1 repeats
+/// within the row. Values here are always present (def == max).
+fn write_string_map_column(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[Option<Vec<(String, String)>>],
+) -> Result<(), ParquetEncodingError> {
+    let mut keys: Vec<ByteArray> = Vec::new();
+    let mut key_def: Vec<i16> = Vec::new();
+    let mut key_rep: Vec<i16> = Vec::new();
+    let mut values: Vec<ByteArray> = Vec::new();
+    let mut val_def: Vec<i16> = Vec::new();
+    let mut val_rep: Vec<i16> = Vec::new();
+
+    for row in rows {
+        match row {
+            None => {
+                // Null map: one null record at def 0.
+                key_def.push(0);
+                key_rep.push(0);
+                val_def.push(0);
+                val_rep.push(0);
+            }
+            Some(entries) if entries.is_empty() => {
+                // Present but empty map: def 1 (map present, no key_value).
+                key_def.push(1);
+                key_rep.push(0);
+                val_def.push(1);
+                val_rep.push(0);
+            }
+            Some(entries) => {
+                for (idx, (k, v)) in entries.iter().enumerate() {
+                    let rep = i16::from(idx > 0);
+                    keys.push(ByteArray::from(k.as_bytes().to_vec()));
+                    key_def.push(2);
+                    key_rep.push(rep);
+                    values.push(ByteArray::from(v.as_bytes().to_vec()));
+                    val_def.push(3);
+                    val_rep.push(rep);
+                }
+            }
+        }
+    }
+
+    // key leaf column.
+    {
+        let mut col = rg
+            .next_column()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+            .ok_or(ParquetEncodingError::NoColumn)?;
+        match col.untyped() {
+            ColumnWriter::ByteArrayColumnWriter(w) => {
+                w.write_batch(&keys, Some(&key_def), Some(&key_rep))
+                    .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+            }
+            _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+        }
+        col.close()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    }
+    // value leaf column.
+    {
+        let mut col = rg
+            .next_column()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+            .ok_or(ParquetEncodingError::NoColumn)?;
+        match col.untyped() {
+            ColumnWriter::ByteArrayColumnWriter(w) => {
+                w.write_batch(&values, Some(&val_def), Some(&val_rep))
+                    .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+            }
+            _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+        }
+        col.close()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Shared extractors (Task 1)
 // ---------------------------------------------------------------------------
@@ -377,7 +464,52 @@ pub struct ParquetSerializerConfig {
 // Log schema (Task 2)
 // ---------------------------------------------------------------------------
 
-use parquet::basic::{LogicalType, Repetition, TimeUnit as ParquetTimeUnit};
+use parquet::basic::{ConvertedType, LogicalType, Repetition, TimeUnit as ParquetTimeUnit};
+
+/// Build a dictionary-encodable `MAP<Utf8,Utf8>` schema field named `name`.
+///
+/// The Parquet MAP shape is the canonical three-level structure:
+/// ```text
+/// optional group <name> (MAP) {
+///   repeated group key_value { required binary key (STRING); optional binary value (STRING); }
+/// }
+/// ```
+/// Read back by DataFusion as `Map<Struct<key:Utf8, value:Utf8>>`. Used for the
+/// metric data-point `attributes` column so the read side extracts labels
+/// columnar (no per-row JSON parse) — see promql-pushdown T6/materialized-label-columns.
+fn map_string_string_field(name: &str) -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let key = Arc::new(
+        Type::primitive_type_builder("key", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("map key field"),
+    );
+    let value = Arc::new(
+        Type::primitive_type_builder("value", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("map value field"),
+    );
+    let key_value = Arc::new(
+        Type::group_type_builder("key_value")
+            .with_repetition(Repetition::REPEATED)
+            .with_fields(vec![key, value])
+            .build()
+            .expect("map key_value group"),
+    );
+    Arc::new(
+        Type::group_type_builder(name)
+            .with_repetition(Repetition::OPTIONAL)
+            .with_logical_type(Some(LogicalType::Map))
+            .with_converted_type(ConvertedType::MAP)
+            .with_fields(vec![key_value])
+            .build()
+            .expect("map field"),
+    )
+}
 
 /// Build the fixed Parquet schema for OTLP LogRecord files (18 columns).
 pub fn build_otel_log_schema() -> Arc<Type> {
@@ -1473,14 +1605,9 @@ fn common_metric_schema_fields() -> Vec<Arc<Type>> {
                 .build()
                 .expect("start_time_unix_nano field"),
         ),
-        // 6: attributes — OPTIONAL UTF8
-        Arc::new(
-            Type::primitive_type_builder("attributes", PhysicalType::BYTE_ARRAY)
-                .with_logical_type(Some(LogicalType::String))
-                .with_repetition(Repetition::OPTIONAL)
-                .build()
-                .expect("attributes field"),
-        ),
+        // 6: attributes — dictionary-encodable MAP<Utf8,Utf8> (columnar labels,
+        // read parse-free; promql-pushdown T6 / materialized-label-columns).
+        map_string_string_field("attributes"),
         // 7: flags — OPTIONAL INT32
         Arc::new(
             Type::primitive_type_builder("flags", PhysicalType::INT32)
@@ -1818,16 +1945,34 @@ pub fn build_summary_schema() -> Arc<Type> {
 
 use sol_core::event::otel_metric::{MetricData, NumberDataPointValue};
 
-/// Convert OTLP KeyValue attributes to a JSON string, or None if empty.
-fn kv_attrs_to_json_opt(
+/// Convert OTLP KeyValue data-point attributes to `(key, value)` entries for the
+/// columnar `attributes` MAP, or `None` for an absent/empty attribute set (null
+/// map). Keys are the **raw OTLP keys** (normalization is applied on read, in
+/// `udf::normalize`). Values mirror the previous JSON-string semantics exactly:
+/// a string value is stored verbatim; any other scalar/structured value is
+/// stored as its JSON text — so the read side observes identical label values
+/// without parsing JSON per row.
+fn kv_attrs_to_map_opt(
     attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
-) -> Option<String> {
+) -> Option<Vec<(String, String)>> {
     if attrs.is_empty() {
         return None;
     }
     let tmp = OtelAttributes::from_key_values(attrs.to_vec());
-    let json = attrs_to_json(&tmp);
-    if json == "{}" { None } else { Some(json) }
+    match serde_json::to_value(&tmp) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => Some(
+            map.into_iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    (k, val)
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 /// A flattened row for gauge/sum data points. One row per data point.
@@ -1977,22 +2122,13 @@ fn write_common_metric_columns(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -2326,22 +2462,13 @@ fn write_common_metric_columns_histogram(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -2704,22 +2831,13 @@ fn write_common_metric_columns_exp_histogram(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -3155,22 +3273,13 @@ fn write_common_metric_columns_summary(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -4248,6 +4357,83 @@ mod tests {
             .expect("write trace parquet failed")
     }
 
+    /// Read a `MAP<Utf8,Utf8>` column from two leaf readers (key at `key_col`,
+    /// value at `key_col + 1`) into one optional sorted entry-list per row.
+    /// `None` = null map; `Some(vec![])` = present-but-empty map.
+    fn read_string_map_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        key_col: usize,
+        n_records: usize,
+    ) -> Vec<Option<Vec<(String, String)>>> {
+        // key leaf: required string with def/rep levels.
+        let mut key_reader = rg.get_column_reader(key_col).expect("key reader");
+        let mut keys: Vec<ByteArray> = Vec::new();
+        let mut key_def: Vec<i16> = Vec::new();
+        let mut key_rep: Vec<i16> = Vec::new();
+        match &mut key_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                // Read a generous number of values; the records map to rows via levels.
+                r.read_records(n_records * 64 + 64, Some(&mut key_def), Some(&mut key_rep), &mut keys)
+                    .expect("read keys");
+            }
+            _ => panic!("expected byte array reader for map key"),
+        }
+        // value leaf: optional string with def/rep levels.
+        let mut val_reader = rg.get_column_reader(key_col + 1).expect("value reader");
+        let mut vals: Vec<ByteArray> = Vec::new();
+        let mut val_def: Vec<i16> = Vec::new();
+        let mut val_rep: Vec<i16> = Vec::new();
+        match &mut val_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                r.read_records(
+                    n_records * 64 + 64,
+                    Some(&mut val_def),
+                    Some(&mut val_rep),
+                    &mut vals,
+                )
+                .expect("read values");
+            }
+            _ => panic!("expected byte array reader for map value"),
+        }
+
+        let mut rows: Vec<Option<Vec<(String, String)>>> = Vec::new();
+        let mut key_idx = 0usize;
+        let mut val_idx = 0usize;
+        for (rec, &kd) in key_def.iter().enumerate() {
+            let rep = key_rep[rec];
+            if rep == 0 {
+                // new row
+                if kd == 0 {
+                    rows.push(None); // null map
+                    continue;
+                } else if kd == 1 {
+                    rows.push(Some(Vec::new())); // present empty map
+                    continue;
+                }
+                rows.push(Some(Vec::new()));
+            }
+            // kd == 2 → an entry in the current row.
+            let k = String::from_utf8(keys[key_idx].data().to_vec()).expect("utf8 key");
+            key_idx += 1;
+            let v = if val_def[rec] == 3 {
+                let s = String::from_utf8(vals[val_idx].data().to_vec()).expect("utf8 val");
+                val_idx += 1;
+                s
+            } else {
+                String::new()
+            };
+            rows.last_mut()
+                .expect("row")
+                .as_mut()
+                .expect("present map")
+                .push((k, v));
+        }
+        for r in rows.iter_mut().flatten() {
+            r.sort();
+        }
+        rows
+    }
+
     fn read_string_column(
         rg: &dyn parquet::file::reader::RowGroupReader,
         col: usize,
@@ -4764,14 +4950,102 @@ mod tests {
 
     #[test]
     fn test_gauge_writes_prom_name_column() {
-        // prom_name (common column 15) is the normalized name: "test.gauge" + unit
-        // "ms" → "test_gauge_milliseconds" (gauge is non-monotonic, no _total).
+        // prom_name leaf column 16 (the MAP attributes occupies leaves 6+7) is the
+        // normalized name: "test.gauge" + unit "ms" → "test_gauge_milliseconds".
         let metric = create_gauge_metric(Some(1), None);
         let data = write_gauge_parquet(&[&metric]);
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
-        let prom = read_required_string_column(&*rg, 15, 1);
+        let prom = read_required_string_column(&*rg, 16, 1);
         assert_eq!(prom, vec!["test_gauge_milliseconds"]);
+    }
+
+    #[test]
+    fn test_attributes_written_as_map() {
+        // The common `attributes` field is a dictionary-encodable MAP<Utf8,Utf8>,
+        // not a JSON string column (promql-pushdown T6).
+        use parquet::basic::{ConvertedType, LogicalType as PqLogical};
+        let schema = build_gauge_schema();
+        let attrs = schema.get_fields()[6].clone();
+        assert!(attrs.is_group(), "attributes must be a group (MAP)");
+        assert_eq!(attrs.name(), "attributes");
+        assert_eq!(
+            attrs.get_basic_info().converted_type(),
+            ConvertedType::MAP,
+            "attributes must carry the MAP converted type"
+        );
+        assert!(matches!(
+            attrs.get_basic_info().logical_type(),
+            Some(PqLogical::Map)
+        ));
+        // repeated key_value { required key (STRING); optional value (STRING) }
+        let kv = &attrs.get_fields()[0];
+        assert_eq!(kv.name(), "key_value");
+        assert_eq!(kv.get_basic_info().repetition(), Repetition::REPEATED);
+        let key = &kv.get_fields()[0];
+        let value = &kv.get_fields()[1];
+        assert_eq!(key.name(), "key");
+        assert_eq!(value.name(), "value");
+        assert_eq!(key.get_basic_info().repetition(), Repetition::REQUIRED);
+    }
+
+    #[test]
+    fn test_attributes_map_roundtrip_read() {
+        // Round-trip: the dp attribute `dp.key=dp-val` written to the MAP column
+        // reads back as a single (raw-key, value) entry; the raw OTLP key is
+        // preserved (normalization happens on read).
+        let metric = create_gauge_metric(Some(1), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let maps = read_string_map_column(&*rg, 6, 1);
+        assert_eq!(
+            maps,
+            vec![Some(vec![("dp.key".to_string(), "dp-val".to_string())])]
+        );
+    }
+
+    #[test]
+    fn test_attributes_map_handles_empty_and_null() {
+        // A data point with no attributes writes a null map (None on read).
+        let metric = create_gauge_metric(None, Some(1.0));
+        // create_gauge_metric always sets one dp attr; build a no-attr metric inline.
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        let _ = metric;
+        let proto = Metric {
+            name: "no.attr.gauge".to_string(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano: 1,
+                    value: Some(NDPValue::AsInt(1)),
+                    attributes: vec![],
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("svc")),
+            }],
+            ..Default::default()
+        };
+        let metric = OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        );
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let maps = read_string_map_column(&*rg, 6, 1);
+        assert_eq!(maps, vec![None]);
     }
 
     #[test]
@@ -4782,7 +5056,7 @@ mod tests {
         let data = write_sum_parquet(&[&metric]);
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
-        let prom = read_required_string_column(&*rg, 15, 1);
+        let prom = read_required_string_column(&*rg, 16, 1);
         assert_eq!(prom, vec!["test_sum_total"]);
     }
 
@@ -4800,11 +5074,11 @@ mod tests {
         assert_eq!(names, vec!["gauge-svc"]);
 
         // Column 16: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 16, 1);
+        let int_vals = read_optional_i64_column(&*rg, 17, 1);
         assert_eq!(int_vals, vec![Some(42)]);
 
         // Column 17: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 17, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
         assert_eq!(dbl_vals, vec![None]);
     }
 
@@ -4816,11 +5090,11 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 16, 1);
+        let int_vals = read_optional_i64_column(&*rg, 17, 1);
         assert_eq!(int_vals, vec![None]);
 
         // Column 17: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 17, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 42.5).abs() < 1e-10);
     }
@@ -4873,7 +5147,7 @@ mod tests {
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
 
         let rg = reader.get_row_group(0).expect("row group");
-        let int_vals = read_optional_i64_column(&*rg, 16, 2);
+        let int_vals = read_optional_i64_column(&*rg, 17, 2);
         assert_eq!(int_vals, vec![Some(10), Some(20)]);
     }
 
@@ -5022,11 +5296,11 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 18: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 18, 1);
+        let temps = read_optional_i32_column(&*rg, 19, 1);
         assert_eq!(temps, vec![Some(2)]);
 
         // Column 19: is_monotonic (OPTIONAL BOOLEAN)
-        let mono = read_optional_bool_column(&*rg, 19, 1);
+        let mono = read_optional_bool_column(&*rg, 20, 1);
         assert_eq!(mono, vec![Some(false)]);
     }
 
@@ -5039,16 +5313,16 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 17: double_value
-        let dbl_vals = read_optional_double_column(&*rg, 17, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 99.5).abs() < 1e-10);
 
         // Column 18: aggregation_temporality
-        let temps = read_optional_i32_column(&*rg, 18, 1);
+        let temps = read_optional_i32_column(&*rg, 19, 1);
         assert_eq!(temps, vec![Some(1)]); // DELTA
 
         // Column 19: is_monotonic
-        let mono = read_optional_bool_column(&*rg, 19, 1);
+        let mono = read_optional_bool_column(&*rg, 20, 1);
         assert_eq!(mono, vec![Some(true)]);
     }
 
@@ -5122,13 +5396,13 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 20: bucket_counts (OPTIONAL UTF8, JSON)
-        let bc = read_string_column(&*rg, 20, 1);
+        let bc = read_string_column(&*rg, 21, 1);
         assert!(bc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(bc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![10, 30, 40, 20]);
 
         // Column 21: explicit_bounds (OPTIONAL UTF8, JSON)
-        let eb = read_string_column(&*rg, 21, 1);
+        let eb = read_string_column(&*rg, 22, 1);
         assert!(eb[0].is_some());
         let bounds: Vec<f64> = serde_json::from_str(eb[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(bounds, vec![10.0, 100.0, 500.0]);
@@ -5142,19 +5416,19 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 16, 1);
+        let counts = read_required_i64_column(&*rg, 17, 1);
         assert_eq!(counts, vec![100]);
 
         // Column 17: sum (OPTIONAL DOUBLE)
-        let sums = read_optional_double_column(&*rg, 17, 1);
+        let sums = read_optional_double_column(&*rg, 18, 1);
         assert!((sums[0].unwrap() - 5000.0).abs() < 1e-10);
 
         // Column 18: min (OPTIONAL DOUBLE)
-        let mins = read_optional_double_column(&*rg, 18, 1);
+        let mins = read_optional_double_column(&*rg, 19, 1);
         assert!((mins[0].unwrap() - 1.0).abs() < 1e-10);
 
         // Column 19: max (OPTIONAL DOUBLE)
-        let maxes = read_optional_double_column(&*rg, 19, 1);
+        let maxes = read_optional_double_column(&*rg, 20, 1);
         assert!((maxes[0].unwrap() - 999.0).abs() < 1e-10);
     }
 
@@ -5238,35 +5512,35 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 20: scale (REQUIRED INT32)
-        let scales = read_required_i32_column(&*rg, 20, 1);
+        let scales = read_required_i32_column(&*rg, 21, 1);
         assert_eq!(scales, vec![3]);
 
         // Column 21: zero_count (REQUIRED INT64)
-        let zc = read_required_i64_column(&*rg, 21, 1);
+        let zc = read_required_i64_column(&*rg, 22, 1);
         assert_eq!(zc, vec![2]);
 
         // Column 23: positive_offset (OPTIONAL INT32)
-        let po = read_optional_i32_column(&*rg, 23, 1);
+        let po = read_optional_i32_column(&*rg, 24, 1);
         assert_eq!(po, vec![Some(1)]);
 
         // Column 24: positive_bucket_counts (OPTIONAL UTF8, JSON)
-        let pbc = read_string_column(&*rg, 24, 1);
+        let pbc = read_string_column(&*rg, 25, 1);
         assert!(pbc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(pbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![5, 10, 15, 20]);
 
         // Column 25: negative_offset (OPTIONAL INT32)
-        let no = read_optional_i32_column(&*rg, 25, 1);
+        let no = read_optional_i32_column(&*rg, 26, 1);
         assert_eq!(no, vec![Some(-2)]);
 
         // Column 26: negative_bucket_counts (OPTIONAL UTF8, JSON)
-        let nbc = read_string_column(&*rg, 26, 1);
+        let nbc = read_string_column(&*rg, 27, 1);
         assert!(nbc[0].is_some());
         let narr: Vec<u64> = serde_json::from_str(nbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(narr, vec![3, 7]);
 
         // Column 27: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 27, 1);
+        let temps = read_optional_i32_column(&*rg, 28, 1);
         assert_eq!(temps, vec![Some(2)]);
     }
 
@@ -5345,15 +5619,15 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 16, 1);
+        let counts = read_required_i64_column(&*rg, 17, 1);
         assert_eq!(counts, vec![200]);
 
         // Column 17: sum (REQUIRED DOUBLE)
-        let sums = read_required_double_column(&*rg, 17, 1);
+        let sums = read_required_double_column(&*rg, 18, 1);
         assert!((sums[0] - 10_000.0).abs() < 1e-10);
 
         // Column 18: quantile_values (OPTIONAL UTF8, JSON)
-        let qv = read_string_column(&*rg, 18, 1);
+        let qv = read_string_column(&*rg, 19, 1);
         assert!(qv[0].is_some());
         let json: serde_json::Value =
             serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");

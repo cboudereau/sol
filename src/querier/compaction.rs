@@ -838,7 +838,7 @@ mod tests {
             let s = Arc::new(Schema::new(vec![
                 Field::new("name", DataType::Utf8, false),
                 Field::new("service_name", DataType::Utf8, false),
-                Field::new("attributes", DataType::Utf8, true),
+                crate::querier::udf::tests::attributes_map_field(),
                 Field::new(
                     "time_unix_nano",
                     DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
@@ -852,7 +852,7 @@ mod tests {
                 vec![
                     Arc::new(StringArray::from(vec!["cpu", "cpu"])),
                     Arc::new(StringArray::from(vec!["s", "s"])),
-                    Arc::new(StringArray::from(vec!["{}", "{}"])),
+                    crate::querier::udf::tests::json_map_array(&["{}", "{}"]),
                     Arc::new(
                         TimestampNanosecondArray::from(vec![1000i64, 2000]).with_timezone("UTC"),
                     ),

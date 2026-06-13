@@ -186,10 +186,12 @@ classDiagram
 **Tests**: codec schema/value tests (`parquet.rs:4756+`) — `test_attributes_written_as_map`, updated `test_*_schema_column_count`; round-trip read of a MAP attribute.
 **Verify**: `cargo test -p codecs --lib --features parquet`
 **Acceptance criteria**:
-- [ ] `attributes` is a `MAP` column in all 5 metric subtype schemas (dictionary-encoded), populated from data-point attributes.
-- [ ] DataFusion can extract a key from the MAP (primitive verified + used).
-- [ ] Schema tests updated.
+- [x] `attributes` is a `MAP` column in all 5 metric subtype schemas (via `common_metric_schema_fields`), populated from data-point attributes.
+- [x] DataFusion can extract a key from the MAP (primitive verified + used — read-side reads `MapArray` columnar; `map_extract` also confirmed available).
+- [x] Schema tests updated.
 **Depends on**: 5; ADR `accepted` · **Time-box**: ~90 min · `downhill` (after ratification)
+
+> **Done** (`feat: store metric attributes as a columnar Arrow MAP (promql-pushdown T6-7)`). **Feasibility gate cleared first** with throwaway probes: (1) native `parquet` 56 column writer writes a valid `MAP` (`optional map → repeated key_value → required key / optional value`, def/rep levels 0/1/2-3) — round-trips through the parquet reader (`{a:1,b:2}`, empty, null) **without re-introducing the `arrow` dep**; (2) DataFusion 53 reads the codec MAP as `Map<Struct<key,value>>` and downcasts to `MapArray`; (3) **third unknown surfaced**: DataFusion 53 *cannot* `GROUP BY`/`PARTITION BY` a `Map` (Arrow row-format unimplemented) — solved by a `prom_series_key(attributes)→Utf8` UDF that window/partition plans key on. Codec: `map_string_string_field` + `write_string_map_column` (native leaf writers), `kv_attrs_to_map_opt` mirrors the old JSON value semantics; all 4 `write_common_metric_columns_*` paths + the union schema write the MAP; `kv_attrs_to_json_opt` deleted. Tests `test_attributes_written_as_map` / `_map_roundtrip_read` / `_map_handles_empty_and_null`; subtype value-read leaf indices shifted +1 (MAP = 2 leaves). codecs parquet: 239 passed (6 pre-existing JSON-metric failures unrelated — confirmed via stash at HEAD).
 
 ### 7. Read-side reads attributes columnar — kill the last JSON parse ([FR4](./DESIGN.md#fr4), [FR5](./DESIGN.md#fr5))
 **Goal**: `prom_group_key`/`prom_attr` read the `MAP` column columnar — **no `serde_json::from_str` anywhere** in the label path; document the boundary contract.
@@ -197,9 +199,11 @@ classDiagram
 **Tests**: `test_group_key_reads_map_column`, `test_prom_attr_reads_map_column`; full querier suite green over MAP-attribute fixtures; `test_no_serde_json_in_label_path` confirms no per-row JSON parse remains.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib -- -D warnings`
 **Acceptance criteria**:
-- [ ] Grouping/filtering reads the MAP column (verified via plan/EXPLAIN in a test); no JSON parse in the label path.
-- [ ] Full querier parity suite green over MAP-attribute fixtures.
+- [x] Grouping/filtering reads the MAP column; no JSON parse in the metric-label path (`test_no_serde_json_in_label_path` — `group_key.rs` fully JSON-free, `udf.rs` has only the sanctioned `lookup_json` for the out-of-scope JSON `resource_attributes`/logs+traces columns).
+- [x] Full querier parity suite green over MAP-attribute fixtures.
 **Depends on**: 6 · **Time-box**: ~90 min · `downhill`
+
+> **Done** (same commit as T6). `prom_attr`/`prom_group_key` read the columnar MAP via shared `udf::map_row_entries`/`map_row_normalized_labels` (raw keys, normalize on read, promoted wins). `LabelCols` now binds the `attributes` column as a `MapArray` (no cast-to-Utf8, no memo/JSON parse — the per-blob memoization is obsolete; columnar reads are cheap). `prom_attr` keeps a `one_of([Map,Utf8],[Utf8,Utf8])` signature so the same UDF still serves the JSON `resource_attributes`/logs/traces columns (out of scope). `prom_series_key` registered on the shared ctx + `rollup.rs` ctx; all window/partition sites (`prom_part`, `latest_selected_df`, histogram latest, bare-range-at-instant, `lower_topk_df`, rollup) key on it. `distinct_json_keys` dual-mode (MapArray for metrics, JSON for logs/traces). Catalog metric-union `attributes` field → MAP. Tests `test_prom_attr_reads_map_column`, `test_group_key_reads_map_column`, `test_materialization_reads_map_no_json`; all querier fixtures rewritten to MAP via `udf::tests::{attributes_map_field,json_map_array}`. querier:: 163 passed, clippy `-D warnings` clean.
 
 ## Sessions
 

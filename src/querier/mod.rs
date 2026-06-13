@@ -216,4 +216,36 @@ mod no_sql_invariant_tests {
             }
         }
     }
+
+    /// promql-pushdown T7 — the metric-label read path extracts every metric
+    /// label from the columnar `attributes` MAP, never by parsing a JSON string.
+    /// `group_key.rs` (the `prom_group_key` grouping path) must be entirely
+    /// JSON-free; in `udf.rs` only the `lookup_json` helper (the sanctioned path
+    /// for the JSON `resource_attributes` / logs+traces `attributes` columns,
+    /// which are out of scope) may parse JSON — the metric-MAP readers (`lookup_map`,
+    /// `map_row_entries`, `map_row_normalized_labels`) must not. The histogram
+    /// `bucket_counts`/`explicit_bounds` blobs in `prometheus.rs` also stay JSON.
+    #[test]
+    fn test_no_serde_json_in_label_path() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/querier");
+
+        // group_key.rs: the metric grouping path is fully columnar — no JSON.
+        let gk = fs::read_to_string(root.join("group_key.rs")).unwrap();
+        let gk_prod = gk.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !gk_prod.contains("serde_json"),
+            "group_key.rs: the prom_group_key path must read the columnar MAP, no JSON (T7)"
+        );
+
+        // udf.rs: the only sanctioned JSON parse is `lookup_json` (resource_attributes
+        // / logs+traces). The metric-MAP read functions must not parse JSON.
+        let udf = fs::read_to_string(root.join("udf.rs")).unwrap();
+        let udf_prod = udf.split("#[cfg(test)]").next().unwrap();
+        let from_str = udf_prod.matches("serde_json::from_str").count();
+        assert_eq!(
+            from_str, 1,
+            "udf.rs: exactly one JSON parse expected (lookup_json for the JSON \
+             attribute columns); the metric-MAP path must be parse-free (T7)"
+        );
+    }
 }

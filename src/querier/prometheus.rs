@@ -170,10 +170,18 @@ async fn metric_base_df(
     ])?)
 }
 
-/// The `(name, service_name, attributes)` window partition for PromQL.
+/// A groupable series key over the columnar `attributes` MAP. DataFusion cannot
+/// `PARTITION BY`/`GROUP BY` a `Map` column, so window partitions key on this
+/// `prom_series_key(attributes)` UDF output instead (promql-pushdown T7).
+fn prom_series_key_expr() -> datafusion::logical_expr::Expr {
+    use datafusion::prelude::col;
+    super::udf::prom_series_key_udf().call(vec![col("attributes")])
+}
+
+/// The `(name, service_name, series-key)` window partition for PromQL.
 fn prom_part() -> Vec<datafusion::logical_expr::Expr> {
     use datafusion::prelude::col;
-    vec![col("name"), col("service_name"), col("attributes")]
+    vec![col("name"), col("service_name"), prom_series_key_expr()]
 }
 
 fn agg_value_expr(op: &str, e: datafusion::logical_expr::Expr) -> datafusion::logical_expr::Expr {
@@ -373,10 +381,17 @@ fn lower_topk_df(
     let part: Vec<datafusion::logical_expr::Expr> = if has("prom_group_key") {
         vec![col("prom_group_key")]
     } else {
+        // `attributes` is a Map (not partitionable) → key on prom_series_key(attributes).
         ["name", "service_name", "attributes"]
             .into_iter()
             .filter(|n| has(n))
-            .map(col)
+            .map(|n| {
+                if n == "attributes" {
+                    prom_series_key_expr()
+                } else {
+                    col(n)
+                }
+            })
             .collect()
     };
     // The output columns we keep (everything the lowered frame carried, minus the
@@ -423,10 +438,11 @@ async fn latest_selected_df(
         col("time_unix_nano"),
         metric_value_expr(name).alias("v"),
     ])?;
-    // latest per (name, attributes) — matches the SQL row_number partition.
+    // latest per (name, series-key) — matches the SQL row_number partition; keyed
+    // on prom_series_key(attributes) since the Map isn't partitionable.
     super::plan::frame::latest_per_series(
         base,
-        vec![col("name"), col("attributes")],
+        vec![col("name"), prom_series_key_expr()],
         "time_unix_nano",
     )
 }
@@ -529,10 +545,11 @@ async fn lower_instant_df(
             let start = time_ns.saturating_sub(range);
             let series = lower_range_df(engine, expr, start, time_ns, "metrics").await?;
             // rate/over_time project to (service_name, attributes, time, v) — a
-            // series is identified by those, so partition the latest-pick on them.
+            // series is identified by those; partition the latest-pick on the
+            // series-key UDF since the attributes Map isn't partitionable.
             let part = vec![
                 datafusion::prelude::col("service_name"),
-                datafusion::prelude::col("attributes"),
+                prom_series_key_expr(),
             ];
             super::plan::frame::latest_per_series(series, part, "time_unix_nano")
         }
@@ -668,56 +685,21 @@ fn to_err(e: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(e)
 }
 
-// Test-only counter of `attributes`-JSON parses, incremented inside
-// `parse_attr_labels`. Used by `test_materialization_parses_each_blob_once`
-// to prove the memoized path parses each distinct blob at most once (≤ distinct
-// series), never once per row.
-#[cfg(test)]
-thread_local! {
-    static ATTR_PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Parse one raw `attributes` JSON object into normalized label pairs (keys via
-/// [`super::udf::normalize`], values stringified as in the original per-row path).
-/// A non-object / invalid blob yields no labels. This is the single JSON-parse
-/// site for the raw-selector materialization path; [`LabelCols`] memoizes its
-/// result per distinct blob so a blob is parsed at most once.
-fn parse_attr_labels(raw: &str) -> BTreeMap<String, String> {
-    #[cfg(test)]
-    ATTR_PARSE_COUNT.with(|c| c.set(c.get() + 1));
-    let mut m = BTreeMap::new();
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw) {
-        for (k, v) in map {
-            let val = match v {
-                serde_json::Value::String(s) => s,
-                other => other.to_string(),
-            };
-            m.insert(super::udf::normalize(&k), val);
-        }
-    }
-    m
-}
-
 /// Per-batch accessor that turns a metrics result row into Prometheus labels
 /// (C-P1): promoted string columns become labels, `prom_name` → the normalized
-/// `__name__`, and the `attributes` JSON column is exploded into normalized
-/// per-attribute labels. Built once per batch; `labels(i)` yields one row's set.
-/// (Grouped queries project their `by(…)` labels as columns and carry no
-/// `attributes`/`prom_name`, so they're handled by the same path unchanged.)
+/// `__name__`, and the columnar `attributes` MAP is exploded into normalized
+/// per-attribute labels — read parse-free, no `serde_json` (promql-pushdown T7).
+/// Built once per batch; `labels(i)` yields one row's set. (Grouped queries
+/// project their `by(…)` labels as columns and carry no `attributes`/`prom_name`,
+/// so they're handled by the same path unchanged.)
 struct LabelCols {
     promoted: Vec<(String, datafusion::arrow::array::ArrayRef)>,
-    attrs: Option<datafusion::arrow::array::ArrayRef>,
-    /// Memo of parsed+normalized attribute labels keyed by the raw `attributes`
-    /// string. A raw 24h selector repeats a few hundred distinct blobs across
-    /// ~330K rows; this turns per-row JSON parsing into one parse per distinct
-    /// blob + a hash lookup per row ([FR3]).
-    attr_memo: std::cell::RefCell<
-        std::collections::HashMap<String, std::sync::Arc<BTreeMap<String, String>>>,
-    >,
+    attrs: Option<datafusion::arrow::array::MapArray>,
 }
 
 impl LabelCols {
     fn build(batch: &datafusion::arrow::record_batch::RecordBatch) -> crate::Result<Self> {
+        use datafusion::arrow::array::{Array, MapArray};
         use datafusion::arrow::compute::cast;
         use datafusion::arrow::datatypes::DataType;
         // value / internal / raw-name columns are not labels.
@@ -728,9 +710,13 @@ impl LabelCols {
         for (i, f) in schema.fields().iter().enumerate() {
             let n = f.name().as_str();
             if n == "attributes" {
-                attrs = Some(
-                    cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?,
-                );
+                // The attributes column is a columnar MAP — keep it as a MapArray
+                // and read entries directly (no cast-to-Utf8, no JSON parse).
+                attrs = batch
+                    .column(i)
+                    .as_any()
+                    .downcast_ref::<MapArray>()
+                    .map(|m| MapArray::from(m.to_data()));
                 continue;
             }
             if SKIP.contains(&n) {
@@ -744,32 +730,7 @@ impl LabelCols {
             let arr = cast(batch.column(i), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
             promoted.push((key, arr));
         }
-        Ok(Self {
-            promoted,
-            attrs,
-            attr_memo: std::cell::RefCell::new(std::collections::HashMap::new()),
-        })
-    }
-
-    /// Parsed+normalized attribute labels for the raw `attributes` blob at row
-    /// `i`, parsing each distinct blob at most once via [`Self::attr_memo`].
-    fn attr_labels(&self, arr: &dyn datafusion::arrow::array::Array, i: usize) -> Option<
-        std::sync::Arc<BTreeMap<String, String>>,
-    > {
-        use datafusion::arrow::array::{Array, AsArray};
-        let a = arr.as_string::<i32>();
-        if a.is_null(i) {
-            return None;
-        }
-        let raw = a.value(i);
-        if let Some(hit) = self.attr_memo.borrow().get(raw) {
-            return Some(std::sync::Arc::clone(hit));
-        }
-        let parsed = std::sync::Arc::new(parse_attr_labels(raw));
-        self.attr_memo
-            .borrow_mut()
-            .insert(raw.to_string(), std::sync::Arc::clone(&parsed));
-        Some(parsed)
+        Ok(Self { promoted, attrs })
     }
 
     fn labels(&self, i: usize) -> BTreeMap<String, String> {
@@ -781,12 +742,10 @@ impl LabelCols {
                 m.insert(key.clone(), a.value(i).to_string());
             }
         }
-        if let Some(arr) = &self.attrs
-            && let Some(attr) = self.attr_labels(arr.as_ref(), i)
-        {
-            for (k, v) in attr.iter() {
-                // Promoted columns win over attributes on a key collision.
-                m.entry(k.clone()).or_insert_with(|| v.clone());
+        if let Some(map) = &self.attrs {
+            // Columnar MAP read: normalize keys, promoted columns win on collision.
+            for (k, v) in super::udf::map_row_normalized_labels(map, i) {
+                m.entry(k).or_insert(v);
             }
         }
         m
@@ -801,7 +760,9 @@ enum SeriesLabels {
     /// Aggregated frame: the cast `prom_group_key` string column.
     Grouped(datafusion::arrow::array::ArrayRef),
     /// Raw selector frame: promoted + exploded `attributes` label columns.
-    Raw(LabelCols),
+    /// Boxed — `LabelCols` carries a `MapArray`, far larger than the `Grouped`
+    /// variant's single `ArrayRef`.
+    Raw(Box<LabelCols>),
 }
 
 impl SeriesLabels {
@@ -812,7 +773,7 @@ impl SeriesLabels {
             let key = cast(batch.column(idx), &DataType::Utf8).map_err(|e| to_err(e.to_string()))?;
             Ok(SeriesLabels::Grouped(key))
         } else {
-            Ok(SeriesLabels::Raw(LabelCols::build(batch)?))
+            Ok(SeriesLabels::Raw(Box::new(LabelCols::build(batch)?)))
         }
     }
 
@@ -889,28 +850,39 @@ pub(super) async fn distinct_json_keys(
     // label-set cardinality, but a high-cardinality attribute (e.g. a per-request
     // id embedded in the JSON) would otherwise make this an unbounded scan +
     // parse. 10k distinct blobs is far more label sets than any real schema.
-    use datafusion::arrow::array::{Array, AsArray};
-    use datafusion::arrow::compute::cast;
-    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::array::{Array, AsArray, MapArray};
     const MAX_DISTINCT_BLOBS: usize = 10_000;
+    // The `metrics` table's `attributes` is a columnar MAP (read its keys directly,
+    // no JSON parse); `logs`/`traces` keep a JSON-string `attributes` column. A Map
+    // column can't be `.distinct()`-ed, so we cap rows via `limit` (the key set
+    // dedups). Discovery is bounded by label-set cardinality, so the cap sits far
+    // above any real schema's distinct label sets.
     let df = engine
         .table(table)
         .await?
         .filter(datafusion::prelude::col(column).is_not_null())?
         .select(vec![datafusion::prelude::col(column)])?
-        .distinct()?
         .limit(0, Some(MAX_DISTINCT_BLOBS))?;
     let batches = engine.collect(df).await?;
     let mut keys = std::collections::BTreeSet::new();
     for batch in &batches {
-        let c = cast(batch.column(0), &DataType::Utf8)?;
-        let c = c.as_string::<i32>();
-        for i in 0..batch.num_rows() {
-            if !c.is_null(i)
-                && let Ok(serde_json::Value::Object(map)) =
-                    serde_json::from_str::<serde_json::Value>(c.value(i))
-            {
-                keys.extend(map.keys().cloned());
+        let c = batch.column(0);
+        if let Some(map) = c.as_any().downcast_ref::<MapArray>() {
+            for i in 0..map.len() {
+                if let Some(entries) = super::udf::map_row_entries(map, i) {
+                    keys.extend(entries.into_iter().map(|(k, _)| k));
+                }
+            }
+        } else {
+            // JSON-string attributes (logs/traces): parse each object's keys.
+            let s = c.as_string::<i32>();
+            for i in 0..s.len() {
+                if !s.is_null(i)
+                    && let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(s.value(i))
+                {
+                    keys.extend(map.keys().cloned());
+                }
             }
         }
     }
@@ -1785,10 +1757,11 @@ async fn handle_histogram(
         col("explicit_bounds"),
         col("time_unix_nano"),
     ])?;
-    // Latest histogram row per series at/before the eval time.
+    // Latest histogram row per series at/before the eval time (keyed on the
+    // series-key UDF since the attributes Map isn't partitionable).
     let latest = super::plan::frame::latest_per_series(
         base,
-        vec![col("name"), col("service_name"), col("attributes")],
+        vec![col("name"), col("service_name"), prom_series_key_expr()],
         "time_unix_nano",
     )?;
     let batches = engine
@@ -2558,7 +2531,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
@@ -2579,7 +2552,7 @@ mod tests {
                     ])
                     .with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+                crate::querier::udf::tests::json_map_array(&["{}", "{}", "{}"]),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
                 Arc::new(StringArray::from(vec![
                     "http_total",
@@ -2625,7 +2598,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
@@ -2638,11 +2611,11 @@ mod tests {
                     TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000, 3_000_000_000])
                         .with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec![
+                crate::querier::udf::tests::json_map_array(&[
                     r#"{"host":"a"}"#,
                     r#"{"host":"b"}"#,
                     r#"{"host":"c"}"#,
-                ])),
+                ]),
                 Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])),
                 Arc::new(StringArray::from(vec!["up", "up", "up"])),
             ],
@@ -2718,7 +2691,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
@@ -2742,7 +2715,7 @@ mod tests {
                 Arc::new(StringArray::from(svc)),
                 Arc::new(StringArray::from(name)),
                 Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
-                Arc::new(StringArray::from(attrs)),
+                crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
             ],
@@ -2894,50 +2867,45 @@ mod tests {
     }
 
     #[test]
-    fn test_materialization_parses_each_blob_once() {
-        // FR3: the raw-selector materialization path must parse each *distinct*
-        // `attributes` blob at most once (≤ distinct series), never once per row.
-        // Build a LabelCols over N rows with D distinct blobs and assert the
-        // instrumented parse count is ≤ D after materializing every row.
+    fn test_materialization_reads_map_no_json() {
+        // FR3/T7: the raw-selector materialization reads the columnar `attributes`
+        // MAP directly — no JSON parse. Build a LabelCols over a Map column and
+        // assert the exploded labels (normalized keys, promoted column present).
         use datafusion::arrow::array::StringArray;
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         use datafusion::arrow::record_batch::RecordBatch;
         use std::sync::Arc;
 
-        // 2 distinct blobs repeated across 6 rows (3 each).
-        let blob_a = r#"{"http.route":"/a","code":"200"}"#;
-        let blob_b = r#"{"http.route":"/b","code":"500"}"#;
-        let rows = [blob_a, blob_b, blob_a, blob_b, blob_a, blob_b];
-        let distinct = 2usize;
-
+        let rows = [
+            r#"{"http.route":"/a","code":"200"}"#,
+            r#"{"http.route":"/b","code":"500"}"#,
+            r#"{"http.route":"/a","code":"200"}"#,
+        ];
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
         ]));
         let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(StringArray::from(vec!["client"; rows.len()])),
-                Arc::new(StringArray::from(rows.to_vec())),
+                crate::querier::udf::tests::json_map_array(&rows),
             ],
         )
         .unwrap();
 
-        ATTR_PARSE_COUNT.with(|c| c.set(0));
         let cols = LabelCols::build(&batch).unwrap();
+        // The attributes column was bound as a MapArray (not Utf8).
+        assert!(cols.attrs.is_some(), "attributes read as a MAP column");
         for i in 0..batch.num_rows() {
             let m = cols.labels(i);
-            // Promoted column present + both exploded attributes (sanity on parity).
             assert_eq!(m["service_name"], "client");
+            // dotted OTLP keys are normalized: http.route → http_route.
             assert!(m.contains_key("http_route") && m.contains_key("code"));
         }
-        let parses = ATTR_PARSE_COUNT.with(std::cell::Cell::get);
-        assert!(
-            parses <= distinct,
-            "parsed {parses} times for {distinct} distinct blobs over {} rows — memoization broken",
-            rows.len()
-        );
-        assert!(parses > 0, "must parse the distinct blobs at least once");
+        // Distinct label sets preserved across the repeated blob.
+        assert_eq!(cols.labels(0)["http_route"], "/a");
+        assert_eq!(cols.labels(1)["http_route"], "/b");
     }
 
     #[tokio::test]
@@ -2982,7 +2950,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
@@ -3006,7 +2974,7 @@ mod tests {
                 Arc::new(StringArray::from(svc)),
                 Arc::new(StringArray::from(name)),
                 Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
-                Arc::new(StringArray::from(attrs)),
+                crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
             ],
@@ -3122,7 +3090,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("is_monotonic", DataType::Boolean, true),
             Field::new("prom_name", DataType::Utf8, false),
@@ -3141,10 +3109,10 @@ mod tests {
                     TimestampNanosecondArray::from(vec![1_000_000_000i64, 1_000_000_000])
                         .with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"http.response.status_code":"200","http.route":"/user"}"#),
-                    Some(r#"{"http.response.status_code":"500","http.route":"/user"}"#),
-                ])),
+                crate::querier::udf::tests::json_map_array(&[
+                    r#"{"http.response.status_code":"200","http.route":"/user"}"#,
+                    r#"{"http.response.status_code":"500","http.route":"/user"}"#,
+                ]),
                 Arc::new(Float64Array::from(vec![3.0, 1.0])),
                 Arc::new(datafusion::arrow::array::BooleanArray::from(vec![
                     Some(false),
@@ -3238,7 +3206,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new(
                 "time_unix_nano",
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
@@ -3254,7 +3222,7 @@ mod tests {
                 vec![
                     Arc::new(StringArray::from(vec!["s"; n])),
                     Arc::new(StringArray::from(vec!["reqs"; n])),
-                    Arc::new(StringArray::from(vec![r#"{"sc":"a"}"#; n])),
+                    crate::querier::udf::tests::json_map_array(&vec![r#"{"sc":"a"}"#; n]),
                     Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                     Arc::new(Float64Array::from(vals.to_vec())),
                     Arc::new(StringArray::from(vec!["reqs"; n])),
@@ -3344,7 +3312,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new(
                 "time_unix_nano",
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
@@ -3359,12 +3327,12 @@ mod tests {
             vec![
                 Arc::new(StringArray::from(vec!["s", "s", "s", "s"])),
                 Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"sc":"a"}"#),
-                    Some(r#"{"sc":"a"}"#),
-                    Some(r#"{"sc":"b"}"#),
-                    Some(r#"{"sc":"b"}"#),
-                ])),
+                crate::querier::udf::tests::json_map_array(&[
+                    r#"{"sc":"a"}"#,
+                    r#"{"sc":"a"}"#,
+                    r#"{"sc":"b"}"#,
+                    r#"{"sc":"b"}"#,
+                ]),
                 Arc::new(
                     TimestampNanosecondArray::from(vec![
                         1_000_000_000i64,
@@ -3541,7 +3509,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
@@ -3556,7 +3524,7 @@ mod tests {
                 Arc::new(
                     TimestampNanosecondArray::from(vec![1_000_000_000i64]).with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec![Some("{}")])),
+                crate::querier::udf::tests::json_map_array(&["{}"]),
                 Arc::new(StringArray::from(vec![Some("[0,20,30,30,15,5]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
                 Arc::new(StringArray::from(vec!["http_server_request_duration_seconds"])),
@@ -3629,7 +3597,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
@@ -3649,7 +3617,7 @@ mod tests {
                     TimestampNanosecondArray::from(vec![1_000_000_000i64, 2_000_000_000])
                         .with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+                crate::querier::udf::tests::json_map_array(&["{}", "{}"]),
                 Arc::new(StringArray::from(vec![Some("[0,2,3]"), Some("[0,4,6]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20]"), Some("[10,20]")])),
                 Arc::new(StringArray::from(vec![
@@ -3979,7 +3947,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
@@ -4009,7 +3977,7 @@ mod tests {
                 Arc::new(StringArray::from(svc)),
                 Arc::new(StringArray::from(name)),
                 Arc::new(TimestampNanosecondArray::from(t).with_timezone("UTC")),
-                Arc::new(StringArray::from(attrs)),
+                crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
             ],

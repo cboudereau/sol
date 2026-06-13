@@ -212,7 +212,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                 false,
             ),
-            Field::new("attributes", DataType::Utf8, true),
+            crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
         ]));
         let batch = RecordBatch::try_new(
@@ -232,7 +232,7 @@ mod tests {
                     ])
                     .with_timezone("UTC"),
                 ),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+                crate::querier::udf::tests::json_map_array(&["{}", "{}", "{}"]),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
             ],
         )
