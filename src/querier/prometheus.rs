@@ -310,7 +310,7 @@ async fn lower_range_df(
     end_ns: i64,
     table: &str,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
-    use super::plan::frame::{OverTimeAgg, over_time, rate};
+    use super::plan::frame::{OverTimeAgg, irate, over_time, rate};
     use datafusion::prelude::col;
     match expr {
         Expr::Call(c) => {
@@ -327,7 +327,12 @@ async fn lower_range_df(
             let part = prom_part();
             let r = range_to_ns(range);
             match c.func.name {
-                "rate" | "irate" | "increase" => rate(base, part, "v", "time_unix_nano"),
+                // Windowed Prometheus semantics: reset-adjusted increase over the
+                // matrix window `[w]`, divided by `w` seconds for `rate` (kept raw
+                // for `increase`). `irate` is the latest inter-sample slope.
+                "rate" => rate(base, part, "v", "time_unix_nano", r, true),
+                "increase" => rate(base, part, "v", "time_unix_nano", r, false),
+                "irate" => irate(base, part, "v", "time_unix_nano"),
                 "max_over_time" => {
                     over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Max)
                 }
@@ -2918,11 +2923,102 @@ mod tests {
         assert_eq!(resp.data.result.len(), 1, "one series");
         let s = &resp.data.result[0];
         assert_eq!(s.metric["service_name"], "client");
-        // first sample has no predecessor → dropped; rate at 2s,3s = 20,30 per sec.
+        // Windowed Prometheus rate (NOT irate): reset-adjusted increase over the
+        // 5m window / 300s. t=1s is the first sample (delta NULL → no point);
+        // t=2s: 20/300; t=3s: (20+30)/300 = 50/300.
         assert_eq!(
             s.values,
-            vec![(2.0, "20".to_string()), (3.0, "30".to_string())]
+            vec![
+                (2.0, (20.0_f64 / 300.0).to_string()),
+                (3.0, (50.0_f64 / 300.0).to_string())
+            ]
         );
+    }
+
+    /// A **bursty** counter (http_total, service=client): idle at 0 for the first
+    /// three samples, a single +600 jump between t=3s and t=4s, then idle again at
+    /// 600. Used to prove `rate` is windowed (average over the range), not `irate`
+    /// (the latest inter-sample slope).
+    async fn bursty_counter_engine() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        const S: i64 = 1_000_000_000;
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"; 5])),
+                Arc::new(StringArray::from(vec!["http_total"; 5])),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![S, 2 * S, 3 * S, 4 * S, 5 * S])
+                        .with_timezone("UTC"),
+                ),
+                crate::querier::udf::tests::json_map_array(&["{}"; 5]),
+                // idle, idle, idle, +600 burst, idle
+                Arc::new(Float64Array::from(vec![0.0, 0.0, 0.0, 600.0, 600.0])),
+                Arc::new(StringArray::from(vec!["http_total"; 5])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_rate_is_windowed_not_irate() {
+        // Bursty counter: a single +600 jump, idle before and after. Evaluated at
+        // t=5s with a 5m window covering the whole burst.
+        //   windowed rate = total increase 600 / 300s window = 2/s.
+        //   irate (latest inter-sample slope) = (600-600)/1s = 0/s.
+        // The two differ sharply, proving `rate` is NOT irate.
+        let engine = bursty_counter_engine().await;
+
+        let windowed = handle_instant(&engine, "rate(http_total[5m])", 5_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(windowed.data.result.len(), 1, "{:?}", windowed.data.result);
+        let v: f64 = windowed.data.result[0].value.1.parse().unwrap();
+        assert!(
+            (v - 2.0).abs() < 1e-9,
+            "windowed rate = 600/300s = 2/s, got {v} (would be 0/s if irate)"
+        );
+
+        // The latest inter-sample slope (irate) at t=5s is 0/s — distinct from the
+        // windowed 2/s, confirming the new semantics are windowed, not irate.
+        let irate = handle_instant(&engine, "irate(http_total[5m])", 5_000_000_000)
+            .await
+            .unwrap();
+        let iv: f64 = irate.data.result[0].value.1.parse().unwrap();
+        assert!((iv - 0.0).abs() < 1e-9, "irate = latest slope = 0/s, got {iv}");
     }
 
     // Two monotonic counter series of `reqs` distinguished by `host` (a, b),
@@ -3015,9 +3111,12 @@ mod tests {
         .unwrap();
         assert_eq!(resp.data.result.len(), 1, "one summed series: {:?}", resp.data.result);
         let s = &resp.data.result[0];
-        // Once both series are live the summed rate is ~2/s (a+b), not ~1/s.
-        // Take a grid step where both have established a rate (t >= 90s, after each
-        // series has at least two points carried onto the grid).
+        // Windowed rate (no extrapolation): a counter rising +30 per 30s, sampled
+        // every 30s over a 2m=120s window, captures ~3 deltas (90 increase) → a
+        // per-host windowed rate of ~0.75/s, NOT the irate 1/s (the documented
+        // extrapolation gap). The parity property the test guards is that BOTH
+        // hosts contribute: the summed rate (~1.5/s) must clearly exceed a single
+        // host's (~0.75/s) — it does not collapse to one series.
         let late: Vec<f64> = s
             .values
             .iter()
@@ -3027,8 +3126,8 @@ mod tests {
         assert!(!late.is_empty(), "grid has late points: {:?}", s.values);
         for v in &late {
             assert!(
-                (*v - 2.0).abs() < 0.2,
-                "summed rate ≈ 2/s (a+b), not one series ≈ 1/s: {:?}",
+                (*v - 1.5).abs() < 0.3,
+                "summed windowed rate ≈ 1.5/s (a+b ≈ 0.75 each), not one series ≈ 0.75/s: {:?}",
                 s.values
             );
         }
@@ -3058,13 +3157,16 @@ mod tests {
         hosts.sort_unstable();
         assert_eq!(hosts, ["a", "b"], "one series per host: {:?}", resp.data.result);
         for s in &resp.data.result {
-            // each per-host rate is ~1/s where established.
-            for (t, v) in &s.values {
-                if *t >= 90.0 {
-                    let x = v.parse::<f64>().unwrap();
-                    assert!((x - 1.0).abs() < 0.2, "per-host rate ≈ 1/s: {:?}", s.values);
-                }
-            }
+            // Windowed rate (no extrapolation): as the 120s window fills, each
+            // per-host rate ramps toward ~0.75/s (90 increase / 120s window) by the
+            // last grid step — NOT the irate 1/s (the documented extrapolation
+            // gap). Assert the fully-established value at the final grid step.
+            let last = s.values.last().map(|(_, v)| v.parse::<f64>().unwrap());
+            assert!(
+                last.is_some_and(|x| (x - 0.75).abs() < 0.2),
+                "per-host windowed rate ≈ 0.75/s when established: {:?}",
+                s.values
+            );
         }
     }
 
@@ -3178,8 +3280,11 @@ mod tests {
         assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
         assert_eq!(
             resp.data.result[0].values,
-            vec![(2.0, "20".to_string()), (3.0, "30".to_string())],
-            "split+merge equals the unsplit rate"
+            vec![
+                (2.0, (20.0_f64 / 300.0).to_string()),
+                (3.0, (50.0_f64 / 300.0).to_string())
+            ],
+            "split+merge equals the unsplit windowed rate"
         );
     }
 
@@ -3377,7 +3482,9 @@ mod tests {
             resp.data.result
         );
         assert_eq!(resp.data.result[0].metric["sc"], "a", "the higher series");
-        assert_eq!(resp.data.result[0].values, vec![(2.0, "20".to_string())]);
+        // Windowed rate over 5m: sc=a increase 20 at t=2s / 300s (t=1s is the
+        // first sample → no point). Still the higher series than sc=b (5/300).
+        assert_eq!(resp.data.result[0].values, vec![(2.0, (20.0_f64 / 300.0).to_string())]);
     }
 
     #[tokio::test]

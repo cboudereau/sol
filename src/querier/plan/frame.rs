@@ -101,14 +101,15 @@ pub fn lower_topk(
         .filter(col("series_rank").lt_eq(lit(kept)))?)
 }
 
-/// P6 — `rate`: per-sample delta via `LAG` over the series window, counter-reset
-/// aware (`v < prev_v` → use `v`), divided by the elapsed seconds. Drops the first
-/// sample of each series (no predecessor) and zero-`dt` duplicate timestamps.
-/// Output columns: `service_name`, `attributes`, `time_unix_nano`, `v`.
+/// P6 — `irate`: per-sample delta via `LAG` over the series window, counter-reset
+/// aware (`v < prev_v` → use `v`), divided by the elapsed seconds — i.e. the
+/// latest inter-sample slope. Drops the first sample of each series (no
+/// predecessor) and zero-`dt` duplicate timestamps. Output columns:
+/// `service_name`, `attributes`, `time_unix_nano`, `v`.
 ///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
-pub fn rate(
+pub fn irate(
     df: DataFrame,
     part: Vec<Expr>,
     v_col: &str,
@@ -143,6 +144,86 @@ pub fn rate(
             col(time_col),
             rate,
         ])?)
+}
+
+/// P6 — `rate(m[w])` / `increase(m[w])` with **windowed** Prometheus semantics
+/// (Sol↔Mimir parity), NOT the per-sample slope (`irate`). At each sample time
+/// `t` the value is the reset-adjusted increase over the lookback window divided
+/// by the window seconds (`increase` skips that division — `divide_by_window =
+/// false`):
+/// 1. per-sample reset-adjusted `delta` via `LAG` (`v − prev_v`, or `v` on a
+///    counter reset where `v < prev_v`); the first sample of each series has no
+///    predecessor → its delta is NULL so it never inflates a window sum;
+/// 2. windowed increase = `SUM(delta)` over a `RANGE BETWEEN range_ns PRECEDING
+///    AND CURRENT ROW` frame (the same ns-based RANGE frame as [`over_time`]),
+///    i.e. the reset-adjusted increase across the window's samples;
+/// 3. for `rate`, divide by the window seconds (`range_ns / 1e9`).
+///
+/// Output columns: `service_name`, `attributes`, `time_unix_nano`, `v` — the same
+/// shape as [`irate`] so the downstream grid-align + resample are unaffected.
+///
+/// NB: Prometheus additionally *extrapolates* the rate to the window boundaries
+/// (capped at ~half the mean sample interval), so for a counter sampled sparsely
+/// relative to `w` Prometheus reads slightly higher than `increase/w`. That
+/// extrapolation is a documented follow-up and is deliberately NOT implemented
+/// here; windowed increase / window already removes the `irate`-vs-windowed
+/// deviation, which is the dominant gap.
+///
+/// # Errors
+/// Propagates DataFusion plan-construction errors.
+pub fn rate(
+    df: DataFrame,
+    part: Vec<Expr>,
+    v_col: &str,
+    time_col: &str,
+    range_ns: i64,
+    divide_by_window: bool,
+) -> crate::Result<DataFrame> {
+    let order = vec![ns(time_col).sort(true, false)];
+    let prev_v = lag(col(v_col), Some(1), None)
+        .partition_by(part.clone())
+        .order_by(order.clone())
+        .build()?
+        .alias("prev_v");
+    // Per-sample reset-adjusted delta. The first sample of each series has a NULL
+    // `prev_v`; we map that to a NULL delta (not the full value) so `SUM` over the
+    // window skips it — otherwise the window's leading sample would be counted as
+    // a spurious increase equal to its absolute value.
+    let delta = when(col("prev_v").is_null(), lit(ScalarValue::Float64(None)))
+        .when(col(v_col).gt_eq(col("prev_v")), col(v_col) - col("prev_v"))
+        .otherwise(col(v_col))?;
+    // `with_column` preserves every input column (the partition keys `name`/
+    // `service_name`/`attributes` and the time key) and just appends `delta`, so
+    // the SUM window below can still `PARTITION BY part`.
+    let win = df.window(vec![prev_v])?.with_column("delta", delta)?;
+    // Windowed reset-adjusted increase: SUM(delta) over (t-range, t] — the same
+    // ns-based RANGE frame as `over_time`. SUM ignores the NULL first-sample delta.
+    let increase_win: Expr = WindowFunction::new(sum_udaf(), vec![col("delta")]).into();
+    let frame = WindowFrame::new_bounds(
+        WindowFrameUnits::Range,
+        WindowFrameBound::Preceding(ScalarValue::Int64(Some(range_ns))),
+        WindowFrameBound::CurrentRow,
+    );
+    let increase = increase_win
+        .partition_by(part)
+        .order_by(vec![ns(time_col).sort(true, false)])
+        .window_frame(frame)
+        .build()?
+        .alias("increase");
+    let windowed = win.window(vec![increase])?;
+    // `rate` divides by the window seconds; `increase` keeps the raw increase.
+    #[allow(clippy::cast_precision_loss)]
+    let v = if divide_by_window {
+        (col("increase") / lit(range_ns as f64 / 1e9)).alias("v")
+    } else {
+        col("increase").alias("v")
+    };
+    Ok(windowed.select(vec![
+        col("service_name"),
+        col("attributes"),
+        col(time_col),
+        v,
+    ])?)
 }
 
 /// P7 — `<agg>_over_time`: a sliding `agg(v)` over a `RANGE BETWEEN range_ns
@@ -192,7 +273,9 @@ pub fn over_time(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{AsArray, Float64Array, StringArray, TimestampNanosecondArray};
+    use datafusion::arrow::array::{
+        Array, AsArray, Float64Array, StringArray, TimestampNanosecondArray,
+    };
     use datafusion::arrow::datatypes::{Field, Float64Type, Schema, TimeUnit};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::parquet::arrow::ArrowWriter;
@@ -278,18 +361,48 @@ mod tests {
             let idx = b.schema().index_of("v").unwrap();
             let v = b.column(idx).as_primitive::<Float64Type>();
             for i in 0..b.num_rows() {
-                out.push(v.value(i));
+                // Skip NULL `v` (e.g. the first sample of a windowed rate, whose
+                // increase is NULL) — downstream `group_range_series` drops these.
+                if !v.is_null(i) {
+                    out.push(v.value(i));
+                }
             }
         }
         out
     }
 
     #[tokio::test]
-    async fn test_rate_matches_sql_semantics() {
+    async fn test_rate_is_windowed_average_over_the_range() {
         let engine = counter_engine().await;
         let part = vec![col("service_name"), col("attributes")];
-        let df = rate(base(&engine).await, part, "v", "time_unix_nano").unwrap();
-        // first sample dropped; rate at 2s,3s = 20,30 per second (parity with rate_sql).
+        // Window 5m = 300s covers all preceding samples. Windowed rate at each t is
+        // the reset-adjusted increase over `(t-w, t]` / w:
+        //   t=1s: first sample, delta NULL → SUM is NULL → dropped downstream.
+        //   t=2s: increase = (30-10)=20 → 20/300.
+        //   t=3s: increase = 20 + (60-30)=30 → 50/300.
+        let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, true)
+            .unwrap();
+        let got = values_by_time(&engine, df).await;
+        assert_eq!(got, vec![20.0 / 300.0, 50.0 / 300.0]);
+    }
+
+    #[tokio::test]
+    async fn test_increase_is_windowed_sum_without_dividing() {
+        let engine = counter_engine().await;
+        let part = vec![col("service_name"), col("attributes")];
+        // increase(m[5m]) = reset-adjusted increase over the window, NOT divided.
+        let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, false)
+            .unwrap();
+        assert_eq!(values_by_time(&engine, df).await, vec![20.0, 50.0]);
+    }
+
+    #[tokio::test]
+    async fn test_irate_is_per_sample_slope_unchanged() {
+        let engine = counter_engine().await;
+        let part = vec![col("service_name"), col("attributes")];
+        // irate keeps the latest inter-sample slope: first sample dropped, then
+        // 20/1s and 30/1s. (Unchanged from the pre-windowing `rate`.)
+        let df = irate(base(&engine).await, part, "v", "time_unix_nano").unwrap();
         assert_eq!(values_by_time(&engine, df).await, vec![20.0, 30.0]);
     }
 
