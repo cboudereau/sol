@@ -1,11 +1,13 @@
 ---
-status: proposed
+status: accepted
 ---
-# Precomputed counter delta (rate building block)
+# Precomputed counter delta + windowed-rate semantics
 
-Addresses: [NFR6](../DESIGN.md#nfr6) (latency) — the cold-24h `rate()` cost.
+Addresses: [NFR6](../DESIGN.md#nfr6) (latency), Sol↔Mimir `rate` parity.
 
-> **`proposed`** — there's a design obstacle (the codec is stateless per batch) that forks the approach; the human picks before implementation.
+> **`accepted`** (2026-06-13) — user ratified **Option B** (compactor-computed delta) **+ windowed-rate** semantics. Split into two parts on landing:
+> 1. **Windowed-rate (read-side, no cutover) — implement now.** Fixes the semantics deviation; the parity tests are updated.
+> 2. **Delta perf-column (Option B, compactor) — gated.** Deeper analysis showed its perf win requires **path-separation** (only LAG-free compacted rows benefit; a `coalesce(delta, LAG)` read still computes the LAG → no gain), and the LAG cost is **unmeasured**. So part 2 is gated on isolating the LAG cost first.
 
 ## Problem
 
