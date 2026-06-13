@@ -1,11 +1,11 @@
 ---
-status: proposed
+status: accepted
 ---
 # Columnar attributes — Arrow MAP (general); per-key columns deferred
 
 Addresses: [FR4](../DESIGN.md#fr4), [FR3](../DESIGN.md#fr3), [NFR5](../DESIGN.md#nfr5), [NFR6](../DESIGN.md#nfr6)
 
-> **`proposed`** — Approach A is chosen by user direction (replacing the rejected allowlist); the **clean cutover** and the **go for Session 3** await ratification at the S2→S3 checkpoint.
+> **`accepted`** (2026-06-13) — Approach A and the clean cutover ratified by the user; Session 3 cleared to run.
 
 ## Problem
 
