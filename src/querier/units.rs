@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Clément Boudereau
 //! Canonical time/duration units for the query backend.
 //!
-//! Per [ADR canonical-nanoseconds](../../docs/adrs/0046-canonical-nanoseconds.md):
+//! Per [ADR canonical-nanoseconds](../../docs/expr-lowering/adrs/20260608_canonical-nanoseconds.md):
 //! internal time and duration are **nanoseconds `i64`**, wrapped in [`TimeNs`] /
 //! [`DurationNs`] so the core cannot mix sec/ms/ns. Conversions live **only** at
 //! the HTTP boundary — ingress param parsing (sec→ns) and egress response
@@ -84,7 +84,7 @@ fn unit_ns(unit: &str) -> Option<f64> {
 }
 
 /// Parse a duration literal shared by PromQL `[5m]`, TraceQL `1.5s`, and LogQL
-/// `[5m]`/`offset` — the single duration parser ([FR7](../../docs/designs/20260608_expr-lowering.md#fr7)).
+/// `[5m]`/`offset` — the single duration parser ([FR7](../../docs/expr-lowering/designs/20260608_expr-lowering.md#fr7)).
 ///
 /// Accepts a fractional magnitude (`1.5s`) and compound forms (`1h30m`); units
 /// `ns us µs ms s m h d w`. Returns `None` on malformed input (never panics).

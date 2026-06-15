@@ -1,6 +1,6 @@
 # prom-name-column — Design Doc
 
-Builds on: [designs/20260527_parquet-multisignal.md](../../designs/20260527_parquet-multisignal.md) ·
+Builds on: [designs/20260527_parquet-multisignal.md](../../parquet-multisignal/designs/20260527_parquet-multisignal.md) ·
 relates to [parquet-backend](../../workspace/parquet-backend/DESIGN.md)
 
 ## Context

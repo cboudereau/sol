@@ -7,7 +7,7 @@
 //! metrics into per-subtype subdirs (`metrics/<subtype>/dt=…`); the `metrics`
 //! table is a ListingTable over the `metrics/` prefix, so it recurses into
 //! those subdirs and unions the narrow per-subtype files. Schemas are declared
-//! explicitly here as the binding contract with the codec ([parquet-multisignal](../../../docs/designs/20260527_parquet-multisignal.md));
+//! explicitly here as the binding contract with the codec ([parquet-multisignal](../../docs/parquet-multisignal/designs/20260527_parquet-multisignal.md));
 //! DataFusion's schema adapter fills columns missing from a given file with null.
 
 use std::path::PathBuf;

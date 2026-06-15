@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Clément Boudereau
 //! Shared query-plan primitives over the DataFusion logical layer.
 //!
-//! Per the [expr-lowering design](../../../docs/designs/20260608_expr-lowering.md),
+//! Per the [expr-lowering design](../../../docs/expr-lowering/designs/20260608_expr-lowering.md),
 //! the SQL surface of all three signals reduces to a small set of reusable
 //! primitives built on `Expr`/`DataFrame` (no `format!` SQL). This module hosts
 //! them; signal modules (`prometheus`/`loki`/`tempo`) compose them.

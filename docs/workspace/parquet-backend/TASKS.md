@@ -55,7 +55,7 @@ Add a `query:` block to `sol/sol-gateway.yaml` (or a dedicated query role) point
 
 - HTTP serving uses **warp** filters + **hyper**: `src/api/server.rs`, `src/sources/opentelemetry/http.rs`. No new HTTP framework needed.
 - Embedded-server integration precedent: `api: api::Options` at `src/config/mod.rs:149`, started via `setup_api` at `src/app.rs:134`, held on `src/topology/controller.rs:42`. The query server mirrors this exactly.
-- Parquet codec: `lib/codecs/src/encoding/format/parquet.rs`; `parquet = 56.2.0`; attributes are **JSON UTF8 strings** ([ADR 0038](../../adrs/0038-attributes-serialization-strategy.md)); timestamps are `INT64 / TIMESTAMP(NANOS, UTC)`; `trace_id` is `FIXED_LEN_BYTE_ARRAY(16)`, `span_id`/`parent_span_id` `FIXED_LEN_BYTE_ARRAY(8)`. Seven tables: logs, traces, gauge, sum, histogram, exp_histogram, summary (exact columns in [parquet-multisignal](../../designs/20260527_parquet-multisignal.md)).
+- Parquet codec: `lib/codecs/src/encoding/format/parquet.rs`; `parquet = 56.2.0`; attributes are **JSON UTF8 strings** ([ADR 0038](../../parquet-multisignal/adrs/20260527_attributes-serialization-strategy.md)); timestamps are `INT64 / TIMESTAMP(NANOS, UTC)`; `trace_id` is `FIXED_LEN_BYTE_ARRAY(16)`, `span_id`/`parent_span_id` `FIXED_LEN_BYTE_ARRAY(8)`. Seven tables: logs, traces, gauge, sum, histogram, exp_histogram, summary (exact columns in [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md)).
 - `lib/prometheus-parser` is a **text-exposition-format** parser, **not** PromQL — do not reuse it for query parsing.
 - `moka` (0.12) is already in `Cargo.lock` (transitive); `datafusion` / `promql-parser` are **not** present and must be added.
 
@@ -212,7 +212,7 @@ classDiagram
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
 |---|---|---|
-| `SignalTable::arrow_schema` | `&self → SchemaRef` | Column names/types must match the codec output in [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) exactly; mismatch is a hard error |
+| `SignalTable::arrow_schema` | `&self → SchemaRef` | Column names/types must match the codec output in [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md) exactly; mismatch is a hard error |
 | `ParquetCatalog::refresh` | `&SessionContext → Result` | Idempotent; re-registers tables from current file listing; never panics on an empty/absent directory |
 | `LogqlTranslator::translate` | `LogqlExpr × TimeRange → Sql` | `{k="v"}` → `WHERE k='v'`; `\|= "t"` → `body LIKE '%t%'`; `=~` → regex match; always bounded by `time_unix_nano BETWEEN start AND end`; `limit` applied |
 | `PromqlTranslator::translate` | `promql Expr × TimeRange → Result<Sql, UnsupportedFn>` | Supported fns ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md)) translate; any other fn → `UnsupportedFn` error (never a panic, never wrong SQL) |
@@ -256,7 +256,7 @@ classDiagram
 **Types**: `SignalTable`, `ParquetCatalog`, `QueryEngine`
 **Constraints**:
 - [ADR: DataFusion table discovery](./adrs/querier/datafusion-table-discovery.md) — one `ListingTable` per signal **directory** (`logs/`, `traces/`, per-subtype metric dirs; or single `metrics/` union fallback), explicit Arrow schema, periodic re-list (default 15s). Requires the sink to write per-subtype metric dirs — a documented write-side dependency
-- Invariant: `SignalTable::arrow_schema()` columns match [parquet-multisignal](../../designs/20260527_parquet-multisignal.md) exactly (names, types, nullability)
+- Invariant: `SignalTable::arrow_schema()` columns match [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md) exactly (names, types, nullability)
 - Predicate pushdown enabled for `service_name`, `name`, timestamp columns
 - `Querier::resolve_files` honours **footer supersession** ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md)): when both raw and compacted files are present, pick the highest `level` per sub-range and skip superseded inputs (each datum read once). Pre-compaction (no compacted files yet) this is a no-op.
 - [NFR5](./DESIGN.md#nfr5): bound the DataFusion worker pool (default `min(4, available_parallelism)`) and the Parquet metadata cache so the backend does not starve ingestion
@@ -524,7 +524,7 @@ classDiagram
 - [ADR: datafusion-table-discovery](./adrs/querier/datafusion-table-discovery.md) — emit `…/logs/dt=YYYY-MM-DD/`, `…/traces/dt=…/`, `…/metrics/gauge/dt=…/`, `…/metrics/sum/dt=…/`, … (one dir per signal/subtype) so each maps to a clean `ListingTable`
 - [ADR: file-layout-and-compaction](./adrs/compactor/file-layout-and-compaction-strategy.md) — sort within each batch by `service_name`, `name`, `time_unix_nano` (write-side hint)
 - Path template uses event-batch flush time for `dt=`; late/cross-midnight data is bounded (compaction re-buckets) — do not block the gateway to sort globally
-- The codec already emits one blob per subtype ([parquet-multisignal](../../designs/20260527_parquet-multisignal.md)); this task only changes the **sink path/sort**, not the codec
+- The codec already emits one blob per subtype ([parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md)); this task only changes the **sink path/sort**, not the codec
 **Tests**:
 - `test_file_sink_writes_per_subtype_dt_partition` — a mixed batch lands in the right `…/<signal|subtype>/dt=YYYY-MM-DD/` dirs
 - `test_file_sink_sorts_batch_by_sort_key`
