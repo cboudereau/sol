@@ -39,6 +39,7 @@ Retention pruning (delete files past a configured age) runs in the same backgrou
 > - The numbers traces 30d (7d opt-in) / logs 30d / metrics 13mo (2y opt-in) are **query intervals** ([NFR7](../../DESIGN.md#nfr7)), *not* retention TTLs. **Retention** (deletion policy) is a separate, configurable per-signal knob enforced by the compactor's GC, ≥ the query interval.
 > - For metrics, compaction additionally produces **rollup tiers** (5m/1h/1d, [FR6](../../DESIGN.md#fr6)) for the cold tail, storing bucket counts / counter values (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct.
 > - Compaction is a **standalone Parquet→Parquet component**, run as the **singleton** compactor role on a **sealed-day cadence** with footer-provenance consistency — see [compaction-consistency](./compaction-consistency.md), which supersedes the embedded-background-task framing above.
+> - Partitioning **at scale** (many services) and the **file-naming convention** (raw UUID token vs deterministic, no-GUID compacted/rollup names; the `parse_hour` ⇄ path-template coupling) are decided in [partitioning-and-file-naming](./partitioning-and-file-naming.md).
 
 ## Consequences
 
