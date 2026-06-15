@@ -7,7 +7,7 @@ Addresses: [NFR6](../DESIGN.md#nfr6) (latency), Sol↔Mimir `rate` parity.
 
 > **`accepted`** (2026-06-13) — user ratified **Option B** (compactor-computed delta) **+ windowed-rate** semantics. Split into two parts on landing:
 > 1. **Windowed-rate (read-side, no cutover) — implement now.** Fixes the semantics deviation; the parity tests are updated.
-> 2. **Delta perf-column (Option B, compactor) — gated.** Deeper analysis showed its perf win requires **path-separation** (only LAG-free compacted rows benefit; a `coalesce(delta, LAG)` read still computes the LAG → no gain), and the LAG cost is **unmeasured**. So part 2 is gated on isolating the LAG cost first.
+> 2. **Delta perf-column (Option B, compactor) — DECLINED after measurement (2026-06-15).** Live isolation on a counter (63.6K rows): scan+filter 0.236s vs scan+**LAG** 0.294s → the LAG window adds only **~60ms (~25% over scan)**, not the cold-24h bottleneck. Decisively, **windowed-rate = LAG(delta) + RANGE-SUM**, so a precomputed delta removes only the LAG, *not* the RANGE-SUM windowing. The win ceiling (~10–20% of the rate path, compacted-only) doesn't justify a compactor change + schema change + clean cutover + path-separation. **YAGNI.** If cold-24h latency needs cutting, the lever is **fewer rows (intraday rollups)**, not precomputed deltas. (Secondary: `prom_series_key` over the MAP is now the larger per-row cost than the LAG — a future look if grouping/rate-partition cost matters.)
 
 ## Problem
 
