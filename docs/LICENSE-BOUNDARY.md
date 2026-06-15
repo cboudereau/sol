@@ -87,7 +87,7 @@ src/sinks/opentelemetry/grpc.rs
 src/sinks/opentelemetry/http.rs
 src/sinks/opentelemetry/load_balancing.rs
 src/sources/source_otel.rs
-src/transforms/servicegraph/*.rs      (3 files)
+src/transforms/20260505_servicegraph/*.rs      (3 files)
 src/transforms/span_metrics/*.rs      (3 files)
 src/transforms/tail_sampling/*.rs     (4 files)
 src/vrl_migrate/*.rs                   (8 files)

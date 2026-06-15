@@ -2,7 +2,7 @@
 
 ## Context
 
-The [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md) workspace defines how Sol writes OTLP logs, traces, and metrics as Parquet files. This workspace addresses the **read side**: how to query those Parquet files to serve Grafana dashboards via the Prometheus (PromQL), Tempo (TraceQL), and Loki (LogQL) APIs.
+The [parquet-multisignal](../../20260527_parquet-multisignal/designs/20260527_parquet-multisignal.md) workspace defines how Sol writes OTLP logs, traces, and metrics as Parquet files. This workspace addresses the **read side**: how to query those Parquet files to serve Grafana dashboards via the Prometheus (PromQL), Tempo (TraceQL), and Loki (LogQL) APIs.
 
 ### Current architecture
 
@@ -135,7 +135,7 @@ WHERE cum_count >= 0.95 * total_count
 
 ### Pre-existing Sol features relevant to this workspace
 
-- **`servicegraph` transform** (`src/transforms/servicegraph/`): computes `traces_service_graph_request_server_seconds` histogram metrics from trace spans at ingest time. Input: `DataType::Trace`, output: `DataType::Metric`. The cross-signal service graph metric is already materialized at ingest — no cross-signal query needed at read time.
+- **`servicegraph` transform** (`src/transforms/20260505_servicegraph/`): computes `traces_service_graph_request_server_seconds` histogram metrics from trace spans at ingest time. Input: `DataType::Trace`, output: `DataType::Metric`. The cross-signal service graph metric is already materialized at ingest — no cross-signal query needed at read time.
 
 ### State of the art
 
@@ -295,7 +295,7 @@ The query engine must discover and register Parquet files from configurable stor
 - Local filesystem (development, single-node)
 - S3-compatible object storage (production)
 
-File discovery is based on the naming convention defined in the [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md) codec design.
+File discovery is based on the naming convention defined in the [parquet-multisignal](../../20260527_parquet-multisignal/designs/20260527_parquet-multisignal.md) codec design.
 
 ### <a id="nfr5"></a>NFR5 — Resource cost budget (CPU / memory)
 
@@ -442,7 +442,7 @@ flowchart TB
 
 | Tier | Role | State | Scaling | Designed in |
 |---|---|---|---|---|
-| Agent / client | collector → loadbalancer → **gateway** (OTLP in, transforms, file sink → Parquet) | streaming buffers | by throughput | existing demo + [parquet-multisignal](../../parquet-multisignal/designs/20260527_parquet-multisignal.md); this workspace only adds the `dt=` path hint ([FR7](#fr7)) |
+| Agent / client | collector → loadbalancer → **gateway** (OTLP in, transforms, file sink → Parquet) | streaming buffers | by throughput | existing demo + [parquet-multisignal](../../20260527_parquet-multisignal/designs/20260527_parquet-multisignal.md); this workspace only adds the `dt=` path hint ([FR7](#fr7)) |
 | Backend — **querier** | API translation + DataFusion over shared storage; `resolve_files` honours footer provenance | **stateless** | **horizontal** ([NFR8](#nfr8)) | [FR1](#fr1)–[FR4](#fr4), tasks 1–9 |
 | Backend — **query-frontend** | time-split + merge + shared result cache | cache only | horizontal | [FR8](#fr8), task 11 |
 | Backend — **compactor** | leveled compaction (hourly→daily), rollups, footer provenance, deferred GC + retention | owns compacted files | **singleton** | [FR6](#fr6)/[FR7](#fr7), tasks 10, 12 |
@@ -570,7 +570,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 - **Grafana data source configuration**: Grafana connects to Sol's query backend using standard Prometheus, Tempo, and Loki data source configs — only the URL changes (e.g. `http://sol-querier:9009/prometheus`). No custom plugins.
 - **Demo integration (parallel, dual-write)**: in `demo/otel-sol-grafana-dotnet/`, the gateway **dual-writes** every signal — OTLP → Mimir/Tempo/Loki **and** Parquet → Sol — so both backends hold identical data. A `sol-querier` service serves the APIs over the shared `parquet-data` volume. Grafana gets **parallel** `Sol-Prometheus`/`Sol-Tempo`/`Sol-Loki` datasources next to the existing ones, and every demo dashboard uses a **datasource template variable** so a user flips Sol ↔ Grafana backend from a dropdown (side-by-side parity + latency comparison). Tasked in [TASKS.md](./TASKS.md) tasks 14–15.
-- **Parquet file schema dependency**: the query backend depends on the schema defined in [parquet-multisignal/DESIGN.md](../../parquet-multisignal/designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
+- **Parquet file schema dependency**: the query backend depends on the schema defined in [20260527_parquet-multisignal/DESIGN.md](../../20260527_parquet-multisignal/designs/20260527_parquet-multisignal.md). Schema changes require coordinated updates to both the codec and the query engine table registrations.
 - **Observability of the query backend (Sol monitoring Sol)**: the backend emits internal metrics that flow through the same pipeline (`internal_metrics` source → Mimir), exactly like the existing `sol_component_*` / `sol_tail_sampling_*` metrics. The catalog (dashboarded in `demo/.../grafana/.../Sol/SOL Querier Backend.json`):
 
   | Metric | Type | Labels | Watches (NFR) |

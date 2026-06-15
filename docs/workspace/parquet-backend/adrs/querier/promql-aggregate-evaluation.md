@@ -1,9 +1,9 @@
 ---
-status: superseded-by docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
+status: superseded-by docs/20260615_promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 ---
 # PromQL aggregate evaluation: in-memory composition vs. pushed-down SQL
 
-Addresses: [FR1](../../DESIGN.md#fr1) (Prometheus-compatible API), [FR4](../../DESIGN.md#fr4) (DataFusion engine), [NFR5](../../DESIGN.md#nfr5) (memory budget), [NFR6](../../DESIGN.md#nfr6) (latency). Refines the [expr-lowering design](../../../../expr-lowering/designs/20260608_expr-lowering.md) (PromQL → `Expr`/`DataFrame`, no `format!` SQL).
+Addresses: [FR1](../../DESIGN.md#fr1) (Prometheus-compatible API), [FR4](../../DESIGN.md#fr4) (DataFusion engine), [NFR5](../../DESIGN.md#nfr5) (memory budget), [NFR6](../../DESIGN.md#nfr6) (latency). Refines the [expr-lowering design](../../../../20260608_expr-lowering/designs/20260608_expr-lowering.md) (PromQL → `Expr`/`DataFrame`, no `format!` SQL).
 
 ## Problem
 
