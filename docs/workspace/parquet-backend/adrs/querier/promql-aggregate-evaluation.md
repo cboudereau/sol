@@ -1,5 +1,5 @@
 ---
-status: draft
+status: superseded-by docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 ---
 # PromQL aggregate evaluation: in-memory composition vs. pushed-down SQL
 

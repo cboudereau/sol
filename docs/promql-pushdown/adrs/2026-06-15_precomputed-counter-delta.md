@@ -3,7 +3,7 @@ status: accepted
 ---
 # Precomputed counter delta + windowed-rate semantics
 
-Addresses: [NFR6](../DESIGN.md#nfr6) (latency), Sol↔Mimir `rate` parity.
+Addresses: [NFR6](../designs/2026-06-15_promql-pushdown.md#nfr6) (latency), Sol↔Mimir `rate` parity.
 
 > **`accepted`** (2026-06-13) — user ratified **Option B** (compactor-computed delta) **+ windowed-rate** semantics. Split into two parts on landing:
 > 1. **Windowed-rate (read-side, no cutover) — implement now.** Fixes the semantics deviation; the parity tests are updated.
@@ -27,7 +27,7 @@ Live measurements: the scan is cheap (~23 ms `count(*)` over 11.5 M rows); the c
 
 ## Recommendation (proposed)
 
-**Option B — compactor-computed delta + hybrid read.** It avoids a new stateful ingest path (B's state lives in the compactor's existing whole-partition pass), and the LAG fallback only applies to the small uncompacted tail — exactly the window where data is freshest and smallest. The `delta` column rides the **same clean cutover** as the MAP change ([materialized-label-columns](./materialized-label-columns.md)). Read path: `rate(m[w]) = sum(delta)/w`, `increase = sum(delta)`, over compacted partitions; raw tail via the existing `plan::frame::rate` LAG. Gauges/histograms unchanged.
+**Option B — compactor-computed delta + hybrid read.** It avoids a new stateful ingest path (B's state lives in the compactor's existing whole-partition pass), and the LAG fallback only applies to the small uncompacted tail — exactly the window where data is freshest and smallest. The `delta` column rides the **same clean cutover** as the MAP change ([materialized-label-columns](./2026-06-15_materialized-label-columns.md)). Read path: `rate(m[w]) = sum(delta)/w`, `increase = sum(delta)`, over compacted partitions; raw tail via the existing `plan::frame::rate` LAG. Gauges/histograms unchanged.
 
 **Semantic note:** this changes `rate` from Sol's current per-sample-slope (≈ `irate`) to a true windowed sum (≈ Prometheus `rate`, sans boundary extrapolation). It should **narrow** the Sol↔Mimir gap, but it **changes rate values** → the existing rate parity tests must be updated to the new (more correct) expected values and re-verified against Mimir. Boundary extrapolation remains a separate, optional refinement.
 

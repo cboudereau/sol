@@ -16,7 +16,7 @@
 //! holds): `by(L)` keeps `L ∩ present`; `without(L)` keeps every present label
 //! except `L` and `__name__`; no modifier keeps nothing (constant key `""`).
 //!
-//! [ADR: group-key-format]: ../../docs/workspace/promql-pushdown/adrs/group-key-format.md
+//! [ADR: group-key-format]: ../../docs/promql-pushdown/adrs/2026-06-15_group-key-format.md
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

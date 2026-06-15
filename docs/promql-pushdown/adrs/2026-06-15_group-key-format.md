@@ -1,13 +1,13 @@
 ---
-status: draft
+status: accepted
 ---
 # Group-key canonical format
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR3](../DESIGN.md#fr3)
+Addresses: [FR1](../designs/2026-06-15_promql-pushdown.md#fr1), [FR3](../designs/2026-06-15_promql-pushdown.md#fr3)
 
 ## Problem
 
-The [aggregation-pushdown](./aggregation-pushdown.md) plan groups on a single string column produced by `prom_group_key(...)`. That string is both (a) the `GROUP BY` key and (b) the serialized result label set parsed back once per output group. Its format is therefore **load-bearing and hard to change** once plans depend on it. What is the canonical format, and what are the escaping/ordering rules so two rows of the same series always collide and two different series never do?
+The [aggregation-pushdown](./2026-06-15_aggregation-pushdown.md) plan groups on a single string column produced by `prom_group_key(...)`. That string is both (a) the `GROUP BY` key and (b) the serialized result label set parsed back once per output group. Its format is therefore **load-bearing and hard to change** once plans depend on it. What is the canonical format, and what are the escaping/ordering rules so two rows of the same series always collide and two different series never do?
 
 ## Options
 
@@ -36,5 +36,5 @@ This makes **mixed nesting** expressible and correct, e.g. `sum by (cpu) (sum wi
 
 ## Consequences
 
-- **Easier:** building the key is a single pass in the UDF; reconstructing labels is per-group, not per-row ([FR3](../DESIGN.md#fr3)); deterministic grouping ([NFR2](../DESIGN.md#nfr2) parity).
+- **Easier:** building the key is a single pass in the UDF; reconstructing labels is per-group, not per-row ([FR3](../designs/2026-06-15_promql-pushdown.md#fr3)); deterministic grouping ([NFR2](../designs/2026-06-15_promql-pushdown.md#nfr2) parity).
 - **Harder:** the format is frozen — changing it invalidates nothing on disk (it's computed at query time) but must stay consistent between the UDF and `parse_group_key`. A single round-trip unit test (`build == parse⁻¹`) guards it. The separator choice (`\x1f`) assumes labels never contain control chars; values are escaped to be safe.

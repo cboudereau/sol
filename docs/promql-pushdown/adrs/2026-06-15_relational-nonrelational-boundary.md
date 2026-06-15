@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Relational / non-relational boundary
 
-Addresses: [FR5](../DESIGN.md#fr5), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR5](../designs/2026-06-15_promql-pushdown.md#fr5), [NFR2](../designs/2026-06-15_promql-pushdown.md#nfr2)
 
 ## Problem
 
@@ -23,7 +23,7 @@ Addresses: [FR5](../DESIGN.md#fr5), [NFR2](../DESIGN.md#nfr2)
 
 **Pushed to DataFusion (relational core):**
 - vector selectors (already), `rate`/`irate`/`increase` (already, LAG window), `<agg>_over_time` (already, RANGE-frame window);
-- grouping + aggregation `sum/min/max/avg/count` with `by`/`without`/nesting ([aggregation-pushdown](./aggregation-pushdown.md));
+- grouping + aggregation `sum/min/max/avg/count` with `by`/`without`/nesting ([aggregation-pushdown](./2026-06-15_aggregation-pushdown.md));
 - `topk`/`bottomk` (`ROW_NUMBER` window);
 - `clamp_min`/`clamp_max` and scalar∘vector arithmetic that is a plain per-row column op.
 
@@ -37,5 +37,5 @@ The line: a construct is pushed **iff** it is expressible as scan/group-by/windo
 
 ## Consequences
 
-- **Easier:** scope is bounded — the migration touches grouping/aggregation/topk/clamp, not the semantic tail; parity ([NFR2](../DESIGN.md#nfr2)) is preserved because the hard-semantics paths are untouched.
+- **Easier:** scope is bounded — the migration touches grouping/aggregation/topk/clamp, not the semantic tail; parity ([NFR2](../designs/2026-06-15_promql-pushdown.md#nfr2)) is preserved because the hard-semantics paths are untouched.
 - **Harder:** the boundary must be defended in review — new PromQL features get classified against this contract, not pushed reflexively. A construct that "almost" fits relational algebra (vector matching) is deliberately left Rust to avoid fidelity loss.

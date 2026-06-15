@@ -258,7 +258,7 @@ fn rename_inner_group_key(
 /// `agg(v)` ([ADR: aggregation-pushdown]). Nested aggregates chain through the
 /// same path over the uniform frame.
 ///
-/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+/// [ADR: aggregation-pushdown]: ../../docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 async fn lower_aggregate_range(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
@@ -474,7 +474,7 @@ fn matrix_range_ns(expr: &Expr) -> Option<i64> {
 ///   `[T-range, T]` window, then the value at `T` (latest per group);
 /// - a **nested aggregate** (`count(count(m) by (cpu))`): recurse, then re-project.
 ///
-/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+/// [ADR: aggregation-pushdown]: ../../docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 async fn lower_aggregate_instant(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
@@ -2086,7 +2086,7 @@ fn reduce_step(op: &str, acc: f64, n: u64, v: f64) -> f64 {
 /// raw points as-is — the aggregate then groups by the literal sample timestamp,
 /// matching the pre-grid behaviour for the rare no-step path.
 ///
-/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+/// [ADR: aggregation-pushdown]: ../../docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 #[allow(clippy::cast_precision_loss)] // ns→s for the grid; sub-ms precision irrelevant
 fn aggregate_range_series(
     op: &str,
@@ -2143,7 +2143,7 @@ fn aggregate_range_series(
 /// [ADR: aggregation-pushdown] "Amendment"). `step_ns <= 0` means no grid
 /// (raw-sample step), in which case the aggregate reduces over the raw points.
 ///
-/// [ADR: aggregation-pushdown]: ../../docs/workspace/promql-pushdown/adrs/aggregation-pushdown.md
+/// [ADR: aggregation-pushdown]: ../../docs/promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 async fn eval_range_window(
     engine: &super::QueryEngine,
     expr: &Expr,
