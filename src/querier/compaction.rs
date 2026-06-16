@@ -586,6 +586,12 @@ pub(crate) fn merge_ctx(mem_budget_bytes: usize) -> crate::Result<SessionContext
     // (default 10 MB). Tie it to the budget so a small budget can still merge
     // its spilled runs rather than dead-locking on the reservation.
     config.options_mut().execution.sort_spill_reservation_bytes = mem_budget_bytes / 4;
+    // Merge as a SINGLE partition. With N input files DataFusion would otherwise
+    // run up to `target_partitions` (≈ #CPUs) concurrent partition-sorts, each
+    // reserving `sort_spill_reservation_bytes` up front — N × reservation blows
+    // the pool before anything can spill (ResourcesExhausted on a many-file
+    // partition like logs). Compaction is background, so serialising is fine.
+    config.options_mut().execution.target_partitions = 1;
     let rt = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
         .with_disk_manager_builder(datafusion::execution::disk_manager::DiskManagerBuilder::default())
         .with_memory_pool(Arc::new(
@@ -595,31 +601,28 @@ pub(crate) fn merge_ctx(mem_budget_bytes: usize) -> crate::Result<SessionContext
     Ok(SessionContext::new_with_config_rt(config, rt))
 }
 
-/// Build the streaming sort-merge plan over the input files: each is read as a
-/// disk-streaming scan, unioned, then globally sorted by `sort_exprs`. We do
-/// **not** declare `file_sort_order` — only metric files are sorted on write
-/// (`sort_dp_rows`); logs/traces are not, and the file-layout ADR requires the
-/// seal to sort any input. The sort is spillable (see [`merge_ctx`]), so peak
-/// memory stays bounded; DataFusion k-way merges the spilled runs internally.
+/// Build the streaming sort-merge plan over the input files: all files are read
+/// as one disk-streaming scan (a single partition, see [`merge_ctx`]), then
+/// globally sorted by `sort_exprs`. We do **not** declare `file_sort_order` —
+/// only metric files are sorted on write (`sort_dp_rows`); logs/traces are not,
+/// and the file-layout ADR requires the seal to sort any input. The sort is
+/// spillable, so peak memory stays bounded; DataFusion k-way merges the spilled
+/// runs internally.
 pub(crate) async fn build_merge_df(
     ctx: &SessionContext,
     read: &[PathBuf],
     sort_exprs: &[SortExpr],
 ) -> crate::Result<DataFrame> {
-    let mut acc: Option<DataFrame> = None;
-    for path in read {
-        let df = ctx
-            .read_parquet(
-                path.to_string_lossy().to_string(),
-                ParquetReadOptions::default(),
-            )
-            .await?;
-        acc = Some(match acc {
-            Some(prev) => prev.union(df)?,
-            None => df,
-        });
+    if read.is_empty() {
+        return Err(err("merge: no input files"));
     }
-    let df = acc.ok_or_else(|| err("merge: no input files"))?;
+    let paths: Vec<String> = read
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let df = ctx
+        .read_parquet(paths, ParquetReadOptions::default())
+        .await?;
     Ok(df.sort(sort_exprs.to_vec())?)
 }
 
@@ -822,6 +825,50 @@ mod tests {
             reservation.try_grow(8 << 20).is_err(),
             "merge pool must be bounded to its budget; an unbounded pool OOMs the day-seal"
         );
+        // Single partition: N concurrent partition-sorts would each reserve the
+        // spill headroom up front and exhaust the pool on a many-file partition.
+        assert_eq!(
+            ctx.copied_config().options().execution.target_partitions,
+            1,
+            "merge must run as one partition so spill reservations don't multiply"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seal_merges_many_files_single_partition() {
+        // The real failure was a many-file partition (logs: ~136 files): N
+        // partition-sorts × per-sort spill reservation exhausted the pool. With
+        // one partition this seals correctly to a sorted, complete output.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        let files = 12;
+        for f in 0..files {
+            // interleaved services across files so a correct merge is required
+            write_raw(
+                &dir,
+                &format!("{f:02}-00-00.parquet"),
+                &["a", "m", "z"],
+                &[f, f, f],
+                &[f, f, f],
+            );
+        }
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
+
+        let batches = read_batches(&dir.join("compacted-2026-05-30.parquet")).unwrap();
+        let mut svcs = Vec::new();
+        for b in &batches {
+            let col = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..col.len() {
+                svcs.push(col.value(i).to_string());
+            }
+        }
+        assert_eq!(svcs.len(), (files as usize) * 3, "all rows preserved");
+        let mut sorted = svcs.clone();
+        sorted.sort();
+        assert_eq!(svcs, sorted, "globally sorted across all files");
     }
 
     #[tokio::test]

@@ -42,6 +42,12 @@ compactor. This is the [NFR3](../../DESIGN.md#nfr3)/no-spill risk made real.
   [NFR5](../../DESIGN.md#nfr5)'s cache budget) **plus a `DiskManager`**, so the
   sort spills to disk instead of OOMing. `sort_spill_reservation_bytes` is tied
   to the budget so a small budget can still merge its spilled runs;
+- reads all inputs in **one scan as a single partition** (`target_partitions =
+  1`). With N input files DataFusion otherwise runs up to `target_partitions`
+  (≈ #CPUs) concurrent partition-sorts, **each reserving `sort_spill_reservation_bytes`
+  up front** — N × reservation exhausts the pool *before anything can spill*
+  (`ResourcesExhausted` on a many-file partition like logs, ~136 files). Serial
+  merge is fine for background compaction;
 - **streams the sorted output to the `ArrowWriter` batch-by-batch**
   (`execute_stream`), never `collect()`-ing the full result.
 
