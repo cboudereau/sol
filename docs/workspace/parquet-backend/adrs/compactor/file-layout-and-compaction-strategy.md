@@ -40,6 +40,7 @@ Retention pruning (delete files past a configured age) runs in the same backgrou
 > - For metrics, compaction additionally produces **rollup tiers** (5m/1h/1d, [FR6](../../DESIGN.md#fr6)) for the cold tail, storing bucket counts / counter values (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct.
 > - Compaction is a **standalone Parquet→Parquet component**, run as the **singleton** compactor role on a **sealed-day cadence** with footer-provenance consistency — see [compaction-consistency](./compaction-consistency.md), which supersedes the embedded-background-task framing above.
 > - Partitioning **at scale** (many services) and the **file-naming convention** (raw UUID token vs deterministic, no-GUID compacted/rollup names; the `parse_hour` ⇄ path-template coupling) are decided in [partitioning-and-file-naming](./partitioning-and-file-naming.md).
+> - The seal/merge runs as a **bounded-memory, disk-spilling streaming sort** (not a full in-RAM sort) — see [bounded-memory-seal-merge](./bounded-memory-seal-merge.md), the fix for the day-seal OOM.
 
 ## Consequences
 

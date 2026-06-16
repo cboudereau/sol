@@ -24,11 +24,13 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::MemTable;
+use datafusion::dataframe::DataFrame;
+use datafusion::logical_expr::SortExpr;
 use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use datafusion::parquet::file::metadata::KeyValue;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use futures::StreamExt;
 
 /// Footer key: compaction level (`0`=raw, `1`=day-merge, `2`=rollup…).
 const LEVEL_KEY: &str = "sol.compaction.level";
@@ -42,6 +44,12 @@ const COMPACTED_PREFIX: &str = "compacted-";
 /// `metrics_5m/1h/1d` tables and are NOT part of the lossless union, so they
 /// are excluded from [`resolve_files`] (and never fed into a seal merge).
 const ROLLUP_PREFIX: &str = "rollup-";
+/// Memory budget for the seal/merge sort. The merge streams batches from disk
+/// and **spills sorted runs to disk** past this cap, so peak RAM is bounded
+/// regardless of how large a sealed day is — the fix for the midnight day-seal
+/// OOM. Sized well under NFR5's cache budget so the compactor co-exists with
+/// the querier on one host.
+const MERGE_MEM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(msg.into())
@@ -231,39 +239,52 @@ impl Compactor {
         out_name: &str,
         level: i32,
     ) -> crate::Result<Option<usize>> {
-        let mut batches: Vec<RecordBatch> = Vec::new();
-        for path in read {
-            batches.extend(read_batches(path)?);
-        }
-        if batches.is_empty() {
+        if read.is_empty() {
             return Ok(None);
         }
-        let schema = batches[0].schema();
+        // Pick the sort columns from the (metadata-only) schema of the first input.
+        // Sort by (service_name, [prom_name], time): metric files carry prom_name
+        // and sorting on it tightens read-time row-group pruning; logs/traces have
+        // no prom_name column, so include it only when present.
+        let schema = read_schema(&read[0])?;
         let time_col = if schema.field_with_name("time_unix_nano").is_ok() {
             "time_unix_nano"
         } else {
             "start_time_unix_nano"
         };
-
-        let ctx = SessionContext::new();
-        let mem = MemTable::try_new(Arc::clone(&schema), vec![batches])?;
-        ctx.register_table("t", Arc::new(mem))?;
-        // Sort by (service_name, [prom_name], time): metric files carry prom_name
-        // and sorting on it tightens read-time row-group pruning; logs/traces have
-        // no prom_name column, so include it only when present.
         let mut sort_exprs = vec![datafusion::prelude::col("service_name").sort(true, false)];
         if schema.field_with_name("prom_name").is_ok() {
             sort_exprs.push(datafusion::prelude::col("prom_name").sort(true, false));
         }
         sort_exprs.push(datafusion::prelude::col(time_col).sort(true, false));
-        let df = ctx.table("t").await?.sort(sort_exprs)?;
-        let sorted = df.collect().await?;
-        let rows: usize = sorted.iter().map(RecordBatch::num_rows).sum();
 
-        write_with_provenance(
-            &dir.join(out_name),
-            schema,
-            &sorted,
+        // Stream a spilling sort-merge of the inputs straight to the writer —
+        // never materialise the whole partition in RAM (the OOM that killed the
+        // demo compactor on the midnight day-seal). DataFusion's external sort
+        // spills sorted runs to disk past the memory budget, then k-way merges
+        // them; we consume that merged stream and write it batch-by-batch.
+        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES)?;
+        let df = build_merge_df(&ctx, read, &sort_exprs).await?;
+        let mut stream = df.execute_stream().await?;
+        let out_path = dir.join(out_name);
+        let (mut writer, staging) = open_staged_writer(&out_path, stream.schema())?;
+        let mut rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| err(e.to_string()))?;
+            rows += batch.num_rows();
+            writer.write(&batch)?;
+        }
+        if rows == 0 {
+            // No rows to carry forward — discard the staged file, write nothing
+            // (matches the prior `batches.is_empty()` behaviour).
+            drop(writer);
+            let _ = fs::remove_file(&staging);
+            return Ok(None);
+        }
+        finalize_writer(
+            writer,
+            &staging,
+            &out_path,
             level,
             &supersede.join(","),
             "raw",
@@ -475,9 +496,62 @@ fn hour_end_ns(date: NaiveDate, hour: u32) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-/// Atomically write `batches` to `path` with compaction footer provenance:
-/// stages to a hidden `.tmp` sibling and renames into place, so a crash
-/// mid-write never leaves a visible partial file.
+/// Open a ZSTD-9 `ArrowWriter` over a hidden `.tmp` staging sibling of `path`.
+/// Compaction is background (not latency-sensitive) and its output is read
+/// repeatedly, so compress at a high level. The default `WriterProperties` is
+/// UNCOMPRESSED — merging zstd raw files into an uncompressed file *grew*
+/// on-disk size (a 107 MB compacted log file 7z'd to 8 MB before this fix).
+fn open_staged_writer(
+    path: &Path,
+    schema: Arc<datafusion::arrow::datatypes::Schema>,
+) -> crate::Result<(ArrowWriter<fs::File>, PathBuf)> {
+    let staging = path.with_file_name(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("compacted.parquet")
+    ));
+    let file = fs::File::create(&staging)?;
+    let props = datafusion::parquet::file::properties::WriterProperties::builder()
+        .set_compression(datafusion::parquet::basic::Compression::ZSTD(
+            datafusion::parquet::basic::ZstdLevel::try_new(9).map_err(|e| err(e.to_string()))?,
+        ))
+        .build();
+    let writer = ArrowWriter::try_new(file, schema, Some(props))?;
+    Ok((writer, staging))
+}
+
+/// Append the compaction footer provenance, close the writer, then durably
+/// publish the staged file: a later pass deletes the inputs this file
+/// supersedes, so it must survive a crash. fsync the file, rename, then fsync
+/// the directory entry — a crash mid-write never leaves a visible partial file.
+fn finalize_writer(
+    mut writer: ArrowWriter<fs::File>,
+    staging: &Path,
+    path: &Path,
+    level: i32,
+    supersedes: &str,
+    resolution: &str,
+) -> crate::Result<()> {
+    writer.append_key_value_metadata(KeyValue::new(LEVEL_KEY.into(), Some(level.to_string())));
+    writer.append_key_value_metadata(KeyValue::new(
+        SUPERSEDES_KEY.into(),
+        Some(supersedes.to_string()),
+    ));
+    writer.append_key_value_metadata(KeyValue::new(
+        RESOLUTION_KEY.into(),
+        Some(resolution.to_string()),
+    ));
+    writer.close()?;
+    fs::File::open(staging)?.sync_all()?;
+    fs::rename(staging, path)?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Atomically write `batches` to `path` with compaction footer provenance.
 pub(crate) fn write_with_provenance(
     path: &Path,
     schema: Arc<datafusion::arrow::datatypes::Schema>,
@@ -486,49 +560,67 @@ pub(crate) fn write_with_provenance(
     supersedes: &str,
     resolution: &str,
 ) -> crate::Result<()> {
-    let staging = path.with_file_name(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("compacted.parquet")
-    ));
-    {
-        let file = fs::File::create(&staging)?;
-        // Compaction is background (not latency-sensitive) and its output is read
-        // repeatedly, so compress with ZSTD at a high level. The default
-        // `WriterProperties` is UNCOMPRESSED — merging zstd raw files into an
-        // uncompressed file *grew* on-disk size (a 107 MB compacted log file
-        // 7z'd to 8 MB before this fix).
-        let props = datafusion::parquet::file::properties::WriterProperties::builder()
-            .set_compression(datafusion::parquet::basic::Compression::ZSTD(
-                datafusion::parquet::basic::ZstdLevel::try_new(9)
-                    .map_err(|e| err(e.to_string()))?,
-            ))
-            .build();
-        let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-        for batch in batches {
-            writer.write(batch)?;
-        }
-        writer.append_key_value_metadata(KeyValue::new(LEVEL_KEY.into(), Some(level.to_string())));
-        writer.append_key_value_metadata(KeyValue::new(
-            SUPERSEDES_KEY.into(),
-            Some(supersedes.to_string()),
-        ));
-        writer.append_key_value_metadata(KeyValue::new(
-            RESOLUTION_KEY.into(),
-            Some(resolution.to_string()),
-        ));
-        writer.close()?;
+    let (mut writer, staging) = open_staged_writer(path, schema)?;
+    for batch in batches {
+        writer.write(batch)?;
     }
-    // Durably persist the file contents before the rename is relied upon: a
-    // later pass deletes the inputs this file supersedes, so it must survive a
-    // crash. fsync the file, rename, then fsync the directory entry.
-    fs::File::open(&staging)?.sync_all()?;
-    fs::rename(&staging, path)?;
-    if let Some(parent) = path.parent() {
-        fs::File::open(parent)?.sync_all()?;
+    finalize_writer(writer, &staging, path, level, supersedes, resolution)
+}
+
+/// Read just the Arrow schema from a Parquet file's footer (no row groups).
+fn read_schema(path: &Path) -> crate::Result<datafusion::arrow::datatypes::SchemaRef> {
+    let file = fs::File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    Ok(Arc::clone(builder.schema()))
+}
+
+/// Session for the seal/merge: a bounded `FairSpillPool` + an on-OS-temp
+/// `DiskManager`, so the sort spills to disk instead of OOMing on a large
+/// sealed day. Utf8View coercion is disabled so the merged output keeps the
+/// codec's exact schema (Utf8/Binary) — otherwise the compacted file diverges
+/// from the raw inputs the querier unions it with.
+pub(crate) fn merge_ctx(mem_budget_bytes: usize) -> crate::Result<SessionContext> {
+    let mut config = datafusion::prelude::SessionConfig::new();
+    config.options_mut().execution.parquet.schema_force_view_types = false;
+    // The external sort holds a reservation aside for its spill-merge phase
+    // (default 10 MB). Tie it to the budget so a small budget can still merge
+    // its spilled runs rather than dead-locking on the reservation.
+    config.options_mut().execution.sort_spill_reservation_bytes = mem_budget_bytes / 4;
+    let rt = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
+        .with_disk_manager_builder(datafusion::execution::disk_manager::DiskManagerBuilder::default())
+        .with_memory_pool(Arc::new(
+            datafusion::execution::memory_pool::FairSpillPool::new(mem_budget_bytes),
+        ))
+        .build_arc()?;
+    Ok(SessionContext::new_with_config_rt(config, rt))
+}
+
+/// Build the streaming sort-merge plan over the input files: each is read as a
+/// disk-streaming scan, unioned, then globally sorted by `sort_exprs`. We do
+/// **not** declare `file_sort_order` — only metric files are sorted on write
+/// (`sort_dp_rows`); logs/traces are not, and the file-layout ADR requires the
+/// seal to sort any input. The sort is spillable (see [`merge_ctx`]), so peak
+/// memory stays bounded; DataFusion k-way merges the spilled runs internally.
+pub(crate) async fn build_merge_df(
+    ctx: &SessionContext,
+    read: &[PathBuf],
+    sort_exprs: &[SortExpr],
+) -> crate::Result<DataFrame> {
+    let mut acc: Option<DataFrame> = None;
+    for path in read {
+        let df = ctx
+            .read_parquet(
+                path.to_string_lossy().to_string(),
+                ParquetReadOptions::default(),
+            )
+            .await?;
+        acc = Some(match acc {
+            Some(prev) => prev.union(df)?,
+            None => df,
+        });
     }
-    Ok(())
+    let df = acc.ok_or_else(|| err("merge: no input files"))?;
+    Ok(df.sort(sort_exprs.to_vec())?)
 }
 
 /// Read all record batches from a Parquet file.
@@ -686,6 +778,86 @@ mod tests {
         assert_eq!(report.partitions_sealed, 1, "only the sealed partition");
         assert_eq!(count_parquet(&active, true), 0, "active day not compacted");
         assert_eq!(count_parquet(&sealed, true), 1, "sealed day compacted");
+    }
+
+    #[tokio::test]
+    async fn test_seal_streaming_merge_globally_sorts_overlapping_inputs() {
+        // Two pre-sorted files whose service ranges INTERLEAVE (a,c | b,d): a
+        // naive concatenation is a,c,b,d (not sorted) — only a real merge yields
+        // the globally sorted a,b,c,d. Proves the streaming merge is correct.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        write_raw(&dir, "a.parquet", &["a", "c"], &[1, 1], &[1, 3]);
+        write_raw(&dir, "b.parquet", &["b", "d"], &[1, 1], &[2, 4]);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
+
+        let batches = read_batches(&dir.join("compacted-2026-05-30.parquet")).unwrap();
+        let mut svcs = Vec::new();
+        for b in &batches {
+            let col = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..col.len() {
+                svcs.push(col.value(i).to_string());
+            }
+        }
+        assert_eq!(
+            svcs,
+            vec!["a", "b", "c", "d"],
+            "merge must globally sort by service_name across files, not concat"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_ctx_pool_is_bounded_so_sort_spills() {
+        // The day-seal OOM came from an unbounded memory pool. merge_ctx must
+        // cap the pool (paired with its DiskManager, that is what makes the
+        // external sort spill to disk instead of buffering the whole partition).
+        use datafusion::execution::memory_pool::MemoryConsumer;
+        let ctx = merge_ctx(1 << 20).unwrap(); // 1 MiB budget
+        let pool = Arc::clone(&ctx.task_ctx().runtime_env().memory_pool);
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        assert!(
+            reservation.try_grow(8 << 20).is_err(),
+            "merge pool must be bounded to its budget; an unbounded pool OOMs the day-seal"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_streams_large_input_correctly() {
+        // Many reverse-sorted rows merge to a complete, globally-sorted output
+        // through the streaming (execute_stream, no collect) path.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        let n: i64 = 50_000;
+        let svc: Vec<String> = (0..n).map(|i| format!("svc-{:06}", n - 1 - i)).collect();
+        let svc_ref: Vec<&str> = svc.iter().map(String::as_str).collect();
+        let ts: Vec<i64> = (0..n).collect();
+        let vals: Vec<i64> = (0..n).collect();
+        write_raw(&dir, "a.parquet", &svc_ref, &ts, &vals);
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
+
+        let batches = read_batches(&dir.join("compacted-2026-05-30.parquet")).unwrap();
+        let mut count = 0usize;
+        let mut last: Option<String> = None;
+        let mut sorted = true;
+        for b in &batches {
+            let col = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..col.len() {
+                let v = col.value(i).to_string();
+                if last.as_ref().is_some_and(|p| &v < p) {
+                    sorted = false;
+                }
+                last = Some(v);
+                count += 1;
+            }
+        }
+        assert_eq!(count, n as usize, "all rows preserved");
+        assert!(sorted, "output globally sorted");
     }
 
     #[tokio::test]
