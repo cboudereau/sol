@@ -87,6 +87,17 @@ plan is shared with the in-memory `rollup_batches` test helper (`rollup_plan`).
   budget knob trades RAM for spill volume.
 - **Metrics are re-sorted even though already sorted** — a CPU cost we accept to
   keep one correct path for all signals and honour the sort-any-input guarantee.
+- **Passes are slow (memory-for-throughput trade-off).** `target_partitions = 1`
+  serialises the merge and every rollup, and spilling adds disk I/O. Verified
+  live (2026-06-17 demo seal): a full pass over the sealed day took **~16 min**
+  — each rollup tier ~2–3 min — to seal all signals, generate the 5m/1h/1d
+  tiers for `gauge`/`sum`/`histogram`, and GC each partition to one file (logs
+  142→1, traces 262→1). No OOM, compactor stayed up throughout. This is fine for
+  background compaction at the demo cadence (`interval_secs = 300`, work is
+  idempotent so a pass simply resumes), but it does **not** scale to high
+  ingest. Levers if throughput matters: raise `MERGE_MEM_BUDGET_BYTES` and allow
+  `target_partitions > 1` (more concurrent sorts × spill reservation — size the
+  budget accordingly), and/or the zero-resort k-way merge below.
 - **Future optimisation:** if the codec also sorts logs/traces on write (by
   `(service_name, time)`), the seal could declare `file_sort_order` per input
   and lower to a `SortPreservingMergeExec` — a true zero-resort streaming k-way
