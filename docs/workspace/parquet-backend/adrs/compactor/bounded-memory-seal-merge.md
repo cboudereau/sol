@@ -66,6 +66,18 @@ file-layout ADR guarantees the seal sorts unsorted input. Trusting a
 coerces `Utf8`→`Utf8View` on read, which would make the compacted file's schema
 diverge from the raw files the querier unions it with.
 
+## Rollup path (same fix)
+
+The metric **rollup** (`generate_rollup`) had the identical anti-pattern —
+`read_batches` the whole compacted daily into a `Vec`, `MemTable`, downsample,
+`collect()` on a default unbounded `SessionContext` — and OOM-killed the demo
+compactor a second time (00:18 UTC, *after* the large-logs seal succeeded, while
+rolling up the 64 MB `sum`/`gauge` dailies). It now reuses `merge_ctx`
+(bounded `FairSpillPool` + `DiskManager` + single partition), reads the
+survivors as a streaming `read_parquet` scan, and streams the downsample output
+to the writer via `execute_stream` — no `Vec`, no `collect()`. The downsample
+plan is shared with the in-memory `rollup_batches` test helper (`rollup_plan`).
+
 ## Consequences
 
 - **No more day-seal OOM** — the seal of an arbitrarily large partition stays

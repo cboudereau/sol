@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
+#[cfg(test)]
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::SortExpr;
@@ -49,7 +50,7 @@ const ROLLUP_PREFIX: &str = "rollup-";
 /// regardless of how large a sealed day is — the fix for the midnight day-seal
 /// OOM. Sized well under NFR5's cache budget so the compactor co-exists with
 /// the querier on one host.
-const MERGE_MEM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MERGE_MEM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(msg.into())
@@ -501,7 +502,7 @@ fn hour_end_ns(date: NaiveDate, hour: u32) -> i64 {
 /// repeatedly, so compress at a high level. The default `WriterProperties` is
 /// UNCOMPRESSED — merging zstd raw files into an uncompressed file *grew*
 /// on-disk size (a 107 MB compacted log file 7z'd to 8 MB before this fix).
-fn open_staged_writer(
+pub(crate) fn open_staged_writer(
     path: &Path,
     schema: Arc<datafusion::arrow::datatypes::Schema>,
 ) -> crate::Result<(ArrowWriter<fs::File>, PathBuf)> {
@@ -525,7 +526,7 @@ fn open_staged_writer(
 /// publish the staged file: a later pass deletes the inputs this file
 /// supersedes, so it must survive a crash. fsync the file, rename, then fsync
 /// the directory entry — a crash mid-write never leaves a visible partial file.
-fn finalize_writer(
+pub(crate) fn finalize_writer(
     mut writer: ArrowWriter<fs::File>,
     staging: &Path,
     path: &Path,
@@ -552,6 +553,9 @@ fn finalize_writer(
 }
 
 /// Atomically write `batches` to `path` with compaction footer provenance.
+/// Test-only since the live seal/rollup paths stream via `open_staged_writer`
+/// + `finalize_writer`; tests use it to synthesise fixture files.
+#[cfg(test)]
 pub(crate) fn write_with_provenance(
     path: &Path,
     schema: Arc<datafusion::arrow::datatypes::Schema>,
@@ -626,7 +630,9 @@ pub(crate) async fn build_merge_df(
     Ok(df.sort(sort_exprs.to_vec())?)
 }
 
-/// Read all record batches from a Parquet file.
+/// Read all record batches from a Parquet file. Test-only: the live paths
+/// stream via `read_parquet` rather than buffering whole files.
+#[cfg(test)]
 pub(crate) fn read_batches(path: &Path) -> crate::Result<Vec<RecordBatch>> {
     let file = fs::File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;

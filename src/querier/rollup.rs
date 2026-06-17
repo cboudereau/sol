@@ -18,10 +18,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use futures::StreamExt;
 
-use super::compaction::{read_batches, resolve_files, write_with_provenance};
+use super::compaction::{
+    MERGE_MEM_BUDGET_BYTES, finalize_writer, merge_ctx, open_staged_writer, resolve_files,
+};
 
 const M5_NS: i64 = 300_000_000_000;
 const H1_NS: i64 = 3_600_000_000_000;
@@ -93,9 +97,6 @@ pub async fn rollup_batches(
     if batches.is_empty() || resolution_ns <= 0 {
         return Ok(batches);
     }
-    use datafusion::arrow::datatypes::DataType::Int64;
-    use datafusion::logical_expr::expr_fn::cast;
-    use datafusion::prelude::{col, lit};
     let schema = batches[0].schema();
     let ctx = SessionContext::new();
     // The attributes column is a Map (not partitionable); key on the series-key UDF.
@@ -104,25 +105,38 @@ pub async fn rollup_batches(
         "m",
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?),
     )?;
-    // Keep the last raw sample per (series, time-bucket): partition by the series
-    // key plus the bucket index `time / resolution`, take the latest by time (P5).
+    let out = rollup_plan(ctx.table("m").await?, &schema, resolution_ns)?;
+    Ok(out.collect().await?)
+}
+
+/// The downsample plan: keep the last raw sample per `(name, service_name,
+/// attributes-series-key, time-bucket)`, project the original columns back, and
+/// sort `(service_name, prom_name, time)` so the tier files prune like raw ones.
+/// `arrow_schema` provides the column projection; the table must come from a ctx
+/// that has [`super::udf::prom_series_key_udf`] registered.
+fn rollup_plan(
+    table: DataFrame,
+    arrow_schema: &datafusion::arrow::datatypes::SchemaRef,
+    resolution_ns: i64,
+) -> crate::Result<DataFrame> {
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::{col, lit};
+    // Partition by the series key plus the bucket index `time / resolution`,
+    // take the latest by time (P5).
     let bucket = cast(col("time_unix_nano"), Int64) / lit(resolution_ns);
     let series_key = super::udf::prom_series_key_udf().call(vec![col("attributes")]);
     let latest = super::plan::frame::latest_per_series(
-        ctx.table("m").await?,
+        table,
         vec![col("name"), col("service_name"), series_key, bucket],
         "time_unix_nano",
     )?;
-    // Project the original columns back (drop the window `rn`), preserving schema.
-    let cols: Vec<_> = schema.fields().iter().map(|f| col(f.name())).collect();
-    // Rollups are metrics-only, so prom_name is always present — sort on it
-    // (between service_name and time) so the tier files prune like the raw ones.
-    let out = latest.select(cols)?.sort(vec![
+    let cols: Vec<_> = arrow_schema.fields().iter().map(|f| col(f.name())).collect();
+    Ok(latest.select(cols)?.sort(vec![
         col("service_name").sort(true, false),
         col("prom_name").sort(true, false),
         col("time_unix_nano").sort(true, false),
-    ])?;
-    Ok(out.collect().await?)
+    ])?)
 }
 
 /// Whether `out` already reflects `sources` — true when the rollup file exists
@@ -159,20 +173,36 @@ pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Opti
     if rollup_is_current(&out, &sources)? {
         return Ok(None); // sealed-day data unchanged — skip the rewrite
     }
-    let mut batches = Vec::new();
-    for path in &sources {
-        batches.extend(read_batches(path)?);
+    let resolution_ns = tier.resolution_ns();
+    if resolution_ns <= 0 {
+        return Ok(None); // Raw tier writes no rollup file
     }
-    if batches.is_empty() {
+    // Bounded, spilling, single-partition session (same budget as the seal) so a
+    // large compacted daily is downsampled without materialising it in RAM —
+    // the rollup-path counterpart of the seal/merge OOM fix. Read the survivors
+    // as a disk-streaming scan and stream the aggregation output to the writer.
+    let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES)?;
+    ctx.register_udf(super::udf::prom_series_key_udf());
+    let paths: Vec<String> = sources.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let scan = ctx.read_parquet(paths, ParquetReadOptions::default()).await?;
+    let arrow_schema: datafusion::arrow::datatypes::SchemaRef =
+        Arc::new(scan.schema().as_arrow().clone());
+    let df = rollup_plan(scan, &arrow_schema, resolution_ns)?;
+    let mut stream = df.execute_stream().await?;
+
+    let (mut writer, staging) = open_staged_writer(&out, stream.schema())?;
+    let mut rows = 0usize;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        rows += batch.num_rows();
+        writer.write(&batch)?;
+    }
+    if rows == 0 {
+        drop(writer);
+        let _ = fs::remove_file(&staging);
         return Ok(None);
     }
-    let rolled = rollup_batches(batches, tier.resolution_ns()).await?;
-    if rolled.is_empty() {
-        return Ok(None);
-    }
-    let rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
-    let schema = rolled[0].schema();
-    write_with_provenance(&out, schema, &rolled, 2, "", tier.label())?;
+    finalize_writer(writer, &staging, &out, 2, "", tier.label())?;
     super::telemetry::record_compaction(0, 1, rows as u64, std::time::Duration::from_secs(0));
     Ok(Some(rows))
 }
@@ -180,6 +210,7 @@ pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::querier::compaction::write_with_provenance;
     use datafusion::arrow::array::{AsArray, Float64Array, StringArray, TimestampNanosecondArray};
     use datafusion::arrow::datatypes::{DataType, Field, Float64Type, Schema, TimeUnit};
 
