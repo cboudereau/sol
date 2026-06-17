@@ -44,6 +44,15 @@ order is a cutover: any unsorted file silently mis-merges.
 - **Fast passes** — the seal merge stops buffering/re-sorting; the big logs seal
   becomes a streaming merge. (Rollup cost is unchanged — it's a separate
   aggregation, not addressed here.)
+- **SPM memory ∝ fan-in.** A `SortPreservingMerge` holds **one batch per input
+  file** at once and **cannot spill** those buffers, so peak RAM ≈
+  `fan_in × batch_size × row_width`. Intraday compaction merges a whole hour of
+  raw files (≈100s of small files) at once — at the default 8192-row batch that
+  blew the 128 MB pool live (2026-06-17 fresh start: `SortPreservingMergeExec`
+  reservation hit ~123 MB and failed). Bounded by capping the merge batch size
+  (`MERGE_BATCH_SIZE = 1024`), so `fan_in × batch` stays well under the pool even
+  at high fan-in. The day-seal itself is low fan-in (~24 hourly L1 files after
+  intraday), so its cost is unaffected.
 - **Cutover risk** — if any input is not actually sorted by the exact key, SPM
   mis-orders **silently**. Mitigated by: codec sort-on-write (all signals), the
   one-shot example for pre-existing raw, and a plan-shape test asserting SPM (not

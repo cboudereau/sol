@@ -51,6 +51,12 @@ const ROLLUP_PREFIX: &str = "rollup-";
 /// OOM. Sized well under NFR5's cache budget so the compactor co-exists with
 /// the querier on one host.
 pub(crate) const MERGE_MEM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+/// Batch size for the merge. A `SortPreservingMerge` buffers one batch per input
+/// file simultaneously and **cannot spill** them, so its peak RAM is
+/// `fan_in × batch_size × row_width`. Intraday compaction merges a whole hour of
+/// raw files (≈100s of small files) at once, so the default 8192-row batch blew
+/// the pool; a small batch keeps `fan_in × batch` bounded even at high fan-in.
+pub(crate) const MERGE_BATCH_SIZE: usize = 1024;
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(msg.into())
@@ -579,6 +585,9 @@ pub(crate) fn merge_ctx(
     // (default 10 MB). Tie it to the budget so a small budget can still merge
     // its spilled runs rather than dead-locking on the reservation.
     config.options_mut().execution.sort_spill_reservation_bytes = mem_budget_bytes / 4;
+    // Cap the batch size so a high-fan-in SortPreservingMerge (one un-spillable
+    // batch per input file) stays within the pool — see MERGE_BATCH_SIZE.
+    config.options_mut().execution.batch_size = MERGE_BATCH_SIZE;
     // `Some(1)` forces a SINGLE partition — for a *full* sort (the rollup
     // aggregation) this avoids N concurrent partition-sorts each reserving spill
     // headroom up front (N × reservation blows the pool before anything spills).
@@ -854,6 +863,13 @@ mod tests {
             ctx.copied_config().options().execution.target_partitions,
             1,
             "Some(1) must force one partition so spill reservations don't multiply"
+        );
+        // Small batch caps a high-fan-in SortPreservingMerge's un-spillable
+        // per-input buffers (fan_in × batch_size) within the pool.
+        assert_eq!(
+            ctx.copied_config().options().execution.batch_size,
+            MERGE_BATCH_SIZE,
+            "merge must use the capped batch size to bound SPM fan-in memory"
         );
     }
 
