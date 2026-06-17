@@ -771,6 +771,11 @@ fn write_log_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     logs: &[&OtelLog],
 ) -> Result<(), ParquetEncodingError> {
+    // Sort-on-write: order rows by (service_name, time_unix_nano) so the file is
+    // locally sorted. Cheap pointer reorder; all columns below map in this order.
+    let mut logs = logs.to_vec();
+    sort_logs(&mut logs);
+    let logs = logs.as_slice();
     // Column 0: service_name (REQUIRED)
     let service_names: Vec<ByteArray> = logs
         .iter()
@@ -1182,6 +1187,11 @@ fn write_trace_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     spans: &[&OtelSpan],
 ) -> Result<(), ParquetEncodingError> {
+    // Sort-on-write: order rows by (service_name, start_time_unix_nano) so the
+    // file is locally sorted. Cheap pointer reorder; all columns map in order.
+    let mut spans = spans.to_vec();
+    sort_spans(&mut spans);
+    let spans = spans.as_slice();
     // Column 0: service_name (REQUIRED)
     let service_names: Vec<ByteArray> = spans
         .iter()
@@ -2006,6 +2016,30 @@ fn sort_dp_rows<R>(rows: &mut [R], key: impl Fn(&R) -> (&OtelMetric, u64)) {
             extract_service_name(metric.resource_attrs()),
             metric_prom_name(metric),
             time_unix_nano,
+        )
+    });
+}
+
+/// Sort log rows by the read-side key `(service_name, time_unix_nano)` so each
+/// written Parquet file is locally sorted — the write-side hint that lets the
+/// compactor's seal merge pre-sorted files (zero-resort k-way merge) instead of
+/// re-sorting. `time_unix_nano` is OPTIONAL (0 = absent → NULL); the reader
+/// orders NULLs last, so absent-time logs sort last here too.
+fn sort_logs(logs: &mut [&OtelLog]) {
+    logs.sort_by_cached_key(|l| {
+        let t = l.time_unix_nano();
+        (extract_service_name(l.resource_attrs()), t == 0, t)
+    });
+}
+
+/// Sort span rows by the read-side key `(service_name, start_time_unix_nano)`
+/// (same write-side hint). `start_time_unix_nano` is REQUIRED, so no NULL
+/// handling is needed.
+fn sort_spans(spans: &mut [&OtelSpan]) {
+    spans.sort_by_cached_key(|s| {
+        (
+            extract_service_name(s.resource_attrs()),
+            s.start_time_unix_nano(),
         )
     });
 }
@@ -5216,6 +5250,103 @@ mod tests {
                 ("svc-b".to_string(), "only", 500),
             ],
             "rows sorted by (service_name, name, time_unix_nano)"
+        );
+    }
+
+    #[test]
+    fn test_log_rows_sorted_by_service_name_time() {
+        // Sort-on-write: logs ordered by (service_name, time_unix_nano), absent
+        // time (0 → NULL) last, matching the reader's nulls-last order.
+        use opentelemetry_proto::tonic::logs::v1::LogRecord;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        let log = |svc: &str, t: u64| {
+            let record = LogRecord {
+                time_unix_nano: t,
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelLog::from_parts(
+                record,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+        let a3 = log("svc-a", 3000);
+        let b1 = log("svc-b", 1000);
+        let a0 = log("svc-a", 0); // absent → last within svc-a
+        let a1 = log("svc-a", 1000);
+        let mut v: Vec<&OtelLog> = vec![&a3, &b1, &a0, &a1];
+        sort_logs(&mut v);
+        let got: Vec<(String, u64)> = v
+            .iter()
+            .map(|l| (extract_service_name(l.resource_attrs()), l.time_unix_nano()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), 1000),
+                ("svc-a".to_string(), 3000),
+                ("svc-a".to_string(), 0),
+                ("svc-b".to_string(), 1000),
+            ],
+            "logs sorted by (service_name, time); absent time last"
+        );
+    }
+
+    #[test]
+    fn test_trace_rows_sorted_by_service_name_start_time() {
+        // Sort-on-write: spans ordered by (service_name, start_time_unix_nano).
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::Span;
+        let span = |svc: &str, start: u64| {
+            let s = Span {
+                start_time_unix_nano: start,
+                end_time_unix_nano: start + 1,
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelSpan::from_parts(
+                s,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+        let b1 = span("svc-b", 1000);
+        let a3 = span("svc-a", 3000);
+        let a1 = span("svc-a", 1000);
+        let mut v: Vec<&OtelSpan> = vec![&b1, &a3, &a1];
+        sort_spans(&mut v);
+        let got: Vec<(String, u64)> = v
+            .iter()
+            .map(|s| {
+                (
+                    extract_service_name(s.resource_attrs()),
+                    s.start_time_unix_nano(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), 1000),
+                ("svc-a".to_string(), 3000),
+                ("svc-b".to_string(), 1000),
+            ],
+            "spans sorted by (service_name, start_time)"
         );
     }
 
