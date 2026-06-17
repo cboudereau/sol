@@ -243,28 +243,14 @@ impl Compactor {
         if read.is_empty() {
             return Ok(None);
         }
-        // Pick the sort columns from the (metadata-only) schema of the first input.
-        // Sort by (service_name, [prom_name], time): metric files carry prom_name
-        // and sorting on it tightens read-time row-group pruning; logs/traces have
-        // no prom_name column, so include it only when present.
+        // Inputs are all pre-sorted by the read-side key (codec sort-on-write +
+        // prior compaction), so this lowers to a streaming SortPreservingMerge:
+        // a zero-resort k-way merge written batch-by-batch, never materialising
+        // the partition in RAM. `None` keeps per-file partitions so the planner
+        // picks the SPM (not a buffering SortExec). See build_merge_df.
         let schema = read_schema(&read[0])?;
-        let time_col = if schema.field_with_name("time_unix_nano").is_ok() {
-            "time_unix_nano"
-        } else {
-            "start_time_unix_nano"
-        };
-        let mut sort_exprs = vec![datafusion::prelude::col("service_name").sort(true, false)];
-        if schema.field_with_name("prom_name").is_ok() {
-            sort_exprs.push(datafusion::prelude::col("prom_name").sort(true, false));
-        }
-        sort_exprs.push(datafusion::prelude::col(time_col).sort(true, false));
-
-        // Stream a spilling sort-merge of the inputs straight to the writer —
-        // never materialise the whole partition in RAM (the OOM that killed the
-        // demo compactor on the midnight day-seal). DataFusion's external sort
-        // spills sorted runs to disk past the memory budget, then k-way merges
-        // them; we consume that merged stream and write it batch-by-batch.
-        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES)?;
+        let sort_exprs = sort_exprs_for_schema(&schema);
+        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, None)?;
         let df = build_merge_df(&ctx, read, &sort_exprs).await?;
         let mut stream = df.execute_stream().await?;
         let out_path = dir.join(out_name);
@@ -583,19 +569,26 @@ fn read_schema(path: &Path) -> crate::Result<datafusion::arrow::datatypes::Schem
 /// sealed day. Utf8View coercion is disabled so the merged output keeps the
 /// codec's exact schema (Utf8/Binary) — otherwise the compacted file diverges
 /// from the raw inputs the querier unions it with.
-pub(crate) fn merge_ctx(mem_budget_bytes: usize) -> crate::Result<SessionContext> {
+pub(crate) fn merge_ctx(
+    mem_budget_bytes: usize,
+    target_partitions: Option<usize>,
+) -> crate::Result<SessionContext> {
     let mut config = datafusion::prelude::SessionConfig::new();
     config.options_mut().execution.parquet.schema_force_view_types = false;
     // The external sort holds a reservation aside for its spill-merge phase
     // (default 10 MB). Tie it to the budget so a small budget can still merge
     // its spilled runs rather than dead-locking on the reservation.
     config.options_mut().execution.sort_spill_reservation_bytes = mem_budget_bytes / 4;
-    // Merge as a SINGLE partition. With N input files DataFusion would otherwise
-    // run up to `target_partitions` (≈ #CPUs) concurrent partition-sorts, each
-    // reserving `sort_spill_reservation_bytes` up front — N × reservation blows
-    // the pool before anything can spill (ResourcesExhausted on a many-file
-    // partition like logs). Compaction is background, so serialising is fine.
-    config.options_mut().execution.target_partitions = 1;
+    // `Some(1)` forces a SINGLE partition — for a *full* sort (the rollup
+    // aggregation) this avoids N concurrent partition-sorts each reserving spill
+    // headroom up front (N × reservation blows the pool before anything spills).
+    // The seal passes `None` (default ≈ #CPUs) so the planner keeps the per-file
+    // scans as separate ordered partitions and lowers to a streaming
+    // `SortPreservingMerge` rather than coalescing them into a buffering
+    // `SortExec`.
+    if let Some(n) = target_partitions {
+        config.options_mut().execution.target_partitions = n;
+    }
     let rt = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
         .with_disk_manager_builder(datafusion::execution::disk_manager::DiskManagerBuilder::default())
         .with_memory_pool(Arc::new(
@@ -605,28 +598,53 @@ pub(crate) fn merge_ctx(mem_budget_bytes: usize) -> crate::Result<SessionContext
     Ok(SessionContext::new_with_config_rt(config, rt))
 }
 
-/// Build the streaming sort-merge plan over the input files: all files are read
-/// as one disk-streaming scan (a single partition, see [`merge_ctx`]), then
-/// globally sorted by `sort_exprs`. We do **not** declare `file_sort_order` —
-/// only metric files are sorted on write (`sort_dp_rows`); logs/traces are not,
-/// and the file-layout ADR requires the seal to sort any input. The sort is
-/// spillable, so peak memory stays bounded; DataFusion k-way merges the spilled
-/// runs internally.
+/// The read-side sort key for a signal's schema: `(service_name, [prom_name],
+/// time)` — `prom_name` only for metrics; time is `time_unix_nano` when present
+/// (logs/metrics) else `start_time_unix_nano` (traces). All ascending,
+/// nulls-last (`sort(true, false)`), byte-identical to what the codec writes.
+pub(crate) fn sort_exprs_for_schema(
+    schema: &datafusion::arrow::datatypes::SchemaRef,
+) -> Vec<SortExpr> {
+    use datafusion::prelude::col;
+    let time_col = if schema.field_with_name("time_unix_nano").is_ok() {
+        "time_unix_nano"
+    } else {
+        "start_time_unix_nano"
+    };
+    let mut exprs = vec![col("service_name").sort(true, false)];
+    if schema.field_with_name("prom_name").is_ok() {
+        exprs.push(col("prom_name").sort(true, false));
+    }
+    exprs.push(col(time_col).sort(true, false));
+    exprs
+}
+
+/// Build the **zero-resort k-way merge** plan over the input files. Every file
+/// is already sorted by `sort_exprs` on write (`sort_dp_rows` for metrics,
+/// `sort_logs`/`sort_spans` for logs/traces; compacted files by this same key) —
+/// so each single-file scan declares its `file_sort_order`, and the final
+/// `.sort()` lowers to a streaming `SortPreservingMergeExec` (zero re-sort,
+/// `O(k·batch)` memory) rather than a buffering `SortExec`. Requires every input
+/// to actually be sorted — the empty-state / sort-on-write cutover contract (see
+/// the sort-on-write-cutover ADR). `merge_ctx(None)` keeps the per-file
+/// partitions so the planner picks the SPM.
 pub(crate) async fn build_merge_df(
     ctx: &SessionContext,
     read: &[PathBuf],
     sort_exprs: &[SortExpr],
 ) -> crate::Result<DataFrame> {
-    if read.is_empty() {
-        return Err(err("merge: no input files"));
+    let mut acc: Option<DataFrame> = None;
+    for path in read {
+        let opts = ParquetReadOptions::default().file_sort_order(vec![sort_exprs.to_vec()]);
+        let df = ctx
+            .read_parquet(path.to_string_lossy().to_string(), opts)
+            .await?;
+        acc = Some(match acc {
+            Some(prev) => prev.union(df)?,
+            None => df,
+        });
     }
-    let paths: Vec<String> = read
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    let df = ctx
-        .read_parquet(paths, ParquetReadOptions::default())
-        .await?;
+    let df = acc.ok_or_else(|| err("merge: no input files"))?;
     Ok(df.sort(sort_exprs.to_vec())?)
 }
 
@@ -824,19 +842,47 @@ mod tests {
         // cap the pool (paired with its DiskManager, that is what makes the
         // external sort spill to disk instead of buffering the whole partition).
         use datafusion::execution::memory_pool::MemoryConsumer;
-        let ctx = merge_ctx(1 << 20).unwrap(); // 1 MiB budget
+        let ctx = merge_ctx(1 << 20, Some(1)).unwrap(); // 1 MiB budget
         let pool = Arc::clone(&ctx.task_ctx().runtime_env().memory_pool);
         let reservation = MemoryConsumer::new("test").register(&pool);
         assert!(
             reservation.try_grow(8 << 20).is_err(),
             "merge pool must be bounded to its budget; an unbounded pool OOMs the day-seal"
         );
-        // Single partition: N concurrent partition-sorts would each reserve the
-        // spill headroom up front and exhaust the pool on a many-file partition.
+        // Some(1) → single partition (the full-sort caller: rollup).
         assert_eq!(
             ctx.copied_config().options().execution.target_partitions,
             1,
-            "merge must run as one partition so spill reservations don't multiply"
+            "Some(1) must force one partition so spill reservations don't multiply"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seal_merge_plan_is_sort_preserving_merge() {
+        // Pre-sorted inputs (the cutover contract) must lower to a streaming
+        // SortPreservingMerge — a zero-resort k-way merge — not a buffering
+        // SortExec. merge_ctx(None) keeps per-file partitions for the SPM.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        write_raw(&dir, "a.parquet", &["a", "c"], &[1, 1], &[1, 3]);
+        write_raw(&dir, "b.parquet", &["b", "d"], &[1, 1], &[2, 4]);
+        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, None).unwrap();
+        let read = vec![dir.join("a.parquet"), dir.join("b.parquet")];
+        let schema = read_schema(&read[0]).unwrap();
+        let df = build_merge_df(&ctx, &read, &sort_exprs_for_schema(&schema))
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let display = datafusion::physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(
+            display.contains("SortPreservingMerge"),
+            "expected a streaming SortPreservingMerge, got:\n{display}"
+        );
+        assert!(
+            !display.contains("SortExec"),
+            "must not buffer/full-sort pre-sorted inputs, got:\n{display}"
         );
     }
 
@@ -879,12 +925,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_streams_large_input_correctly() {
-        // Many reverse-sorted rows merge to a complete, globally-sorted output
-        // through the streaming (execute_stream, no collect) path.
+        // A large pre-sorted input streams through (execute_stream, no collect)
+        // to a complete, globally-sorted output.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("metrics").join("dt=2026-05-30");
         let n: i64 = 50_000;
-        let svc: Vec<String> = (0..n).map(|i| format!("svc-{:06}", n - 1 - i)).collect();
+        let svc: Vec<String> = (0..n).map(|i| format!("svc-{i:06}")).collect();
         let svc_ref: Vec<&str> = svc.iter().map(String::as_str).collect();
         let ts: Vec<i64> = (0..n).collect();
         let vals: Vec<i64> = (0..n).collect();
@@ -991,8 +1037,8 @@ mod tests {
     async fn test_compaction_merges_to_fewer_sorted_files_and_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("metrics").join("dt=2026-05-30");
-        // unsorted across two files
-        write_raw(&dir, "a.parquet", &["b", "a"], &[30, 10], &[3, 1]);
+        // two pre-sorted files (the codec's sort-on-write contract)
+        write_raw(&dir, "a.parquet", &["a", "b"], &[10, 30], &[1, 3]);
         write_raw(&dir, "b.parquet", &["a"], &[20], &[2]);
         let c = Compactor::new(tmp.path(), CompactorConfig::default());
         let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();

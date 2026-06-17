@@ -181,7 +181,9 @@ pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Opti
     // large compacted daily is downsampled without materialising it in RAM —
     // the rollup-path counterpart of the seal/merge OOM fix. Read the survivors
     // as a disk-streaming scan and stream the aggregation output to the writer.
-    let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES)?;
+    // Single partition: the rollup is a real aggregation (window + sort), not a
+    // pre-sorted merge, so keep one partition to bound the spill reservation.
+    let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, Some(1))?;
     ctx.register_udf(super::udf::prom_series_key_udf());
     let paths: Vec<String> = sources.iter().map(|p| p.to_string_lossy().to_string()).collect();
     let scan = ctx.read_parquet(paths, ParquetReadOptions::default()).await?;

@@ -98,10 +98,12 @@ plan is shared with the in-memory `rollup_batches` test helper (`rollup_plan`).
   ingest. Levers if throughput matters: raise `MERGE_MEM_BUDGET_BYTES` and allow
   `target_partitions > 1` (more concurrent sorts × spill reservation — size the
   budget accordingly), and/or the zero-resort k-way merge below.
-- **Future optimisation:** if the codec also sorts logs/traces on write (by
-  `(service_name, time)`), the seal could declare `file_sort_order` per input
-  and lower to a `SortPreservingMergeExec` — a true zero-resort streaming k-way
-  merge for *all* signals, dropping the re-sort cost. Gated on the write-side
-  sort landing for logs/traces (and the clean-cutover that implies).
+- **Future optimisation (now realised):** the codec sorts logs/traces on write
+  (`sort_logs`/`sort_spans`), so the seal declares `file_sort_order` per input
+  and lowers to a streaming `SortPreservingMergeExec` — a true zero-resort k-way
+  merge for *all* signals, dropping the re-sort cost (the seal goes back to
+  default `target_partitions`; the rollup keeps `Some(1)`). See
+  [sort-on-write-cutover](./sort-on-write-cutover.md) — it trusts input ordering,
+  so it's gated on an empty-state start (no backward compat).
 - The `merge_ctx` budget and spill reservation are currently module constants;
   promote to `compactor.*` config if deployments need to tune them.
