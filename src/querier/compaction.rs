@@ -57,6 +57,17 @@ pub(crate) const MERGE_MEM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 /// raw files (≈100s of small files) at once, so the default 8192-row batch blew
 /// the pool; a small batch keeps `fan_in × batch` bounded even at high fan-in.
 pub(crate) const MERGE_BATCH_SIZE: usize = 1024;
+/// Fan-in (input file count) above which the seal merge switches from the
+/// streaming SPM (memory ∝ fan-in, un-spillable) to the bounded spilling
+/// full-sort (memory independent of fan-in — it spills). This makes peak RAM
+/// bounded at *any* ingest rate, not just the common case. Sized so
+/// `MAX_SPM_FANIN × MERGE_BATCH_SIZE × row_width` stays well under the pool.
+pub(crate) const MAX_SPM_FANIN: usize = 256;
+
+/// Use the streaming SPM while fan-in fits the pool; spill above it.
+pub(crate) fn merge_uses_spm(fan_in: usize) -> bool {
+    fan_in <= MAX_SPM_FANIN
+}
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::<dyn std::error::Error + Send + Sync>::from(msg.into())
@@ -250,14 +261,24 @@ impl Compactor {
             return Ok(None);
         }
         // Inputs are all pre-sorted by the read-side key (codec sort-on-write +
-        // prior compaction), so this lowers to a streaming SortPreservingMerge:
-        // a zero-resort k-way merge written batch-by-batch, never materialising
-        // the partition in RAM. `None` keeps per-file partitions so the planner
-        // picks the SPM (not a buffering SortExec). See build_merge_df.
+        // prior compaction). Strategy by fan-in so peak RAM is bounded at ANY
+        // fan-in (not just the common case):
+        //   ≤ MAX_SPM_FANIN → streaming SortPreservingMerge — zero-resort k-way
+        //     merge, but holds one un-spillable batch per input file, so memory
+        //     ∝ fan-in. `None` keeps per-file partitions so the planner picks it.
+        //   >  MAX_SPM_FANIN → bounded spilling full-sort — re-sorts (slower) but
+        //     spills to disk, so memory is the spillable sort buffer, independent
+        //     of fan-in. The backstop that makes OOM impossible at any ingest.
+        // Either way the result streams to the writer batch-by-batch.
         let schema = read_schema(&read[0])?;
         let sort_exprs = sort_exprs_for_schema(&schema);
-        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, None)?;
-        let df = build_merge_df(&ctx, read, &sort_exprs).await?;
+        let df = if merge_uses_spm(read.len()) {
+            let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, None)?;
+            build_merge_df(&ctx, read, &sort_exprs).await?
+        } else {
+            let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, Some(1))?;
+            build_spilling_sort_df(&ctx, read, &sort_exprs).await?
+        };
         let mut stream = df.execute_stream().await?;
         let out_path = dir.join(out_name);
         let (mut writer, staging) = open_staged_writer(&out_path, stream.schema())?;
@@ -657,6 +678,30 @@ pub(crate) async fn build_merge_df(
     Ok(df.sort(sort_exprs.to_vec())?)
 }
 
+/// The bounded **spilling full-sort** fallback for high fan-in. Reads all inputs
+/// as one sequential scan (`merge_ctx(Some(1))` → single partition, so the scan
+/// reads files one at a time and the single `SortExec` doesn't fan out spill
+/// reservations) and sorts with spill-to-disk. Inputs are already sorted, so
+/// this re-sorts redundantly (slower) — but its peak RAM is the spillable sort
+/// buffer, **independent of fan-in**, so it cannot OOM however many files it gets.
+pub(crate) async fn build_spilling_sort_df(
+    ctx: &SessionContext,
+    read: &[PathBuf],
+    sort_exprs: &[SortExpr],
+) -> crate::Result<DataFrame> {
+    if read.is_empty() {
+        return Err(err("merge: no input files"));
+    }
+    let paths: Vec<String> = read
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let df = ctx
+        .read_parquet(paths, ParquetReadOptions::default())
+        .await?;
+    Ok(df.sort(sort_exprs.to_vec())?)
+}
+
 /// Read all record batches from a Parquet file. Test-only: the live paths
 /// stream via `read_parquet` rather than buffering whole files.
 #[cfg(test)]
@@ -900,6 +945,83 @@ mod tests {
             !display.contains("SortExec"),
             "must not buffer/full-sort pre-sorted inputs, got:\n{display}"
         );
+    }
+
+    #[test]
+    fn test_merge_uses_spm_below_threshold_only() {
+        assert!(merge_uses_spm(1), "tiny fan-in uses SPM");
+        assert!(merge_uses_spm(MAX_SPM_FANIN), "at the cap, still SPM");
+        assert!(
+            !merge_uses_spm(MAX_SPM_FANIN + 1),
+            "above the cap, fall back to the spilling sort"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spilling_fallback_plan_is_buffering_sort() {
+        // The high-fan-in fallback must be a real (spilling) SortExec, NOT an
+        // SPM — that's what makes its memory independent of fan-in.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        write_raw(&dir, "a.parquet", &["a", "c"], &[1, 1], &[1, 3]);
+        write_raw(&dir, "b.parquet", &["b", "d"], &[1, 1], &[2, 4]);
+        let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, Some(1)).unwrap();
+        let read = vec![dir.join("a.parquet"), dir.join("b.parquet")];
+        let schema = read_schema(&read[0]).unwrap();
+        let df = build_spilling_sort_df(&ctx, &read, &sort_exprs_for_schema(&schema))
+            .await
+            .unwrap();
+        let display = datafusion::physical_plan::displayable(
+            df.create_physical_plan().await.unwrap().as_ref(),
+        )
+        .indent(true)
+        .to_string();
+        assert!(
+            display.contains("SortExec"),
+            "fallback must be a spilling SortExec, got:\n{display}"
+        );
+        assert!(
+            !display.contains("SortPreservingMerge"),
+            "fallback must not be an SPM (whose memory grows with fan-in):\n{display}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seal_high_fanin_falls_back_and_completes() {
+        // Fan-in above MAX_SPM_FANIN takes the spilling path and still produces
+        // a complete, globally-sorted output — the fan-in-independent guarantee.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        let n = MAX_SPM_FANIN + 1;
+        for i in 0..n {
+            // one row per file; services in reverse file order so a correct
+            // merge/sort is required to produce ascending output.
+            let svc = format!("s{:04}", n - 1 - i);
+            write_raw(
+                &dir,
+                &format!("{i:05}-00-00.parquet"),
+                &[&svc],
+                &[i as i64],
+                &[i as i64],
+            );
+        }
+        let c = Compactor::new(tmp.path(), CompactorConfig::default());
+        c.seal_signal("metrics", NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+            .await
+            .unwrap();
+
+        let batches = read_batches(&dir.join("compacted-2026-05-30.parquet")).unwrap();
+        let mut svcs = Vec::new();
+        for b in &batches {
+            let col = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..col.len() {
+                svcs.push(col.value(i).to_string());
+            }
+        }
+        assert_eq!(svcs.len(), n, "all rows preserved through the fallback");
+        let mut sorted = svcs.clone();
+        sorted.sort();
+        assert_eq!(svcs, sorted, "fallback output is globally sorted");
     }
 
     #[tokio::test]

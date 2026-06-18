@@ -44,19 +44,24 @@ order is a cutover: any unsorted file silently mis-merges.
 - **Fast passes** — the seal merge stops buffering/re-sorting; the big logs seal
   becomes a streaming merge. (Rollup cost is unchanged — it's a separate
   aggregation, not addressed here.)
-- **SPM memory ∝ fan-in.** A `SortPreservingMerge` holds **one batch per input
-  file** at once and **cannot spill** those buffers, so peak RAM ≈
-  `fan_in × batch_size × row_width`. Intraday compaction merges a whole hour of
-  raw files (≈100s of small files) at once — at the default 8192-row batch that
-  blew the 128 MB pool live (2026-06-17 fresh start: `SortPreservingMergeExec`
-  reservation hit ~123 MB and failed). Bounded by capping the merge batch size
-  (`MERGE_BATCH_SIZE = 1024`), so `fan_in × batch` stays well under the pool even
-  at high fan-in. The day-seal itself is low fan-in (~24 hourly L1 files after
-  intraday), so its cost is unaffected.
+- **SPM memory ∝ fan-in — bounded by a fallback, not just batch size.** A
+  `SortPreservingMerge` holds **one batch per input file** at once and **cannot
+  spill** those buffers, so its peak RAM ≈ `fan_in × batch_size × row_width`,
+  which grows with ingest. Intraday compaction merges a whole hour of raw files
+  (≈100s) at once — at the default 8192-row batch it blew the 128 MB pool live
+  (2026-06-17 fresh start: `SortPreservingMergeExec` hit ~123 MB and failed).
+  A smaller batch (`MERGE_BATCH_SIZE = 1024`) only *raises the ceiling* — it
+  doesn't remove the fan-in dependency, so it's not a general bound. The actual
+  fix makes peak RAM **independent of fan-in**: `merge_inputs` switches strategy
+  at `MAX_SPM_FANIN` (256) — SPM at or below it (fast), and a **bounded spilling
+  full-sort** above it (re-sorts, slower, but spills to disk so memory is the
+  spillable sort buffer regardless of fan-in). So the merge cannot OOM at any
+  ingest rate. The day-seal is low fan-in (~24 hourly L1 files) → always SPM.
 - **Cutover risk** — if any input is not actually sorted by the exact key, SPM
   mis-orders **silently**. Mitigated by: codec sort-on-write (all signals), the
-  one-shot example for pre-existing raw, and a plan-shape test asserting SPM (not
-  SortExec). Querier correctness is unaffected regardless (it filters/sorts in
+  empty-state start (no pre-cutover unsorted files), and a plan-shape test
+  asserting SPM (not SortExec). Querier correctness is unaffected regardless (it
+  filters/sorts in
   queries); only on-disk pruning would degrade.
 - **Test contract change** — seal tests that fed *deliberately unsorted* fixtures
   to prove "the seal sorts" must switch to pre-sorted fixtures: the seal no longer
