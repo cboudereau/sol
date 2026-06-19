@@ -57,6 +57,20 @@ order is a cutover: any unsorted file silently mis-merges.
   full-sort** above it (re-sorts, slower, but spills to disk so memory is the
   spillable sort buffer regardless of fan-in). So the merge cannot OOM at any
   ingest rate. The day-seal is low fan-in (~24 hourly L1 files) → always SPM.
+- **Rollup spill reservation** — the seal work had inflated
+  `sort_spill_reservation_bytes` to `mem/4` (32 MB). The rollup's sort-heavy
+  pipeline (sort → window → sort) in the tight pool then couldn't *obtain* that
+  reservation → `ExternalSorterMerge` ResourcesExhausted on the largest metric
+  daily (2026-06-19 live: `sum` rollup failed, "wants 32 MB, 24 MB free").
+  Fixed by reverting to DataFusion's **default reservation (10 MB)** — reliably
+  obtainable; DataFusion multi-pass-merges if a single pass is short. (This is
+  exactly what DataFusion's own error message advises: *decrease
+  `sort_spill_reservation_bytes`*.)
+- **Pass resilience** — that one rollup failure aborted the *whole* pass, so GC
+  never ran and raw piled up (670+ files/partition). `run_once` is now resilient:
+  each per-signal seal/intraday, each rollup tier, and each GC step is logged +
+  skipped on error (counted in `report.failures`), never aborting the pass — so
+  GC always runs and one bad unit is retried next pass instead of cascading.
 - **Cutover risk** — if any input is not actually sorted by the exact key, SPM
   mis-orders **silently**. Mitigated by: codec sort-on-write (all signals), the
   empty-state start (no pre-cutover unsorted files), and a plan-shape test

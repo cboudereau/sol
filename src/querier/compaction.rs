@@ -116,6 +116,20 @@ pub struct CompactionReport {
     pub rows: usize,
     /// Superseded input files deleted (disk reclamation).
     pub files_deleted: usize,
+    /// Per-signal/per-rollup steps that failed this pass (logged, non-fatal).
+    pub failures: usize,
+}
+
+impl CompactionReport {
+    /// Fold a per-signal seal/intraday report into the pass total.
+    fn merge(&mut self, o: CompactionReport) {
+        self.partitions_sealed += o.partitions_sealed;
+        self.files_input += o.files_input;
+        self.files_output += o.files_output;
+        self.rows += o.rows;
+        self.files_deleted += o.files_deleted;
+        self.failures += o.failures;
+    }
 }
 
 /// The standalone compactor over a storage root (`<root>/<signal>/dt=…/`).
@@ -454,6 +468,11 @@ impl Compactor {
     /// Run one full compaction pass over all signals: seal sealed-day partitions,
     /// generate metric rollup tiers (when `rollups`), then retention GC. `today`
     /// is the current UTC date. This is the body the compactor daemon loops.
+    ///
+    /// **Resilient**: a single signal/partition/tier failure is logged and
+    /// skipped (counted in `report.failures`), never aborting the pass — so GC
+    /// always runs (no raw pile-up) and one bad rollup can't block the rest. The
+    /// failed unit is idempotently retried next pass.
     pub async fn run_once(
         &self,
         now: DateTime<Utc>,
@@ -464,14 +483,19 @@ impl Compactor {
         for signal in ["logs", "traces", "metrics"] {
             // Intra-day hourly compaction of the active day, then seal the
             // sealed days into a single daily file (leveled compaction).
-            for r in [
-                self.compact_active_day(signal, now).await?,
-                self.seal_signal(signal, today).await?,
-            ] {
-                report.partitions_sealed += r.partitions_sealed;
-                report.files_input += r.files_input;
-                report.files_output += r.files_output;
-                report.rows += r.rows;
+            match self.compact_active_day(signal, now).await {
+                Ok(r) => report.merge(r),
+                Err(e) => {
+                    report.failures += 1;
+                    tracing::warn!("compactor: intraday compaction failed for {signal}: {e}");
+                }
+            }
+            match self.seal_signal(signal, today).await {
+                Ok(r) => report.merge(r),
+                Err(e) => {
+                    report.failures += 1;
+                    tracing::warn!("compactor: seal failed for {signal}: {e}");
+                }
             }
         }
         if rollups {
@@ -481,15 +505,30 @@ impl Compactor {
                     continue;
                 }
                 for tier in super::rollup::RollupTier::all() {
-                    super::rollup::generate_rollup(&dir, tier).await?;
+                    if let Err(e) = super::rollup::generate_rollup(&dir, tier).await {
+                        report.failures += 1;
+                        tracing::warn!(
+                            "compactor: rollup {tier:?} failed for {}: {e}",
+                            dir.display()
+                        );
+                    }
                 }
             }
         }
         for signal in ["logs", "traces", "metrics"] {
-            report.files_deleted += self.gc_superseded(signal, now)?;
-            self.gc_retention(signal, today)?;
+            match self.gc_superseded(signal, now) {
+                Ok(n) => report.files_deleted += n,
+                Err(e) => {
+                    report.failures += 1;
+                    tracing::warn!("compactor: gc_superseded failed for {signal}: {e}");
+                }
+            }
+            if let Err(e) = self.gc_retention(signal, today) {
+                report.failures += 1;
+                tracing::warn!("compactor: gc_retention failed for {signal}: {e}");
+            }
         }
-        super::telemetry::set_compactor_lag(0.0); // caught up after a full pass
+        super::telemetry::set_compactor_lag(0.0); // a pass completed
         Ok(report)
     }
 }
@@ -602,10 +641,11 @@ pub(crate) fn merge_ctx(
 ) -> crate::Result<SessionContext> {
     let mut config = datafusion::prelude::SessionConfig::new();
     config.options_mut().execution.parquet.schema_force_view_types = false;
-    // The external sort holds a reservation aside for its spill-merge phase
-    // (default 10 MB). Tie it to the budget so a small budget can still merge
-    // its spilled runs rather than dead-locking on the reservation.
-    config.options_mut().execution.sort_spill_reservation_bytes = mem_budget_bytes / 4;
+    // Keep DataFusion's *default* `sort_spill_reservation_bytes` (10 MB). An
+    // inflated reservation (we briefly used mem/4 = 32 MB) is held aside per
+    // SortExec and, in the rollup's sort-heavy pipeline within a tight pool,
+    // becomes un-obtainable → `ExternalSorterMerge` ResourcesExhausted. The small
+    // default is reliably obtainable and DataFusion multi-pass-merges if needed.
     // Cap the batch size so a high-fan-in SortPreservingMerge (one un-spillable
     // batch per input file) stays within the pool — see MERGE_BATCH_SIZE.
     config.options_mut().execution.batch_size = MERGE_BATCH_SIZE;
