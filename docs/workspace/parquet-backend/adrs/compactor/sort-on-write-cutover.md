@@ -66,6 +66,23 @@ order is a cutover: any unsorted file silently mis-merges.
   obtainable; DataFusion multi-pass-merges if a single pass is short. (This is
   exactly what DataFusion's own error message advises: *decrease
   `sort_spill_reservation_bytes`*.)
+- **Rollup memory — the real fix: hash aggregation, not window+sort.** The
+  reservation revert was a band-aid: it still failed live (2026-06-22) on
+  `gauge/dt=2026-06-20`, and the evidence proved the plan, not the data, was the
+  problem — that partition (6.3M rows, 294 series) failed while the *larger*
+  `gauge/dt=2026-06-19` (9.3M rows, same cardinality) had succeeded, and it
+  failed even with the system idle over a paused weekend (no external memory
+  pressure; a fresh 128 MB pool showed only 5.3 MB free → the rollup's own
+  pipeline held ~122 MB). The cause: "last sample per (series, bucket)" was a
+  `ROW_NUMBER` window + **two sorts**, which hold ~the whole pool and don't spill
+  cleanly. Rewrote `rollup_plan` as a **spillable hash aggregation** —
+  `GROUP BY (name, service_name, prom_series_key(attributes), time/resolution)`
+  with `last_value(col ORDER BY time)` per remaining column (incl. the
+  `attributes` Map, which `last_value` carries by position — never compared, so
+  it needs no GROUP BY/Map ordering). DataFusion spills hash aggregates, so
+  memory is bounded by group count (cardinality × buckets), not by buffering the
+  sorted day. A plan-shape test asserts `AggregateExec` and **not** a window
+  operator.
 - **Pass resilience** — that one rollup failure aborted the *whole* pass, so GC
   never ran and raw piled up (670+ files/partition). `run_once` is now resilient:
   each per-signal seal/intraday, each rollup tier, and each GC step is logged +

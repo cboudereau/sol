@@ -120,19 +120,45 @@ fn rollup_plan(
     resolution_ns: i64,
 ) -> crate::Result<DataFrame> {
     use datafusion::arrow::datatypes::DataType::Int64;
-    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::functions_aggregate::first_last::last_value_udaf;
+    use datafusion::logical_expr::{ExprFunctionExt, expr_fn::cast};
     use datafusion::prelude::{col, lit};
-    // Partition by the series key plus the bucket index `time / resolution`,
-    // take the latest by time (P5).
-    let bucket = cast(col("time_unix_nano"), Int64) / lit(resolution_ns);
-    let series_key = super::udf::prom_series_key_udf().call(vec![col("attributes")]);
-    let latest = super::plan::frame::latest_per_series(
-        table,
-        vec![col("name"), col("service_name"), series_key, bucket],
-        "time_unix_nano",
-    )?;
+
+    // Keep the last raw sample per (series, time-bucket) via a **hash
+    // aggregation**, not a ROW_NUMBER window + sort. DataFusion spills hash
+    // aggregates cleanly, so memory is bounded by the group count (cardinality ×
+    // buckets) regardless of day size — the window+double-sort plan held ~the
+    // whole pool and OOMed nondeterministically on full days. Group by the
+    // series key (the attributes Map can't be a GROUP BY key — hence the UDF)
+    // plus the bucket index `time / resolution`; `last_value(col ORDER BY time)`
+    // picks each column from the latest-timestamp row in the bucket.
+    let bucket = (cast(col("time_unix_nano"), Int64) / lit(resolution_ns)).alias("__bucket");
+    let series_key = super::udf::prom_series_key_udf()
+        .call(vec![col("attributes")])
+        .alias("__series_key");
+    // `name`/`service_name` are real group keys (emitted directly); every other
+    // column — including the `attributes` Map, which `last_value` carries by
+    // position (it never compares the value, only the ORDER BY time) — is taken
+    // from the bucket's latest sample. ASC order ⇒ last = max time.
+    let order = vec![col("time_unix_nano").sort(true, false)];
+    let aggrs: Vec<_> = arrow_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .filter(|n| *n != "name" && *n != "service_name")
+        .map(|n| {
+            last_value_udaf()
+                .call(vec![col(n)])
+                .order_by(order.clone())
+                .build()
+                .map(|e| e.alias(n))
+        })
+        .collect::<Result<_, _>>()?;
+    let agg = table.aggregate(vec![col("name"), col("service_name"), series_key, bucket], aggrs)?;
+    // Project back to the original schema order (drops the helper group cols),
+    // sorted (service_name, prom_name, time) so tier files prune like raw ones.
     let cols: Vec<_> = arrow_schema.fields().iter().map(|f| col(f.name())).collect();
-    Ok(latest.select(cols)?.sort(vec![
+    Ok(agg.select(cols)?.sort(vec![
         col("service_name").sort(true, false),
         col("prom_name").sort(true, false),
         col("time_unix_nano").sort(true, false),
@@ -322,6 +348,38 @@ mod tests {
         assert!(
             (raw_rate - rollup_rate).abs() < 1e-6,
             "raw {raw_rate} vs rollup {rollup_rate}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollup_plan_is_hash_aggregation_not_window() {
+        // The fix: rollup must lower to a spillable AggregateExec, NOT a
+        // window (WindowAggExec) + sort — that's what bounds its memory and
+        // stops the nondeterministic ExternalSorterMerge OOM on full days.
+        let ctx = SessionContext::new();
+        ctx.register_udf(super::super::udf::prom_series_key_udf());
+        let schema = counter_schema();
+        ctx.register_table(
+            "m",
+            Arc::new(
+                MemTable::try_new(Arc::clone(&schema), vec![vec![batch(&[0, 1], &[1.0, 2.0], &["[]", "[]"])]])
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        let df = rollup_plan(ctx.table("m").await.unwrap(), &schema, M5_NS).unwrap();
+        let display = datafusion::physical_plan::displayable(
+            df.create_physical_plan().await.unwrap().as_ref(),
+        )
+        .indent(true)
+        .to_string();
+        assert!(
+            display.contains("AggregateExec"),
+            "rollup must be a hash aggregation, got:\n{display}"
+        );
+        assert!(
+            !display.contains("WindowAggExec") && !display.contains("BoundedWindowAggExec"),
+            "rollup must not use a window operator (un-spillable), got:\n{display}"
         );
     }
 
