@@ -1214,20 +1214,15 @@ async fn handle_hist_quantile_range(
     spec: &HistSpec,
     start_ns: i64,
     end_ns: i64,
+    step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    use datafusion::prelude::{col, lit};
-    let mut df = engine
-        .table("metrics")
-        .await?
-        .filter(prom_name_expr().eq(lit(spec.base.clone())))?;
-    for p in &spec.preds {
-        df = df.filter(p.clone())?;
-    }
-    df = df.filter(prom_time_between(start_ns, end_ns))?;
+    use datafusion::prelude::col;
+    // Sealed windows from the rollup tier (coarse step), trailing day from raw.
+    let df = tiered_hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns).await?;
     let mut proj = vec![
         col("time_unix_nano"),
         col("bucket_counts"),
@@ -1373,21 +1368,17 @@ async fn handle_bucket_heatmap(
     spec: &BucketSpec,
     start_ns: i64,
     end_ns: i64,
+    step_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
-    use datafusion::prelude::{col, lit};
-    let mut df = engine
-        .table("metrics")
+    use datafusion::prelude::col;
+    // Sealed windows from the rollup tier (coarse step), trailing day from raw.
+    let df = tiered_hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns)
         .await?
-        .filter(prom_name_expr().eq(lit(spec.base.clone())))?
         .filter(col("bucket_counts").is_not_null())?;
-    for p in &spec.preds {
-        df = df.filter(p.clone())?;
-    }
-    df = df.filter(prom_time_between(start_ns, end_ns))?;
     let mut proj = vec![
         col("time_unix_nano"),
         col("bucket_counts"),
@@ -1497,6 +1488,55 @@ fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
     }
 }
 
+/// One filtered scan of `table` for a classic-histogram range query:
+/// `prom_name == base`, the `preds`, and `time ∈ [lo, hi]`.
+async fn hist_scan(
+    engine: &super::QueryEngine,
+    table: &str,
+    base: &str,
+    preds: &[datafusion::logical_expr::Expr],
+    lo: i64,
+    hi: i64,
+) -> crate::Result<datafusion::prelude::DataFrame> {
+    let mut df = engine
+        .table(table)
+        .await?
+        .filter(prom_name_expr().eq(datafusion::prelude::lit(base.to_string())))?;
+    for p in preds {
+        df = df.filter(p.clone())?;
+    }
+    Ok(df.filter(prom_time_between(lo, hi))?)
+}
+
+/// Tier-routed row source for a classic-histogram range query — the same
+/// sealed-boundary routing `handle_range` applies to rate/agg queries (which
+/// `handle_hist_quantile_range`/`handle_bucket_heatmap` previously bypassed,
+/// always reading raw). Sealed windows read the coarsest rollup tier ≤ `step_ns`
+/// (the rollup preserves each bucket's last `bucket_counts`/`explicit_bounds`,
+/// so the per-timestamp quantile/heatmap is exact); the trailing ≤1-day window —
+/// which the tier never covers — reads raw `metrics`. The two windows are
+/// disjoint in time, so a later per-timestamp sum never double-counts.
+async fn tiered_hist_source(
+    engine: &super::QueryEngine,
+    base: &str,
+    preds: &[datafusion::logical_expr::Expr],
+    start_ns: i64,
+    end_ns: i64,
+    step_ns: i64,
+) -> crate::Result<datafusion::prelude::DataFrame> {
+    let tier = select_range_table(engine, step_ns);
+    let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
+    if tier == "metrics" || start_ns > sealed_ns {
+        return hist_scan(engine, "metrics", base, preds, start_ns, end_ns).await;
+    }
+    if end_ns <= sealed_ns {
+        return hist_scan(engine, &tier, base, preds, start_ns, end_ns).await;
+    }
+    let sealed = hist_scan(engine, &tier, base, preds, start_ns, sealed_ns).await?;
+    let trailing = hist_scan(engine, "metrics", base, preds, sealed_ns + 1, end_ns).await?;
+    Ok(sealed.union(trailing)?)
+}
+
 /// Run a range PromQL query and build a `resultType=matrix` response. Long
 /// ranges are split into per-day shards by the query-frontend ([`super::frontend`])
 /// and merged (FR8); a coarse `step_ns` selects a rollup tier table (FR6).
@@ -1511,10 +1551,10 @@ pub async fn handle_range(
     // Classic-histogram queries are computed from OTLP array buckets:
     // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
     if let Some(spec) = detect_hist_quantile(&parsed) {
-        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns).await;
+        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns, step_ns).await;
     }
     if let Some(spec) = detect_bucket_heatmap(&parsed) {
-        return handle_bucket_heatmap(engine, &spec, start_ns, end_ns).await;
+        return handle_bucket_heatmap(engine, &spec, start_ns, end_ns, step_ns).await;
     }
 
     // A top-level topk/bottomk: keep the top-N *series* after merge; evaluate the
@@ -2244,10 +2284,10 @@ async fn eval_range_window(
         }
         _ => {
             if let Some(spec) = detect_hist_quantile(expr) {
-                let resp = handle_hist_quantile_range(engine, &spec, s, e).await?;
+                let resp = handle_hist_quantile_range(engine, &spec, s, e, step_ns).await?;
                 Ok(RangeVal::Vector(matrix_to_series(resp)))
             } else if let Some(spec) = detect_bucket_heatmap(expr) {
-                let resp = handle_bucket_heatmap(engine, &spec, s, e).await?;
+                let resp = handle_bucket_heatmap(engine, &spec, s, e, step_ns).await?;
                 Ok(RangeVal::Vector(matrix_to_series(resp)))
             } else if let Some((n, is_topk, inner)) = topk_parts(expr) {
                 // topk/bottomk is relational: lower the inner to a DataFrame and
@@ -3673,6 +3713,109 @@ mod tests {
         assert!(
             (v[0].1.parse::<f64>().unwrap() - 50.0).abs() < 1e-9,
             "p95 from OTLP buckets = 50: {v:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_histogram_quantile_range_routes_sealed_window_to_tier() {
+        // histogram_quantile range must tier-route like handle_range: a sealed
+        // window reads the 5m rollup (which preserves bucket_counts), NOT raw.
+        // Distinct bucket_counts in raw vs tier prove which source served: raw
+        // day-0 mass is all in the first bucket (p95 ≈ 9.5), tier day-0 mass is
+        // all in +Inf (p95 = 50). A coarse-step query must yield the tier's 50.
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp
+            .path()
+            .join("metrics")
+            .join("histogram")
+            .join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let mk = |counts: &str| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["client"])),
+                    Arc::new(StringArray::from(vec!["dur"])),
+                    Arc::new(StringArray::from(vec![Some("s")])),
+                    Arc::new(BooleanArray::from(vec![Some(false)])),
+                    Arc::new(TimestampNanosecondArray::from(vec![M5]).with_timezone("UTC")),
+                    crate::querier::udf::tests::json_map_array(&["{}"]),
+                    Arc::new(StringArray::from(vec![Some(counts)])),
+                    Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
+                    Arc::new(StringArray::from(vec!["dur_seconds"])),
+                ],
+            )
+            .unwrap()
+        };
+        // Build both batches first so the `mk` closure's borrow of `schema` ends
+        // before `schema` is moved into the second writer.
+        let raw_batch = mk("[100,0,0,0,0,0]"); // all mass in first bucket → p95 ≈ 9.5
+        let tier_batch = mk("[0,0,0,0,0,100]"); // all mass in +Inf → p95 = 50
+        // raw day-0 (the "wrong" answer if served from raw).
+        let f = std::fs::File::create(dir.join("h.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        w.write(&raw_batch).unwrap();
+        w.close().unwrap();
+        // rollup-5m tier day-0 (the answer that proves tier routing).
+        let f = std::fs::File::create(dir.join("rollup-5m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&tier_batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
+        assert!(engine.has_table("metrics_5m"), "tier registered");
+
+        // coarse step (M5) over [0, 2d]: day-0 is sealed → must read the tier.
+        let resp = handle_range(
+            &engine,
+            "histogram_quantile(0.95, sum(rate(dur_seconds_bucket[5m])) by (le))",
+            0,
+            2 * DAY_NS,
+            M5,
+        )
+        .await
+        .unwrap();
+        let qs: Vec<f64> = resp
+            .data
+            .result
+            .iter()
+            .flat_map(|s| s.values.iter().map(|v| v.1.parse::<f64>().unwrap()))
+            .collect();
+        assert!(!qs.is_empty(), "expected a sealed-day point, got none");
+        assert!(
+            qs.iter().all(|q| (*q - 50.0).abs() < 1e-6),
+            "sealed window must be served from the rollup tier (p95=50), got {qs:?}"
         );
     }
 

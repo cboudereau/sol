@@ -61,3 +61,17 @@ These are complementary, not alternatives — the decision is to use all three f
 - Rollups are **excluded** from `resolve_files` (the lossless union) and back
   separate `metrics_5m/1h/1d` tables; the querier routes a coarse-`step` range to
   the coarsest tier ≤ `step`, else raw.
+- **`histogram_quantile` / `_bucket`-heatmap range queries now tier-route too.**
+  These were a gap: `handle_range` early-returned them to `handle_hist_quantile_range`
+  / `handle_bucket_heatmap`, which hardcoded raw `.table("metrics")` and bypassed
+  `select_range_table` entirely — so the dashboard's heaviest panels (latency
+  percentiles, the response-time heatmap; both `histogram_quantile`/`topk(histogram_quantile)`,
+  captured by `detect_hist_quantile`) read **full-resolution raw over the whole
+  range regardless of step**. (Symptom: setting Grafana "Min interval" to 5m
+  changed nothing — confirmed live, `sol-querier` ~225% CPU on a 7-day view.) Fix:
+  both handlers take `step_ns` and read via `tiered_hist_source` — sealed windows
+  from the coarsest tier ≤ step (the rollup preserves per-bucket `bucket_counts`,
+  so quantiles stay exact), the trailing ≤1-day window from raw, disjoint so the
+  per-timestamp sum never double-counts. Correct because the path computes the
+  quantile of the cumulative `bucket_counts` **per timestamp** (no rate); the 5m
+  tier supplies the same per-bucket counts at 5m spacing.
