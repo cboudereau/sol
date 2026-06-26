@@ -4,21 +4,25 @@ Design: [DESIGN.md](./DESIGN.md)
 
 ## Analysis
 
-Build: `cargo check --features querier-backend --lib` — verified green (HEAD `40149d8fa`)
-Test: `cargo test --features querier-backend --lib querier::` — verified green (querier:: 176 passed, 1 ignored)
+Build: `cargo check --features querier-backend --lib` — verified green (HEAD `20e203c51`)
+Test: `cargo test --features querier-backend --lib querier::` — verified green (querier:: **177 passed, 1 ignored**, 2026-06-26 at HEAD `20e203c51`)
 Lint: `cargo clippy --features querier-backend --lib` — verified clean (`#![deny(warnings)]` at `src/lib.rs:7` makes warnings hard errors; `querier-backend` is a default feature)
 
 ### Known-failing tests
 | Test | Reason | Action |
 |---|---|---|
-| (none — querier:: 176 green at HEAD) | | — |
+| (none — querier:: 177 green at HEAD `20e203c51`) | | — |
+
+### Refresh-path profiling (evidence — why the catalog refresh is out of scope)
+Profiled the live demo store (`sol:20e203c51`, 2026-06-26): **451 MB, 792 parquet files, 42 dirs, 83 compacted, 54 rollup** (7 days). The 15 s catalog refresh (`catalog.rs:284 build_providers` → `resolve_signal_files` + `rollup_tier_files` ×3) measured **~30 ms total** (enumeration 5–9 ms; metrics tree ×4 = 16 ms; 83 `read_provenance` footer reads negligible in-process — the apparent 120 ms was shell `fork` overhead, 83 `/bin/true` = 107 ms). Querier idles at **0.01–0.06 % CPU** between queries; refresh ticks are not a visible cost and **do not scale into one** in the foreseeable range (footer reads scale with compacted-file count: 83 → ~120 at 30-day retention). The fix `20e203c51` is performance-**neutral** (same walk, reordered to close the registration gap). **Conclusion: the refresh path is not the CPU cost** — the 225 % querier CPU was the *read path* under active 7-day load (raw scans via the op-unaware `select_range_table`), which is exactly what this work consolidates. No catalog-refresh follow-up is warranted.
 
 ### Read-path inventory (Phase 4a, all `src/querier/prometheus.rs` unless noted)
 | Path | Entry | Current source | Routes today? |
 |---|---|---|---|
 | Range rate/agg | `handle_range:1543` → `select_range_table:1480` + sealed split (`:1576`,`:1581`,`:1597`) → `eval_range_window:2187`(table) → `lower_range_df:306`(table) → `metric_base_df:144`(table) | tier/raw per window | ✅ (step-only, **op-unaware**) |
 | Range histogram/heatmap | `handle_hist_quantile_range:1212` / `handle_bucket_heatmap:1366` (early-return at `:1553`/`:1556`; also `eval_range_window:2287`/`:2290` ignore the passed `table`) → `tiered_hist_source:1519` | tier/raw (a 2nd routing copy) | ✅ (the `40149d8fa` copy) |
-| Instant | `handle_instant:805` → `lower_range_df(…,"metrics"):551` / `lower_aggregate_range(…,"metrics"):510` | raw hardcoded | ❌ |
+| Instant (function) | `handle_instant:805` → `lower_range_df(…,"metrics"):551` / `lower_aggregate_range(…,"metrics"):510` | raw hardcoded | ❌ |
+| Instant (bare selector) | `handle_instant:805` → `latest_selected_df:415` (`engine.table("metrics"):429`) — latest sample ≤ `t` | raw hardcoded | ❌ |
 | Instant histogram | `handle_histogram:1770` (`engine.table("metrics"):1788`) | raw hardcoded | ❌ |
 | Metadata `/series` | `handle_series:967` → `build_series:106` (`:111`) | raw | ❌ |
 | Metadata `/label/:name/values` | `handle_label_values:943` → `build_label_values:900` (scan `:917`, 4×) | raw | ❌ |
@@ -64,7 +68,7 @@ classDiagram
 | `MetricWindow` (`(String,i64,i64)`) | [FR1](./DESIGN.md#fr1) | Value returned by the resolver |
 | `handle_range` (+`eval_range_window`/`lower_range_df`/`metric_base_df` table flow) | [FR3](./DESIGN.md#fr3) | Range rate/agg routed via resolver + op_safety |
 | `handle_hist_quantile_range`/`handle_bucket_heatmap` | [FR3](./DESIGN.md#fr3) | Take windows from resolver; `tiered_hist_source` deleted |
-| `handle_instant`/`lower_range_df`/`lower_aggregate_range`/`handle_histogram` | [FR4](./DESIGN.md#fr4) | Instant routed via resolver (resolution = `matrix_range_ns`, gated by `op_safety`) |
+| `handle_instant`/`lower_range_df`/`lower_aggregate_range`/`latest_selected_df`/`handle_histogram` | [FR4](./DESIGN.md#fr4) | Instant routed via resolver (resolution = `matrix_range_ns`, gated by `op_safety`); bare-selector `latest_selected_df` → resolver yields raw (no hardcoded literal) |
 | `build_series`/`build_label_values`/`handle_labels` | [FR5](./DESIGN.md#fr5) | Metadata sealed→tier (op_safe=true always) |
 
 ### Transformations
@@ -134,7 +138,7 @@ classDiagram
 **Goal**: instant queries + instant histogram source via the resolver, resolution = `matrix_range_ns(expr)`, gated by `op_safety`.
 **Constraints**:
 - [ADR: instant-and-metadata-routing](./adrs/instant-and-metadata-routing.md) — instant via selector window + safety gate; no range selector ⇒ raw.
-- Replace hardcoded `"metrics"` at `:510`, `:551`, `:1788`.
+- Replace hardcoded `"metrics"` at `:510`, `:551`, `:1788`, **and `:429` (`latest_selected_df`, the bare-instant path)**. Route `latest_selected_df` through the resolver too: a bare selector has no `Call` ⇒ `op_safety=false` ⇒ resolver returns all-raw, so it stays functionally raw — but with **no hardcoded literal**, keeping the no-bypass guard (Task 6) absolute (no whitelist carve-out).
 - Invariant: a recent bare-selector instant still reads raw; an instant `histogram_quantile(rate(..[long]))`/`rate(..[long])` over a sealed window uses the tier; instant `max_over_time` reads raw.
 **Tests**:
 - `test_instant_rate_long_window_uses_tier` — instant `sum(rate(m[…]))` whose window covers a sealed span reads tier.
@@ -169,7 +173,7 @@ classDiagram
 - [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md), [ADR: operator-safety-allowlist](./adrs/operator-safety-allowlist.md).
 - Invariant: every metric query-serving read of a tier goes through `resolve_metric_windows`.
 **Tests**:
-- `test_no_query_path_hardcodes_tier_table` — a source-level guard (like the existing `no_sql_invariant_tests`): assert no query-serving fn in `prometheus.rs` contains a `.table("metrics_…")` literal (tiers only reached via the resolver). Allow raw `.table("metrics")` only where the resolver isn't applicable, or assert resolver usage.
+- `test_no_query_path_hardcodes_tier_table` — a source-level guard (like the existing `no_sql_invariant_tests` at `mod.rs:162`): assert no query-serving fn in `prometheus.rs` contains a `.table("metrics_…")` literal (tiers only reached via the resolver). With `latest_selected_df` routed (Task 4), **no query path hardcodes a raw `.table("metrics")` either** — the guard is absolute, no whitelist carve-out (test fixtures under `#[cfg(test)]` excluded).
 - `test_unsafe_operator_never_tiers` — table-driven over the unsafe op list, asserting `resolve_metric_windows(op_safe=op_safety(expr))` yields all-raw.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib`
 **Acceptance criteria**:
