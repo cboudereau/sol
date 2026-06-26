@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::catalog::TableProvider;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -195,48 +196,54 @@ impl ParquetCatalog {
         Self { root }
     }
 
-    /// Register every signal table in `ctx`. An absent or empty directory is not an
-    /// error — it registers as an empty table (count == 0).
-    pub async fn register(&self, ctx: &SessionContext) -> crate::Result<()> {
+    /// Build the `(table_name, provider)` set for every signal table + present
+    /// rollup tier, doing the file-listing walk. Pure (no `ctx` mutation), so a
+    /// `refresh` can build the new providers while the old tables stay live, then
+    /// swap them in (see [`refresh`]).
+    async fn build_providers(&self) -> crate::Result<Vec<(String, Arc<dyn TableProvider>)>> {
+        let mut out: Vec<(String, Arc<dyn TableProvider>)> = Vec::new();
+        let listing = |paths: Vec<ListingTableUrl>, schema| -> crate::Result<Arc<dyn TableProvider>> {
+            // Schema is explicit, so don't let DataFusion open every file's footer
+            // for stats at plan time — with thousands of files that exhausts the
+            // fd limit (EMFILE).
+            let options =
+                ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
+            let config = ListingTableConfig::new_with_multi_paths(paths)
+                .with_listing_options(options)
+                .with_schema(schema);
+            Ok(Arc::new(ListingTable::try_new(config)?))
+        };
+        let urls = |files: &[PathBuf]| {
+            files
+                .iter()
+                .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
+                .collect::<Result<Vec<_>, _>>()
+        };
         for table in SignalTable::ALL {
             let dir = self.root.join(table.listing_dir());
             let schema = table.arrow_schema();
             // Enumerate the surviving files ourselves (recursive walk + per-partition
-            // supersession via `resolve_files`) and register over that explicit list.
-            // This finds files at any partition depth — `logs/dt=…/` and (task 14b)
-            // `metrics/<subtype>/dt=…/` — and skips raw inputs already superseded by a
-            // compacted file, so the querier never double-counts (compaction ADR).
+            // supersession via `resolve_files`) over that explicit list. Finds files
+            // at any partition depth — `logs/dt=…/` and `metrics/<subtype>/dt=…/` —
+            // and skips raw inputs already superseded by a compacted file (no double
+            // count, compaction ADR).
             let files = if dir.is_dir() {
                 resolve_signal_files(&dir)?
             } else {
                 Vec::new()
             };
-            if files.is_empty() {
+            let provider: Arc<dyn TableProvider> = if files.is_empty() {
                 // Absent/empty → empty table with the declared schema
                 // (one empty partition; MemTable requires ≥1 partition).
-                let empty = MemTable::try_new(schema, vec![vec![]])?;
-                ctx.register_table(table.table_name(), Arc::new(empty))?;
+                Arc::new(MemTable::try_new(schema, vec![vec![]])?)
             } else {
-                let paths = files
-                    .iter()
-                    .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
-                    .collect::<Result<Vec<_>, _>>()?;
-                // We pass the schema explicitly, so don't let DataFusion open
-                // every file's footer for stats at plan time — with thousands
-                // of files that exhausts the fd limit (EMFILE).
-                let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
-                    .with_collect_stat(false);
-                let config = ListingTableConfig::new_with_multi_paths(paths)
-                    .with_listing_options(options)
-                    .with_schema(schema);
-                let listing = ListingTable::try_new(config)?;
-                ctx.register_table(table.table_name(), Arc::new(listing))?;
-            }
+                listing(urls(&files)?, schema)?
+            };
+            out.push((table.table_name().to_string(), provider));
         }
-
         // Rollup tier tables (FR6): metrics_5m / metrics_1h / metrics_1d over the
-        // compactor's rollup-<tier>.parquet files. Registered only when present,
-        // so the frontend can detect availability and fall back to raw.
+        // compactor's rollup-<tier>.parquet files. Built only when present, so the
+        // frontend can detect availability and fall back to raw.
         let metrics_root = self.root.join("metrics");
         let metric_schema = SignalTable::Metrics.arrow_schema();
         for tier in ROLLUP_TIERS {
@@ -244,34 +251,53 @@ impl ParquetCatalog {
             if files.is_empty() {
                 continue;
             }
-            let paths = files
-                .iter()
-                .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
-                .collect::<Result<Vec<_>, _>>()?;
-            let options =
-                ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
-            let config = ListingTableConfig::new_with_multi_paths(paths)
-                .with_listing_options(options)
-                .with_schema(Arc::clone(&metric_schema));
-            ctx.register_table(
+            out.push((
                 format!("metrics_{tier}"),
-                Arc::new(ListingTable::try_new(config)?),
-            )?;
+                listing(urls(&files)?, Arc::clone(&metric_schema))?,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Register every signal table in `ctx`. An absent or empty directory is not an
+    /// error — it registers as an empty table (count == 0).
+    pub async fn register(&self, ctx: &SessionContext) -> crate::Result<()> {
+        for (name, provider) in self.build_providers().await? {
+            ctx.register_table(name, provider)?;
         }
         Ok(())
     }
 
-    /// Re-register tables to pick up newly-created directories / files.
-    /// (ListingTable lists files at registration; this re-registers so newly
-    /// written files — and new compacted/rollup files — become visible.)
+    /// Re-register tables to pick up newly-created directories / files
+    /// (ListingTable lists files at registration), without a registration gap.
+    ///
+    /// The old code deregistered **every** table and *then* ran the file-listing
+    /// walk to re-register — leaving a window (widened by the now-large store +
+    /// rollup tiers) during which a concurrent query planned against a missing
+    /// table ("Error during planning: No table named 'metrics'"). `register_table`
+    /// errors on an existing name (no in-place replace), so a deregister is
+    /// unavoidable — but it must not bracket the slow walk. Instead: build all
+    /// the new providers first (walk runs while the old tables stay live), then
+    /// swap each in with a tight `deregister`→`register` pair with **no `await`
+    /// between** (catalog map ops), shrinking the unregistered window per table
+    /// from the whole walk to effectively nothing.
     pub async fn refresh(&self, ctx: &SessionContext) -> crate::Result<()> {
-        for table in SignalTable::ALL {
-            let _ = ctx.deregister_table(table.table_name());
+        let providers = self.build_providers().await?;
+        let present: std::collections::HashSet<&str> =
+            providers.iter().map(|(n, _)| n.as_str()).collect();
+        for (name, provider) in &providers {
+            let _ = ctx.deregister_table(name.as_str());
+            ctx.register_table(name.as_str(), Arc::clone(provider))?;
         }
+        // Drop any rollup tier whose files have all vanished (e.g. retention GC):
+        // `build_providers` omits empty tiers, so a stale registration would linger.
         for tier in ROLLUP_TIERS {
-            let _ = ctx.deregister_table(format!("metrics_{tier}"));
+            let name = format!("metrics_{tier}");
+            if !present.contains(name.as_str()) {
+                let _ = ctx.deregister_table(name.as_str());
+            }
         }
-        self.register(ctx).await
+        Ok(())
     }
 }
 
@@ -762,6 +788,40 @@ mod tests {
             "absent tier not registered"
         );
         assert_eq!(count(&engine, "metrics_1h").await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_keeps_metrics_and_drops_vanished_tier() {
+        // refresh() re-registers over the current files WITHOUT deregistering
+        // first (the "No table named 'metrics'" race: the old code deregistered
+        // every table, then ran the file-listing walk, leaving a window where a
+        // concurrent query planned against a missing table). It must still drop a
+        // rollup tier whose files have all gone (e.g. retention GC).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("metrics")
+            .join("gauge")
+            .join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_min_log_parquet(&dir.join("m.parquet"), 2);
+        write_min_log_parquet(&dir.join("rollup-5m.parquet"), 1);
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        assert!(engine.has_table("metrics_5m"), "tier registered initially");
+        assert!(engine.has_table("metrics"));
+
+        // the tier's files vanish; a refresh must drop the now-stale tier table…
+        std::fs::remove_file(dir.join("rollup-5m.parquet")).unwrap();
+        engine.refresh().await.unwrap();
+        assert!(
+            !engine.has_table("metrics_5m"),
+            "vanished tier must be deregistered"
+        );
+        // …while the main table stays continuously registered (no gap, no loss).
+        assert!(engine.has_table("metrics"), "main table stays registered");
+        assert_eq!(count(&engine, "metrics").await, 2);
     }
 
     #[tokio::test]
