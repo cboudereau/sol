@@ -189,10 +189,11 @@ classDiagram
 - `test_instant_bare_selector_reads_raw` — `m` at `t` reads raw.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] Instant + instant-histogram source via the resolver; no hardcoded `"metrics"` in those paths.
-- [ ] The three instant tests pass; existing instant tests green.
+- [x] Instant + instant-histogram source via the resolver; no hardcoded `"metrics"` in those paths.
+- [x] The three instant tests pass; existing instant tests green. *(straddle case: windows unioned at the leaf base before the single over_time/rate pass.)*
 **Depends on**: 2, 3
 **Time-box**: ~75 min
+**Status**: ✅ done (Session-3 commit).
 
 ### 6. Route the metadata paths ([FR5](./DESIGN.md#fr5), [NFR1](./DESIGN.md#nfr1))
 **Goal**: `/series`, `/label/:name/values`, `/labels` enumerate from the tier for sealed windows, raw for trailing.
@@ -205,10 +206,11 @@ classDiagram
 - `test_label_values_matches_raw_via_tier` — `/label/host/values` identical via tier.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] Metadata paths source via the resolver (sealed→tier).
-- [ ] Enumeration identical to raw; both tests pass.
+- [x] Metadata paths source via the resolver (sealed→tier). *(ranged case; no-time-range `/labels` + param-less `/series` keep the documented raw fallback — active day lives only in raw.)*
+- [x] Enumeration identical to raw; both tests pass.
 **Depends on**: 2
 **Time-box**: ~60 min
+**Status**: ✅ done (Session-3 commit).
 
 ### 7. No-silent-bypass guard + capability invariants ([NFR3](./DESIGN.md#nfr3), [NFR1](./DESIGN.md#nfr1))
 **Goal**: lock in the consolidation — no handler can hardcode a table or route a `None`-capability op to a tier.
@@ -216,14 +218,15 @@ classDiagram
 - [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md), [ADR: operator → capability](./adrs/operator-safety-allowlist.md).
 - Invariant: every metric query-serving read goes through `resolve_metric_windows`.
 **Tests**:
-- `test_no_query_path_hardcodes_table` — source-level guard (like `no_sql_invariant_tests` at `mod.rs:162`): no query-serving fn in `prometheus.rs` contains a `.table("metrics")` or `.table("metrics_…")` literal (all via the resolver); `#[cfg(test)]` fixtures excluded. Absolute — no carve-out (Task 5 routed `latest_selected_df`).
-- `test_none_capability_never_tiers` — table-driven over the `None` op list (`irate`, `quantile_over_time`, unknown, bare selector): `resolve_metric_windows(op_capability(expr))` yields all-raw.
+- `test_no_handler_hardcodes_tier_table` — source-level guard (like `no_sql_invariant_tests` at `mod.rs:162`, via `include_str!` + strip `#[cfg(test)]`): production `prometheus.rs` contains **no** `metrics_5m`/`metrics_1h`/`metrics_1d` literal and no `.table("metrics_…")` — **tier** tables are reached only through the resolver's `format!`. Raw `.table("metrics")` is intentionally allowed (the resolver's safe fallback). *(Refined from the original "no .table(metrics) at all": Task 6 legitimately keeps raw no-time-range metadata fallbacks, so the guard targets tier literals — the real no-bypass invariant. Validated: a planted `"metrics_5m"` made the test fail, removal restored green.)*
+- `test_none_capability_never_tiers` — table-driven over the `None` op list (`irate`, `quantile_over_time`, `stddev_over_time`, bare selector, `1+2`): `op_capability`→`None` and `resolve_metric_windows(...)` yields a single raw window even over a sealed span with a tier registered.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib`
 **Acceptance criteria**:
-- [ ] Guard tests pass and would fail if a handler hardcoded a table or tiered a `None` op.
-- [ ] Full `querier::` suite green; clippy clean.
+- [x] Guard tests pass and would fail if a handler hardcoded a tier table or tiered a `None` op (planted-literal sanity check confirmed).
+- [x] Full `querier::` suite green; clippy clean.
 **Depends on**: 3, 4, 5, 6
 **Time-box**: ~45 min
+**Status**: ✅ done (Session-3 commit).
 
 ## Sessions
 

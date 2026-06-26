@@ -199,6 +199,8 @@ async fn prom_label_values(
 
 #[derive(Debug, Deserialize)]
 struct SeriesParams {
+    start: Option<String>,
+    end: Option<String>,
     #[serde(rename = "match[]", default)]
     matcher: Option<String>,
 }
@@ -207,7 +209,14 @@ async fn prom_series(
     params: SeriesParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    match prometheus::handle_series(&engine, params.matcher.as_deref()).await {
+    // An explicit `[start, end]` range routes the sealed span to the rollup tier
+    // (FR5); an absent start (no range) keeps the raw scan. Mirror the
+    // label-values convention: start defaults to 0 only to bound the window when
+    // end is given — `time_range` is `Some` only when at least `start` is present.
+    let time_range = params.start.as_ref().map(|_| {
+        (parse_time_ns(&params.start), parse_time_ns(&params.end))
+    });
+    match prometheus::handle_series(&engine, params.matcher.as_deref(), time_range).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }

@@ -106,12 +106,53 @@ fn apply_match_selector(
 pub async fn build_series(
     engine: &super::QueryEngine,
     matcher: Option<&str>,
+    time_range: Option<(i64, i64)>,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
-    let df = apply_match_selector(engine.table("metrics").await?, matcher)?;
-    Ok(df
-        .select(vec![prom_name_expr().alias("name"), col("service_name")])?
-        .distinct()?)
+    let project = |df: datafusion::dataframe::DataFrame| -> crate::Result<_> {
+        Ok(apply_match_selector(df, matcher)?
+            .select(vec![prom_name_expr().alias("name"), col("service_name")])?
+            .distinct()?)
+    };
+    // FR5: with an explicit `[start, end]` range, enumerate the distinct series
+    // over the resolver's source windows (coarsest tier ≤ ∞ for the sealed span,
+    // raw for the trailing ≤1-day window) and UNION the per-window distinct sets.
+    // Metadata computes no values, so capability `Last` is always tier-eligible;
+    // the rollup preserves the full series set, so the union equals the raw-only
+    // enumeration. Without an explicit range we cannot split sealed/live, so we
+    // keep the raw `metrics` scan (the active day lives only in raw) — conservative.
+    let dfs = metadata_sources(engine, time_range).await?;
+    let mut acc: Option<datafusion::dataframe::DataFrame> = None;
+    for df in dfs {
+        let part = project(df)?;
+        acc = Some(match acc {
+            Some(a) => a.union(part)?.distinct()?,
+            None => part,
+        });
+    }
+    acc.ok_or_else(|| to_err("build_series: no source windows".to_string()))
+}
+
+/// The metadata-path source `DataFrame`s for an optional explicit `[start, end]`
+/// range (FR5). With a range, [`resolve_metric_windows`] (capability `Last`,
+/// resolution `i64::MAX` → coarsest available tier for the sealed span) yields
+/// the time-disjoint `(table, lo, hi)` windows; each window's scan is filtered to
+/// its `[lo, hi]` so the unioned distinct enumeration equals the raw-only result.
+/// Without a range, a single unfiltered raw `metrics` scan (the active day lives
+/// only in raw and there is no sealed/live split to compute) — conservative.
+async fn metadata_sources(
+    engine: &super::QueryEngine,
+    time_range: Option<(i64, i64)>,
+) -> crate::Result<Vec<datafusion::dataframe::DataFrame>> {
+    let Some((start_ns, end_ns)) = time_range else {
+        return Ok(vec![engine.table("metrics").await?]);
+    };
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last);
+    let mut out = Vec::with_capacity(windows.len());
+    for (table, lo, hi) in windows {
+        out.push(engine.table(&table).await?.filter(prom_time_between(lo, hi))?);
+    }
+    Ok(out)
 }
 
 /// Numeric value `Expr`: the gauge/counter value, or the histogram count/sum.
@@ -461,6 +502,141 @@ async fn lower_over_time(
     over_time(base, part, "v", "time_unix_nano", range_ns, agg)
 }
 
+/// The per-window value projection(s) for a `*_over_time` op, **normalised** so a
+/// single merge agg is exact across a `union` of tier and raw windows (the instant
+/// path collapses the whole `[t-window, t]` span to one value, so a tier window and
+/// the trailing raw window must aggregate together — a per-window split then
+/// latest-pick would drop the sealed window's contribution). On a tier window the
+/// per-bucket aggregate column is used (FR7); a raw window normalises to the same
+/// merge semantics: `count_over_time` counts each raw sample as `1`, the others
+/// reduce over the raw sample value. The returned `(value_cols, agg)` feed
+/// [`super::plan::frame::over_time`]; `avg_over_time` is handled separately (it
+/// needs the two-column ratio frame).
+fn over_time_window_value(
+    op: &str,
+    name: &str,
+    is_tier: bool,
+) -> (
+    Vec<datafusion::logical_expr::Expr>,
+    super::plan::frame::OverTimeAgg,
+) {
+    use super::plan::frame::OverTimeAgg;
+    use datafusion::prelude::{col, lit};
+    if is_tier {
+        let value = match op {
+            "max_over_time" => (col("value_max"), OverTimeAgg::Max),
+            "min_over_time" => (col("value_min"), OverTimeAgg::Min),
+            "sum_over_time" => (col("value_sum"), OverTimeAgg::Sum),
+            // count_over_time sums the per-bucket counts (NOT Count of rows).
+            "count_over_time" => (col("value_count"), OverTimeAgg::Sum),
+            _ => (col("value_max"), OverTimeAgg::Max),
+        };
+        (vec![value.0.alias("v")], value.1)
+    } else {
+        let value = match op {
+            "max_over_time" => (metric_value_expr(name), OverTimeAgg::Max),
+            "min_over_time" => (metric_value_expr(name), OverTimeAgg::Min),
+            "sum_over_time" => (metric_value_expr(name), OverTimeAgg::Sum),
+            // A raw sample counts as one toward the merged `SUM(count)` — keeping
+            // the same merge agg as the tier arm so the union is exact.
+            "count_over_time" => (lit(1.0_f64), OverTimeAgg::Sum),
+            _ => (metric_value_expr(name), OverTimeAgg::Max),
+        };
+        (vec![value.0.alias("v")], value.1)
+    }
+}
+
+/// The unified `[service_name, attributes, time_unix_nano, v]` frame for a leaf
+/// **instant** range function evaluated over the resolver `windows` (FR4/FR7). The
+/// per-window bases are `union`-ed *before* the single windowing pass so the value
+/// at `t` aggregates the entire `[t-window, t]` span across the tier/raw boundary
+/// (a per-window split would lose the sealed window — see [`over_time_window_value`]).
+/// `rate`/`increase`/`irate` need the last cumulative `v` (Capability::Last), exact
+/// on both raw and tier, so they union the coalesced `v` and slope once over it.
+async fn instant_leaf_frame(
+    engine: &super::QueryEngine,
+    op: &str,
+    vs: &VectorSelector,
+    name: &str,
+    windows: &[MetricWindow],
+    range_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use super::plan::frame::{irate, over_time, over_time_ratio, rate};
+    use datafusion::prelude::{col, lit};
+    let part = prom_part();
+    // Build the unioned base with the op-appropriate, union-compatible value cols.
+    let value_cols = |is_tier: bool| -> Vec<datafusion::logical_expr::Expr> {
+        match op {
+            "rate" | "increase" | "irate" => metric_value_cols(name),
+            "avg_over_time" if is_tier => {
+                vec![col("value_sum").alias("v"), col("value_count").alias("c")]
+            }
+            "avg_over_time" => vec![metric_value_expr(name).alias("v"), lit(1.0_f64).alias("c")],
+            _ => over_time_window_value(op, name, is_tier).0,
+        }
+    };
+    let mut base: Option<datafusion::dataframe::DataFrame> = None;
+    for (table, lo, hi) in windows {
+        let is_tier = table != "metrics";
+        let part_df = metric_base_df(engine, vs, *lo, *hi, table, value_cols(is_tier)).await?;
+        base = Some(match base {
+            Some(acc) => acc.union(part_df)?,
+            None => part_df,
+        });
+    }
+    let base = base.ok_or_else(|| to_err("resolver returned no windows".to_string()))?;
+    match op {
+        "rate" => rate(base, part, "v", "time_unix_nano", range_ns, true),
+        "increase" => rate(base, part, "v", "time_unix_nano", range_ns, false),
+        "irate" => irate(base, part, "v", "time_unix_nano"),
+        "avg_over_time" => over_time_ratio(base, part, "v", "c", "time_unix_nano", range_ns),
+        _ => {
+            // The merge agg is the same across the tier/raw arms by construction, so
+            // either arm yields it; pick the raw arm's (`is_tier=false` is irrelevant
+            // for the agg, only the value col differed, already applied above).
+            let (_v, agg) = over_time_window_value(op, name, false);
+            over_time(base, part, "v", "time_unix_nano", range_ns, agg)
+        }
+    }
+}
+
+/// Lower a leaf **instant** range expression (`rate(m[w])` / `<fn>_over_time(m[w])`)
+/// to the `[service_name, attributes, time_unix_nano, v]` frame over the resolved
+/// `windows`. Mirrors the leaf arm of [`lower_range_df`] but unions the windows at
+/// the base (FR4) so the instant value aggregates across the sealed/live boundary.
+async fn lower_instant_leaf(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    windows: &[MetricWindow],
+    range_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    let Expr::Call(c) = expr else {
+        return Err(to_err(
+            "instant range function expects a range vector like m[5m] (v1)".to_string(),
+        ));
+    };
+    let vs = match c.args.args.first().map(std::convert::AsRef::as_ref) {
+        Some(Expr::MatrixSelector(ms)) => &ms.vs,
+        _ => {
+            return Err(to_err(format!(
+                "{}() expects a range-vector argument like m[5m]",
+                c.func.name
+            )));
+        }
+    };
+    let name = vs
+        .name
+        .as_deref()
+        .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
+    match c.func.name {
+        "rate" | "increase" | "irate" | "max_over_time" | "min_over_time" | "avg_over_time"
+        | "sum_over_time" | "count_over_time" => {
+            instant_leaf_frame(engine, c.func.name, vs, name, windows, range_ns).await
+        }
+        other => Err(to_err(format!("unsupported range function: {other}() (v1)"))),
+    }
+}
+
 /// Apply `topk(k, …)` / `bottomk` to an already-lowered range frame as a window
 /// plan ([`super::plan::frame::lower_topk`]), then drop the window scratch
 /// columns. Partition by the frame's series identity: `prom_group_key` for a
@@ -507,37 +683,35 @@ fn lower_topk_df(
 }
 
 /// Latest sample per series at/before `time_ns`, as a `DataFrame` (P5): the
-/// instant-query base (`metric_base` filtered `<= time_ns`, then `rn = 1`).
+/// instant-query base (`metric_base` filtered `<= time_ns`, then `rn = 1`). A
+/// bare selector has no matrix window (`matrix_range_ns` → None ⇒ resolution 0)
+/// and capability [`Capability::None`], so [`resolve_metric_windows`] yields a
+/// single raw window — no hardcoded `"metrics"` literal (FR4, keeping the
+/// no-bypass guard absolute). A selector spanning the sealed boundary would
+/// resolve to tier+raw windows; we union the per-window bases, time-disjoint, so
+/// the global latest-per-series picks the most recent across both.
 async fn latest_selected_df(
     engine: &super::QueryEngine,
     vs: &VectorSelector,
     time_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
-    use datafusion::arrow::datatypes::DataType::Int64;
-    use datafusion::logical_expr::expr_fn::cast;
-    use datafusion::prelude::{col, lit};
+    use datafusion::prelude::col;
     let name = vs
         .name
         .as_deref()
         .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
-    let mut df = engine
-        .table("metrics")
-        .await?
-        .filter(name_pred_expr(name))?;
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_expr(m) {
-            df = df.filter(p)?;
-        }
+    // Bare selectors evaluate the latest sample only: no lookback window
+    // (resolution 0) and capability None ⇒ a single raw window naturally.
+    let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::None);
+    let mut base: Option<datafusion::dataframe::DataFrame> = None;
+    for (table, _lo, hi) in windows {
+        let part = selector_base_df(engine, vs, name, &table, hi).await?;
+        base = Some(match base {
+            Some(acc) => acc.union(part)?,
+            None => part,
+        });
     }
-    df = df.filter(cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
-    let base = df.select(vec![
-        prom_name_expr().alias("prom_name"),
-        col("name"),
-        col("service_name"),
-        col("attributes"),
-        col("time_unix_nano"),
-        metric_value_expr(name).alias("v"),
-    ])?;
+    let base = base.ok_or_else(|| to_err("resolver returned no windows".to_string()))?;
     // latest per (name, series-key) — matches the SQL row_number partition; keyed
     // on prom_series_key(attributes) since the Map isn't partitionable.
     super::plan::frame::latest_per_series(
@@ -545,6 +719,36 @@ async fn latest_selected_df(
         vec![col("name"), prom_series_key_expr()],
         "time_unix_nano",
     )
+}
+
+/// One filtered `<= time_ns` scan of `table` for the bare-selector instant base:
+/// the matched series' identity columns + the coalesced value `v`. Factored out
+/// of [`latest_selected_df`] so each resolver window contributes a union arm.
+async fn selector_base_df(
+    engine: &super::QueryEngine,
+    vs: &VectorSelector,
+    name: &str,
+    table: &str,
+    time_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast;
+    use datafusion::prelude::{col, lit};
+    let mut df = engine.table(table).await?.filter(name_pred_expr(name))?;
+    for m in &vs.matchers.matchers {
+        if let Some(p) = matcher_expr(m) {
+            df = df.filter(p)?;
+        }
+    }
+    df = df.filter(cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
+    Ok(df.select(vec![
+        prom_name_expr().alias("prom_name"),
+        col("name"),
+        col("service_name"),
+        col("attributes"),
+        col("time_unix_nano"),
+        metric_value_expr(name).alias("v"),
+    ])?)
 }
 
 /// Instant `<agg> [by (...)]` over the latest samples, as a `DataFrame` (P4).
@@ -559,6 +763,26 @@ fn matrix_range_ns(expr: &Expr) -> Option<i64> {
         Expr::Paren(p) => matrix_range_ns(&p.expr),
         _ => None,
     }
+}
+
+/// Resolve the source windows for an **instant** range expression evaluated at
+/// `time_ns` (FR4). The selector window `matrix_range_ns(expr)` is the resolution
+/// input (analogous to `step` for the range path), and [`op_capability`] is the
+/// safety gate: the coarsest tier ≤ the selector window that carries the
+/// operator's capability serves the sealed portion of `[time_ns-window, time_ns]`,
+/// raw serves the trailing live portion. A bare instant selector (no matrix
+/// window) is the caller's responsibility (see [`latest_selected_df`]); this is
+/// for range-function instants, so a missing matrix window is an error.
+fn instant_range_windows(
+    engine: &super::QueryEngine,
+    expr: &Expr,
+    time_ns: i64,
+) -> crate::Result<Vec<MetricWindow>> {
+    let range = matrix_range_ns(expr).ok_or_else(|| {
+        to_err("instant range function expects a range vector like m[5m] (v1)".to_string())
+    })?;
+    let start = time_ns.saturating_sub(range);
+    Ok(resolve_metric_windows(engine, start, time_ns, range, op_capability(expr)))
 }
 
 /// Lower an aggregate at an **instant** to the canonical aggregate frame
@@ -596,14 +820,51 @@ async fn lower_aggregate_instant(
     }
 
     // Range-function inner (`avg(rate(m[5m]))`, common on gauge panels): evaluate
-    // `<agg>(range)` over the [T-range, T] window, then take the value at T (latest
-    // per group) — the canonical frame collapses to `[prom_group_key, v]`.
+    // `<agg>(range)` over the [T-range, T] window via the resolver-derived source
+    // (FR4), then take the value at T (latest per group) — the canonical frame
+    // collapses to `[prom_group_key, v]`. The resolver windows are unioned at the
+    // leaf base (in `lower_instant_aggregate_range`) so a sealed/live straddle
+    // aggregates together rather than dropping the sealed window.
     let range = matrix_range_ns(agg.expr.as_ref()).ok_or_else(|| {
         to_err("instant aggregate inner must be a selector or a range function (v1)".to_string())
     })?;
-    let start = time_ns.saturating_sub(range);
-    let ranged = lower_aggregate_range(engine, agg, start, time_ns, "metrics").await?;
+    let windows = instant_range_windows(engine, agg.expr.as_ref(), time_ns)?;
+    let ranged = lower_instant_aggregate_range(engine, agg, &windows, range).await?;
     super::plan::frame::latest_per_series(ranged, vec![col("prom_group_key")], "time_unix_nano")
+}
+
+/// Lower an instant `<agg>(rate|*_over_time(m[w]))` to the canonical aggregate
+/// frame `[prom_group_key, time_unix_nano, v]` over the resolver `windows` (FR4).
+/// Mirrors [`lower_aggregate_range`] but builds the leaf over the unioned windows
+/// (via [`lower_instant_leaf`]) so the aggregated instant value spans the
+/// sealed/live boundary. Nested aggregates over a range function recurse the same
+/// way. The inner must be a range function (the selector case is handled by the
+/// caller's leaf path); other inners are rejected by [`lower_instant_leaf`].
+async fn lower_instant_aggregate_range(
+    engine: &super::QueryEngine,
+    agg: &AggregateExpr,
+    windows: &[MetricWindow],
+    range_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::prelude::col;
+    let op = agg_name(agg.op).map_err(to_err)?;
+    let grouping = AggGrouping::from(&agg.modifier);
+    let inner = match agg.expr.as_ref() {
+        Expr::Aggregate(inner_agg) => {
+            Box::pin(lower_instant_aggregate_range(engine, inner_agg, windows, range_ns)).await?
+        }
+        Expr::Paren(p) if matches!(p.expr.as_ref(), Expr::Aggregate(_)) => {
+            let Expr::Aggregate(inner_agg) = p.expr.as_ref() else {
+                unreachable!("guarded by the match arm")
+            };
+            Box::pin(lower_instant_aggregate_range(engine, inner_agg, windows, range_ns)).await?
+        }
+        leaf => lower_instant_leaf(engine, leaf, windows, range_ns).await?,
+    };
+    let inner = rename_inner_group_key(inner)?;
+    let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
+    let v = agg_value_expr(op, col("v")).alias("v");
+    Ok(inner.aggregate(vec![key, col("time_unix_nano")], vec![v])?)
 }
 
 /// The inner aggregate of `expr`, unwrapping parens (`Some` only if the inner is
@@ -637,13 +898,15 @@ async fn lower_instant_df(
         Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
         Expr::Aggregate(agg) => lower_aggregate_instant(engine, agg, time_ns).await,
         // Bare range function at an instant (`rate(metric[5m])`): evaluate over the
-        // [T-range, T] window via the range engine, then keep the value at T.
+        // [T-range, T] window using the resolver-derived source (FR4) — the windows
+        // are unioned at the leaf base so the value at T aggregates across the
+        // sealed/live boundary — then keep the value at T.
         Expr::Call(_) => {
             let range = matrix_range_ns(expr).ok_or_else(|| {
                 to_err("instant range function expects a range vector like m[5m] (v1)".to_string())
             })?;
-            let start = time_ns.saturating_sub(range);
-            let series = lower_range_df(engine, expr, start, time_ns, "metrics").await?;
+            let windows = instant_range_windows(engine, expr, time_ns)?;
+            let series = lower_instant_leaf(engine, expr, &windows, range).await?;
             // rate/over_time project to (service_name, attributes, time, v) — a
             // series is identified by those; partition the latest-pick on the
             // series-key UDF since the attributes Map isn't partitionable.
@@ -1001,37 +1264,66 @@ pub async fn build_label_values(
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::functions::expr_fn::concat;
     use datafusion::prelude::{col, lit};
-    // Scope every scan to the requested time window so listing a label only
-    // processes rows in range (and gets time-stats pruning) instead of all
-    // history — an absent window is `[0, i64::MAX]`, i.e. unchanged behaviour.
-    let window = || prom_time_between(start_ns, end_ns);
-    // Scope to the `match[]` selector too — a `$host` variable query like
+    // FR5: route each label-value enumeration through the tier-resolution choke
+    // point. Metadata computes no values, so capability `Last` is always
+    // tier-eligible; passing `resolution_ns = i64::MAX` selects the coarsest
+    // available tier (fewest rows → cheapest `DISTINCT`) for the sealed span, raw
+    // for the trailing ≤1-day window. The windows are time-disjoint and the tier
+    // preserves the full label/series set, so the UNION-distinct equals the
+    // raw-only enumeration. With no registered tier / no sealed portion the
+    // resolver returns a single raw `metrics` window — unchanged behaviour.
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last);
+    // One scan of a resolver window `(table, lo, hi)`: scope to the window's time
+    // range and the `match[]` selector — a `$host` variable query like
     // `label_values(up{service_name="X"}, host)` must restrict `host` to that
-    // service, not list every host in the store.
-    let scan = |pred: datafusion::prelude::Expr| async move {
-        apply_match_selector(engine.table("metrics").await?.filter(pred)?, matcher)
+    // service, not list every host in the store — plus any caller `extra` pred.
+    let scan = |table: String, lo: i64, hi: i64, extra: datafusion::prelude::Expr| async move {
+        let df = engine.table(&table).await?.filter(prom_time_between(lo, hi).and(extra))?;
+        apply_match_selector(df, matcher)
     };
+    // UNION the per-window value projections into one distinct, sorted result.
+    let union_distinct =
+        |acc: Option<datafusion::dataframe::DataFrame>, df: datafusion::dataframe::DataFrame| match acc {
+            Some(a) => a.union(df),
+            None => Ok(df),
+        };
     if label == "__name__" {
-        let names = scan(window()).await?.select(vec![prom_name_expr().alias("v")])?;
         let variant = |suffix: &str| concat(vec![prom_name_expr(), lit(suffix.to_string())]);
-        let with_buckets = || window().and(col("bucket_counts").is_not_null());
-        let bkt = scan(with_buckets()).await?.select(vec![variant("_bucket").alias("v")])?;
-        let cnt = scan(with_buckets()).await?.select(vec![variant("_count").alias("v")])?;
-        let sm = scan(with_buckets()).await?.select(vec![variant("_sum").alias("v")])?;
-        return Ok(names
-            .union(bkt)?
-            .union(cnt)?
-            .union(sm)?
+        let mut acc: Option<datafusion::dataframe::DataFrame> = None;
+        for (table, lo, hi) in &windows {
+            let names = scan(table.clone(), *lo, *hi, lit(true))
+                .await?
+                .select(vec![prom_name_expr().alias("v")])?;
+            let with_buckets = || col("bucket_counts").is_not_null();
+            let bkt = scan(table.clone(), *lo, *hi, with_buckets())
+                .await?
+                .select(vec![variant("_bucket").alias("v")])?;
+            let cnt = scan(table.clone(), *lo, *hi, with_buckets())
+                .await?
+                .select(vec![variant("_count").alias("v")])?;
+            let sm = scan(table.clone(), *lo, *hi, with_buckets())
+                .await?
+                .select(vec![variant("_sum").alias("v")])?;
+            for df in [names, bkt, cnt, sm] {
+                acc = Some(union_distinct(acc, df)?);
+            }
+        }
+        let merged = acc.ok_or_else(|| to_err("build_label_values: no source windows".to_string()))?;
+        return Ok(merged
             .filter(col("v").is_not_null())?
             .distinct()?
             .sort(vec![col("v").sort(true, false)])?);
     }
     let lhs = label_lhs_expr(label);
-    Ok(scan(window().and(lhs.clone().is_not_null()))
-        .await?
-        .select(vec![lhs.alias("v")])?
-        .distinct()?
-        .sort(vec![col("v").sort(true, false)])?)
+    let mut acc: Option<datafusion::dataframe::DataFrame> = None;
+    for (table, lo, hi) in &windows {
+        let df = scan(table.clone(), *lo, *hi, lhs.clone().is_not_null())
+            .await?
+            .select(vec![lhs.clone().alias("v")])?;
+        acc = Some(union_distinct(acc, df)?);
+    }
+    let merged = acc.ok_or_else(|| to_err("build_label_values: no source windows".to_string()))?;
+    Ok(merged.distinct()?.sort(vec![col("v").sort(true, false)])?)
 }
 
 /// Run `label/:name/values` and build `{status, data:[...]}`.
@@ -1050,6 +1342,10 @@ pub async fn handle_label_values(
 /// Run `labels` (label-name discovery for Grafana's metric browser): the
 /// promoted columns plus the Prometheus-normalized metric attribute keys.
 pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
+    // FR5 no-range fallback: `/labels` carries no `[start, end]` params, so there
+    // is no sealed/live split to compute and the active day lives only in raw —
+    // keep the raw `metrics` scan (conservative and correct). The documented
+    // exception to the "no hardcoded `metrics` literal" rule for metadata paths.
     let keys = distinct_json_keys(engine, "metrics", "attributes").await?;
     let mut names: std::collections::BTreeSet<String> =
         ["__name__".to_string(), "service_name".to_string()].into();
@@ -1062,12 +1358,13 @@ pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_j
 pub async fn handle_series(
     engine: &super::QueryEngine,
     matcher: Option<&str>,
+    time_range: Option<(i64, i64)>,
 ) -> crate::Result<serde_json::Value> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let df = build_series(engine, matcher).await?;
+    let df = build_series(engine, matcher, time_range).await?;
     let batches = engine.collect(df).await?;
     let mut series: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
@@ -1995,6 +2292,40 @@ fn parse_f64_array(json: Option<&str>) -> Vec<f64> {
     serde_json::from_str::<Vec<f64>>(json).unwrap_or_default()
 }
 
+/// One filtered `<= time_ns` scan of `table` for the instant-histogram base: the
+/// matched series' identity + the OTLP `bucket_counts`/`explicit_bounds` arrays.
+/// Factored out of [`handle_histogram`] so each resolver window contributes a
+/// union arm (the bucket columns are shared across the raw/tier schemas).
+async fn hist_instant_scan(
+    engine: &super::QueryEngine,
+    vs: &VectorSelector,
+    name: &str,
+    table: &str,
+    time_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use datafusion::arrow::datatypes::DataType::Int64;
+    use datafusion::logical_expr::expr_fn::cast as df_cast;
+    use datafusion::prelude::{col, lit};
+    let mut df = engine
+        .table(table)
+        .await?
+        .filter(prom_name_expr().eq(lit(name.to_string())))?;
+    for m in &vs.matchers.matchers {
+        if let Some(p) = matcher_expr(m) {
+            df = df.filter(p)?;
+        }
+    }
+    df = df.filter(df_cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
+    Ok(df.select(vec![
+        col("name"),
+        col("service_name"),
+        col("attributes"),
+        col("bucket_counts"),
+        col("explicit_bounds"),
+        col("time_unix_nano"),
+    ])?)
+}
+
 /// Run `histogram_quantile(φ, m{…})` and build a `resultType=vector` response.
 async fn handle_histogram(
     engine: &super::QueryEngine,
@@ -2010,27 +2341,22 @@ async fn handle_histogram(
         .name
         .as_deref()
         .ok_or_else(|| to_err("histogram selector requires a name".into()))?;
-    use datafusion::arrow::datatypes::DataType::Int64;
-    use datafusion::logical_expr::expr_fn::cast as df_cast;
-    use datafusion::prelude::{col, lit};
-    let mut df = engine
-        .table("metrics")
-        .await?
-        .filter(prom_name_expr().eq(lit(name.to_string())))?;
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_expr(m) {
-            df = df.filter(p)?;
-        }
+    use datafusion::prelude::col;
+    // An instant histogram has no lookback window (resolution 0); `histogram_quantile`
+    // is Capability::Last, but resolution 0 ⇒ the resolver yields a single raw
+    // window (FR4) — no hardcoded `"metrics"` literal. The bucket columns are
+    // shared across raw/tier schemas, so a boundary-straddling window (were the
+    // resolution ever > 0) unions cleanly.
+    let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::Last);
+    let mut base: Option<datafusion::dataframe::DataFrame> = None;
+    for (table, _lo, hi) in windows {
+        let part = hist_instant_scan(engine, vs, name, &table, hi).await?;
+        base = Some(match base {
+            Some(acc) => acc.union(part)?,
+            None => part,
+        });
     }
-    df = df.filter(df_cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
-    let base = df.select(vec![
-        col("name"),
-        col("service_name"),
-        col("attributes"),
-        col("bucket_counts"),
-        col("explicit_bounds"),
-        col("time_unix_nano"),
-    ])?;
+    let base = base.ok_or_else(|| to_err("resolver returned no windows".to_string()))?;
     // Latest histogram row per series at/before the eval time (keyed on the
     // series-key UDF since the attributes Map isn't partitionable).
     let latest = super::plan::frame::latest_per_series(
@@ -5025,6 +5351,60 @@ mod tests {
         assert_eq!(cap("1 + 2"), Capability::None);
     }
 
+    /// The single instant sample's value for a one-series vector response.
+    fn instant_value(resp: &PromResponse) -> f64 {
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        resp.data.result[0]
+            .value
+            .1
+            .parse::<f64>()
+            .expect("a numeric instant value")
+    }
+
+    #[tokio::test]
+    async fn test_instant_rate_long_window_uses_tier() {
+        // An instant `sum(rate(g[3d]))` at t=2d: the selector window
+        // [2d-3d, 2d] covers the sealed day-0 span, so the resolver (resolution =
+        // the 3d selector window, Capability::Last) routes the sealed portion to
+        // the 5m tier. It must route + evaluate.
+        let engine = engine_with_rich_5m_tier().await;
+        let range = parser::parse("sum(rate(g[3d]))").unwrap();
+        let w = resolve_metric_windows(&engine, -DAY_NS, 2 * DAY_NS, 3 * DAY_NS, op_capability(&range));
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        let resp = handle_instant(&engine, "sum(rate(g[3d]))", 2 * DAY_NS).await;
+        assert!(resp.is_ok(), "instant rate over a sealed window must route + evaluate");
+    }
+
+    #[tokio::test]
+    async fn test_instant_max_over_time_uses_tier_and_matches_raw() {
+        // Instant `max_over_time(g[3d])` at t=2d over the sealed span uses the
+        // tier's per-bucket `value_max`=99 (the raw peak), NOT the last-valued
+        // `double_value`=20 a recompute would see. The live tail sample is 5, so
+        // the overall max equals the raw max (99) — peak preserved (FR7).
+        let engine = engine_with_rich_5m_tier().await;
+        let resp = handle_instant(&engine, "max_over_time(g[3d])", 2 * DAY_NS)
+            .await
+            .unwrap();
+        let v = instant_value(&resp);
+        assert!(
+            (v - 99.0).abs() < 1e-6,
+            "instant max_over_time must use the tier's value_max (99) and match raw, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instant_bare_selector_reads_raw() {
+        // A bare instant vector `g` at t=2d: no matrix window (capability None) ⇒
+        // resolves to a single raw window. The latest sample at/before 2d is the
+        // live tail value 5.
+        let engine = engine_with_rich_5m_tier().await;
+        let bare = parser::parse("g").unwrap();
+        assert_eq!(op_capability(&bare), Capability::None);
+        let resp = handle_instant(&engine, "g", 2 * DAY_NS).await.unwrap();
+        let v = instant_value(&resp);
+        assert!((v - 5.0).abs() < 1e-6, "bare selector reads raw latest = 5, got {v}");
+    }
+
     #[test]
     fn test_op_capability_binary_mixed_is_none() {
         // `max_over_time(a)/rate(b)`: operands need different value columns
@@ -5034,5 +5414,132 @@ mod tests {
         // A unary negation carries its operand's capability through.
         let neg = parser::parse("-rate(g[5m])").unwrap();
         assert_eq!(op_capability(&neg), Capability::Last);
+    }
+
+    // --- Task 6: metadata tier routing (FR5) ---
+
+    #[tokio::test]
+    async fn test_series_enumeration_matches_raw_via_tier() {
+        // `/series` over a sealed 2-day span routes the sealed day to `metrics_5m`
+        // (resolution = i64::MAX → coarsest tier, capability Last) and the trailing
+        // live day to raw. The rollup tier carries the same `(name, service_name)`
+        // series as raw for the sealed window, so the routed union MUST equal the
+        // raw-only enumeration (no-range fallback → unfiltered raw `metrics`).
+        let engine = engine_with_rich_5m_tier().await;
+        // Routed (explicit range): sealed day-0 → tier, trailing day-1 → raw.
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last);
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        let routed = handle_series(&engine, None, Some((0, 2 * DAY_NS))).await.unwrap();
+        // Raw-only baseline: no time range → unfiltered raw `metrics` scan.
+        let raw_only = handle_series(&engine, None, None).await.unwrap();
+        assert_eq!(
+            routed["data"], raw_only["data"],
+            "tier-routed /series must equal raw-only: routed={routed} raw={raw_only}"
+        );
+        assert_eq!(
+            routed["data"],
+            serde_json::json!([{ "__name__": "g", "service_name": "s" }]),
+            "the fixture's single series: {routed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_label_values_matches_raw_via_tier() {
+        // `/label/__name__/values` over a sealed 2-day span routes the sealed day
+        // to `metrics_5m` (coarsest tier, capability Last) and the trailing day to
+        // raw. The tier preserves the full name set, so the routed value set MUST
+        // equal the raw-only enumeration.
+        let engine = engine_with_rich_5m_tier().await;
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last);
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        // Routed (explicit range).
+        let routed = handle_label_values(&engine, "__name__", 0, 2 * DAY_NS, None).await.unwrap();
+        // Raw-only baseline: a span starting after the sealed boundary
+        // (`start > sealed_ns`) resolves to a single raw `metrics` window (no
+        // tier) yet still covers the live day-1 sample at `DAY_NS + 60s`.
+        let raw_start = DAY_NS + 30_000_000_000; // just before the live sample
+        let raw_only =
+            handle_label_values(&engine, "__name__", raw_start, 2 * DAY_NS, None).await.unwrap();
+        assert_eq!(
+            routed["data"], raw_only["data"],
+            "tier-routed label values must equal raw-only: routed={routed} raw={raw_only}"
+        );
+        assert_eq!(routed["data"], serde_json::json!(["g"]), "the fixture's single name: {routed}");
+    }
+
+    // --- Task 7: NFR3 no-silent-bypass + NFR1 ---
+
+    /// NFR1 — every operator the classifier maps to [`Capability::None`] must
+    /// force a single raw `metrics` window, even over a multi-day sealed span
+    /// where a tier is registered. This proves the safe-by-default path: an
+    /// unsafe/unlisted operator can never be silently served from a coarse tier.
+    ///
+    /// Table-driven over `irate`, `quantile_over_time`, `stddev_over_time` (the
+    /// documented `None` operators), a bare selector `m`, and a pure scalar
+    /// `1+2`. For each we assert (a) `op_capability == None` and (b) the resolver
+    /// returns exactly one window on the raw `metrics` table — never a tier — at a
+    /// coarse resolution over a 2-day span with `metrics_5m` registered. We test
+    /// the *classifier + resolver* (which parse/inspect the `Expr`), not query
+    /// execution, so the operators need not be runtime-implemented.
+    #[tokio::test]
+    async fn test_none_capability_never_tiers() {
+        let engine = engine_with_rich_5m_tier().await;
+        // Coarse resolution + multi-day sealed span: the conditions under which a
+        // non-None capability *would* route to `metrics_5m` (see
+        // `test_resolve_windows_splits_sealed_and_trailing`). The point is that
+        // None never does, regardless.
+        let start = 0i64;
+        let end = 2 * DAY_NS;
+        for query in ["irate(m[5m])", "quantile_over_time(0.9, m[5m])", "stddev_over_time(m[5m])", "m", "1 + 2"] {
+            let expr = parser::parse(query).unwrap();
+            let cap = op_capability(&expr);
+            assert_eq!(cap, Capability::None, "{query}: must classify as Capability::None");
+            let w = resolve_metric_windows(&engine, start, end, i64::MAX, cap);
+            assert_eq!(
+                w,
+                vec![("metrics".to_string(), start, end)],
+                "{query}: None capability must yield a single raw window, never a tier"
+            );
+        }
+    }
+
+    /// NFR3 (no silent bypass) — source guard, mirroring `no_sql_invariant_tests`
+    /// in `mod.rs`: read this module's own source, drop the test region (split on
+    /// the first `#[cfg(test)]`, keep the production prefix), strip line comments,
+    /// and assert no handler hardcodes a rollup tier table. Tier table names are
+    /// produced ONLY inside `resolve_metric_windows` via
+    /// `format!("metrics_{}", tier.label())`, so no production line may contain a
+    /// `metrics_5m`/`metrics_1h`/`metrics_1d` literal or a `.table("metrics_`
+    /// occurrence. This test FAILS if a future handler hardcodes a tier table,
+    /// bypassing the single tier-resolution choke point.
+    ///
+    /// Raw `.table("metrics")` (no trailing `_`) is intentionally allowed — it is
+    /// the safe fallback `resolve_metric_windows` itself emits and the two
+    /// documented no-time-range metadata fallbacks read.
+    #[test]
+    fn test_no_handler_hardcodes_tier_table() {
+        let src = include_str!("prometheus.rs");
+        // Production region only — drop everything from the first test module.
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        // Strip line comments so doc/comment mentions of a tier table don't trip
+        // the gate (mirrors `no_sql_invariant_tests::test_no_format_sql_in_core`).
+        let code: String = prod
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for tier in ["metrics_5m", "metrics_1h", "metrics_1d"] {
+            assert!(
+                !code.contains(tier),
+                "prometheus.rs hardcodes tier table `{tier}` outside the resolver — \
+                 reach tier tables only via `resolve_metric_windows`'s `format!`"
+            );
+        }
+        assert!(
+            !code.contains(".table(\"metrics_"),
+            "prometheus.rs scans a tier table directly via `.table(\"metrics_…\")` — \
+             route every tier read through `resolve_metric_windows`"
+        );
     }
 }
