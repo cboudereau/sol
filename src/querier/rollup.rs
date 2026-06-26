@@ -29,7 +29,8 @@ use super::compaction::{
 
 const M5_NS: i64 = 300_000_000_000;
 const H1_NS: i64 = 3_600_000_000_000;
-const D1_NS: i64 = 86_400_000_000_000;
+// Canonical day value (canonical-ns ADR — single source of truth, no duplicated literal).
+const D1_NS: i64 = super::units::DurationNs::DAY.ns();
 
 /// A downsampling resolution tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

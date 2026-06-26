@@ -47,6 +47,11 @@ impl DurationNs {
     /// Zero duration.
     pub const ZERO: DurationNs = DurationNs(0);
 
+    /// One day — the canonical sealed-day boundary offset and the `RollupTier::D1`
+    /// bucket width. The single source of truth for "one day in ns" (canonical-ns
+    /// ADR: no hand-rolled ns literals).
+    pub const DAY: DurationNs = DurationNs(86_400_000_000_000);
+
     /// The underlying nanosecond count.
     #[must_use]
     pub const fn ns(self) -> i64 {

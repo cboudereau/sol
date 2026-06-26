@@ -270,6 +270,47 @@ pub fn over_time(
     ])?)
 }
 
+/// `avg_over_time` off a rollup tier: the windowed mean is
+/// `SUM(value_sum) / SUM(value_count)` over the same `RANGE … PRECEDING` frame,
+/// **not** `AVG(value_last)` — a single windowed column cannot recover the
+/// per-bucket mean once the rollup has reduced each bucket to scalars. The two
+/// windowed sums share one frame/partition, so the ratio equals the raw
+/// `avg_over_time` over the bucket members. Output columns mirror [`over_time`].
+///
+/// # Errors
+/// Propagates DataFusion plan-construction errors.
+pub fn over_time_ratio(
+    df: DataFrame,
+    part: Vec<Expr>,
+    num_col: &str,
+    den_col: &str,
+    time_col: &str,
+    range_ns: i64,
+) -> crate::Result<DataFrame> {
+    let frame = || {
+        WindowFrame::new_bounds(
+            WindowFrameUnits::Range,
+            WindowFrameBound::Preceding(ScalarValue::Int64(Some(range_ns))),
+            WindowFrameBound::CurrentRow,
+        )
+    };
+    let order = || vec![ns(time_col).sort(true, false)];
+    let win_sum = |c: &str| -> crate::Result<Expr> {
+        let w: Expr = WindowFunction::new(sum_udaf(), vec![col(c)]).into();
+        Ok(w.partition_by(part.clone())
+            .order_by(order())
+            .window_frame(frame())
+            .build()?)
+    };
+    let v = (win_sum(num_col)? / win_sum(den_col)?).alias("v");
+    Ok(df.select(vec![
+        col("service_name"),
+        col("attributes"),
+        col(time_col),
+        v,
+    ])?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

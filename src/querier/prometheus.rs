@@ -139,14 +139,18 @@ fn prom_time_between(start_ns: i64, end_ns: i64) -> datafusion::logical_expr::Ex
     cast(col("time_unix_nano"), Int64).between(lit(start_ns), lit(end_ns))
 }
 
-/// Per-sample base over `metrics` as a `DataFrame` (P3): the matched series'
-/// `(prom_name, name, service_name, attributes, time, v)`.
+/// Per-sample base over `table` as a `DataFrame` (P3): the matched series'
+/// identity columns (`prom_name, name, service_name, attributes, time`) plus the
+/// `value_cols` value projections. Most callers want the single coalesced value
+/// `v`; tier `*_over_time` windows project the per-bucket aggregate column(s)
+/// instead (FR7, via [`metric_value_cols`]).
 async fn metric_base_df(
     engine: &super::QueryEngine,
     vs: &VectorSelector,
     start_ns: i64,
     end_ns: i64,
     table: &str,
+    value_cols: Vec<datafusion::logical_expr::Expr>,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let name = vs
@@ -160,14 +164,21 @@ async fn metric_base_df(
         }
     }
     df = df.filter(prom_time_between(start_ns, end_ns))?;
-    Ok(df.select(vec![
+    let mut proj = vec![
         prom_name_expr().alias("prom_name"),
         col("name"),
         col("service_name"),
         col("attributes"),
         col("time_unix_nano"),
-        metric_value_expr(name).alias("v"),
-    ])?)
+    ];
+    proj.extend(value_cols);
+    Ok(df.select(proj)?)
+}
+
+/// The default single value projection `[coalesced v]` for the non-over-time
+/// paths (selectors, `rate`/`increase`, raw windows).
+fn metric_value_cols(name: &str) -> Vec<datafusion::logical_expr::Expr> {
+    vec![metric_value_expr(name).alias("v")]
 }
 
 /// A groupable series key over the columnar `attributes` MAP. DataFusion cannot
@@ -310,7 +321,7 @@ async fn lower_range_df(
     end_ns: i64,
     table: &str,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
-    use super::plan::frame::{OverTimeAgg, irate, over_time, rate};
+    use super::plan::frame::{irate, rate};
     use datafusion::prelude::col;
     match expr {
         Expr::Call(c) => {
@@ -323,30 +334,46 @@ async fn lower_range_df(
                     )));
                 }
             };
-            let base = metric_base_df(engine, vs, start_ns, end_ns, table).await?;
+            let name = vs
+                .name
+                .as_deref()
+                .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
             let part = prom_part();
             let r = range_to_ns(range);
+            let is_tier = table != "metrics";
             match c.func.name {
                 // Windowed Prometheus semantics: reset-adjusted increase over the
                 // matrix window `[w]`, divided by `w` seconds for `rate` (kept raw
-                // for `increase`). `irate` is the latest inter-sample slope.
-                "rate" => rate(base, part, "v", "time_unix_nano", r, true),
-                "increase" => rate(base, part, "v", "time_unix_nano", r, false),
-                "irate" => irate(base, part, "v", "time_unix_nano"),
-                "max_over_time" => {
-                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Max)
+                // for `increase`). `irate` is the latest inter-sample slope. These
+                // need the last cumulative value per bucket — the coalesced `v` is
+                // correct on both raw and tier (Capability::Last), so no override.
+                "rate" => {
+                    let base =
+                        metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
+                            .await?;
+                    rate(base, part, "v", "time_unix_nano", r, true)
                 }
-                "min_over_time" => {
-                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Min)
+                "increase" => {
+                    let base =
+                        metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
+                            .await?;
+                    rate(base, part, "v", "time_unix_nano", r, false)
                 }
-                "avg_over_time" => {
-                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Avg)
+                "irate" => {
+                    let base =
+                        metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
+                            .await?;
+                    irate(base, part, "v", "time_unix_nano")
                 }
-                "sum_over_time" => {
-                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Sum)
-                }
-                "count_over_time" => {
-                    over_time(base, part, "v", "time_unix_nano", r, OverTimeAgg::Count)
+                // `*_over_time`: on a tier window the value comes from the matching
+                // per-bucket aggregate column (FR7) rather than recomputing over the
+                // last-valued `v` (which would drop intra-bucket detail); on a raw
+                // window the coalesced `v` with the natural agg (unchanged).
+                "max_over_time" | "min_over_time" | "avg_over_time" | "sum_over_time"
+                | "count_over_time" => {
+                    lower_over_time(engine, c.func.name, vs, name, start_ns, end_ns, table,
+                        is_tier, part, r)
+                        .await
                 }
                 other => Err(to_err(format!(
                     "unsupported range function: {other}() (v1)"
@@ -357,13 +384,81 @@ async fn lower_range_df(
         Expr::Aggregate(agg) => {
             Box::pin(lower_aggregate_range(engine, agg, start_ns, end_ns, table)).await
         }
-        Expr::VectorSelector(vs) => Ok(metric_base_df(engine, vs, start_ns, end_ns, table)
+        Expr::VectorSelector(vs) => {
+            Ok(metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(
+                vs.name.as_deref().unwrap_or_default(),
+            ))
             .await?
-            .sort(vec![col("time_unix_nano").sort(true, false)])?),
+            .sort(vec![col("time_unix_nano").sort(true, false)])?)
+        }
         _ => Err(to_err(
             "unsupported PromQL expression for query_range (v1)".to_string(),
         )),
     }
+}
+
+/// Lower a `*_over_time` range function with capability-aware value selection
+/// (FR7). On a **raw** window the agg runs over the coalesced `v` with its
+/// natural [`OverTimeAgg`]. On a **tier** window the per-bucket aggregate column
+/// is selected per the [operator → capability ADR][adr]: `max→MAX(value_max)`,
+/// `min→MIN(value_min)`, `sum→SUM(value_sum)`, `count→SUM(value_count)`, and
+/// `avg→Σvalue_sum/Σvalue_count` (the one case a single windowed column cannot
+/// express — see [`super::plan::frame::over_time_ratio`]).
+///
+/// [adr]: ../../../docs/workspace/rollup-read-routing/adrs/operator-safety-allowlist.md
+#[allow(clippy::too_many_arguments)]
+async fn lower_over_time(
+    engine: &super::QueryEngine,
+    op: &str,
+    vs: &VectorSelector,
+    name: &str,
+    start_ns: i64,
+    end_ns: i64,
+    table: &str,
+    is_tier: bool,
+    part: Vec<datafusion::logical_expr::Expr>,
+    range_ns: i64,
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    use super::plan::frame::{OverTimeAgg, over_time, over_time_ratio};
+    use datafusion::prelude::col;
+    // avg over a tier is the ratio of two windowed sums — it needs both the
+    // `value_sum` and `value_count` columns in the base, then a dedicated frame.
+    if is_tier && op == "avg_over_time" {
+        let base = metric_base_df(
+            engine,
+            vs,
+            start_ns,
+            end_ns,
+            table,
+            vec![col("value_sum").alias("v"), col("value_count").alias("c")],
+        )
+        .await?;
+        return over_time_ratio(base, part, "v", "c", "time_unix_nano", range_ns);
+    }
+    // The single value column + merge agg for this op on this source.
+    let (value_expr, agg) = if is_tier {
+        match op {
+            "max_over_time" => (col("value_max"), OverTimeAgg::Max),
+            "min_over_time" => (col("value_min"), OverTimeAgg::Min),
+            "sum_over_time" => (col("value_sum"), OverTimeAgg::Sum),
+            // count_over_time sums the per-bucket counts (NOT Count of rows).
+            "count_over_time" => (col("value_count"), OverTimeAgg::Sum),
+            other => return Err(to_err(format!("unexpected over_time op: {other}"))),
+        }
+    } else {
+        let agg = match op {
+            "max_over_time" => OverTimeAgg::Max,
+            "min_over_time" => OverTimeAgg::Min,
+            "avg_over_time" => OverTimeAgg::Avg,
+            "sum_over_time" => OverTimeAgg::Sum,
+            "count_over_time" => OverTimeAgg::Count,
+            other => return Err(to_err(format!("unexpected over_time op: {other}"))),
+        };
+        (metric_value_expr(name), agg)
+    };
+    let base =
+        metric_base_df(engine, vs, start_ns, end_ns, table, vec![value_expr.alias("v")]).await?;
+    over_time(base, part, "v", "time_unix_nano", range_ns, agg)
 }
 
 /// Apply `topk(k, …)` / `bottomk` to an already-lowered range frame as a window
@@ -1222,7 +1317,7 @@ async fn handle_hist_quantile_range(
 
     use datafusion::prelude::col;
     // Sealed windows from the rollup tier (coarse step), trailing day from raw.
-    let df = tiered_hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns).await?;
+    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns).await?;
     let mut proj = vec![
         col("time_unix_nano"),
         col("bucket_counts"),
@@ -1376,7 +1471,7 @@ async fn handle_bucket_heatmap(
 
     use datafusion::prelude::col;
     // Sealed windows from the rollup tier (coarse step), trailing day from raw.
-    let df = tiered_hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns)
+    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns)
         .await?
         .filter(col("bucket_counts").is_not_null())?;
     let mut proj = vec![
@@ -1477,17 +1572,6 @@ fn topk_parts(expr: &Expr) -> Option<(i64, bool, &Expr)> {
 
 /// Pick the table to serve a range query: the coarsest registered rollup tier
 /// whose resolution ≤ `step_ns` (FR6), else raw `metrics`.
-fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
-    let available: Vec<super::rollup::RollupTier> = super::rollup::RollupTier::all()
-        .into_iter()
-        .filter(|t| engine.has_table(&format!("metrics_{}", t.label())))
-        .collect();
-    match super::rollup::select_tier(step_ns, &available) {
-        super::rollup::RollupTier::Raw => "metrics".to_string(),
-        tier => format!("metrics_{}", tier.label()),
-    }
-}
-
 /// The per-bucket information a range operator needs from a rollup tier (FR2,
 /// per the [operator → capability ADR](../../../docs/workspace/rollup-read-routing/adrs/operator-safety-allowlist.md)).
 /// `None` means "no tier can answer this exactly" — the query must read raw.
@@ -1502,6 +1586,24 @@ pub enum Capability {
     /// Force raw: `irate`, `quantile/stddev/stdvar_over_time`, bare selectors,
     /// and any unclassified operator (fail-safe default).
     None,
+}
+
+/// Whether `expr` references any metric series (a `VectorSelector` or
+/// `MatrixSelector`) anywhere in its tree. Used to tell a capability-neutral
+/// **scalar** binary operand (`* 2`, `/ 1024`, `> 5`) — which carries no
+/// selector — from a metric operand, so scalar-scaled metric expressions stay
+/// tier-eligible (they inherit the metric operand's capability).
+fn expr_has_selector(expr: &Expr) -> bool {
+    match expr {
+        Expr::VectorSelector(_) | Expr::MatrixSelector(_) => true,
+        Expr::Paren(p) => expr_has_selector(&p.expr),
+        Expr::Unary(u) => expr_has_selector(&u.expr),
+        Expr::Aggregate(a) => expr_has_selector(a.expr.as_ref()),
+        Expr::Subquery(s) => expr_has_selector(&s.expr),
+        Expr::Binary(b) => expr_has_selector(&b.lhs) || expr_has_selector(&b.rhs),
+        Expr::Call(c) => c.args.args.iter().any(|a| expr_has_selector(a)),
+        _ => false,
+    }
 }
 
 /// Statically classify the governing range operator of `expr` into the rollup
@@ -1520,6 +1622,23 @@ pub fn op_capability(expr: &Expr) -> Capability {
     match expr {
         Expr::Paren(p) => op_capability(&p.expr),
         Expr::Aggregate(agg) => op_capability(agg.expr.as_ref()),
+        // A unary op (`-rate(m[5m])`) carries its operand's capability — the value
+        // column selection is unchanged, only its sign flips downstream.
+        Expr::Unary(u) => op_capability(&u.expr),
+        // A binary op. A **scalar** operand (no metric selector — e.g. `* 2`,
+        // `/ 1024`, `> 5`) is capability-*neutral*: it inherits the metric
+        // operand's capability so unit-scaling/threshold panels still tier. Two
+        // metric operands must agree on a value column (`combine_capability`).
+        Expr::Binary(b) => {
+            let (lc, rc) = (op_capability(&b.lhs), op_capability(&b.rhs));
+            match (expr_has_selector(&b.lhs), expr_has_selector(&b.rhs)) {
+                // No metric anywhere — never reaches the range tier path; force raw.
+                (false, false) => Capability::None,
+                (false, true) => rc, // lhs scalar → inherit rhs
+                (true, false) => lc, // rhs scalar → inherit lhs
+                (true, true) => combine_capability(lc, rc),
+            }
+        }
         Expr::Call(c) => match c.func.name {
             "rate" | "increase" => Capability::Last,
             "max_over_time" | "min_over_time" => Capability::MinMax,
@@ -1530,14 +1649,29 @@ pub fn op_capability(expr: &Expr) -> Capability {
     }
 }
 
+/// Combine the capabilities of a binary op's two operands. Tier routing needs a
+/// single value column for the whole window, so two operands may share a tier
+/// only when they agree: equal capabilities pass through; any `None`, or two
+/// different (column-incompatible) capabilities (e.g. `MinMax` vs `Last`), force
+/// raw. Conservative by design — when unsure, `None`.
+fn combine_capability(lhs: Capability, rhs: Capability) -> Capability {
+    match (lhs, rhs) {
+        (Capability::None, _) | (_, Capability::None) => Capability::None,
+        (a, b) if a == b => a,
+        _ => Capability::None,
+    }
+}
+
 /// A time-disjoint source window for a metric query: `(table, lo_ns, hi_ns)`,
 /// both bounds inclusive. The resolver returns these ordered and covering the
 /// requested span.
 pub type MetricWindow = (String, i64, i64);
 
 /// One day in nanoseconds — the sealed/live boundary offset (rollups only cover
-/// fully-sealed days; the trailing ≤1-day window is always raw).
-const SEALED_OFFSET_NS: i64 = 86_400_000_000_000;
+/// fully-sealed days; the trailing ≤1-day window is always raw). Canonical day
+/// value from [`super::units::DurationNs::DAY`] (canonical-ns ADR — no duplicated
+/// ns literals).
+const SEALED_OFFSET_NS: i64 = super::units::DurationNs::DAY.ns();
 
 /// The single tier-resolution choke point (FR1, per the
 /// [tier-resolution-choke-point ADR](../../../docs/workspace/rollup-read-routing/adrs/tier-resolution-choke-point.md)):
@@ -1600,15 +1734,16 @@ async fn hist_scan(
     Ok(df.filter(prom_time_between(lo, hi))?)
 }
 
-/// Tier-routed row source for a classic-histogram range query — the same
-/// sealed-boundary routing `handle_range` applies to rate/agg queries (which
-/// `handle_hist_quantile_range`/`handle_bucket_heatmap` previously bypassed,
-/// always reading raw). Sealed windows read the coarsest rollup tier ≤ `step_ns`
-/// (the rollup preserves each bucket's last `bucket_counts`/`explicit_bounds`,
-/// so the per-timestamp quantile/heatmap is exact); the trailing ≤1-day window —
-/// which the tier never covers — reads raw `metrics`. The two windows are
-/// disjoint in time, so a later per-timestamp sum never double-counts.
-async fn tiered_hist_source(
+/// Tier-routed row source for a classic-histogram range query, built from the
+/// single tier-resolution choke point ([`resolve_metric_windows`], FR1/FR3). A
+/// histogram-quantile / heatmap range query has capability [`Capability::Last`]
+/// (it reads the cumulative `bucket_counts`/`explicit_bounds` the rollup
+/// preserves per bucket), so its source windows are the coarsest tier ≤
+/// `step_ns` for the sealed span and raw `metrics` for the trailing ≤1-day
+/// window. Each window is scanned via [`hist_scan`] and the per-window
+/// DataFrames are UNIONed; the windows are time-disjoint, so a later
+/// per-timestamp quantile/heatmap aggregation never double-counts.
+async fn hist_source(
     engine: &super::QueryEngine,
     base: &str,
     preds: &[datafusion::logical_expr::Expr],
@@ -1616,17 +1751,17 @@ async fn tiered_hist_source(
     end_ns: i64,
     step_ns: i64,
 ) -> crate::Result<datafusion::prelude::DataFrame> {
-    let tier = select_range_table(engine, step_ns);
-    let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
-    if tier == "metrics" || start_ns > sealed_ns {
-        return hist_scan(engine, "metrics", base, preds, start_ns, end_ns).await;
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, step_ns, Capability::Last);
+    let mut df: Option<datafusion::prelude::DataFrame> = None;
+    for (table, lo, hi) in windows {
+        let scan = hist_scan(engine, &table, base, preds, lo, hi).await?;
+        df = Some(match df {
+            Some(acc) => acc.union(scan)?,
+            None => scan,
+        });
     }
-    if end_ns <= sealed_ns {
-        return hist_scan(engine, &tier, base, preds, start_ns, end_ns).await;
-    }
-    let sealed = hist_scan(engine, &tier, base, preds, start_ns, sealed_ns).await?;
-    let trailing = hist_scan(engine, "metrics", base, preds, sealed_ns + 1, end_ns).await?;
-    Ok(sealed.union(trailing)?)
+    // `resolve_metric_windows` always returns ≥1 window, so `df` is always set.
+    df.ok_or_else(|| to_err("resolve_metric_windows returned no windows".to_string()))
 }
 
 /// Run a range PromQL query and build a `resultType=matrix` response. Long
@@ -1660,34 +1795,36 @@ pub async fn handle_range(
         None => &parsed,
     };
 
-    // A coarse step routes to a rollup tier table — but rollups only cover
-    // *sealed* days (the compactor never rolls up the active day). Routing the
-    // whole range to the tier would silently drop the live tail, so each window
-    // picks its source per the sealed boundary below. When no tier qualifies,
-    // every window falls back to raw `metrics`.
-    let tier = select_range_table(engine, step_ns);
-    // The trailing day of the range is treated as unsealed and read from raw —
-    // a rolling `end − 1d` (not a wall-clock "today"), so the boundary day of a
-    // historical range is raw too. That is coarser, not wrong: the `metrics`
-    // union includes the compacted daily, so the data is present either way.
-    let sealed_ns = end_ns.saturating_sub(86_400_000_000_000);
-    let windows: Vec<(i64, i64)> = if super::frontend::should_split(start_ns, end_ns) {
-        // Per-day shards aligned to UTC midnight; everything before the last day
-        // is sealed/cacheable. `split` emits the shard-count metric.
-        super::frontend::split(start_ns, end_ns, 0, sealed_ns)
-            .into_iter()
-            .map(|s| (s.start_ns, s.end_ns))
-            .collect()
-    } else {
-        vec![(start_ns, end_ns)]
-    };
+    // Route through the single tier-resolution choke point (FR3): the operator's
+    // capability (recursing through binary/unary/aggregate/topk) decides whether a
+    // tier may serve the sealed portion at all, and the resolver returns the
+    // ordered, time-disjoint `(table, lo, hi)` windows — coarsest eligible tier for
+    // the sealed span, raw `metrics` for the trailing ≤1-day (unsealed) window.
+    let cap = op_capability(eval_expr);
+    let resolved = resolve_metric_windows(engine, start_ns, end_ns, step_ns, cap);
+    // Within each resolver window, keep the frontend's per-day shard split (for
+    // the historical-shard cache); every shard inherits its window's table.
+    let windows: Vec<(String, i64, i64)> = resolved
+        .into_iter()
+        .flat_map(|(table, lo, hi)| {
+            if super::frontend::should_split(lo, hi) {
+                // Per-day shards aligned to UTC midnight; `split` emits the
+                // shard-count metric. The whole window is one tier, so treat it as
+                // fully sealed for the split (the tier/raw boundary already lives in
+                // the resolver windows).
+                super::frontend::split(lo, hi, 0, hi)
+                    .into_iter()
+                    .map(|s| (table.clone(), s.start_ns, s.end_ns))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![(table, lo, hi)]
+            }
+        })
+        .collect();
 
     let mut merged: RangeSeries = BTreeMap::new();
-    for (s, e) in windows {
-        // Sealed windows read the rollup tier; the trailing window — which the
-        // tier never covers — reads raw `metrics`.
-        let table: &str = if e <= sealed_ns { &tier } else { "metrics" };
-        match eval_range_window(engine, eval_expr, s, e, table, step_ns).await? {
+    for (table, s, e) in windows {
+        match eval_range_window(engine, eval_expr, s, e, &table, step_ns).await? {
             RangeVal::Vector(part) => {
                 for (key, (metric, points)) in part {
                     merged
@@ -3912,6 +4049,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_histogram_quantile_range_sealed_tier_trailing_raw_parity() {
+        // Consolidation guard (FR3): the histogram range path now routes through
+        // the single `resolve_metric_windows` choke point (capability Last) — the
+        // standalone `tiered_hist_source`/`select_range_table` copy is gone. Prove
+        // both windows of one query route correctly: a sealed-day point reads the
+        // tier (rollup-5m: all mass in +Inf → p95=50), a trailing-day point reads
+        // raw (all mass in first bucket → p95≈9.5, equal to the raw-only result).
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{BooleanArray, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let mk = |ts: i64, counts: &str| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["client"])),
+                    Arc::new(StringArray::from(vec!["dur"])),
+                    Arc::new(StringArray::from(vec![Some("s")])),
+                    Arc::new(BooleanArray::from(vec![Some(false)])),
+                    Arc::new(TimestampNanosecondArray::from(vec![ts]).with_timezone("UTC")),
+                    crate::querier::udf::tests::json_map_array(&["{}"]),
+                    Arc::new(StringArray::from(vec![Some(counts)])),
+                    Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
+                    Arc::new(StringArray::from(vec!["dur_seconds"])),
+                ],
+            )
+            .unwrap()
+        };
+        // Sealed day-0: raw mass in first bucket (the "wrong" answer), tier mass in
+        // +Inf (the answer that proves day-0 read the tier).
+        let raw_d0 = mk(M5, "[100,0,0,0,0,0]");
+        let tier_d0 = mk(M5, "[0,0,0,0,0,100]");
+        // Trailing day-2 (within the live ≤1-day window of end=2d): raw only, mass
+        // in first bucket → p95≈9.5 must come from raw (no tier covers it).
+        let raw_d2 = mk(2 * DAY_NS, "[100,0,0,0,0,0]");
+
+        let d0 = tmp
+            .path()
+            .join("metrics")
+            .join("histogram")
+            .join("dt=2026-06-01");
+        std::fs::create_dir_all(&d0).unwrap();
+        let f = std::fs::File::create(d0.join("h.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        w.write(&raw_d0).unwrap();
+        w.write(&raw_d2).unwrap();
+        w.close().unwrap();
+        let f = std::fs::File::create(d0.join("rollup-5m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&tier_d0).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
+        assert!(engine.has_table("metrics_5m"), "tier registered");
+
+        let resp = handle_range(
+            &engine,
+            "histogram_quantile(0.95, sum(rate(dur_seconds_bucket[5m])) by (le))",
+            0,
+            2 * DAY_NS,
+            M5,
+        )
+        .await
+        .unwrap();
+        let qs: Vec<f64> = resp
+            .data
+            .result
+            .iter()
+            .flat_map(|s| s.values.iter().map(|v| v.1.parse::<f64>().unwrap()))
+            .collect();
+        assert!(!qs.is_empty(), "expected points, got none");
+        // Sealed window → tier (p95=50); trailing window → raw (p95≈9.5).
+        assert!(
+            qs.iter().any(|q| (*q - 50.0).abs() < 1e-6),
+            "a sealed-window point must come from the tier (p95=50), got {qs:?}"
+        );
+        assert!(
+            qs.iter().any(|q| (*q - 9.5).abs() < 1e-6),
+            "a trailing-window point must come from raw (p95≈9.5), got {qs:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_bucket_heatmap_explodes_le_series() {
         // #4 heatmap: sum(rate(<base>_bucket[d])) by (le) → per-le cumulative
         // bucket rate series, exploded from the OTLP arrays.
@@ -4553,6 +4801,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_windows_short_span_all_live_is_raw() {
+        // A span shorter than one day ends entirely inside the trailing live
+        // window (`start_ns > sealed_ns`), so even a tier-eligible capability +
+        // coarse resolution resolves to a single raw window — the sealed/live
+        // early-return branch.
+        let engine = engine_with_5m_tier().await;
+        const M5: i64 = 300_000_000_000;
+        let end = 10 * SEALED_OFFSET_NS; // arbitrary; span below is < 1 day
+        let start = end - SEALED_OFFSET_NS / 2; // half a day → fully live
+        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax);
+        assert_eq!(w, vec![("metrics".to_string(), start, end)]);
+        assert_disjoint_covering(&w, start, end);
+    }
+
+    #[tokio::test]
     async fn test_resolve_windows_fine_resolution_no_tier() {
         let engine = engine_with_5m_tier().await;
         const DAY_NS: i64 = 86_400_000_000_000;
@@ -4561,5 +4824,215 @@ mod tests {
         // non-None capability.
         let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M1, Capability::SumCount);
         assert_eq!(w, vec![("metrics".to_string(), 0, 2 * DAY_NS)]);
+    }
+
+    // --- Task 3: capability-aware value selection on a tier (FR7) ---
+
+    const DAY_NS: i64 = 86_400_000_000_000;
+    const M5: i64 = 300_000_000_000;
+
+    /// Build an engine whose **raw** `metrics` carries multi-sample 5m buckets on
+    /// the sealed day 0 (the per-bucket peak is *not* the last sample, so a tier
+    /// that only kept `last` would drop it) plus a live-day-1 sample, and whose
+    /// `rollup-5m.parquet` tier carries the per-bucket `{last, min, max, sum,
+    /// count}` aggregates. The tier's `last` (`double_value`) is deliberately a
+    /// *wrong* value for max/avg — only `value_max`/`value_sum`/`value_count`
+    /// match raw — so a test that reads the tier and matches raw proves FR7 (the
+    /// per-op aggregate column, not a recompute over `last`, is used).
+    async fn engine_with_rich_5m_tier() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("gauge").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Raw schema (no value_* cols — the catalog adapter nulls them for raw).
+        let raw_schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        // Day-0 (sealed) bucket [0, 5m): samples 10, 99, 20 — peak 99 is NOT last.
+        // Day-1 (live) sample at DAY+1m: 5.
+        let n = 4usize;
+        let raw = RecordBatch::try_new(
+            raw_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["s"; n])),
+                Arc::new(StringArray::from(vec!["g"; n])),
+                crate::querier::udf::tests::json_map_array(&vec![r#"{"sc":"a"}"#; n]),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![
+                        60_000_000_000i64,  // t=1m  (bucket 0)
+                        120_000_000_000,    // t=2m  (bucket 0)
+                        180_000_000_000,    // t=3m  (bucket 0)
+                        DAY_NS + 60_000_000_000, // live day 1
+                    ])
+                    .with_timezone("UTC"),
+                ),
+                Arc::new(Float64Array::from(vec![10.0, 99.0, 20.0, 5.0])),
+                Arc::new(StringArray::from(vec!["g"; n])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, raw_schema, None).unwrap();
+        w.write(&raw).unwrap();
+        w.close().unwrap();
+
+        // Tier schema = raw + the four value_* aggregate columns (nullable).
+        let tier_schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+            Field::new("value_min", DataType::Float64, true),
+            Field::new("value_max", DataType::Float64, true),
+            Field::new("value_sum", DataType::Float64, true),
+            Field::new("value_count", DataType::Float64, true),
+        ]));
+        // One sealed bucket row at t=3m. `double_value` (last) = 20 — a wrong value
+        // for both max (99) and avg (129/3=43). value_* carry the truth.
+        let tier = RecordBatch::try_new(
+            tier_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["s"])),
+                Arc::new(StringArray::from(vec!["g"])),
+                crate::querier::udf::tests::json_map_array(&[r#"{"sc":"a"}"#]),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![180_000_000_000i64]).with_timezone("UTC"),
+                ),
+                Arc::new(Float64Array::from(vec![20.0])),
+                Arc::new(StringArray::from(vec!["g"])),
+                Arc::new(Float64Array::from(vec![10.0])), // value_min
+                Arc::new(Float64Array::from(vec![99.0])), // value_max
+                Arc::new(Float64Array::from(vec![129.0])), // value_sum (10+99+20)
+                Arc::new(Float64Array::from(vec![3.0])),  // value_count
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("rollup-5m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, tier_schema, None).unwrap();
+        w.write(&tier).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    /// The first point's value for the (single-series) matrix response, parsed.
+    fn first_point_value(resp: &PromMatrixResponse) -> f64 {
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        resp.data.result[0]
+            .values
+            .first()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .expect("a numeric first point")
+    }
+
+    #[tokio::test]
+    async fn test_range_max_over_time_uses_tier_and_matches_raw() {
+        // `max(max_over_time(g[5m]))` over a sealed 2-day span at 5m step routes the
+        // sealed day to the tier. The tier's per-bucket `value_max`=99 (the raw
+        // peak) is used — NOT the last-valued `double_value`=20 a recompute would
+        // see — so the result equals the raw max (99). Proves FR7 + tier routing.
+        let engine = engine_with_rich_5m_tier().await;
+        let resp = handle_range(&engine, "max(max_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        let v = first_point_value(&resp);
+        assert!(
+            (v - 99.0).abs() < 1e-6,
+            "max_over_time must use the tier's value_max (99) and match raw, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_avg_over_time_uses_tier_and_matches_raw() {
+        // `avg_over_time(g[5m])` over the sealed tier = Σvalue_sum/Σvalue_count =
+        // 129/3 = 43 — the raw bucket average — NOT avg(last)=20.
+        let engine = engine_with_rich_5m_tier().await;
+        let resp = handle_range(&engine, "avg(avg_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        let v = first_point_value(&resp);
+        assert!(
+            (v - 43.0).abs() < 1e-6,
+            "avg_over_time must be Σvalue_sum/Σvalue_count = 43, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_rate_still_uses_tier() {
+        // The existing rate routing stays green: a coarse-step rate over a sealed
+        // window reads the tier (Capability::Last) — exercised end-to-end here.
+        let engine = engine_with_rich_5m_tier().await;
+        let resp = handle_range(&engine, "rate(g[5m])", 0, 2 * DAY_NS, M5).await;
+        // It must succeed (routing path intact) and yield a series from the tier.
+        assert!(resp.is_ok(), "rate over a sealed window must route + evaluate");
+    }
+
+    #[tokio::test]
+    async fn test_range_binary_rate_ratio_uses_tier() {
+        // `rate(a[5m])/rate(b[5m])`: both operands are Capability::Last, so the
+        // binary combine is Last and the whole query routes to the tier.
+        let expr = parser::parse("rate(g[5m])/rate(g[5m])").unwrap();
+        assert_eq!(op_capability(&expr), Capability::Last);
+        let engine = engine_with_rich_5m_tier().await;
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, op_capability(&expr));
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        // And it evaluates (g/g = 1 on the overlapping series).
+        let resp = handle_range(&engine, "rate(g[5m])/rate(g[5m])", 0, 2 * DAY_NS, M5).await;
+        assert!(resp.is_ok(), "binary rate ratio must route + evaluate");
+    }
+
+    #[test]
+    fn test_op_capability_scalar_scaled_rate_is_last() {
+        // A scalar operand (no selector) is capability-neutral — unit-scaling and
+        // threshold panels over a rate stay tier-eligible (inherit Last).
+        let cap = |q: &str| op_capability(&parser::parse(q).unwrap());
+        assert_eq!(cap("rate(m[5m]) * 2"), Capability::Last);
+        assert_eq!(cap("2 * rate(m[5m])"), Capability::Last);
+        assert_eq!(cap("rate(m[5m]) / 1024"), Capability::Last);
+        assert_eq!(cap("rate(m[5m]) > 5"), Capability::Last);
+        // max_over_time scaled by a scalar keeps MinMax (the metric operand wins).
+        assert_eq!(cap("max_over_time(m[5m]) / 100"), Capability::MinMax);
+        // Two scalars (no metric) → None (never reaches the range tier path).
+        assert_eq!(cap("1 + 2"), Capability::None);
+    }
+
+    #[test]
+    fn test_op_capability_binary_mixed_is_none() {
+        // `max_over_time(a)/rate(b)`: operands need different value columns
+        // (value_max vs last) → combine is None → forced raw.
+        let expr = parser::parse("max_over_time(g[5m])/rate(g[5m])").unwrap();
+        assert_eq!(op_capability(&expr), Capability::None);
+        // A unary negation carries its operand's capability through.
+        let neg = parser::parse("-rate(g[5m])").unwrap();
+        assert_eq!(op_capability(&neg), Capability::Last);
     }
 }

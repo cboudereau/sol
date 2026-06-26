@@ -152,11 +152,12 @@ classDiagram
 - `test_range_binary_rate_ratio_uses_tier` — `rate(a[5m])/rate(b[5m])` over a sealed window routes both operands to the tier (capability combine = `Last`); `test_op_capability_binary_mixed_is_none` — `max_over_time(a)/rate(b)` → `None` (conflicting columns → raw).
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] Range path sources windows from `resolve_metric_windows`; tier value via `agg_value_for_window`.
-- [ ] `max_over_time`/`avg_over_time` use the tier and match raw; all pre-existing range tests green.
-- [ ] `select_range_table` removed once `handle_range` no longer calls it (no dead code).
+- [x] Range path sources windows from `resolve_metric_windows`; tier value via `lower_over_time`/`metric_base_df(value_cols)`.
+- [x] `max_over_time`/`avg_over_time` use the tier and match raw; all pre-existing range tests green. *(avg via `over_time_ratio` = Σvalue_sum/Σvalue_count.)*
+- [x] `handle_range` no longer calls `select_range_table` (routes via the resolver). Binary/unary capability combine added incl. scalar-operand neutrality (`rate(x)*2`→tier; conflicts→raw).
 **Depends on**: 2
 **Time-box**: ~90 min
+**Status**: ✅ done (Session-2 commit).
 
 ### 4. Route the range histogram/heatmap path ([FR3](./DESIGN.md#fr3), [NFR1](./DESIGN.md#nfr1))
 **Goal**: histogram/heatmap range handlers take windows from the resolver (capability `Last`); delete the `tiered_hist_source` duplicate.
@@ -169,10 +170,12 @@ classDiagram
 - `test_tiered_hist_source_removed` — (compile-level) `tiered_hist_source` gone; histogram handlers reference the resolver.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] `tiered_hist_source` deleted; histogram/heatmap route via `resolve_metric_windows`.
-- [ ] The existing histogram routing + all histogram tests pass.
-**Depends on**: 2
+- [x] `tiered_hist_source` deleted; histogram/heatmap route via `resolve_metric_windows` (`hist_source`, capability `Last`).
+- [x] `select_range_table` removed — both callers gone; no dead code (clippy clean).
+- [x] The existing histogram routing + all histogram tests pass (+ a sealed-tier/trailing-raw parity test).
+**Depends on**: 2, 3
 **Time-box**: ~60 min
+**Status**: ✅ done (Session-2 commit).
 
 ### 5. Route the instant paths ([FR4](./DESIGN.md#fr4), [FR7](./DESIGN.md#fr7), [NFR1](./DESIGN.md#nfr1))
 **Goal**: instant queries + instant histogram source via the resolver, resolution = `matrix_range_ns(expr)`, gated by `op_capability`, with tier value selection (FR7).
