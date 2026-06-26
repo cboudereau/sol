@@ -182,6 +182,13 @@ fn metric_union_schema() -> SchemaRef {
         i32("negative_offset"),
         utf8("negative_bucket_counts", true),
         utf8("quantile_values", true),
+        // per-bucket scalar-value aggregates (FR6 rollup-aggregate-schema ADR);
+        // nullable so raw files null them via the schema adapter — only tier
+        // files (written by the compactor rollup) populate them.
+        f64n("value_min"),
+        f64n("value_max"),
+        f64n("value_sum"),
+        f64n("value_count"),
     ]))
 }
 
@@ -642,6 +649,20 @@ mod tests {
     fn test_signal_tables_map_to_directories() {
         let dirs: Vec<_> = SignalTable::ALL.iter().map(|t| t.listing_dir()).collect();
         assert_eq!(dirs, vec!["logs", "traces", "metrics"]);
+    }
+
+    #[test]
+    fn test_catalog_metric_schema_has_value_aggregate_cols() {
+        // FR6: the shared metric schema (raw + tiers) carries the four per-bucket
+        // scalar-value aggregates, each Float64 and nullable (raw files null them).
+        let schema = metric_union_schema();
+        for name in ["value_min", "value_max", "value_sum", "value_count"] {
+            let f = schema
+                .field_with_name(name)
+                .unwrap_or_else(|_| panic!("missing {name}"));
+            assert_eq!(f.data_type(), &DataType::Float64, "{name} must be Float64");
+            assert!(f.is_nullable(), "{name} must be nullable");
+        }
     }
 
     #[test]

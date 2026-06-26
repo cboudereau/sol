@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Rollup aggregate schema
 

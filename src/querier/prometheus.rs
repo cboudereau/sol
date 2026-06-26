@@ -1488,6 +1488,98 @@ fn select_range_table(engine: &super::QueryEngine, step_ns: i64) -> String {
     }
 }
 
+/// The per-bucket information a range operator needs from a rollup tier (FR2,
+/// per the [operator → capability ADR](../../../docs/workspace/rollup-read-routing/adrs/operator-safety-allowlist.md)).
+/// `None` means "no tier can answer this exactly" — the query must read raw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    /// Last cumulative value per bucket: `rate`/`increase`/`histogram_quantile`.
+    Last,
+    /// Per-bucket extrema: `max_over_time`/`min_over_time`.
+    MinMax,
+    /// Per-bucket sum/count: `avg_/sum_/count_over_time`.
+    SumCount,
+    /// Force raw: `irate`, `quantile/stddev/stdvar_over_time`, bare selectors,
+    /// and any unclassified operator (fail-safe default).
+    None,
+}
+
+/// Statically classify the governing range operator of `expr` into the rollup
+/// [`Capability`] it needs. Recurses through `Paren`, `Aggregate` (e.g.
+/// `sum by(le)(…)`), and `topk`/`bottomk` wrappers the same way
+/// [`detect_hist_quantile`] does, so `histogram_quantile(0.9, sum by(le)(rate(..)))`
+/// and `topk(k, histogram_quantile(..))` both classify as [`Capability::Last`].
+/// Unknown/unimplemented functions and bare selectors fall back to
+/// [`Capability::None`] (raw) by design.
+pub fn op_capability(expr: &Expr) -> Capability {
+    // `histogram_quantile` may sit under topk/aggregate/rate — reuse the same
+    // recursion the histogram path uses to find it.
+    if detect_hist_quantile(expr).is_some() {
+        return Capability::Last;
+    }
+    match expr {
+        Expr::Paren(p) => op_capability(&p.expr),
+        Expr::Aggregate(agg) => op_capability(agg.expr.as_ref()),
+        Expr::Call(c) => match c.func.name {
+            "rate" | "increase" => Capability::Last,
+            "max_over_time" | "min_over_time" => Capability::MinMax,
+            "avg_over_time" | "sum_over_time" | "count_over_time" => Capability::SumCount,
+            _ => Capability::None,
+        },
+        _ => Capability::None,
+    }
+}
+
+/// A time-disjoint source window for a metric query: `(table, lo_ns, hi_ns)`,
+/// both bounds inclusive. The resolver returns these ordered and covering the
+/// requested span.
+pub type MetricWindow = (String, i64, i64);
+
+/// One day in nanoseconds — the sealed/live boundary offset (rollups only cover
+/// fully-sealed days; the trailing ≤1-day window is always raw).
+const SEALED_OFFSET_NS: i64 = 86_400_000_000_000;
+
+/// The single tier-resolution choke point (FR1, per the
+/// [tier-resolution-choke-point ADR](../../../docs/workspace/rollup-read-routing/adrs/tier-resolution-choke-point.md)):
+/// resolve the ordered, time-disjoint `(table, lo, hi)` source windows covering
+/// `[start_ns, end_ns]`. `capability == None` ⇒ a single raw window. Otherwise
+/// the sealed part `[start_ns, sealed_ns]` reads the coarsest registered tier
+/// whose resolution ≤ `resolution_ns` (via [`super::rollup::select_tier`]), and
+/// the trailing live part `(sealed_ns, end_ns]` — which no tier covers — reads
+/// raw `metrics`. Every rollup file now carries all capabilities (clean
+/// cutover), so capability only gates None-vs-not, not which tier is eligible.
+pub fn resolve_metric_windows(
+    engine: &super::QueryEngine,
+    start_ns: i64,
+    end_ns: i64,
+    resolution_ns: i64,
+    capability: Capability,
+) -> Vec<MetricWindow> {
+    let raw_all = || vec![("metrics".to_string(), start_ns, end_ns)];
+    if capability == Capability::None {
+        return raw_all();
+    }
+    let available: Vec<super::rollup::RollupTier> = super::rollup::RollupTier::all()
+        .into_iter()
+        .filter(|t| engine.has_table(&format!("metrics_{}", t.label())))
+        .collect();
+    let tier = match super::rollup::select_tier(resolution_ns, &available) {
+        super::rollup::RollupTier::Raw => return raw_all(),
+        tier => tier,
+    };
+    let sealed_ns = end_ns - SEALED_OFFSET_NS;
+    // No sealed part falls in range — the whole span is live → raw.
+    if start_ns > sealed_ns {
+        return raw_all();
+    }
+    let tier_table = format!("metrics_{}", tier.label());
+    let mut windows = vec![(tier_table, start_ns, end_ns.min(sealed_ns))];
+    if end_ns > sealed_ns {
+        windows.push(("metrics".to_string(), sealed_ns + 1, end_ns));
+    }
+    windows
+}
+
 /// One filtered scan of `table` for a classic-histogram range query:
 /// `prom_name == base`, the `preds`, and `time ∈ [lo, hi]`.
 async fn hist_scan(
@@ -4332,5 +4424,142 @@ mod tests {
             raw.data.result.len(),
             d_raw,
         );
+    }
+
+    // --- operator → capability classifier + tier-resolution choke point ---
+
+    #[test]
+    fn test_op_capability_classes() {
+        let cap = |q: &str| op_capability(&parser::parse(q).unwrap());
+        // Last: rate/increase/histogram_quantile (incl. under sum-by-le + topk).
+        assert_eq!(cap("rate(m[5m])"), Capability::Last);
+        assert_eq!(cap("increase(m[5m])"), Capability::Last);
+        assert_eq!(
+            cap("topk(3, histogram_quantile(0.9, sum by(le)(rate(m_bucket[5m]))))"),
+            Capability::Last
+        );
+        // MinMax: max_over_time/min_over_time.
+        assert_eq!(cap("max_over_time(m[5m])"), Capability::MinMax);
+        assert_eq!(cap("min_over_time(m[5m])"), Capability::MinMax);
+        // SumCount: avg/sum/count_over_time.
+        assert_eq!(cap("avg_over_time(m[5m])"), Capability::SumCount);
+        assert_eq!(cap("sum_over_time(m[5m])"), Capability::SumCount);
+        assert_eq!(cap("count_over_time(m[5m])"), Capability::SumCount);
+        // None (force raw): irate, bare selector, unknown fn.
+        assert_eq!(cap("irate(m[5m])"), Capability::None);
+        assert_eq!(cap("m"), Capability::None);
+        assert_eq!(cap("quantile_over_time(0.5, m[5m])"), Capability::None);
+        // a real PromQL fn the classifier does not list → unclassified → None.
+        assert_eq!(cap("stddev_over_time(m[5m])"), Capability::None);
+    }
+
+    /// Build a `QueryEngine` whose `metrics` table also has a registered
+    /// `metrics_5m` rollup tier — the minimal fixture the resolver consults via
+    /// `has_table`. Mirrors `test_long_range_keeps_live_tail_when_tier_selected`.
+    async fn engine_with_5m_tier() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("sum").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let mk = || {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["s"])),
+                    Arc::new(StringArray::from(vec!["reqs"])),
+                    crate::querier::udf::tests::json_map_array(&vec![r#"{"sc":"a"}"#]),
+                    Arc::new(TimestampNanosecondArray::from(vec![0i64]).with_timezone("UTC")),
+                    Arc::new(Float64Array::from(vec![1.0])),
+                    Arc::new(StringArray::from(vec!["reqs"])),
+                ],
+            )
+            .unwrap()
+        };
+        for f in ["m.parquet", "rollup-5m.parquet"] {
+            let file = std::fs::File::create(dir.join(f)).unwrap();
+            let mut w = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+            w.write(&mk()).unwrap();
+            w.close().unwrap();
+        }
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    /// Windows must be ordered, time-disjoint, and cover `[start, end]` exactly.
+    fn assert_disjoint_covering(windows: &[MetricWindow], start: i64, end: i64) {
+        assert_eq!(windows.first().unwrap().1, start, "first window starts at start");
+        assert_eq!(windows.last().unwrap().2, end, "last window ends at end");
+        for pair in windows.windows(2) {
+            assert!(
+                pair[0].2 < pair[1].1,
+                "windows disjoint: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert_eq!(pair[1].1, pair[0].2 + 1, "windows contiguous (no gap)");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_windows_none_is_all_raw() {
+        let engine = engine_with_5m_tier().await;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, 300_000_000_000, Capability::None);
+        assert_eq!(w, vec![("metrics".to_string(), 0, 2 * DAY_NS)]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_windows_splits_sealed_and_trailing() {
+        let engine = engine_with_5m_tier().await;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+        let start = 0i64;
+        let end = 2 * DAY_NS;
+        let sealed = end - DAY_NS;
+        // 2-day span, 5m resolution, non-None capability, metrics_5m present.
+        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax);
+        assert_eq!(
+            w,
+            vec![
+                ("metrics_5m".to_string(), start, sealed),
+                ("metrics".to_string(), sealed + 1, end),
+            ]
+        );
+        assert_disjoint_covering(&w, start, end);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_windows_fine_resolution_no_tier() {
+        let engine = engine_with_5m_tier().await;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M1: i64 = 60_000_000_000;
+        // 1m resolution: no tier resolution ≤ 1m → single raw window even for a
+        // non-None capability.
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M1, Capability::SumCount);
+        assert_eq!(w, vec![("metrics".to_string(), 0, 2 * DAY_NS)]);
     }
 }

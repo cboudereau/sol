@@ -119,10 +119,20 @@ fn rollup_plan(
     arrow_schema: &datafusion::arrow::datatypes::SchemaRef,
     resolution_ns: i64,
 ) -> crate::Result<DataFrame> {
-    use datafusion::arrow::datatypes::DataType::Int64;
+    use std::collections::HashSet;
+
+    use datafusion::arrow::datatypes::DataType::{Float64, Int64};
+    use datafusion::functions_aggregate::expr_fn::{count, max, min, sum};
     use datafusion::functions_aggregate::first_last::last_value_udaf;
     use datafusion::logical_expr::{ExprFunctionExt, expr_fn::cast};
-    use datafusion::prelude::{col, lit};
+    use datafusion::prelude::{coalesce, col, lit};
+    use datafusion::scalar::ScalarValue;
+
+    // The four per-bucket scalar-value aggregates (FR6) are *computed* by this
+    // plan over the coalesced scalar value — they are never `last_value`d, and
+    // need not exist on the input (raw files lack them; the schema adapter nulls
+    // them). Excluded from the last-valued set below; emitted explicitly after.
+    const VALUE_AGG_COLS: [&str; 4] = ["value_min", "value_max", "value_sum", "value_count"];
 
     // Keep the last raw sample per (series, time-bucket) via a **hash
     // aggregation**, not a ROW_NUMBER window + sort. DataFusion spills hash
@@ -141,11 +151,18 @@ fn rollup_plan(
     // position (it never compares the value, only the ORDER BY time) — is taken
     // from the bucket's latest sample. ASC order ⇒ last = max time.
     let order = vec![col("time_unix_nano").sort(true, false)];
-    let aggrs: Vec<_> = arrow_schema
+    // Which input columns exist on the scanned schema. Raw metric files vary by
+    // subtype (a gauge-only file has no `int_value`; none carry value_*), so the
+    // plan must reference only columns that are actually present.
+    let present: HashSet<&str> =
+        arrow_schema.fields().iter().map(|f| f.name().as_str()).collect();
+    // last_value every input column except the group keys and the value_*
+    // aggregates (which this plan computes; raw files never carry them).
+    let mut aggrs: Vec<_> = arrow_schema
         .fields()
         .iter()
         .map(|f| f.name().as_str())
-        .filter(|n| *n != "name" && *n != "service_name")
+        .filter(|n| *n != "name" && *n != "service_name" && !VALUE_AGG_COLS.contains(n))
         .map(|n| {
             last_value_udaf()
                 .call(vec![col(n)])
@@ -154,10 +171,39 @@ fn rollup_plan(
                 .map(|e| e.alias(n))
         })
         .collect::<Result<_, _>>()?;
+    // Per-bucket aggregates over the coalesced scalar value (FR6), built only from
+    // the scalar columns the input actually has. Histogram rows (or files with no
+    // scalar column at all) yield a null scalar → min/max/sum null and count 0,
+    // which is correct (histograms use the Last capability, not these).
+    let scalar = match (present.contains("double_value"), present.contains("int_value")) {
+        (true, true) => coalesce(vec![col("double_value"), cast(col("int_value"), Float64)]),
+        (true, false) => col("double_value"),
+        (false, true) => cast(col("int_value"), Float64),
+        (false, false) => lit(ScalarValue::Float64(None)),
+    };
+    aggrs.push(min(scalar.clone()).alias("value_min"));
+    aggrs.push(max(scalar.clone()).alias("value_max"));
+    aggrs.push(sum(scalar.clone()).alias("value_sum"));
+    // count(scalar) excludes nulls and yields Int64; cast to Float64 happens in
+    // the projection below (DataFusion rejects a cast wrapping an aggregate).
+    aggrs.push(count(scalar).alias("value_count"));
     let agg = table.aggregate(vec![col("name"), col("service_name"), series_key, bucket], aggrs)?;
-    // Project back to the original schema order (drops the helper group cols),
-    // sorted (service_name, prom_name, time) so tier files prune like raw ones.
-    let cols: Vec<_> = arrow_schema.fields().iter().map(|f| col(f.name())).collect();
+    // Project: the input columns (minus any value_* the input happened to carry),
+    // then the four value_* aggregates appended exactly once — so the rollup file
+    // always carries them regardless of the scanned schema. Sorted
+    // (service_name, prom_name, time) so tier files prune like raw ones.
+    let mut cols: Vec<_> = arrow_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .filter(|n| !VALUE_AGG_COLS.contains(n))
+        .map(col)
+        .collect();
+    cols.push(col("value_min"));
+    cols.push(col("value_max"));
+    cols.push(col("value_sum"));
+    // value_count is cast Int64→Float64 to match the shared schema column.
+    cols.push(cast(col("value_count"), Float64).alias("value_count"));
     Ok(agg.select(cols)?.sort(vec![
         col("service_name").sort(true, false),
         col("prom_name").sort(true, false),
@@ -285,6 +331,10 @@ mod tests {
             Field::new("double_value", DataType::Float64, true),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            // int_value placed after prom_name to keep the positional column
+            // indices the existing tests rely on (time=3, double=4, bucket=5).
+            // Realistic raw input: NO value_* columns — the rollup plan adds them.
+            Field::new("int_value", DataType::Int64, true),
         ]))
     }
 
@@ -300,9 +350,62 @@ mod tests {
                 Arc::new(Float64Array::from(vals.to_vec())),
                 Arc::new(StringArray::from(buckets.to_vec())),
                 Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(datafusion::arrow::array::Int64Array::from(
+                    vec![None::<i64>; n],
+                )),
             ],
         )
         .unwrap()
+    }
+
+    /// A gauge-only-style raw schema with `double_value` but NO `int_value`,
+    /// mirroring the per-subtype / compaction fixtures (locks in the BUG 1 fix).
+    fn double_only_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]))
+    }
+
+    fn double_only_batch(times: &[i64], vals: &[f64]) -> RecordBatch {
+        let n = times.len();
+        RecordBatch::try_new(
+            double_only_schema(),
+            vec![
+                Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(StringArray::from(vec!["s"; n])),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
+                Arc::new(Float64Array::from(vals.to_vec())),
+                Arc::new(StringArray::from(vec!["m"; n])),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Column index of a named field in `counter_schema`.
+    fn col_idx(b: &RecordBatch, name: &str) -> usize {
+        b.schema().index_of(name).unwrap()
+    }
+
+    /// Read a Float64 column across all rolled-up batches as a flat Vec.
+    fn f64_col(bs: &[RecordBatch], name: &str) -> Vec<f64> {
+        let mut out = Vec::new();
+        for b in bs {
+            let a = b.column(col_idx(b, name)).as_primitive::<Float64Type>();
+            for i in 0..b.num_rows() {
+                out.push(a.value(i));
+            }
+        }
+        out
     }
 
     #[tokio::test]
@@ -348,6 +451,100 @@ mod tests {
         assert!(
             (raw_rate - rollup_rate).abs() < 1e-6,
             "raw {raw_rate} vs rollup {rollup_rate}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollup_emits_per_bucket_aggregates() {
+        // One 5m bucket, scalar values [1, 9, 4] at ascending times → one row with
+        // min=1, max=9, sum=14, count=3, and double_value (last) = 4.
+        let raw = batch(
+            &[0, 60_000_000_000, 120_000_000_000],
+            &[1.0, 9.0, 4.0],
+            &["[]"; 3],
+        );
+        let rolled = rollup_batches(vec![raw], M5_NS).await.unwrap();
+        let rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, 1, "three samples in one 5m bucket → one rollup row");
+
+        assert_eq!(f64_col(&rolled, "value_min"), vec![1.0]);
+        assert_eq!(f64_col(&rolled, "value_max"), vec![9.0]);
+        assert_eq!(f64_col(&rolled, "value_sum"), vec![14.0]);
+        assert_eq!(f64_col(&rolled, "value_count"), vec![3.0]);
+        assert_eq!(f64_col(&rolled, "double_value"), vec![4.0], "last sample");
+    }
+
+    #[tokio::test]
+    async fn test_rollup_handles_schema_without_int_value() {
+        // BUG 1: a gauge-only raw schema (double_value, no int_value) must roll up
+        // successfully and still emit the four value_* aggregates — mirrors the
+        // per-subtype / compaction case where rollup_plan must not reference
+        // columns absent from the scanned schema.
+        let raw = double_only_batch(&[0, 60_000_000_000, 120_000_000_000], &[2.0, 8.0, 5.0]);
+        let rolled = rollup_batches(vec![raw], M5_NS).await.unwrap();
+        let rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, 1, "one 5m bucket → one rollup row");
+
+        assert_eq!(f64_col(&rolled, "value_min"), vec![2.0]);
+        assert_eq!(f64_col(&rolled, "value_max"), vec![8.0]);
+        assert_eq!(f64_col(&rolled, "value_sum"), vec![15.0]);
+        assert_eq!(f64_col(&rolled, "value_count"), vec![3.0]);
+        // schema gained exactly the four value_* columns (none duplicated).
+        let schema = rolled[0].schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        for n in ["value_min", "value_max", "value_sum", "value_count"] {
+            assert_eq!(names.iter().filter(|x| **x == n).count(), 1, "{n} once");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_max_over_rollup_matches_raw() {
+        // Several samples across two 5m buckets; MAX(value_max) over the tier rows
+        // equals the max of all raw samples (peaks preserved).
+        let times = [
+            0i64,
+            60_000_000_000,
+            120_000_000_000,
+            300_000_000_000,
+            360_000_000_000,
+            420_000_000_000,
+        ];
+        let vals = [3.0, 7.0, 2.0, 5.0, 11.0, 1.0];
+        let raw = batch(&times, &vals, &["[]"; 6]);
+        let rolled = rollup_batches(vec![raw], M5_NS).await.unwrap();
+
+        let tier_max = f64_col(&rolled, "value_max")
+            .into_iter()
+            .fold(f64::MIN, f64::max);
+        let raw_max = vals.iter().copied().fold(f64::MIN, f64::max);
+        assert!(
+            (tier_max - raw_max).abs() < 1e-9,
+            "tier max {tier_max} vs raw {raw_max}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_avg_over_rollup_matches_raw() {
+        // sum(value_sum)/sum(value_count) over the tier == mean of all raw samples.
+        let times = [
+            0i64,
+            60_000_000_000,
+            120_000_000_000,
+            300_000_000_000,
+            360_000_000_000,
+            420_000_000_000,
+        ];
+        let vals = [3.0, 7.0, 2.0, 5.0, 11.0, 1.0];
+        let raw = batch(&times, &vals, &["[]"; 6]);
+        let rolled = rollup_batches(vec![raw], M5_NS).await.unwrap();
+
+        let sum: f64 = f64_col(&rolled, "value_sum").iter().sum();
+        let count: f64 = f64_col(&rolled, "value_count").iter().sum();
+        let tier_avg = sum / count;
+        let raw_avg = vals.iter().sum::<f64>() / vals.len() as f64;
+        assert!(
+            (tier_avg - raw_avg).abs() < 1e-9,
+            "tier avg {tier_avg} vs raw {raw_avg}"
         );
     }
 

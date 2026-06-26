@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Instant & metadata tier routing
 

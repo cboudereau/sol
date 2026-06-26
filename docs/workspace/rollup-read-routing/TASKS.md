@@ -110,10 +110,11 @@ classDiagram
 - `test_catalog_metric_schema_has_value_aggregate_cols` — the 4 cols present and nullable in `metric_union_schema`.
 **Verify**: `cargo test --features querier-backend --lib querier::rollup querier::catalog`
 **Acceptance criteria**:
-- [ ] `rollup_plan` emits the 4 aggregate columns; schema carries them (nullable).
-- [ ] max/avg-from-rollup parity tests pass; rate/histogram rollup tests stay green.
+- [x] `rollup_plan` emits the 4 aggregate columns; schema carries them (nullable). *(robust to per-subtype schemas: scalar built from present cols; value_* always appended in projection.)*
+- [x] max/avg-from-rollup parity tests pass; rate/histogram rollup tests stay green. *(querier::rollup 12 passed; compaction run_once green unedited.)*
 **Depends on**: (none)
 **Time-box**: ~90 min
+**Status**: ✅ done (commit pending Session-1 checkpoint).
 
 ### 2. Capability classifier + choke point ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2))
 **Goal**: one `Capability` classifier + one routing function (`resolve_metric_windows`), replacing `select_range_table`.
@@ -130,10 +131,11 @@ classDiagram
 - `test_resolve_windows_fine_resolution_no_tier` — resolution < 5m → all raw.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus::tests::test_op_capability querier::prometheus::tests::test_resolve_windows`
 **Acceptance criteria**:
-- [ ] `Capability` + `op_capability` + `resolve_metric_windows` exist; the 4 tests pass.
-- [ ] `select_range_table` removed (folded in).
+- [x] `Capability` + `op_capability` + `resolve_metric_windows` exist; the 4 tests pass.
+- [x] `select_range_table` left in place (still used by `handle_range`); removed in Task 3 when its caller is rewired (dead code would fail `#![deny(warnings)]`). New fns are exercised by their tests → not dead.
 **Depends on**: 1
 **Time-box**: ~75 min
+**Status**: ✅ done (commit pending Session-1 checkpoint). **Review finding → Task 3**: `op_capability` returns `None` for `Expr::Binary`/`Expr::Unary` (e.g. `rate(a)/rate(b)`) → raw. Correct but an efficiency regression vs the old step-only routing; Task 3 must handle it (see Task 3 constraints).
 
 ### 3. Route range + capability-aware value selection ([FR3](./DESIGN.md#fr3), [FR7](./DESIGN.md#fr7), [NFR1](./DESIGN.md#nfr1))
 **Goal**: `handle_range` sources windows from the resolver; on a tier window the value comes from the per-op aggregate column (`agg_value_for_window`), so `max_over_time` now uses the tier **correctly** (not raw).
@@ -141,15 +143,18 @@ classDiagram
 **Constraints**:
 - [ADR: operator → capability](./adrs/operator-safety-allowlist.md), [FR7](./DESIGN.md#fr7).
 - `eval_range_window`/`lower_range_df`/`metric_base_df`/`over_time` keep `table: &str`; add the per-op value/agg selection for tier windows (`metric_value_expr` → `value_max` etc.; `over_time` merge agg per [transformations table](#transformations)); `avg` = `Σvalue_sum/Σvalue_count`.
-- Invariant: `max_over_time` at a coarse step over a sealed window reads the **tier** and equals the raw max (peaks preserved — the FR2/FR6 win).
+- **Binary/unary expressions (review finding from Task 2):** `op_capability` returns `None` for `Expr::Binary`/`Expr::Unary`, so `rate(a[5m])/rate(b[5m])` (a common error-rate panel shape) would read **raw** — correct but an efficiency regression vs the old step-only routing. Extend `op_capability` to recurse into binary/unary operands and **combine**: if all leaf operands share a tier-eligible capability (or only differ as `Last`-compatible), return it; if any operand is `None` or capabilities conflict (e.g. `MinMax` vs `SumCount` — different source columns), return `None` (raw). Keep it conservative: when unsure, `None`.
+- Invariant: `max_over_time` at a coarse step over a sealed window reads the **tier** and equals the raw max (peaks preserved — the FR2/FR6 win). `rate(a)/rate(b)` over a sealed window routes to the tier (both operands `Last`).
 **Tests**:
 - `test_range_max_over_time_uses_tier_and_matches_raw` — `max(max_over_time(m[5m]))` over a sealed 2-day span at M5 step reads the tier **and** equals the raw result.
 - `test_range_avg_over_time_uses_tier_and_matches_raw` — `avg_over_time` tier == raw.
 - `test_range_rate_still_uses_tier` — existing rate routing stays green.
+- `test_range_binary_rate_ratio_uses_tier` — `rate(a[5m])/rate(b[5m])` over a sealed window routes both operands to the tier (capability combine = `Last`); `test_op_capability_binary_mixed_is_none` — `max_over_time(a)/rate(b)` → `None` (conflicting columns → raw).
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
 - [ ] Range path sources windows from `resolve_metric_windows`; tier value via `agg_value_for_window`.
 - [ ] `max_over_time`/`avg_over_time` use the tier and match raw; all pre-existing range tests green.
+- [ ] `select_range_table` removed once `handle_range` no longer calls it (no dead code).
 **Depends on**: 2
 **Time-box**: ~90 min
 
