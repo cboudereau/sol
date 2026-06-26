@@ -1,34 +1,34 @@
 ---
 status: proposed
 ---
-# Operator-safety allowlist for rollup routing
+# Operator → capability classifier + rich rollup
 
-Addresses: [FR2](../DESIGN.md#fr2), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR2](../DESIGN.md#fr2), [FR6](../DESIGN.md#fr6), [FR7](../DESIGN.md#fr7), [NFR1](../DESIGN.md#nfr1)
 
 ## Problem
-The rollup keeps the **last raw sample per (series, time-bucket)**. That is exact for operations that only need the last cumulative value, but **lossy** for operations that need intra-bucket detail. The current router picks a tier by **step alone**, so `max_over_time(m[…])` at a coarse step reads the 5m tier and silently under-reports peaks (a spike between bucket boundaries is gone). Which operators may route to a tier?
+The rollup keeps the **last raw sample per (series, time-bucket)**. That is exact for operators that only need the last cumulative value (`rate`/`increase`/`histogram_quantile`) but **lossy** for operators needing intra-bucket detail (`max/min/avg/sum/count_over_time`). The original router picked a tier by **step alone**, so `max_over_time(m[…])` at a coarse step read the 5m tier and silently under-reported peaks. Which operators may route to a tier — and must we forfeit the tier's acceleration for the lossy ones?
 
 ## Options
 | Option | Pros | Cons |
 |---|---|---|
-| A. Static allowlist of rollup-safe operators; unknown/unsafe → raw | Correct by construction; tiny static table; conservative default can't be wrong | `max/min/avg/quantile_over_time` lose the tier speedup (read raw) |
-| B. Route everything by step (status quo) | Max speedup, simplest | **Silently wrong** for `*_over_time` aggregations — a correctness bug, not just imprecision |
-| C. Make the rollup carry per-bucket min/max/sum/count so all ops are safe | Every operator could use a tier | Write-side change (bigger rollup, more storage/compute); out of this work's scope; still wrong for `quantile_over_time` |
+| A. Static binary allowlist (safe→tier, else raw) | Tiny; correct by construction | `max/min/avg/sum/count_over_time` lose the tier speedup permanently — and these are heavily used (`max_over_time` is on 8+ dashboard panels). "Force raw to support resolution" is the compromise we want to avoid. |
+| B. Route everything by step (status quo) | Max speedup | **Silently wrong** for `*_over_time` — a correctness bug |
+| C. Rich rollup: carry per-bucket `{last,min,max,sum,count}`; classify each operator by the **capability** it needs; route to the coarsest tier that carries it | All of `max/min/avg/sum/count_over_time` route to a tier **and** stay exact; "use the best tier that can answer", not "fall back to raw"; the capability model extends cleanly (sketches → quantiles later) | Write-side change (bigger rollup + read-side per-op column selection); `quantile_over_time`/`irate` still raw |
 
 ## Decision
-**Option A.** A static classifier `op_safety(expr) -> bool` over the parsed PromQL `Expr` (`Expr::Call` with `c.func.name`, per Phase 4a analysis). Scoped to what the querier actually supports today:
-- **Safe (may route to a tier):** `rate`, `increase` (counter rate = `(last−first)/window`, sampling-density-independent — exact over last-per-bucket), and `histogram_quantile` (operates on cumulative `bucket_counts`, which the rollup preserves).
-- **Unsafe (force raw):**
-  - `irate` — slope of the *last two* samples; over a 5m rollup the "last two" are 5m apart, changing the result. Sampling-dependent ⇒ raw.
-  - `max_over_time`, `min_over_time` — intra-bucket peaks are dropped.
-  - `avg_over_time` — needs all samples.
-  - `sum_over_time`, `count_over_time` — sum/count of *samples in window*; the rollup has one sample per bucket ⇒ undercounts.
-- **Unknown / unsupported / unclassified:** default to **raw** (fail-safe). `delta`/`resets`/`last_over_time`/`quantile_over_time` are not implemented yet (they error today); when added, `delta`/`resets`/`last_over_time` would be safe and can join the allowlist, `quantile_over_time` would not.
+**Option C.** Replace the binary `op_safety -> bool` with a capability classifier `op_capability(&Expr) -> Capability`, and enrich the rollup (FR6) so every tier carries `{Last, MinMax, SumCount}`.
 
-The choke point ([tier-resolution-choke-point](./tier-resolution-choke-point.md)) consults this; unsafe ⇒ all-raw windows.
+`Capability` (scoped to the implemented dispatch `prometheus.rs:333-353`):
+- **`Last`** — `rate`, `increase`, `histogram_quantile`, bare cumulative-counter selector. Served from the last-valued columns (unchanged).
+- **`MinMax`** — `max_over_time` → `MAX(value_max)`; `min_over_time` → `MIN(value_min)`.
+- **`SumCount`** — `avg_over_time` → `SUM(value_sum)/SUM(value_count)`; `sum_over_time` → `SUM(value_sum)`; `count_over_time` → `SUM(value_count)`.
+- **`None` (force raw)** — `irate` (last-two-sample slope, sampling-dependent), `quantile_over_time`/`stddev_over_time`/`stdvar_over_time` (need per-bucket distributions/sum-of-squares), and any unknown/unimplemented/unclassified operator (fail-safe default). `delta`/`resets`/`last_over_time` join `Last` when implemented.
+
+The choke point ([tier-resolution-choke-point](./tier-resolution-choke-point.md)) routes to the coarsest tier ≤ resolution **whose advertised capabilities ⊇ the query's capability**; if none qualifies (or capability is `None`), all-raw.
 
 ## Consequences
-- **Correctness guaranteed**: no rollup-unsafe operator ever reads a downsampled tier; `*_over_time` peak/avg/quantile panels match raw.
-- `max_over_time`-style panels over long ranges stay full-resolution (slower) — accepted; correctness > cost. If they later need acceleration, **Option C** (per-bucket aggregates in the rollup) is the documented future lever, not a step-only override.
-- The allowlist is a small maintenance point: a new range function defaults to raw until explicitly classified safe — fail-safe.
-- Parity tests must include an unsafe operator (`max_over_time`) asserting it reads raw even at a coarse step.
+- **Correctness + speed together**: `max/min/avg/sum/count_over_time` now read a tier *and* equal the raw result (no dropped peaks). This is the whole point — we stop trading the tier away to be correct.
+- **Write-side scope is in**: this is no longer a read-only refactor (see [rollup aggregate schema ADR](./rollup-aggregate-schema.md)). Doing write+read together avoids re-creating the write-ahead-of-read gap that caused the original bug.
+- **Irreducible raw residue**: `irate`, `quantile_over_time`, `stddev/stdvar` stay raw — documented, not a gap. A sketch-carrying tier could serve quantiles later; that's a future capability, not this scope.
+- **Fail-safe**: a new range function defaults to `None` (raw) until classified.
+- Parity tests must cover one operator per capability (`max_over_time`/MinMax, `avg_over_time`/SumCount, `rate`/Last) asserting tier == raw, plus a `None` op (`irate`) asserting raw even at a coarse step.

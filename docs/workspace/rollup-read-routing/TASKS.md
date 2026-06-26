@@ -38,6 +38,13 @@ Profiled the live demo store (`sol:20e203c51`, 2026-06-26): **451 MB, 792 parque
 ### Domain model
 ```mermaid
 classDiagram
+    class Capability {
+        <<enum>>
+        Last
+        MinMax
+        SumCount
+        None
+    }
     class MetricWindow {
         <<type alias>>
         +String table
@@ -46,161 +53,195 @@ classDiagram
     }
     class resolve_metric_windows {
         <<fn>>
-        +(engine, start_ns, end_ns, resolution_ns, op_safe: bool) -> Vec~MetricWindow~
+        +(engine, start_ns, end_ns, resolution_ns, capability: Capability) -> Vec~MetricWindow~
     }
-    class op_safety {
+    class op_capability {
         <<fn>>
-        +(&Expr) -> bool
+        +(&Expr) -> Capability
     }
-    class hist_scan {
+    class rollup_plan {
         <<fn>>
-        +(engine, table, base, preds, lo, hi) -> DataFrame
+        +emits value_last/min/max/sum/count per (series,bucket)
+    }
+    class agg_value_for_window {
+        <<fn>>
+        +(op, is_tier) -> (value_expr, merge_agg)
     }
     resolve_metric_windows ..> MetricWindow
-    resolve_metric_windows ..> op_safety : caller passes its result as op_safe
+    resolve_metric_windows ..> Capability : caller passes op_capability(expr)
+    agg_value_for_window ..> Capability
 ```
 
 ### Requirement traceability
 | Type / Fn | Addresses | Notes |
 |---|---|---|
-| `resolve_metric_windows` | [FR1](./DESIGN.md#fr1) | The single choke point; returns time-disjoint `(table,lo,hi)` windows |
-| `op_safety` | [FR2](./DESIGN.md#fr2) | Static allowlist classifier; default raw |
+| `Capability` (enum) | [FR2](./DESIGN.md#fr2) | `Last`/`MinMax`/`SumCount`/`None` — what a query needs / a tier carries |
+| `op_capability` | [FR2](./DESIGN.md#fr2) | Static classifier; default `None` (raw) |
+| `resolve_metric_windows` | [FR1](./DESIGN.md#fr1) | Single choke point; routes to coarsest tier carrying the capability |
 | `MetricWindow` (`(String,i64,i64)`) | [FR1](./DESIGN.md#fr1) | Value returned by the resolver |
-| `handle_range` (+`eval_range_window`/`lower_range_df`/`metric_base_df` table flow) | [FR3](./DESIGN.md#fr3) | Range rate/agg routed via resolver + op_safety |
-| `handle_hist_quantile_range`/`handle_bucket_heatmap` | [FR3](./DESIGN.md#fr3) | Take windows from resolver; `tiered_hist_source` deleted |
-| `handle_instant`/`lower_range_df`/`lower_aggregate_range`/`latest_selected_df`/`handle_histogram` | [FR4](./DESIGN.md#fr4) | Instant routed via resolver (resolution = `matrix_range_ns`, gated by `op_safety`); bare-selector `latest_selected_df` → resolver yields raw (no hardcoded literal) |
-| `build_series`/`build_label_values`/`handle_labels` | [FR5](./DESIGN.md#fr5) | Metadata sealed→tier (op_safe=true always) |
+| `value_min/value_max/value_sum/value_count` cols + `rollup_plan` | [FR6](./DESIGN.md#fr6) | Per-bucket scalar aggregates; nullable, shared with raw schema |
+| `agg_value_for_window` (read-side value/agg selection) | [FR7](./DESIGN.md#fr7) | Tier → per-op aggregate column; raw → coalesced `v` |
+| `handle_range` (+`eval_range_window`/`lower_range_df`/`metric_base_df`/`over_time`) | [FR3](./DESIGN.md#fr3), [FR7](./DESIGN.md#fr7) | Range routed via resolver + capability; tier value via `agg_value_for_window` |
+| `handle_hist_quantile_range`/`handle_bucket_heatmap` | [FR3](./DESIGN.md#fr3) | Take windows from resolver (capability `Last`); `tiered_hist_source` deleted |
+| `handle_instant`/`lower_range_df`/`lower_aggregate_range`/`latest_selected_df`/`handle_histogram` | [FR4](./DESIGN.md#fr4) | Instant routed via resolver (resolution = `matrix_range_ns`, gated by `op_capability`); bare-selector `latest_selected_df` → resolver yields raw (no hardcoded literal) |
+| `build_series`/`build_label_values`/`handle_labels` | [FR5](./DESIGN.md#fr5) | Metadata sealed→tier (capability `Last` always) |
 
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
 |---|---|---|
-| `resolve_metric_windows` | `(start,end,resolution,op_safe) → Vec<(table,lo,hi)>` | Windows are time-**disjoint** and cover `[start,end]`; a tier appears **only** when `op_safe && tier eligible (≤ resolution) && window ≤ sealed_ns`; else raw `metrics`. Trailing `(sealed_ns,end]` always raw. |
-| `op_safety` | `&Expr → bool` | `true` **only** for `rate`/`increase`/`histogram_quantile` (incl. through `topk`/`sum by(le)`/paren wrappers); everything else (incl. `irate`, `*_over_time`, unknown) `false`. |
+| `op_capability` | `&Expr → Capability` | `Last`: `rate`/`increase`/`histogram_quantile` (incl. through `topk`/`sum by(le)`/paren). `MinMax`: `max_over_time`/`min_over_time`. `SumCount`: `avg`/`sum`/`count_over_time`. `None`: `irate`, `quantile/stddev/stdvar_over_time`, unknown, bare selector. |
+| `resolve_metric_windows` | `(start,end,resolution,capability) → Vec<(table,lo,hi)>` | Time-**disjoint**, cover `[start,end]`; a tier appears **only** when `capability≠None && tier ≤ resolution && tier carries capability && window ≤ sealed_ns`; trailing `(sealed_ns,end]` always raw. |
+| `rollup_plan` | `batches → batches (+value_min/max/sum/count)` | Per `(name,service_name,series_key,bucket)`: `last_value` for existing cols; `min/max/sum/count` of the coalesced scalar value into the 4 new cols. |
+| `agg_value_for_window` | `(op, is_tier) → (value_expr, agg)` | Tier: `max→(value_max,MAX)`, `min→(value_min,MIN)`, `sum→(value_sum,SUM)`, `count→(value_count,SUM)`, `avg→(value_sum/value_count via Σ)`. Raw: `(coalesced v, op's natural agg)`. |
 
 ## Tasks
 
-### 1. Choke point + operator-safety classifier ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2))
-**Goal**: One routing function + one safety classifier, replacing `select_range_table`.
-**Types**: `resolve_metric_windows`, `op_safety`, `MetricWindow` — see domain model.
+### 1. Rich rollup aggregates + schema ([FR6](./DESIGN.md#fr6))
+**Goal**: the rollup carries per-bucket `{last, min, max, sum, count}` of the scalar value so `max/min/avg/sum/count_over_time` can be exact off a tier.
+**Types**: `value_min`/`value_max`/`value_sum`/`value_count` columns, `rollup_plan` — see domain model.
+**Constraints**:
+- [ADR: rollup aggregate schema](./adrs/rollup-aggregate-schema.md) — 4 nullable `Float64` cols added to the **shared** `metric_union_schema` (`catalog.rs:143`); raw files null them (adapter). Clean cutover (empty state) — no migration, no per-file probing.
+- Aggregate the **coalesced scalar value** (same `metric_value_expr` coalesce the read path uses), grouped by the existing `(name, service_name, series_key, bucket)`; keep the existing `last_value(...)` columns unchanged (rate/histogram_quantile rely on them). Histograms null the new cols.
+- Invariant: `value_count` = raw sample count per bucket; `avg = Σvalue_sum/Σvalue_count`; existing `test_rate_over_rollup_matches_raw`/`test_rollup_preserves_bucket_counts` stay green.
+**Tests** (red→green):
+- `test_rollup_emits_per_bucket_aggregates` — a 5m bucket with values `[1,9,4]` → `value_min=1,value_max=9,value_sum=14,value_count=3`, `double_value`(last)=4.
+- `test_max_over_rollup_matches_raw` — `max_over_time` from `MAX(value_max)` over a multi-sample-per-bucket fixture equals the raw max (peaks preserved).
+- `test_avg_over_rollup_matches_raw` — `Σvalue_sum/Σvalue_count` equals raw `avg_over_time`.
+- `test_catalog_metric_schema_has_value_aggregate_cols` — the 4 cols present and nullable in `metric_union_schema`.
+**Verify**: `cargo test --features querier-backend --lib querier::rollup querier::catalog`
+**Acceptance criteria**:
+- [ ] `rollup_plan` emits the 4 aggregate columns; schema carries them (nullable).
+- [ ] max/avg-from-rollup parity tests pass; rate/histogram rollup tests stay green.
+**Depends on**: (none)
+**Time-box**: ~90 min
+
+### 2. Capability classifier + choke point ([FR1](./DESIGN.md#fr1), [FR2](./DESIGN.md#fr2))
+**Goal**: one `Capability` classifier + one routing function (`resolve_metric_windows`), replacing `select_range_table`.
+**Types**: `Capability`, `op_capability`, `resolve_metric_windows`, `MetricWindow` — see domain model.
 **Constraints**:
 - [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md) — single resolver; subsumes `select_range_table`.
-- [ADR: operator-safety-allowlist](./adrs/operator-safety-allowlist.md) — safe set = `{rate, increase, histogram_quantile}`; default raw.
-- Invariant: windows time-disjoint + cover `[start,end]`; tier only when `op_safe && ≤resolution && sealed`.
-- Reuse `RollupTier`/`select_tier` (`rollup.rs`), `sealed_ns = end − 86_400_000_000_000`.
-**Tests** (red→green):
-- `test_op_safety_safe_ops` — `rate`/`increase`/`histogram_quantile` (incl. `topk(histogram_quantile(sum by(le)(rate(..))))`) → true.
-- `test_op_safety_unsafe_ops` — `irate`, `max_over_time`, `avg_over_time`, `sum_over_time`, `count_over_time`, a bare selector, unknown fn → false.
-- `test_resolve_windows_unsafe_is_all_raw` — `op_safe=false` → single `[(metrics,start,end)]`.
-- `test_resolve_windows_splits_sealed_and_trailing` — coarse resolution, `op_safe=true`, 2-day span → `[(metrics_5m,start,sealed),(metrics,sealed+1,end)]`, disjoint.
-- `test_resolve_windows_fine_resolution_no_tier` — resolution < 5m → all raw even when safe.
-**Verify**: `cargo test --features querier-backend --lib querier::prometheus::tests::test_op_safety querier::prometheus::tests::test_resolve_windows`
+- [ADR: operator → capability classifier + rich rollup](./adrs/operator-safety-allowlist.md) — `Last`={rate,increase,histogram_quantile}; `MinMax`={max,min_over_time}; `SumCount`={avg,sum,count_over_time}; `None`={irate,quantile/stddev/stdvar_over_time,bare selector,unknown}.
+- Tier advertises `{Last,MinMax,SumCount}` unconditionally (clean cutover, Task 1). Reuse `RollupTier`/`select_tier`; `sealed_ns = end − 86_400_000_000_000`.
+- Invariant: windows time-disjoint + cover `[start,end]`; tier only when `capability≠None && tier ≤ resolution && window ≤ sealed_ns`.
+**Tests**:
+- `test_op_capability_classes` — each op → its capability (incl. `topk(histogram_quantile(sum by(le)(rate(..))))`→Last; `irate`/unknown/bare→None).
+- `test_resolve_windows_none_is_all_raw` — `None` → single `[(metrics,start,end)]`.
+- `test_resolve_windows_splits_sealed_and_trailing` — coarse res, 2-day span, any non-None capability → `[(metrics_5m,start,sealed),(metrics,sealed+1,end)]`, disjoint.
+- `test_resolve_windows_fine_resolution_no_tier` — resolution < 5m → all raw.
+**Verify**: `cargo test --features querier-backend --lib querier::prometheus::tests::test_op_capability querier::prometheus::tests::test_resolve_windows`
 **Acceptance criteria**:
-- [ ] `resolve_metric_windows` + `op_safety` exist; the 5 tests pass.
-- [ ] `op_safety` returns true only for the three safe operators.
-- [ ] `select_range_table` is removed (folded in) or delegates to the resolver.
-**Depends on**: (none)
+- [ ] `Capability` + `op_capability` + `resolve_metric_windows` exist; the 4 tests pass.
+- [ ] `select_range_table` removed (folded in).
+**Depends on**: 1
 **Time-box**: ~75 min
 
-### 2. Route the range rate/agg path ([FR3](./DESIGN.md#fr3), [NFR1](./DESIGN.md#nfr1))
-**Goal**: `handle_range` chooses each window's table via the resolver + `op_safety`, not `select_range_table` + a step-only branch.
+### 3. Route range + capability-aware value selection ([FR3](./DESIGN.md#fr3), [FR7](./DESIGN.md#fr7), [NFR1](./DESIGN.md#nfr1))
+**Goal**: `handle_range` sources windows from the resolver; on a tier window the value comes from the per-op aggregate column (`agg_value_for_window`), so `max_over_time` now uses the tier **correctly** (not raw).
+**Types**: `agg_value_for_window` — see domain model.
 **Constraints**:
-- [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md), [ADR: operator-safety-allowlist](./adrs/operator-safety-allowlist.md).
-- `eval_range_window`/`lower_range_df`/`metric_base_df` keep their `table: &str` param (table flows down unchanged); only the *choice* moves to the resolver.
-- Invariant: a `max_over_time(...)` range query at a coarse step now reads **raw** (was tier).
+- [ADR: operator → capability](./adrs/operator-safety-allowlist.md), [FR7](./DESIGN.md#fr7).
+- `eval_range_window`/`lower_range_df`/`metric_base_df`/`over_time` keep `table: &str`; add the per-op value/agg selection for tier windows (`metric_value_expr` → `value_max` etc.; `over_time` merge agg per [transformations table](#transformations)); `avg` = `Σvalue_sum/Σvalue_count`.
+- Invariant: `max_over_time` at a coarse step over a sealed window reads the **tier** and equals the raw max (peaks preserved — the FR2/FR6 win).
 **Tests**:
-- `test_range_max_over_time_reads_raw_at_coarse_step` — `max(max_over_time(m[5m]))` over a sealed 2-day span at M5 step reads raw (distinct raw vs tier values prove it — extend the existing tier fixture `test_long_range_keeps_live_tail_when_tier_selected`).
-- `test_range_rate_still_uses_tier` — `sum(rate(m[5m]))` sealed window still reads tier (the existing test stays green).
+- `test_range_max_over_time_uses_tier_and_matches_raw` — `max(max_over_time(m[5m]))` over a sealed 2-day span at M5 step reads the tier **and** equals the raw result.
+- `test_range_avg_over_time_uses_tier_and_matches_raw` — `avg_over_time` tier == raw.
+- `test_range_rate_still_uses_tier` — existing rate routing stays green.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] Range path sources windows from `resolve_metric_windows`.
-- [ ] `max_over_time` coarse-step reads raw; `rate` reads tier; both tests pass.
-- [ ] All pre-existing range tests stay green.
-**Depends on**: 1
-**Time-box**: ~60 min
+- [ ] Range path sources windows from `resolve_metric_windows`; tier value via `agg_value_for_window`.
+- [ ] `max_over_time`/`avg_over_time` use the tier and match raw; all pre-existing range tests green.
+**Depends on**: 2
+**Time-box**: ~90 min
 
-### 3. Route the range histogram/heatmap path ([FR3](./DESIGN.md#fr3), [NFR1](./DESIGN.md#nfr1))
-**Goal**: histogram/heatmap range handlers take windows from the resolver; delete the `tiered_hist_source` duplicate.
+### 4. Route the range histogram/heatmap path ([FR3](./DESIGN.md#fr3), [NFR1](./DESIGN.md#nfr1))
+**Goal**: histogram/heatmap range handlers take windows from the resolver (capability `Last`); delete the `tiered_hist_source` duplicate.
 **Constraints**:
 - [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md) — one routing impl.
-- Handlers take `windows: &[MetricWindow]` (or the resolver result) and union `hist_scan` over them; `handle_range` early-return + `eval_range_window:2287/2290` pass windows (the latter passes its single chosen window).
-- Invariant: results unchanged vs the `40149d8fa` behaviour (the existing routing test stays green).
+- Handlers union `hist_scan` over the resolver windows; `handle_range` early-return + `eval_range_window:2287/2290` pass windows.
+- Invariant: results unchanged vs `40149d8fa` (the existing routing test stays green).
 **Tests**:
-- `test_histogram_quantile_range_routes_sealed_window_to_tier` — already exists (`40149d8fa`); must stay green against the consolidated path.
-- `test_tiered_hist_source_removed` — (compile-level) `tiered_hist_source` no longer exists; histogram handlers reference the resolver.
+- `test_histogram_quantile_range_routes_sealed_window_to_tier` — exists (`40149d8fa`); stays green against the consolidated path.
+- `test_tiered_hist_source_removed` — (compile-level) `tiered_hist_source` gone; histogram handlers reference the resolver.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] `tiered_hist_source` deleted; histogram/heatmap handlers route via `resolve_metric_windows`.
-- [ ] The existing histogram routing test + all histogram tests pass.
-**Depends on**: 1
+- [ ] `tiered_hist_source` deleted; histogram/heatmap route via `resolve_metric_windows`.
+- [ ] The existing histogram routing + all histogram tests pass.
+**Depends on**: 2
 **Time-box**: ~60 min
 
-### 4. Route the instant paths ([FR4](./DESIGN.md#fr4), [NFR1](./DESIGN.md#nfr1))
-**Goal**: instant queries + instant histogram source via the resolver, resolution = `matrix_range_ns(expr)`, gated by `op_safety`.
+### 5. Route the instant paths ([FR4](./DESIGN.md#fr4), [FR7](./DESIGN.md#fr7), [NFR1](./DESIGN.md#nfr1))
+**Goal**: instant queries + instant histogram source via the resolver, resolution = `matrix_range_ns(expr)`, gated by `op_capability`, with tier value selection (FR7).
 **Constraints**:
-- [ADR: instant-and-metadata-routing](./adrs/instant-and-metadata-routing.md) — instant via selector window + safety gate; no range selector ⇒ raw.
-- Replace hardcoded `"metrics"` at `:510`, `:551`, `:1788`, **and `:429` (`latest_selected_df`, the bare-instant path)**. Route `latest_selected_df` through the resolver too: a bare selector has no `Call` ⇒ `op_safety=false` ⇒ resolver returns all-raw, so it stays functionally raw — but with **no hardcoded literal**, keeping the no-bypass guard (Task 6) absolute (no whitelist carve-out).
-- Invariant: a recent bare-selector instant still reads raw; an instant `histogram_quantile(rate(..[long]))`/`rate(..[long])` over a sealed window uses the tier; instant `max_over_time` reads raw.
+- [ADR: instant-and-metadata-routing](./adrs/instant-and-metadata-routing.md).
+- Replace hardcoded `"metrics"` at `:510`, `:551`, `:1788`, **and `:429` (`latest_selected_df`, the bare-instant path)**. Route `latest_selected_df` via the resolver too: bare selector → `Capability::None` → all-raw — functionally raw, but **no hardcoded literal** (keeps Task 7's guard absolute).
+- Invariant: a recent bare-selector instant reads raw; an instant `max_over_time`/`rate` over a sealed window uses the tier (correctly, via FR7).
 **Tests**:
-- `test_instant_rate_long_window_uses_tier` — instant `sum(rate(m[…]))` whose window covers a sealed span reads tier.
-- `test_instant_max_over_time_reads_raw` — instant `max_over_time(m[…])` reads raw at any window.
-- `test_instant_bare_selector_reads_raw` — `m` at `t` reads raw (recent).
+- `test_instant_rate_long_window_uses_tier` — instant `sum(rate(m[…]))` over a sealed span reads tier.
+- `test_instant_max_over_time_uses_tier_and_matches_raw` — instant `max_over_time(m[…long])` over a sealed span uses the tier and equals raw.
+- `test_instant_bare_selector_reads_raw` — `m` at `t` reads raw.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
-- [ ] Instant + instant-histogram source via the resolver; no hardcoded `"metrics"` left in those paths.
-- [ ] The three instant tests pass; existing instant tests stay green.
-**Depends on**: 1
+- [ ] Instant + instant-histogram source via the resolver; no hardcoded `"metrics"` in those paths.
+- [ ] The three instant tests pass; existing instant tests green.
+**Depends on**: 2, 3
 **Time-box**: ~75 min
 
-### 5. Route the metadata paths ([FR5](./DESIGN.md#fr5), [NFR1](./DESIGN.md#nfr1))
+### 6. Route the metadata paths ([FR5](./DESIGN.md#fr5), [NFR1](./DESIGN.md#nfr1))
 **Goal**: `/series`, `/label/:name/values`, `/labels` enumerate from the tier for sealed windows, raw for trailing.
 **Constraints**:
-- [ADR: instant-and-metadata-routing](./adrs/instant-and-metadata-routing.md) — metadata is always tier-eligible (no value compute; rollup preserves the series/label set); `op_safety` not consulted.
+- [ADR: instant-and-metadata-routing](./adrs/instant-and-metadata-routing.md) — metadata always tier-eligible (capability `Last`; no value compute).
 - Replace hardcoded `"metrics"` at `:111`, `:917` (×4), `:958`.
-- Invariant: enumerated names/labels are **identical** to the raw-only result (the tier has the same distinct series/labels).
+- Invariant: enumerated names/labels **identical** to the raw-only result.
 **Tests**:
-- `test_series_enumeration_matches_raw_via_tier` — `/series` over a sealed span returns the same `(name,service_name)` set whether read from tier or raw.
+- `test_series_enumeration_matches_raw_via_tier` — `/series` over a sealed span: same `(name,service_name)` set via tier or raw.
 - `test_label_values_matches_raw_via_tier` — `/label/host/values` identical via tier.
 **Verify**: `cargo test --features querier-backend --lib querier::prometheus`
 **Acceptance criteria**:
 - [ ] Metadata paths source via the resolver (sealed→tier).
-- [ ] Enumeration results identical to raw; both tests pass.
-**Depends on**: 1
+- [ ] Enumeration identical to raw; both tests pass.
+**Depends on**: 2
 **Time-box**: ~60 min
 
-### 6. No-silent-bypass guard ([NFR3](./DESIGN.md#nfr3))
-**Goal**: lock in the consolidation so a future handler can't silently bypass routing or route an unsafe op.
+### 7. No-silent-bypass guard + capability invariants ([NFR3](./DESIGN.md#nfr3), [NFR1](./DESIGN.md#nfr1))
+**Goal**: lock in the consolidation — no handler can hardcode a table or route a `None`-capability op to a tier.
 **Constraints**:
-- [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md), [ADR: operator-safety-allowlist](./adrs/operator-safety-allowlist.md).
-- Invariant: every metric query-serving read of a tier goes through `resolve_metric_windows`.
+- [ADR: tier-resolution-choke-point](./adrs/tier-resolution-choke-point.md), [ADR: operator → capability](./adrs/operator-safety-allowlist.md).
+- Invariant: every metric query-serving read goes through `resolve_metric_windows`.
 **Tests**:
-- `test_no_query_path_hardcodes_tier_table` — a source-level guard (like the existing `no_sql_invariant_tests` at `mod.rs:162`): assert no query-serving fn in `prometheus.rs` contains a `.table("metrics_…")` literal (tiers only reached via the resolver). With `latest_selected_df` routed (Task 4), **no query path hardcodes a raw `.table("metrics")` either** — the guard is absolute, no whitelist carve-out (test fixtures under `#[cfg(test)]` excluded).
-- `test_unsafe_operator_never_tiers` — table-driven over the unsafe op list, asserting `resolve_metric_windows(op_safe=op_safety(expr))` yields all-raw.
+- `test_no_query_path_hardcodes_table` — source-level guard (like `no_sql_invariant_tests` at `mod.rs:162`): no query-serving fn in `prometheus.rs` contains a `.table("metrics")` or `.table("metrics_…")` literal (all via the resolver); `#[cfg(test)]` fixtures excluded. Absolute — no carve-out (Task 5 routed `latest_selected_df`).
+- `test_none_capability_never_tiers` — table-driven over the `None` op list (`irate`, `quantile_over_time`, unknown, bare selector): `resolve_metric_windows(op_capability(expr))` yields all-raw.
 **Verify**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib`
 **Acceptance criteria**:
-- [ ] Guard test(s) pass and would fail if a new handler hardcoded a tier or routed an unsafe op.
+- [ ] Guard tests pass and would fail if a handler hardcoded a table or tiered a `None` op.
 - [ ] Full `querier::` suite green; clippy clean.
-**Depends on**: 2, 3, 4, 5
+**Depends on**: 3, 4, 5, 6
 **Time-box**: ~45 min
 
 ## Sessions
 
-### Session 1 — Choke point + range paths (~3H)
-Tasks: 1, 2, 3
+### Session 1 — Rich rollup + choke point (~2.75H)
+Tasks: 1, 2
 **Skills**: `rust-software-engineer`
-**Checkpoint**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib` — green; `select_range_table`/`tiered_hist_source` gone; range rate/agg + histogram route via the resolver; `max_over_time` reads raw.
+**Checkpoint**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib` — green; rollup emits `{min,max,sum,count}`; schema carries them; `Capability`/`op_capability`/`resolve_metric_windows` exist; `select_range_table` gone.
 **Commit point**: yes
 
-### Session 2 — Instant + metadata + guard (~3H)
-Tasks: 4, 5, 6
+### Session 2 — Route range + histogram + value selection (~2.5H)
+Tasks: 3, 4
 **Skills**: `rust-software-engineer`
-**Checkpoint**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib` — green; no hardcoded tier reads outside the resolver; instant + metadata routed.
+**Checkpoint**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib` — green; range rate/agg + histogram route via the resolver; `tiered_hist_source` gone; `max_over_time`/`avg_over_time` use the tier and match raw.
+**Commit point**: yes
+
+### Session 3 — Instant + metadata + guard (~3H)
+Tasks: 5, 6, 7
+**Skills**: `rust-software-engineer`
+**Checkpoint**: `cargo test --features querier-backend --lib querier:: && cargo clippy --features querier-backend --lib` — green; no hardcoded table reads outside the resolver; instant + metadata routed; `None`-capability ops never tier.
 **Commit point**: yes
 
 ## Quality gates (post-session review)
 - [ ] Acceptance criteria: all green above
-- [ ] Code review: matches [DESIGN.md](./DESIGN.md) — one resolver, no per-handler routing
-- [ ] Code organization: resolver + classifier co-located; dead code (`select_range_table`, `tiered_hist_source`) removed
-- [ ] Code quality: no duplicated routing logic; `op_safety` is the only safety surface
-- [ ] Security: n/a (read-path refactor, no new deps/inputs)
-- [ ] Observability: `querier_bytes_scanned`/`files_opened` reflect the drop on routed paths
-- [ ] Performance: 7-day metric dashboard cold-load CPU drops vs raw; `max_over_time` parity with raw confirmed
+- [ ] Code review: matches [DESIGN.md](./DESIGN.md) — one resolver + one capability classifier, no per-handler routing
+- [ ] Code organization: resolver + classifier + `agg_value_for_window` co-located; dead code (`select_range_table`, `tiered_hist_source`) removed
+- [ ] Code quality: no duplicated routing/value-selection logic; `op_capability` is the only capability surface
+- [ ] Security: n/a (no new deps/inputs; plain Arrow columns + read-path refactor)
+- [ ] Observability: `querier_bytes_scanned`/`files_opened` reflect the tier drop on routed paths
+- [ ] Performance: 7-day dashboard cold-load CPU drops vs raw; `max_over_time`/`avg_over_time`/`rate` parity with raw confirmed; rollup storage delta measured (estimate ~15–22% of raw)

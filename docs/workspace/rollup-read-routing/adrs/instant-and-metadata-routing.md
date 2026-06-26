@@ -13,14 +13,14 @@ Instant queries have no `step`; their "window" is the range selector (`m[w]`). M
 ## Options
 | Decision point | Option | Pros | Cons |
 |---|---|---|---|
-| **Instant** | A. Route via the choke point using the **selector window** as the resolution input, gated by `op_safety` | Stat panels with a long safe-operator window (`rate`/`histogram_quantile` over `[$__range]`) use the tier; recent/short or unsafe stays raw | Slightly more logic in the instant path |
+| **Instant** | A. Route via the choke point using the **selector window** as the resolution input, gated by `op_capability` | Stat panels with a long window use the tier per the operator's capability (`rate`→Last, `max_over_time`→MinMax, …); recent/short or `None`-capability stays raw | Slightly more logic in the instant path |
 | | B. Leave instant always-raw | Simplest | A 7-day Stat panel keeps scanning raw — the same cost the range fix removed |
 | **Metadata** | A. Route sealed window → tier, trailing → raw | Tier has the **same series set** (rollup keeps every series with ≥1 sample/bucket) → enumeration is exact and cheaper (far fewer rows for `DISTINCT`) | Must confirm the tier carries the label columns enumerated (it does — same schema) |
 | | B. Leave metadata raw | No change | Variable-dropdown / autocomplete queries over long ranges stay full-resolution |
 
 ## Decision
-- **Instant → Option A.** `handle_instant`/`handle_histogram` resolve their source via the choke point, passing the range-selector window as the resolution and `op_safety(expr)` as the gate. No range selector (bare instant vector) ⇒ short/recent ⇒ resolves to raw naturally.
-- **Metadata → Option A.** `/series` and `/label/:name/values` route the sealed window to the tier (always tier-eligible — no value computation, so `op_safety` is not consulted; the rollup preserves the full series/label set), raw for the trailing window.
+- **Instant → Option A.** `handle_instant`/`handle_histogram` resolve their source via the choke point, passing the range-selector window as the resolution and `op_capability(expr)` as the gate. A bare instant selector routes via the resolver too — capability `Last`, short window ⇒ resolves to raw naturally (no hardcoded `.table("metrics")` literal; keeps the no-bypass guard absolute).
+- **Metadata → Option A.** `/series` and `/label/:name/values` route the sealed window to the tier (always tier-eligible — no value computation, so capability `Last` suffices; the rollup preserves the full series/label set), raw for the trailing window.
 
 ## Consequences
 - Instant Stat panels with long *safe* windows get the tier speedup; recent and unsafe-operator instants are unchanged (raw).
