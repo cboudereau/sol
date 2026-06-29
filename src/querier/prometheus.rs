@@ -447,6 +447,27 @@ async fn lower_range_df(
 /// express — see [`super::plan::frame::over_time_ratio`]).
 ///
 /// [adr]: ../../../docs/workspace/rollup-read-routing/adrs/operator-safety-allowlist.md
+/// The single per-op **tier** value-column + merge agg for a `*_over_time` op
+/// (FR7), shared by the range ([`lower_over_time`]) and instant
+/// ([`over_time_window_value`]) paths so the mapping lives in one place:
+/// `max→MAX(value_max)`, `min→MIN(value_min)`, `sum→SUM(value_sum)`,
+/// `count→SUM(value_count)` (the per-bucket counts are *summed*, not counted).
+/// `None` for `avg_over_time` (handled separately via the two-column ratio frame)
+/// and any op the classifier should never route here.
+fn tier_over_time_value(
+    op: &str,
+) -> Option<(datafusion::logical_expr::Expr, super::plan::frame::OverTimeAgg)> {
+    use super::plan::frame::OverTimeAgg;
+    use datafusion::prelude::col;
+    match op {
+        "max_over_time" => Some((col("value_max"), OverTimeAgg::Max)),
+        "min_over_time" => Some((col("value_min"), OverTimeAgg::Min)),
+        "sum_over_time" => Some((col("value_sum"), OverTimeAgg::Sum)),
+        "count_over_time" => Some((col("value_count"), OverTimeAgg::Sum)),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn lower_over_time(
     engine: &super::QueryEngine,
@@ -478,13 +499,10 @@ async fn lower_over_time(
     }
     // The single value column + merge agg for this op on this source.
     let (value_expr, agg) = if is_tier {
-        match op {
-            "max_over_time" => (col("value_max"), OverTimeAgg::Max),
-            "min_over_time" => (col("value_min"), OverTimeAgg::Min),
-            "sum_over_time" => (col("value_sum"), OverTimeAgg::Sum),
-            // count_over_time sums the per-bucket counts (NOT Count of rows).
-            "count_over_time" => (col("value_count"), OverTimeAgg::Sum),
-            other => return Err(to_err(format!("unexpected over_time op: {other}"))),
+        // avg is special-cased above, so `None` here is a genuine miswire.
+        match tier_over_time_value(op) {
+            Some(va) => va,
+            None => return Err(to_err(format!("unexpected over_time op: {op}"))),
         }
     } else {
         let agg = match op {
@@ -521,16 +539,12 @@ fn over_time_window_value(
     super::plan::frame::OverTimeAgg,
 ) {
     use super::plan::frame::OverTimeAgg;
-    use datafusion::prelude::{col, lit};
+    use datafusion::prelude::lit;
     if is_tier {
-        let value = match op {
-            "max_over_time" => (col("value_max"), OverTimeAgg::Max),
-            "min_over_time" => (col("value_min"), OverTimeAgg::Min),
-            "sum_over_time" => (col("value_sum"), OverTimeAgg::Sum),
-            // count_over_time sums the per-bucket counts (NOT Count of rows).
-            "count_over_time" => (col("value_count"), OverTimeAgg::Sum),
-            _ => (col("value_max"), OverTimeAgg::Max),
-        };
+        // The op set is guaranteed by `op_capability`; avg is handled separately
+        // by the caller before reaching here, so `None` is unreachable.
+        let value = tier_over_time_value(op)
+            .unwrap_or_else(|| unreachable!("over_time op gated by op_capability: {op}"));
         (vec![value.0.alias("v")], value.1)
     } else {
         let value = match op {
@@ -5294,6 +5308,60 @@ mod tests {
         assert!(
             (v - 99.0).abs() < 1e-6,
             "max_over_time must use the tier's value_max (99) and match raw, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_min_over_time_uses_tier_and_matches_raw() {
+        // `min(min_over_time(g[5m]))` over the sealed span routes to the tier and
+        // reads `value_min`=10 (the raw bucket min) — NOT value_max(99)/last(20).
+        let engine = engine_with_rich_5m_tier().await;
+        let cap = op_capability(&parser::parse("min_over_time(g[5m])").unwrap());
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        let resp = handle_range(&engine, "min(min_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        let v = first_point_value(&resp);
+        assert!(
+            (v - 10.0).abs() < 1e-6,
+            "min_over_time must use the tier's value_min (10) and match raw, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_sum_over_time_uses_tier_and_matches_raw() {
+        // `sum_over_time(g[5m])` over the tier = SUM(value_sum) = 129 — the raw sum
+        // of the bucket samples (10+99+20) — NOT sum(last)=20.
+        let engine = engine_with_rich_5m_tier().await;
+        let cap = op_capability(&parser::parse("sum_over_time(g[5m])").unwrap());
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        let resp = handle_range(&engine, "sum(sum_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        let v = first_point_value(&resp);
+        assert!(
+            (v - 129.0).abs() < 1e-6,
+            "sum_over_time must be SUM(value_sum) = 129 and match raw, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_count_over_time_uses_tier_and_matches_raw() {
+        // `count_over_time(g[5m])` over the tier = SUM(value_count) = 3 — the raw
+        // sample count of the bucket — NOT a row count (1) of the single tier row.
+        let engine = engine_with_rich_5m_tier().await;
+        let cap = op_capability(&parser::parse("count_over_time(g[5m])").unwrap());
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
+        let resp = handle_range(&engine, "sum(count_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+            .await
+            .unwrap();
+        let v = first_point_value(&resp);
+        assert!(
+            (v - 3.0).abs() < 1e-6,
+            "count_over_time must be SUM(value_count) = 3 and match raw, got {v}"
         );
     }
 
