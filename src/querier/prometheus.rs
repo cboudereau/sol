@@ -787,6 +787,20 @@ fn matrix_range_ns(expr: &Expr) -> Option<i64> {
 /// raw serves the trailing live portion. A bare instant selector (no matrix
 /// window) is the caller's responsibility (see [`latest_selected_df`]); this is
 /// for range-function instants, so a missing matrix window is an error.
+/// Whether the governing range function of `expr` is a LAG-based counter op
+/// (`rate`/`increase`/`irate`) — the ops whose per-sample delta needs the sample
+/// *before* the window as a LAG predecessor (see [`instant_range_windows`]).
+/// Recurses through `Paren`/`Aggregate` like [`op_capability`] so `sum(rate(m[w]))`
+/// is detected. `*_over_time` and bare selectors return `false`.
+fn is_lag_range_op(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(p) => is_lag_range_op(&p.expr),
+        Expr::Aggregate(a) => is_lag_range_op(a.expr.as_ref()),
+        Expr::Call(c) => matches!(c.func.name, "rate" | "increase" | "irate"),
+        _ => false,
+    }
+}
+
 fn instant_range_windows(
     engine: &super::QueryEngine,
     expr: &Expr,
@@ -799,7 +813,19 @@ fn instant_range_windows(
     // Anchor an omitted `time` (i64::MAX) to now so `[T-range, T]` lands on real
     // data, not the year 2262 (empty). A finite explicit time passes through.
     let anchor = instant_anchor(time_ns, now_ns);
-    let start = anchor.saturating_sub(range);
+    // `rate`/`increase`/`irate` compute each sample's delta as `v - LAG(v)` and SUM
+    // the deltas whose timestamp falls in the `range`-wide frame ending at `anchor`.
+    // The window's *leading* sample (at `anchor-range`) needs its predecessor sample
+    // — which sits just *before* the window — to contribute its delta. The range path
+    // scans the whole query span, so that predecessor is present; an instant scan of
+    // exactly `[anchor-range, anchor]` lacks it, dropping the leading delta and
+    // under-reporting (live: ~½). Extend the scan lower bound back by an extra `range`
+    // for the LAG ops so the predecessor is scanned; the `range`-wide SUM frame at
+    // `anchor` is unchanged, so the extra older rows only seed LAG (not the sum), and
+    // `latest_per_series` still emits only the value at `anchor`. `*_over_time` must
+    // NOT extend (it would pull older rows into its windowed aggregate).
+    let lag_margin = if is_lag_range_op(expr) { range } else { 0 };
+    let start = anchor.saturating_sub(range).saturating_sub(lag_margin);
     Ok(resolve_metric_windows(engine, start, anchor, range, op_capability(expr)))
 }
 
@@ -5544,6 +5570,124 @@ mod tests {
             .await
             .unwrap();
         assert!(empty.data.result.is_empty(), "sentinel-now window is past all data → empty");
+    }
+
+    /// A monotonic counter sampled every 15s over 10m (41 samples on a single day),
+    /// value = 100·k so the increment is 100 per 15s (rate = 100/15 ≈ 6.667/s). All
+    /// samples are on the active (unsealed) day, so the resolver returns one raw
+    /// window — isolating the rate/increase logic from tier routing.
+    async fn monotonic_counter_engine() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let n = 41usize; // 0..40 → 10m at 15s
+        let times: Vec<i64> = (0..n).map(|k| (k as i64) * 15_000_000_000).collect();
+        let vals: Vec<f64> = (0..n).map(|k| 100.0 * k as f64).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"; n])),
+                Arc::new(StringArray::from(vec!["c"; n])),
+                Arc::new(TimestampNanosecondArray::from(times).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                Arc::new(Float64Array::from(vals)),
+                Arc::new(StringArray::from(vec!["c"; n])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("c.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_instant_rate_matches_range_rate() {
+        // PARITY (Sol↔Mimir): the instant `rate(c[5m])` at T must equal the range
+        // path's rate at the same grid point T — the range path is the verified-correct
+        // reference (matches Mimir live). The bug was the instant returning ~½ the
+        // range value because its base was scanned over exactly `[T-range, T]`, so the
+        // window's leading sample had no LAG predecessor and its delta was dropped.
+        let engine = monotonic_counter_engine().await;
+        let t_last = 600_000_000_000i64;
+
+        // Instant path (omitted time → anchored to T_last).
+        let instant = handle_instant(&engine, "rate(c[5m])", i64::MAX, t_last)
+            .await
+            .unwrap();
+        let iv = instant_value(&instant);
+
+        // Range path as the reference: a range query over [0, T_last] at 5m step;
+        // its last grid point (at T_last) is the verified-correct rate at T_last.
+        let range = handle_range(&engine, "rate(c[5m])", 0, t_last, M5)
+            .await
+            .unwrap();
+        assert_eq!(range.data.result.len(), 1, "one range series: {:?}", range.data.result);
+        let rv = range.data.result[0]
+            .values
+            .last()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .expect("a numeric range rate at T_last");
+
+        assert!(
+            (iv - rv).abs() < 1e-6,
+            "instant rate ({iv}) must equal the range rate ({rv}) at the same instant"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instant_increase_matches_range_increase() {
+        // Same parity for `increase` (rate without the /window): instant must equal
+        // the range path's increase at T_last.
+        let engine = monotonic_counter_engine().await;
+        let t_last = 600_000_000_000i64;
+
+        let instant = handle_instant(&engine, "increase(c[5m])", i64::MAX, t_last)
+            .await
+            .unwrap();
+        let iv = instant_value(&instant);
+
+        let range = handle_range(&engine, "increase(c[5m])", 0, t_last, M5)
+            .await
+            .unwrap();
+        let rv = range.data.result[0]
+            .values
+            .last()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .expect("a numeric range increase at T_last");
+
+        assert!(
+            (iv - rv).abs() < 1e-6,
+            "instant increase ({iv}) must equal the range increase ({rv})"
+        );
     }
 
     #[test]
