@@ -791,12 +791,16 @@ fn instant_range_windows(
     engine: &super::QueryEngine,
     expr: &Expr,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<Vec<MetricWindow>> {
     let range = matrix_range_ns(expr).ok_or_else(|| {
         to_err("instant range function expects a range vector like m[5m] (v1)".to_string())
     })?;
-    let start = time_ns.saturating_sub(range);
-    Ok(resolve_metric_windows(engine, start, time_ns, range, op_capability(expr)))
+    // Anchor an omitted `time` (i64::MAX) to now so `[T-range, T]` lands on real
+    // data, not the year 2262 (empty). A finite explicit time passes through.
+    let anchor = instant_anchor(time_ns, now_ns);
+    let start = anchor.saturating_sub(range);
+    Ok(resolve_metric_windows(engine, start, anchor, range, op_capability(expr)))
 }
 
 /// Lower an aggregate at an **instant** to the canonical aggregate frame
@@ -812,6 +816,7 @@ async fn lower_aggregate_instant(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let op = agg_name(agg.op).map_err(to_err)?;
@@ -820,13 +825,15 @@ async fn lower_aggregate_instant(
 
     // Nested aggregate inner: recurse to the canonical frame, then re-project.
     if let Some(inner_agg) = aggregate_inner(agg.expr.as_ref()) {
-        let inner = Box::pin(lower_aggregate_instant(engine, inner_agg, time_ns)).await?;
+        let inner = Box::pin(lower_aggregate_instant(engine, inner_agg, time_ns, now_ns)).await?;
         let inner = rename_inner_group_key(inner)?;
         let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
         return Ok(inner.aggregate(vec![key], vec![v])?);
     }
 
     // Leaf selector inner (`sum(m)`): latest sample per series, then aggregate.
+    // A bare selector's `latest ≤ time_ns` is correct at i64::MAX (newest), so it
+    // keeps `time_ns` — only the range-window paths need the anchor.
     if let Some(vs) = aggregate_inner_selector(agg.expr.as_ref()) {
         let inner = latest_selected_df(engine, vs, time_ns).await?;
         let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
@@ -842,7 +849,7 @@ async fn lower_aggregate_instant(
     let range = matrix_range_ns(agg.expr.as_ref()).ok_or_else(|| {
         to_err("instant aggregate inner must be a selector or a range function (v1)".to_string())
     })?;
-    let windows = instant_range_windows(engine, agg.expr.as_ref(), time_ns)?;
+    let windows = instant_range_windows(engine, agg.expr.as_ref(), time_ns, now_ns)?;
     let ranged = lower_instant_aggregate_range(engine, agg, &windows, range).await?;
     super::plan::frame::latest_per_series(ranged, vec![col("prom_group_key")], "time_unix_nano")
 }
@@ -906,11 +913,14 @@ async fn lower_instant_df(
     engine: &super::QueryEngine,
     expr: &Expr,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     match expr {
+        // A bare selector's `latest ≤ time_ns` is correct at i64::MAX, so it keeps
+        // `time_ns`; only the range-window paths below need the anchor.
         Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
-        Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns)).await,
-        Expr::Aggregate(agg) => lower_aggregate_instant(engine, agg, time_ns).await,
+        Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns, now_ns)).await,
+        Expr::Aggregate(agg) => lower_aggregate_instant(engine, agg, time_ns, now_ns).await,
         // Bare range function at an instant (`rate(metric[5m])`): evaluate over the
         // [T-range, T] window using the resolver-derived source (FR4) — the windows
         // are unioned at the leaf base so the value at T aggregates across the
@@ -919,7 +929,7 @@ async fn lower_instant_df(
             let range = matrix_range_ns(expr).ok_or_else(|| {
                 to_err("instant range function expects a range vector like m[5m] (v1)".to_string())
             })?;
-            let windows = instant_range_windows(engine, expr, time_ns)?;
+            let windows = instant_range_windows(engine, expr, time_ns, now_ns)?;
             let series = lower_instant_leaf(engine, expr, &windows, range).await?;
             // rate/over_time project to (service_name, attributes, time, v) — a
             // series is identified by those; partition the latest-pick on the
@@ -1178,20 +1188,35 @@ pub async fn handle_instant(
     engine: &super::QueryEngine,
     query: &str,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<PromResponse> {
     // histogram_quantile, binary/unary operators and aggregates are all handled
     // by the recursive evaluator; leaves fall through to SQL.
     let expr = parser::parse(query).map_err(to_err)?;
+    // An omitted `time` arrives as i64::MAX ("latest"); anchor it to wall-clock now
+    // for the response sample timestamp (Mimir stamps "now", not year 2262) and the
+    // `[T-range, T]` scan windows (see `instant_anchor`).
+    let anchor = instant_anchor(time_ns, now_ns);
     // ns→seconds for the Prometheus sample timestamp; sub-ms precision is irrelevant here.
     #[allow(clippy::cast_precision_loss)]
-    let time_s = time_ns as f64 / 1_000_000_000.0;
+    let time_s = anchor as f64 / 1_000_000_000.0;
 
     let samples: Vec<(BTreeMap<String, String>, f64, f64)> =
-        match eval_instant(engine, &expr, time_ns).await? {
+        match eval_instant(engine, &expr, time_ns, now_ns).await? {
             InstantVal::Scalar(s) => vec![(BTreeMap::new(), time_s, s)],
             InstantVal::Vector(v) => v.into_iter().map(|(m, x)| (m, time_s, x)).collect(),
         };
     Ok(PromResponse::vector(samples))
+}
+
+/// Anchor an instant query's evaluation time: an omitted `time` param reaches the
+/// query layer as `i64::MAX` ("latest"), which is correct for a bare-selector
+/// `latest sample ≤ T` but breaks a range-function `[T-range, T]` window (it would
+/// land in the year 2262, past all data → empty). Resolve the sentinel to a
+/// real wall-clock `now_ns` (captured at the request boundary, so the core query
+/// fns stay clock-free and testable); a finite explicit time passes through.
+fn instant_anchor(time_ns: i64, now_ns: i64) -> i64 {
+    if time_ns == i64::MAX { now_ns } else { time_ns }
 }
 
 /// Collect the first (string) column of a built `DataFrame`. Shared by the
@@ -2346,6 +2371,7 @@ async fn handle_histogram(
     phi: f64,
     vs: &VectorSelector,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<PromResponse> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
@@ -2360,8 +2386,10 @@ async fn handle_histogram(
     // is Capability::Last, but resolution 0 ⇒ the resolver yields a single raw
     // window (FR4) — no hardcoded `"metrics"` literal. The bucket columns are
     // shared across raw/tier schemas, so a boundary-straddling window (were the
-    // resolution ever > 0) unions cleanly.
-    let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::Last);
+    // resolution ever > 0) unions cleanly. Anchor an omitted `time` (i64::MAX) to
+    // now so the latest-sample filter and the response timestamp are sensible.
+    let anchor = instant_anchor(time_ns, now_ns);
+    let windows = resolve_metric_windows(engine, anchor, anchor, 0, Capability::Last);
     let mut base: Option<datafusion::dataframe::DataFrame> = None;
     for (table, _lo, hi) in windows {
         let part = hist_instant_scan(engine, vs, name, &table, hi).await?;
@@ -2387,7 +2415,7 @@ async fn handle_histogram(
         ])?)
         .await?;
     #[allow(clippy::cast_precision_loss)]
-    let time_s = time_ns as f64 / 1_000_000_000.0;
+    let time_s = anchor as f64 / 1_000_000_000.0;
 
     let mut samples: Vec<(BTreeMap<String, String>, f64, f64)> = Vec::new();
     for batch in &batches {
@@ -2792,7 +2820,9 @@ async fn eval_range_window(
                 .args
                 .first()
                 .ok_or_else(|| to_err("scalar() requires one argument".to_string()))?;
-            let v = Box::pin(eval_instant(engine, arg, e)).await?;
+            // Range-window context: `e` is a finite window end, so it doubles as
+            // the anchor (instant_anchor is a no-op for a non-sentinel time).
+            let v = Box::pin(eval_instant(engine, arg, e, e)).await?;
             Ok(RangeVal::Scalar(instant_to_scalar(v)))
         }
         // `clamp_min`/`clamp_max`: floor/cap every point of every series.
@@ -2809,7 +2839,7 @@ async fn eval_range_window(
                 .get(1)
                 .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
             let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table, step_ns)).await?;
-            let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e)).await?);
+            let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e, e)).await?);
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(clamp_value(is_min, x, bound)),
                 RangeVal::Vector(mut m) => {
@@ -2988,17 +3018,20 @@ fn combine_instant(
     })
 }
 
-/// Evaluate an instant sub-expression at `time_ns`.
+/// Evaluate an instant sub-expression at `time_ns`. `now_ns` anchors an omitted
+/// `time` (i64::MAX) for the range-window paths (see [`instant_anchor`]); it is
+/// threaded but unused by the scalar/bare-selector branches.
 async fn eval_instant(
     engine: &super::QueryEngine,
     expr: &Expr,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<InstantVal> {
     match expr {
         Expr::NumberLiteral(n) => Ok(InstantVal::Scalar(n.val)),
-        Expr::Paren(p) => Box::pin(eval_instant(engine, &p.expr, time_ns)).await,
+        Expr::Paren(p) => Box::pin(eval_instant(engine, &p.expr, time_ns, now_ns)).await,
         Expr::Unary(u) => {
-            let v = Box::pin(eval_instant(engine, &u.expr, time_ns)).await?;
+            let v = Box::pin(eval_instant(engine, &u.expr, time_ns, now_ns)).await?;
             Ok(match v {
                 InstantVal::Scalar(x) => InstantVal::Scalar(-x),
                 InstantVal::Vector(mut m) => {
@@ -3010,8 +3043,8 @@ async fn eval_instant(
             })
         }
         Expr::Binary(b) => {
-            let l = Box::pin(eval_instant(engine, &b.lhs, time_ns)).await?;
-            let r = Box::pin(eval_instant(engine, &b.rhs, time_ns)).await?;
+            let l = Box::pin(eval_instant(engine, &b.lhs, time_ns, now_ns)).await?;
+            let r = Box::pin(eval_instant(engine, &b.rhs, time_ns, now_ns)).await?;
             combine_instant(b.op, l, r, &b.modifier).map_err(to_err)
         }
         // `scalar(v)` collapses an instant vector to a scalar: the sole element's
@@ -3022,7 +3055,7 @@ async fn eval_instant(
                 .args
                 .first()
                 .ok_or_else(|| to_err("scalar() requires one argument".to_string()))?;
-            let v = Box::pin(eval_instant(engine, arg, time_ns)).await?;
+            let v = Box::pin(eval_instant(engine, arg, time_ns, now_ns)).await?;
             Ok(InstantVal::Scalar(instant_to_scalar(v)))
         }
         // `clamp_min(v, m)` / `clamp_max(v, m)`: floor/cap each sample at the
@@ -3039,8 +3072,9 @@ async fn eval_instant(
                 .args
                 .get(1)
                 .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
-            let v = Box::pin(eval_instant(engine, vec_arg, time_ns)).await?;
-            let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, time_ns)).await?);
+            let v = Box::pin(eval_instant(engine, vec_arg, time_ns, now_ns)).await?;
+            let bound =
+                instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, time_ns, now_ns)).await?);
             Ok(match v {
                 InstantVal::Scalar(x) => InstantVal::Scalar(clamp_value(is_min, x, bound)),
                 InstantVal::Vector(mut items) => {
@@ -3055,14 +3089,14 @@ async fn eval_instant(
         // `agg(v)`, chained for nesting; the canonical frame is materialized back
         // into labels per output group ([ADR: aggregation-pushdown]).
         Expr::Aggregate(agg) if agg_name(agg.op).is_ok() => {
-            let df = lower_aggregate_instant(engine, agg, time_ns).await?;
+            let df = lower_aggregate_instant(engine, agg, time_ns, now_ns).await?;
             Ok(InstantVal::Vector(
                 instant_vector_from_df(engine, df).await?,
             ))
         }
         _ => {
             if let Some((phi, vs)) = histogram_quantile_parts(expr) {
-                let resp = handle_histogram(engine, phi, vs, time_ns).await?;
+                let resp = handle_histogram(engine, phi, vs, time_ns, now_ns).await?;
                 let v = resp
                     .data
                     .result
@@ -3071,7 +3105,7 @@ async fn eval_instant(
                     .collect();
                 Ok(InstantVal::Vector(v))
             } else {
-                let df = lower_instant_df(engine, expr, time_ns).await?;
+                let df = lower_instant_df(engine, expr, time_ns, now_ns).await?;
                 Ok(InstantVal::Vector(
                     instant_vector_from_df(engine, df).await?,
                 ))
@@ -3277,7 +3311,7 @@ mod tests {
         // `scalar(v)` on a one-element vector yields that value (then composes
         // in arithmetic) — the Sys Load gauge shape `scalar(node_load1{…}) * …`.
         let engine = counter_engine().await;
-        let resp = handle_instant(&engine, "scalar(http_total) * 2", 3_000_000_000)
+        let resp = handle_instant(&engine, "scalar(http_total) * 2", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(resp.data.result.len(), 1, "scalar → one value: {:?}", resp.data.result);
@@ -3355,7 +3389,7 @@ mod tests {
         // CPU Cores panel: count(count(m) by (cpu)) → number of cpus (2). Requires
         // an aggregate whose inner is itself an aggregate (not a bare selector).
         let engine = cpu_engine().await;
-        let r = handle_instant(&engine, "count(count(m) by (cpu))", 2_000_000_000)
+        let r = handle_instant(&engine, "count(count(m) by (cpu))", 2_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(r.data.result.len(), 1, "{:?}", r.data.result);
@@ -3367,7 +3401,7 @@ mod tests {
         // sum without(mode) (m): groups drop `mode` (and __name__), keep cpu →
         // cpu0: 1+2=3, cpu1: 3+4=7.
         let engine = cpu_engine().await;
-        let r = handle_instant(&engine, "sum without(mode) (m)", 2_000_000_000)
+        let r = handle_instant(&engine, "sum without(mode) (m)", 2_000_000_000, i64::MAX)
             .await
             .unwrap();
         let mut got: Vec<(String, String)> = r
@@ -3385,7 +3419,7 @@ mod tests {
     async fn test_instant_clamp_min_floors_values() {
         // RAM Used panel uses clamp_min(…, 0); here clamp_min(m, 2) floors at 2.
         let engine = cpu_engine().await;
-        let r = handle_instant(&engine, "clamp_min(m, 2)", 2_000_000_000).await.unwrap();
+        let r = handle_instant(&engine, "clamp_min(m, 2)", 2_000_000_000, i64::MAX).await.unwrap();
         let mut vals: Vec<&str> = r.data.result.iter().map(|s| s.value.1.as_str()).collect();
         vals.sort_unstable();
         assert_eq!(vals, ["2", "2", "3", "4"]); // 1→2, 2→2, 3,4 unchanged
@@ -3433,7 +3467,7 @@ mod tests {
         // (over the [T-5m, T] window) instead of erroring "aggregate inner must
         // be a vector selector".
         let engine = counter_engine().await;
-        let resp = handle_instant(&engine, "avg(rate(http_total[5m]))", 3_000_000_000)
+        let resp = handle_instant(&engine, "avg(rate(http_total[5m]))", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(
@@ -3443,7 +3477,7 @@ mod tests {
             resp.data.result
         );
         // bare instant rate is also accepted (not just inside an aggregate).
-        let bare = handle_instant(&engine, "rate(http_total[5m])", 3_000_000_000)
+        let bare = handle_instant(&engine, "rate(http_total[5m])", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(bare.data.result.len(), 1, "one rate series: {:?}", bare.data.result);
@@ -3611,7 +3645,7 @@ mod tests {
         // The two differ sharply, proving `rate` is NOT irate.
         let engine = bursty_counter_engine().await;
 
-        let windowed = handle_instant(&engine, "rate(http_total[5m])", 5_000_000_000)
+        let windowed = handle_instant(&engine, "rate(http_total[5m])", 5_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(windowed.data.result.len(), 1, "{:?}", windowed.data.result);
@@ -3623,7 +3657,7 @@ mod tests {
 
         // The latest inter-sample slope (irate) at t=5s is 0/s — distinct from the
         // windowed 2/s, confirming the new semantics are windowed, not irate.
-        let irate = handle_instant(&engine, "irate(http_total[5m])", 5_000_000_000)
+        let irate = handle_instant(&engine, "irate(http_total[5m])", 5_000_000_000, i64::MAX)
             .await
             .unwrap();
         let iv: f64 = irate.data.result[0].value.1.parse().unwrap();
@@ -3849,7 +3883,7 @@ mod tests {
         };
         let engine = crate::querier::QueryEngine::new(&opts).await.unwrap();
 
-        let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000)
+        let resp = handle_instant(&engine, "http_server_requests_bytes", 2_000_000_000, i64::MAX)
             .await
             .unwrap();
         // Two distinct series (200 vs 500) — not collapsed into one.
@@ -4149,7 +4183,7 @@ mod tests {
         let Expr::Aggregate(agg) = &expr else {
             panic!("expected an aggregate expr");
         };
-        let df = lower_aggregate_instant(&engine, agg, 2_000_000_000)
+        let df = lower_aggregate_instant(&engine, agg, 2_000_000_000, i64::MAX)
             .await
             .unwrap();
         let plan = format!("{}", df.logical_plan().display_indent());
@@ -4168,6 +4202,7 @@ mod tests {
             &engine,
             "sum by (cpu) (sum without (mode) (m))",
             2_000_000_000,
+            i64::MAX,
         )
         .await
         .unwrap();
@@ -4747,12 +4782,12 @@ mod tests {
     #[tokio::test]
     async fn test_instant_scalar_mul_and_unary_minus() {
         let engine = counter_engine().await;
-        let resp = handle_instant(&engine, "http_total * 2", 3_000_000_000)
+        let resp = handle_instant(&engine, "http_total * 2", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(resp.data.result.len(), 1);
         assert_eq!(resp.data.result[0].value.1, "120");
-        let neg = handle_instant(&engine, "- http_total", 3_000_000_000)
+        let neg = handle_instant(&engine, "- http_total", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(neg.data.result[0].value.1, "-60");
@@ -4761,7 +4796,7 @@ mod tests {
     #[tokio::test]
     async fn test_instant_vector_vector_self_ratio() {
         let engine = counter_engine().await;
-        let resp = handle_instant(&engine, "http_total / http_total", 3_000_000_000)
+        let resp = handle_instant(&engine, "http_total / http_total", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(resp.data.result.len(), 1);
@@ -4772,21 +4807,21 @@ mod tests {
     #[tokio::test]
     async fn test_instant_comparison_filters_and_bool() {
         let engine = counter_engine().await;
-        let none = handle_instant(&engine, "http_total > 100", 3_000_000_000)
+        let none = handle_instant(&engine, "http_total > 100", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert!(
             none.data.result.is_empty(),
             "60 > 100 is false → filtered out"
         );
-        let some = handle_instant(&engine, "http_total > 50", 3_000_000_000)
+        let some = handle_instant(&engine, "http_total > 50", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(
             some.data.result[0].value.1, "60",
             "kept value is the LHS sample"
         );
-        let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000)
+        let b = handle_instant(&engine, "http_total > bool 100", 3_000_000_000, i64::MAX)
             .await
             .unwrap();
         assert_eq!(b.data.result[0].value.1, "0", "bool comparison → 0/1");
@@ -4940,7 +4975,7 @@ mod tests {
         let engine = high_cardinality_engine().await;
         let at = HC_POINTS * 1_000_000_000;
 
-        let by = handle_instant(&engine, "sum by (cpu) (m)", at).await.unwrap();
+        let by = handle_instant(&engine, "sum by (cpu) (m)", at, i64::MAX).await.unwrap();
         assert_eq!(
             by.data.result.len(),
             HC_CARDINALITY as usize,
@@ -4962,7 +4997,7 @@ mod tests {
         assert_eq!(got, (0..HC_CARDINALITY).collect::<Vec<_>>(), "all cpus present, no dupes");
 
         // `without(mode)` (mode constant) yields the same per-cpu cardinality.
-        let without = handle_instant(&engine, "sum without(mode) (m)", at).await.unwrap();
+        let without = handle_instant(&engine, "sum without(mode) (m)", at, i64::MAX).await.unwrap();
         assert_eq!(without.data.result.len(), HC_CARDINALITY as usize);
         assert!(
             without.data.result.iter().all(|s| !s.metric.contains_key("mode")),
@@ -4970,7 +5005,7 @@ mod tests {
         );
 
         // Grand total `sum(m)` collapses to one series = Σ cpu indices.
-        let total = handle_instant(&engine, "sum(m)", at).await.unwrap();
+        let total = handle_instant(&engine, "sum(m)", at, i64::MAX).await.unwrap();
         assert_eq!(total.data.result.len(), 1, "grand total is one series");
         let expected: f64 = (0..HC_CARDINALITY).map(|c| c as f64).sum();
         assert_eq!(total.data.result[0].value.1, format!("{expected}"));
@@ -5439,7 +5474,7 @@ mod tests {
         let range = parser::parse("sum(rate(g[3d]))").unwrap();
         let w = resolve_metric_windows(&engine, -DAY_NS, 2 * DAY_NS, 3 * DAY_NS, op_capability(&range));
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
-        let resp = handle_instant(&engine, "sum(rate(g[3d]))", 2 * DAY_NS).await;
+        let resp = handle_instant(&engine, "sum(rate(g[3d]))", 2 * DAY_NS, i64::MAX).await;
         assert!(resp.is_ok(), "instant rate over a sealed window must route + evaluate");
     }
 
@@ -5450,7 +5485,7 @@ mod tests {
         // `double_value`=20 a recompute would see. The live tail sample is 5, so
         // the overall max equals the raw max (99) — peak preserved (FR7).
         let engine = engine_with_rich_5m_tier().await;
-        let resp = handle_instant(&engine, "max_over_time(g[3d])", 2 * DAY_NS)
+        let resp = handle_instant(&engine, "max_over_time(g[3d])", 2 * DAY_NS, i64::MAX)
             .await
             .unwrap();
         let v = instant_value(&resp);
@@ -5468,9 +5503,47 @@ mod tests {
         let engine = engine_with_rich_5m_tier().await;
         let bare = parser::parse("g").unwrap();
         assert_eq!(op_capability(&bare), Capability::None);
-        let resp = handle_instant(&engine, "g", 2 * DAY_NS).await.unwrap();
+        let resp = handle_instant(&engine, "g", 2 * DAY_NS, i64::MAX).await.unwrap();
         let v = instant_value(&resp);
         assert!((v - 5.0).abs() < 1e-6, "bare selector reads raw latest = 5, got {v}");
+    }
+
+    #[test]
+    fn test_instant_anchor() {
+        // The sentinel i64::MAX ("latest") resolves to wall-clock now; a finite
+        // explicit time passes through unchanged.
+        assert_eq!(instant_anchor(i64::MAX, 1000), 1000);
+        assert_eq!(instant_anchor(500, 1000), 500);
+    }
+
+    #[tokio::test]
+    async fn test_instant_range_fn_with_omitted_time_anchors_to_now() {
+        // REGRESSION (Sol↔Mimir parity): an omitted `time` arrives as i64::MAX.
+        // A range-function instant builds a `[T-range, T]` window — with T=i64::MAX
+        // that lands in the year 2262 (past all data) → empty. Anchoring T to a real
+        // `now_ns` puts the window over real samples. The rich fixture's newest raw
+        // sample is the live tail value 5 at DAY+1m; with now=DAY+1m, `m[5m]` covers
+        // it → non-empty value 5. The old code returned empty here.
+        let engine = engine_with_rich_5m_tier().await;
+        let now = DAY_NS + 60_000_000_000; // the live tail sample's timestamp
+        // max_over_time over the anchored 5m window.
+        let resp = handle_instant(&engine, "max_over_time(g[5m])", i64::MAX, now)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "omitted-time must be non-empty: {:?}", resp.data.result);
+        let v = instant_value(&resp);
+        assert!((v - 5.0).abs() < 1e-6, "max over [now-5m, now] is the tail sample 5, got {v}");
+        // rate over the anchored window must route + evaluate (it lands on real data,
+        // not the year 2262); the fixture has a single sample in this 5m window so the
+        // slope is empty — the point is that it no longer scans an empty future range.
+        let rate = handle_instant(&engine, "rate(g[5m])", i64::MAX, now).await;
+        assert!(rate.is_ok(), "omitted-time rate must route + evaluate over real data");
+        // Sanity: with the un-anchored sentinel (now=i64::MAX), the window is in 2262
+        // and the result is empty — the very regression the anchor fixes.
+        let empty = handle_instant(&engine, "max_over_time(g[5m])", i64::MAX, i64::MAX)
+            .await
+            .unwrap();
+        assert!(empty.data.result.is_empty(), "sentinel-now window is past all data → empty");
     }
 
     #[test]

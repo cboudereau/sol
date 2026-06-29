@@ -129,7 +129,18 @@ async fn prom_instant(
 ) -> Result<warp::reply::Response, Infallible> {
     let t = std::time::Instant::now();
     let time_ns = parse_time_ns(&params.time);
-    let r = prometheus::handle_instant(&engine, &params.query, time_ns).await;
+    // Anchor for an omitted `time` (parse_time_ns → i64::MAX = "latest"): wall-clock
+    // now in unix ns, captured at the boundary so the core fns stay clock-free and
+    // testable. A range-function instant builds a `[T-range, T]` window, which would
+    // land in the year 2262 (empty) if T stayed i64::MAX — see `instant_anchor`.
+    let now_ns = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    )
+    .unwrap_or(i64::MAX);
+    let r = prometheus::handle_instant(&engine, &params.query, time_ns, now_ns).await;
     rec("prometheus", "metrics", t);
     match r {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
