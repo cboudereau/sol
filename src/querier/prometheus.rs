@@ -868,25 +868,32 @@ async fn lower_aggregate_instant(
 
     // Range-function inner (`avg(rate(m[5m]))`, common on gauge panels): evaluate
     // `<agg>(range)` over the [T-range, T] window via the resolver-derived source
-    // (FR4), then take the value at T (latest per group) — the canonical frame
-    // collapses to `[prom_group_key, v]`. The resolver windows are unioned at the
-    // leaf base (in `lower_instant_aggregate_range`) so a sealed/live straddle
-    // aggregates together rather than dropping the sealed window.
+    // (FR4). `lower_instant_aggregate_range` collapses each inner series to its
+    // single value at the anchor FIRST, then aggregates across series — so the
+    // result is already the canonical `[prom_group_key, v]` (no per-series time, no
+    // re-pick needed). The resolver windows are unioned at the leaf base so a
+    // sealed/live straddle aggregates together rather than dropping the sealed window.
     let range = matrix_range_ns(agg.expr.as_ref()).ok_or_else(|| {
         to_err("instant aggregate inner must be a selector or a range function (v1)".to_string())
     })?;
     let windows = instant_range_windows(engine, agg.expr.as_ref(), time_ns, now_ns)?;
-    let ranged = lower_instant_aggregate_range(engine, agg, &windows, range).await?;
-    super::plan::frame::latest_per_series(ranged, vec![col("prom_group_key")], "time_unix_nano")
+    lower_instant_aggregate_range(engine, agg, &windows, range).await
 }
 
 /// Lower an instant `<agg>(rate|*_over_time(m[w]))` to the canonical aggregate
-/// frame `[prom_group_key, time_unix_nano, v]` over the resolver `windows` (FR4).
-/// Mirrors [`lower_aggregate_range`] but builds the leaf over the unioned windows
-/// (via [`lower_instant_leaf`]) so the aggregated instant value spans the
-/// sealed/live boundary. Nested aggregates over a range function recurse the same
-/// way. The inner must be a range function (the selector case is handled by the
-/// caller's leaf path); other inners are rejected by [`lower_instant_leaf`].
+/// frame `[prom_group_key, v]` over the resolver `windows` (FR4). Mirrors
+/// [`lower_aggregate_range`] but builds the leaf over the unioned windows (via
+/// [`lower_instant_leaf`]) so the aggregated instant value spans the sealed/live
+/// boundary, AND **collapses each inner series to its single value at the anchor
+/// before aggregating** — `sum(rate(m[w]))` at instant T = Σ over series of (that
+/// series' windowed rate at T). The windowed leaf frame carries one row per sample
+/// timestamp; series scraped at offset instants have their latest point at
+/// different timestamps, so grouping by `(key, time)` and then picking the global
+/// latest timestamp per group would silently drop every series whose last sample
+/// isn't on the max timestamp (Sol↔Mimir parity bug). Reducing to latest-per-series
+/// FIRST (keyed by series identity, no time in the cross-series grouping) makes all
+/// series contribute. Nested aggregates recurse — each level returns a collapsed
+/// `[prom_group_key, v]`, so the outer groups by the re-projected key with no time.
 async fn lower_instant_aggregate_range(
     engine: &super::QueryEngine,
     agg: &AggregateExpr,
@@ -897,6 +904,8 @@ async fn lower_instant_aggregate_range(
     let op = agg_name(agg.op).map_err(to_err)?;
     let grouping = AggGrouping::from(&agg.modifier);
     let inner = match agg.expr.as_ref() {
+        // Nested aggregate inner: the recursion already collapsed it to one row per
+        // `prom_group_key` (no time) — use it directly.
         Expr::Aggregate(inner_agg) => {
             Box::pin(lower_instant_aggregate_range(engine, inner_agg, windows, range_ns)).await?
         }
@@ -906,12 +915,26 @@ async fn lower_instant_aggregate_range(
             };
             Box::pin(lower_instant_aggregate_range(engine, inner_agg, windows, range_ns)).await?
         }
-        leaf => lower_instant_leaf(engine, leaf, windows, range_ns).await?,
+        // Leaf range-function inner (`rate`/`*_over_time`): the windowed frame carries
+        // one row per (series, sample-time). Collapse each series to its value at the
+        // anchor (latest sample per series identity) so every series — even those
+        // whose last sample lands on an earlier timestamp — contributes to the
+        // cross-series aggregate.
+        leaf => {
+            let frame = lower_instant_leaf(engine, leaf, windows, range_ns).await?;
+            super::plan::frame::latest_per_series(
+                frame,
+                vec![col("service_name"), prom_series_key_expr()],
+                "time_unix_nano",
+            )?
+        }
     };
     let inner = rename_inner_group_key(inner)?;
     let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
     let v = agg_value_expr(op, col("v")).alias("v");
-    Ok(inner.aggregate(vec![key, col("time_unix_nano")], vec![v])?)
+    // No `time_unix_nano` in the grouping: the inner is already one row per series
+    // at the anchor, so the cross-series aggregate is a single value per group.
+    Ok(inner.aggregate(vec![key], vec![v])?)
 }
 
 /// The inner aggregate of `expr`, unwrapping parens (`Some` only if the inner is
@@ -5687,6 +5710,203 @@ mod tests {
         assert!(
             (iv - rv).abs() < 1e-6,
             "instant increase ({iv}) must equal the range increase ({rv})"
+        );
+    }
+
+    /// Three series (svc=a/b/c) of `m`, each a monotonic counter sampled every 15s
+    /// over ~10m but **staggered** by 0/5/10s so their last samples land on DIFFERENT
+    /// timestamps (a→600s, b→605s, c→610s). Distinct per-step increments (100/200/300)
+    /// give distinct per-series rates, so a dropped series visibly changes any
+    /// cross-series aggregate. All on the active (unsealed) day → one raw window.
+    async fn offset_multiseries_engine() -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let n = 41usize; // 0..40 → 10m at 15s, per series
+        let mut svc: Vec<&str> = Vec::new();
+        let mut times: Vec<i64> = Vec::new();
+        let mut vals: Vec<f64> = Vec::new();
+        for (s, offset_s, inc) in [("a", 0i64, 100.0), ("b", 5, 200.0), ("c", 10, 300.0)] {
+            for k in 0..n {
+                svc.push(s);
+                times.push((k as i64) * 15_000_000_000 + offset_s * 1_000_000_000);
+                vals.push(inc * k as f64);
+            }
+        }
+        let total = svc.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(svc)),
+                Arc::new(StringArray::from(vec!["m"; total])),
+                Arc::new(TimestampNanosecondArray::from(times).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; total]),
+                Arc::new(Float64Array::from(vals)),
+                Arc::new(StringArray::from(vec!["m"; total])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("m.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    /// The single-series last-grid-point value of a range response (for a query that
+    /// collapses to one output series).
+    fn range_last_value(resp: &PromMatrixResponse) -> f64 {
+        assert_eq!(resp.data.result.len(), 1, "one range series: {:?}", resp.data.result);
+        resp.data.result[0]
+            .values
+            .last()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .expect("a numeric last range point")
+    }
+
+    // The global anchor across the staggered fixture (svc=c's last sample at 610s).
+    const OFFSET_ANCHOR_NS: i64 = 600_000_000_000 + 10_000_000_000;
+
+    #[tokio::test]
+    async fn test_instant_sum_rate_matches_range_multiseries() {
+        // THE failing case: `sum(rate(m[5m]))` instant must sum ALL three series.
+        // The bug grouped by (key, time) then picked the global-latest timestamp,
+        // dropping the series whose last sample wasn't on that max timestamp. Compare
+        // against the range path's last grid point at the anchor (verified reference).
+        let engine = offset_multiseries_engine().await;
+        let instant = handle_instant(&engine, "sum(rate(m[5m]))", i64::MAX, OFFSET_ANCHOR_NS)
+            .await
+            .unwrap();
+        let iv = instant_value(&instant);
+        // Range reference evaluated AT the anchor: start so the step grid's last
+        // point lands exactly on the anchor (610s − 2·5m = 10s ⇒ grid 10s,310s,610s).
+        let range = handle_range(&engine, "sum(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+            .await
+            .unwrap();
+        let rv = range_last_value(&range);
+        // Sanity: the sum must include all three series — far above any single one.
+        assert!(iv > 20.0, "sum must include all 3 staggered series, got {iv}");
+        assert!(
+            (iv - rv).abs() < 1e-6,
+            "instant sum(rate) ({iv}) must equal range sum(rate) at the anchor ({rv})"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instant_sum_rate_by_label_matches_range() {
+        // `sum by(svc)(rate(m[5m]))`: one output series per svc, each must equal the
+        // range path's per-svc last grid point. (Here `service_name` is the grouping
+        // label; the query groups on it.)
+        let engine = offset_multiseries_engine().await;
+        let instant =
+            handle_instant(&engine, "sum by(service_name)(rate(m[5m]))", i64::MAX, OFFSET_ANCHOR_NS)
+                .await
+                .unwrap();
+        let range =
+            handle_range(&engine, "sum by(service_name)(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+                .await
+                .unwrap();
+        assert_eq!(instant.data.result.len(), 3, "three svc groups: {:?}", instant.data.result);
+        // Map each path's results by svc label, then compare per group.
+        let by_svc = |label_get: &dyn Fn(usize) -> Option<String>, val: &dyn Fn(usize) -> f64, len: usize| {
+            let mut m = std::collections::BTreeMap::new();
+            for i in 0..len {
+                if let Some(s) = label_get(i) {
+                    m.insert(s, val(i));
+                }
+            }
+            m
+        };
+        let iv = by_svc(
+            &|i| instant.data.result[i].metric.get("service_name").cloned(),
+            &|i| instant.data.result[i].value.1.parse::<f64>().unwrap(),
+            instant.data.result.len(),
+        );
+        let rv = by_svc(
+            &|i| range.data.result[i].metric.get("service_name").cloned(),
+            &|i| range.data.result[i].values.last().unwrap().1.parse::<f64>().unwrap(),
+            range.data.result.len(),
+        );
+        for (svc, v) in &iv {
+            let r = rv.get(svc).copied().unwrap_or(f64::NAN);
+            assert!(
+                (v - r).abs() < 1e-6,
+                "svc {svc}: instant {v} must equal range {r}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_instant_avg_over_time_aggregate_matches_range() {
+        // `avg(avg_over_time(m[5m]))` over the three staggered series: every series
+        // must contribute its anchor-window mean. Window [310s, 610s] at the anchor:
+        //   svc=a (inc 100): samples 315..600 → mean 3050
+        //   svc=b (inc 200): samples 320..605 → mean 6100
+        //   svc=c (inc 300): samples 310..610 → mean 9000
+        // avg across the three = (3050+6100+9000)/3 = 6050.
+        // (We assert the analytic value rather than range@T here: the range path
+        // resamples each series to the step grid by carrying its *last sample's*
+        // window value forward, so at a sub-step-offset anchor it evaluates svc=a/b
+        // over a slightly different window than the exact-anchor instant — a query-type
+        // difference, not a bug. The analytic value proves all 3 series contribute and
+        // the instant value is exact, which is the regression this matrix locks down.)
+        let engine = offset_multiseries_engine().await;
+        let instant =
+            handle_instant(&engine, "avg(avg_over_time(m[5m]))", i64::MAX, OFFSET_ANCHOR_NS)
+                .await
+                .unwrap();
+        let iv = instant_value(&instant);
+        assert!(
+            (iv - 6050.0).abs() < 1e-6,
+            "instant avg(avg_over_time) must be (3050+6100+9000)/3 = 6050 (all 3 series), got {iv}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instant_max_over_time_aggregate_matches_range() {
+        // `max(max_over_time(m[5m]))` multi-series: instant == range@anchor. The max
+        // is dominated by svc=c (largest values); a dropped series would still need
+        // the right global max — compare against the range reference.
+        let engine = offset_multiseries_engine().await;
+        let instant =
+            handle_instant(&engine, "max(max_over_time(m[5m]))", i64::MAX, OFFSET_ANCHOR_NS)
+                .await
+                .unwrap();
+        let iv = instant_value(&instant);
+        let range = handle_range(&engine, "max(max_over_time(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+            .await
+            .unwrap();
+        let rv = range_last_value(&range);
+        assert!(
+            (iv - rv).abs() < 1e-6,
+            "instant max(max_over_time) ({iv}) must equal range ({rv})"
         );
     }
 
