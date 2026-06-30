@@ -107,6 +107,7 @@ pub async fn build_series(
     engine: &super::QueryEngine,
     matcher: Option<&str>,
     time_range: Option<(i64, i64)>,
+    now_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let project = |df: datafusion::dataframe::DataFrame| -> crate::Result<_> {
@@ -121,7 +122,7 @@ pub async fn build_series(
     // the rollup preserves the full series set, so the union equals the raw-only
     // enumeration. Without an explicit range we cannot split sealed/live, so we
     // keep the raw `metrics` scan (the active day lives only in raw) — conservative.
-    let dfs = metadata_sources(engine, time_range).await?;
+    let dfs = metadata_sources(engine, time_range, now_ns).await?;
     let mut acc: Option<datafusion::dataframe::DataFrame> = None;
     for df in dfs {
         let part = project(df)?;
@@ -143,11 +144,12 @@ pub async fn build_series(
 async fn metadata_sources(
     engine: &super::QueryEngine,
     time_range: Option<(i64, i64)>,
+    now_ns: i64,
 ) -> crate::Result<Vec<datafusion::dataframe::DataFrame>> {
     let Some((start_ns, end_ns)) = time_range else {
         return Ok(vec![engine.table("metrics").await?]);
     };
-    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last);
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last, now_ns);
     let mut out = Vec::with_capacity(windows.len());
     for (table, lo, hi) in windows {
         out.push(engine.table(&table).await?.filter(prom_time_between(lo, hi))?);
@@ -716,7 +718,10 @@ async fn latest_selected_df(
         .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
     // Bare selectors evaluate the latest sample only: no lookback window
     // (resolution 0) and capability None ⇒ a single raw window naturally.
-    let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::None);
+    // Capability::None short-circuits to a single raw window before the
+    // wall-clock sealed boundary is used, so the `now_ns` arg is value-irrelevant
+    // here; pass `time_ns` (in scope) rather than widen this fn's signature.
+    let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::None, time_ns);
     let mut base: Option<datafusion::dataframe::DataFrame> = None;
     for (table, _lo, hi) in windows {
         let part = selector_base_df(engine, vs, name, &table, hi).await?;
@@ -826,7 +831,7 @@ fn instant_range_windows(
     // NOT extend (it would pull older rows into its windowed aggregate).
     let lag_margin = if is_lag_range_op(expr) { range } else { 0 };
     let start = anchor.saturating_sub(range).saturating_sub(lag_margin);
-    Ok(resolve_metric_windows(engine, start, anchor, range, op_capability(expr)))
+    Ok(resolve_metric_windows(engine, start, anchor, range, op_capability(expr), now_ns))
 }
 
 /// Lower an aggregate at an **instant** to the canonical aggregate frame
@@ -1349,6 +1354,7 @@ pub async fn build_label_values(
     start_ns: i64,
     end_ns: i64,
     matcher: Option<&str>,
+    now_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::functions::expr_fn::concat;
     use datafusion::prelude::{col, lit};
@@ -1360,7 +1366,7 @@ pub async fn build_label_values(
     // preserves the full label/series set, so the UNION-distinct equals the
     // raw-only enumeration. With no registered tier / no sealed portion the
     // resolver returns a single raw `metrics` window — unchanged behaviour.
-    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last);
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last, now_ns);
     // One scan of a resolver window `(table, lo, hi)`: scope to the window's time
     // range and the `match[]` selector — a `$host` variable query like
     // `label_values(up{service_name="X"}, host)` must restrict `host` to that
@@ -1421,8 +1427,9 @@ pub async fn handle_label_values(
     start_ns: i64,
     end_ns: i64,
     matcher: Option<&str>,
+    now_ns: i64,
 ) -> crate::Result<serde_json::Value> {
-    let df = build_label_values(engine, label, start_ns, end_ns, matcher).await?;
+    let df = build_label_values(engine, label, start_ns, end_ns, matcher, now_ns).await?;
     let values = string_column_df(engine, df).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
@@ -1447,12 +1454,13 @@ pub async fn handle_series(
     engine: &super::QueryEngine,
     matcher: Option<&str>,
     time_range: Option<(i64, i64)>,
+    now_ns: i64,
 ) -> crate::Result<serde_json::Value> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let df = build_series(engine, matcher, time_range).await?;
+    let df = build_series(engine, matcher, time_range, now_ns).await?;
     let batches = engine.collect(df).await?;
     let mut series: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
@@ -1695,6 +1703,7 @@ async fn handle_hist_quantile_range(
     start_ns: i64,
     end_ns: i64,
     step_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
@@ -1702,7 +1711,7 @@ async fn handle_hist_quantile_range(
 
     use datafusion::prelude::col;
     // Sealed windows from the rollup tier (coarse step), trailing day from raw.
-    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns).await?;
+    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns, now_ns).await?;
     let mut proj = vec![
         col("time_unix_nano"),
         col("bucket_counts"),
@@ -1849,6 +1858,7 @@ async fn handle_bucket_heatmap(
     start_ns: i64,
     end_ns: i64,
     step_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
@@ -1856,7 +1866,7 @@ async fn handle_bucket_heatmap(
 
     use datafusion::prelude::col;
     // Sealed windows from the rollup tier (coarse step), trailing day from raw.
-    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns)
+    let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns, now_ns)
         .await?
         .filter(col("bucket_counts").is_not_null())?;
     let mut proj = vec![
@@ -2067,12 +2077,20 @@ const SEALED_OFFSET_NS: i64 = super::units::DurationNs::DAY.ns();
 /// the trailing live part `(sealed_ns, end_ns]` — which no tier covers — reads
 /// raw `metrics`. Every rollup file now carries all capabilities (clean
 /// cutover), so capability only gates None-vs-not, not which tier is eligible.
+///
+/// The sealed/live boundary is **wall-clock-relative**: `sealed_ns = now_ns -
+/// SEALED_OFFSET_NS`, where `now_ns` is real wall-clock now captured at the
+/// request boundary (the core fns stay clock-free + testable). It is *not*
+/// relative to `end_ns` — a historical dashboard view (`end_ns` in the past)
+/// over a long-sealed day must still route that day to the tier, not read it
+/// raw just because it sits in the last day before the query's own `end`.
 pub fn resolve_metric_windows(
     engine: &super::QueryEngine,
     start_ns: i64,
     end_ns: i64,
     resolution_ns: i64,
     capability: Capability,
+    now_ns: i64,
 ) -> Vec<MetricWindow> {
     let raw_all = || vec![("metrics".to_string(), start_ns, end_ns)];
     if capability == Capability::None {
@@ -2086,7 +2104,7 @@ pub fn resolve_metric_windows(
         super::rollup::RollupTier::Raw => return raw_all(),
         tier => tier,
     };
-    let sealed_ns = end_ns - SEALED_OFFSET_NS;
+    let sealed_ns = now_ns - SEALED_OFFSET_NS;
     // No sealed part falls in range — the whole span is live → raw.
     if start_ns > sealed_ns {
         return raw_all();
@@ -2135,8 +2153,9 @@ async fn hist_source(
     start_ns: i64,
     end_ns: i64,
     step_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<datafusion::prelude::DataFrame> {
-    let windows = resolve_metric_windows(engine, start_ns, end_ns, step_ns, Capability::Last);
+    let windows = resolve_metric_windows(engine, start_ns, end_ns, step_ns, Capability::Last, now_ns);
     let mut df: Option<datafusion::prelude::DataFrame> = None;
     for (table, lo, hi) in windows {
         let scan = hist_scan(engine, &table, base, preds, lo, hi).await?;
@@ -2158,15 +2177,16 @@ pub async fn handle_range(
     start_ns: i64,
     end_ns: i64,
     step_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
     let parsed = parser::parse(query).map_err(to_err)?;
     // Classic-histogram queries are computed from OTLP array buckets:
     // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
     if let Some(spec) = detect_hist_quantile(&parsed) {
-        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns, step_ns).await;
+        return handle_hist_quantile_range(engine, &spec, start_ns, end_ns, step_ns, now_ns).await;
     }
     if let Some(spec) = detect_bucket_heatmap(&parsed) {
-        return handle_bucket_heatmap(engine, &spec, start_ns, end_ns, step_ns).await;
+        return handle_bucket_heatmap(engine, &spec, start_ns, end_ns, step_ns, now_ns).await;
     }
 
     // A top-level topk/bottomk: keep the top-N *series* after merge; evaluate the
@@ -2186,7 +2206,7 @@ pub async fn handle_range(
     // ordered, time-disjoint `(table, lo, hi)` windows — coarsest eligible tier for
     // the sealed span, raw `metrics` for the trailing ≤1-day (unsealed) window.
     let cap = op_capability(eval_expr);
-    let resolved = resolve_metric_windows(engine, start_ns, end_ns, step_ns, cap);
+    let resolved = resolve_metric_windows(engine, start_ns, end_ns, step_ns, cap, now_ns);
     // Within each resolver window, keep the frontend's per-day shard split (for
     // the historical-shard cache); every shard inherits its window's table.
     let windows: Vec<(String, i64, i64)> = resolved
@@ -2209,7 +2229,7 @@ pub async fn handle_range(
 
     let mut merged: RangeSeries = BTreeMap::new();
     for (table, s, e) in windows {
-        match eval_range_window(engine, eval_expr, s, e, &table, step_ns).await? {
+        match eval_range_window(engine, eval_expr, s, e, &table, step_ns, now_ns).await? {
             RangeVal::Vector(part) => {
                 for (key, (metric, points)) in part {
                     merged
@@ -2438,7 +2458,7 @@ async fn handle_histogram(
     // resolution ever > 0) unions cleanly. Anchor an omitted `time` (i64::MAX) to
     // now so the latest-sample filter and the response timestamp are sensible.
     let anchor = instant_anchor(time_ns, now_ns);
-    let windows = resolve_metric_windows(engine, anchor, anchor, 0, Capability::Last);
+    let windows = resolve_metric_windows(engine, anchor, anchor, 0, Capability::Last, now_ns);
     let mut base: Option<datafusion::dataframe::DataFrame> = None;
     for (table, _lo, hi) in windows {
         let part = hist_instant_scan(engine, vs, name, &table, hi).await?;
@@ -2837,12 +2857,13 @@ async fn eval_range_window(
     e: i64,
     table: &str,
     step_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<RangeVal> {
     match expr {
         Expr::NumberLiteral(n) => Ok(RangeVal::Scalar(n.val)),
-        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table, step_ns)).await,
+        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table, step_ns, now_ns)).await,
         Expr::Unary(u) => {
-            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table, step_ns)).await?;
+            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table, step_ns, now_ns)).await?;
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(-x),
                 RangeVal::Vector(mut m) => {
@@ -2856,8 +2877,8 @@ async fn eval_range_window(
             })
         }
         Expr::Binary(b) => {
-            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table, step_ns)).await?;
-            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table, step_ns)).await?;
+            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table, step_ns, now_ns)).await?;
+            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table, step_ns, now_ns)).await?;
             combine_range(b.op, l, r, &b.modifier).map_err(to_err)
         }
         // `scalar(v)` folds to a constant over the window (e.g. a CPU count as a
@@ -2887,7 +2908,7 @@ async fn eval_range_window(
                 .args
                 .get(1)
                 .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
-            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table, step_ns)).await?;
+            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table, step_ns, now_ns)).await?;
             let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e, e)).await?);
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(clamp_value(is_min, x, bound)),
@@ -2920,7 +2941,7 @@ async fn eval_range_window(
             let op = agg_name(agg.op).map_err(to_err)?;
             let grouping = AggGrouping::from(&agg.modifier);
             let inner =
-                Box::pin(eval_range_window(engine, agg.expr.as_ref(), s, e, table, step_ns)).await?;
+                Box::pin(eval_range_window(engine, agg.expr.as_ref(), s, e, table, step_ns, now_ns)).await?;
             let inner = match inner {
                 // A scalar inner has no series to reduce — pass it through.
                 RangeVal::Scalar(x) => return Ok(RangeVal::Scalar(x)),
@@ -2932,10 +2953,10 @@ async fn eval_range_window(
         }
         _ => {
             if let Some(spec) = detect_hist_quantile(expr) {
-                let resp = handle_hist_quantile_range(engine, &spec, s, e, step_ns).await?;
+                let resp = handle_hist_quantile_range(engine, &spec, s, e, step_ns, now_ns).await?;
                 Ok(RangeVal::Vector(matrix_to_series(resp)))
             } else if let Some(spec) = detect_bucket_heatmap(expr) {
-                let resp = handle_bucket_heatmap(engine, &spec, s, e, step_ns).await?;
+                let resp = handle_bucket_heatmap(engine, &spec, s, e, step_ns, now_ns).await?;
                 Ok(RangeVal::Vector(matrix_to_series(resp)))
             } else if let Some((n, is_topk, inner)) = topk_parts(expr) {
                 // topk/bottomk is relational: lower the inner to a DataFrame and
@@ -3345,13 +3366,14 @@ mod tests {
             0,
             i64::MAX,
             Some(r#"up{service_name="sol-collector"}"#),
+            i64::MAX,
         )
         .await
         .unwrap();
         assert_eq!(scoped["data"], serde_json::json!(["a", "b"]), "scoped: {scoped}");
 
         // No selector → every host.
-        let all = handle_label_values(&engine, "host", 0, i64::MAX, None).await.unwrap();
+        let all = handle_label_values(&engine, "host", 0, i64::MAX, None, i64::MAX).await.unwrap();
         assert_eq!(all["data"], serde_json::json!(["a", "b", "c"]), "unscoped: {all}");
     }
 
@@ -3478,7 +3500,7 @@ mod tests {
     async fn test_range_without_aggregation_and_scalar_divisor() {
         // CPU Basic shape: sum without(mode) (m) over a range → per-cpu series.
         let engine = cpu_engine().await;
-        let r = handle_range(&engine, "sum without(mode) (m)", 1_000_000_000, 2_000_000_000, 1_000_000_000)
+        let r = handle_range(&engine, "sum without(mode) (m)", 1_000_000_000, 2_000_000_000, 1_000_000_000, 2_000_000_000)
             .await
             .unwrap();
         let mut cpus: Vec<&str> = r
@@ -3502,6 +3524,7 @@ mod tests {
             1_000_000_000,
             2_000_000_000,
             1_000_000_000,
+            2_000_000_000,
         )
         .await
         .unwrap();
@@ -3541,6 +3564,7 @@ mod tests {
             0,
             10_000_000_000,
             0,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -3608,7 +3632,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_executes_and_computes_values() {
         let engine = counter_engine().await;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0)
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0, 10_000_000_000)
             .await
             .unwrap();
         assert_eq!(resp.data.result_type, "matrix");
@@ -3798,6 +3822,7 @@ mod tests {
             0,
             120 * S,
             30 * S,
+            120 * S,
         )
         .await
         .unwrap();
@@ -3837,6 +3862,7 @@ mod tests {
             0,
             120 * S,
             30 * S,
+            120 * S,
         )
         .await
         .unwrap();
@@ -3966,7 +3992,7 @@ mod tests {
         // must equal the unsplit rate (split/merge preserves results — FR8).
         let engine = counter_engine().await;
         let two_days = 2 * 86_400_000_000_000i64;
-        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days, 0)
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, two_days, 0, two_days)
             .await
             .unwrap();
         assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
@@ -4057,7 +4083,7 @@ mod tests {
         assert!(engine.has_table("metrics_5m"), "tier registered");
 
         // 5-minute step over a 2-day range → splits per day AND selects the M5 tier.
-        let resp = handle_range(&engine, "sum by (sc) (rate(reqs[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "sum by (sc) (rate(reqs[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         assert_eq!(
@@ -4163,6 +4189,7 @@ mod tests {
             0,
             10_000_000_000,
             0,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -4208,6 +4235,7 @@ mod tests {
             0,
             10_000_000_000,
             0,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -4351,6 +4379,7 @@ mod tests {
             0,
             10_000_000_000,
             15,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -4456,6 +4485,7 @@ mod tests {
             0,
             2 * DAY_NS,
             M5,
+            2 * DAY_NS,
         )
         .await
         .unwrap();
@@ -4562,6 +4592,7 @@ mod tests {
             0,
             2 * DAY_NS,
             M5,
+            2 * DAY_NS,
         )
         .await
         .unwrap();
@@ -4660,6 +4691,7 @@ mod tests {
             0,
             10_000_000_000,
             15,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -4809,6 +4841,7 @@ mod tests {
             0,
             10_000_000_000,
             0,
+            10_000_000_000,
         )
         .await
         .unwrap();
@@ -4915,6 +4948,7 @@ mod tests {
             0,
             5_000_000_000,
             1_000_000_000,
+            5_000_000_000,
         )
         .await
         .unwrap();
@@ -5074,15 +5108,15 @@ mod tests {
         let step = 1_000_000_000i64;
 
         let t0 = Instant::now();
-        let agg = handle_range(&engine, "sum by (cpu) (m)", start, end, step).await.unwrap();
+        let agg = handle_range(&engine, "sum by (cpu) (m)", start, end, step, end).await.unwrap();
         let d_agg = t0.elapsed();
 
         let t1 = Instant::now();
-        let rate = handle_range(&engine, "sum(rate(m[5m]))", start, end, step).await.unwrap();
+        let rate = handle_range(&engine, "sum(rate(m[5m]))", start, end, step, end).await.unwrap();
         let d_rate = t1.elapsed();
 
         let t2 = Instant::now();
-        let raw = handle_range(&engine, "m", start, end, step).await.unwrap();
+        let raw = handle_range(&engine, "m", start, end, step, end).await.unwrap();
         let d_raw = t2.elapsed();
 
         eprintln!(
@@ -5200,7 +5234,8 @@ mod tests {
     async fn test_resolve_windows_none_is_all_raw() {
         let engine = engine_with_5m_tier().await;
         const DAY_NS: i64 = 86_400_000_000_000;
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, 300_000_000_000, Capability::None);
+        let w =
+            resolve_metric_windows(&engine, 0, 2 * DAY_NS, 300_000_000_000, Capability::None, 2 * DAY_NS);
         assert_eq!(w, vec![("metrics".to_string(), 0, 2 * DAY_NS)]);
     }
 
@@ -5213,7 +5248,8 @@ mod tests {
         let end = 2 * DAY_NS;
         let sealed = end - DAY_NS;
         // 2-day span, 5m resolution, non-None capability, metrics_5m present.
-        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax);
+        // `now_ns = end` reproduces the historical `end - 1day` boundary.
+        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax, end);
         assert_eq!(
             w,
             vec![
@@ -5234,7 +5270,7 @@ mod tests {
         const M5: i64 = 300_000_000_000;
         let end = 10 * SEALED_OFFSET_NS; // arbitrary; span below is < 1 day
         let start = end - SEALED_OFFSET_NS / 2; // half a day → fully live
-        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax);
+        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax, end);
         assert_eq!(w, vec![("metrics".to_string(), start, end)]);
         assert_disjoint_covering(&w, start, end);
     }
@@ -5246,8 +5282,66 @@ mod tests {
         const M1: i64 = 60_000_000_000;
         // 1m resolution: no tier resolution ≤ 1m → single raw window even for a
         // non-None capability.
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M1, Capability::SumCount);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M1, Capability::SumCount, 2 * DAY_NS);
         assert_eq!(w, vec![("metrics".to_string(), 0, 2 * DAY_NS)]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_windows_historical_end_uses_tier() {
+        // Regression (live Sol↔Mimir): a historical dashboard view whose `start`
+        // AND `end` are BOTH well in the past — over a day that sealed long ago.
+        // The sealed/live boundary is wall-clock-relative (`now - 1day`), NOT
+        // `end - 1day`, so the long-sealed span must route to `metrics_5m`. With
+        // the old `end - 1day` logic the last day before `end` looked "live" and
+        // the whole query went raw — the ~6× slowdown this fix removes.
+        let engine = engine_with_5m_tier().await;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+        let now_ns = 100 * DAY_NS; // wall-clock now
+        let start = now_ns - 50 * DAY_NS / 24; // now - 50h
+        let end = now_ns - 30 * DAY_NS / 24; // now - 30h (fully sealed: < now - 1d)
+        let w = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax, now_ns);
+        assert_eq!(
+            w,
+            vec![("metrics_5m".to_string(), start, end)],
+            "a fully-sealed historical span must route to the tier, not raw: {w:?}"
+        );
+        assert_disjoint_covering(&w, start, end);
+        // Sanity: the OLD `end - 1day` boundary would have made this all-raw,
+        // because `start (now-50h) > end - 1day (now-54h)`.
+        let old_sealed = end - DAY_NS;
+        assert!(start > old_sealed, "precondition: old end-relative logic went all-raw");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_windows_now_relative_boundary() {
+        // The sealed/live split is at `now_ns - 1day`, independent of `end_ns`:
+        // for the SAME `[start, end]`, two different `now_ns` give two different
+        // sealed boundaries (and so different tier/raw splits).
+        let engine = engine_with_5m_tier().await;
+        const DAY_NS: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+        let start = 0i64;
+        let end = 3 * DAY_NS;
+        // now == end: sealed boundary at end - 1day = 2*DAY_NS.
+        let w_a = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax, end);
+        assert_eq!(
+            w_a,
+            vec![
+                ("metrics_5m".to_string(), start, 2 * DAY_NS),
+                ("metrics".to_string(), 2 * DAY_NS + 1, end),
+            ],
+            "now == end → sealed at end - 1day: {w_a:?}"
+        );
+        // now far in the future: the whole span is sealed → single tier window.
+        let now_future = 10 * DAY_NS;
+        let w_b = resolve_metric_windows(&engine, start, end, M5, Capability::MinMax, now_future);
+        assert_eq!(
+            w_b,
+            vec![("metrics_5m".to_string(), start, end)],
+            "now ≫ end → whole span sealed, single tier window: {w_b:?}"
+        );
+        assert_ne!(w_a, w_b, "the split must depend on now_ns, not end_ns");
     }
 
     // --- Task 3: capability-aware value selection on a tier (FR7) ---
@@ -5385,7 +5479,7 @@ mod tests {
         // peak) is used — NOT the last-valued `double_value`=20 a recompute would
         // see — so the result equals the raw max (99). Proves FR7 + tier routing.
         let engine = engine_with_rich_5m_tier().await;
-        let resp = handle_range(&engine, "max(max_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "max(max_over_time(g[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         let v = first_point_value(&resp);
@@ -5401,9 +5495,9 @@ mod tests {
         // reads `value_min`=10 (the raw bucket min) — NOT value_max(99)/last(20).
         let engine = engine_with_rich_5m_tier().await;
         let cap = op_capability(&parser::parse("min_over_time(g[5m])").unwrap());
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap, 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
-        let resp = handle_range(&engine, "min(min_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "min(min_over_time(g[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         let v = first_point_value(&resp);
@@ -5419,9 +5513,9 @@ mod tests {
         // of the bucket samples (10+99+20) — NOT sum(last)=20.
         let engine = engine_with_rich_5m_tier().await;
         let cap = op_capability(&parser::parse("sum_over_time(g[5m])").unwrap());
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap, 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
-        let resp = handle_range(&engine, "sum(sum_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "sum(sum_over_time(g[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         let v = first_point_value(&resp);
@@ -5437,9 +5531,9 @@ mod tests {
         // sample count of the bucket — NOT a row count (1) of the single tier row.
         let engine = engine_with_rich_5m_tier().await;
         let cap = op_capability(&parser::parse("count_over_time(g[5m])").unwrap());
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, cap, 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
-        let resp = handle_range(&engine, "sum(count_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "sum(count_over_time(g[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         let v = first_point_value(&resp);
@@ -5454,7 +5548,7 @@ mod tests {
         // `avg_over_time(g[5m])` over the sealed tier = Σvalue_sum/Σvalue_count =
         // 129/3 = 43 — the raw bucket average — NOT avg(last)=20.
         let engine = engine_with_rich_5m_tier().await;
-        let resp = handle_range(&engine, "avg(avg_over_time(g[5m]))", 0, 2 * DAY_NS, M5)
+        let resp = handle_range(&engine, "avg(avg_over_time(g[5m]))", 0, 2 * DAY_NS, M5, 2 * DAY_NS)
             .await
             .unwrap();
         let v = first_point_value(&resp);
@@ -5469,7 +5563,7 @@ mod tests {
         // The existing rate routing stays green: a coarse-step rate over a sealed
         // window reads the tier (Capability::Last) — exercised end-to-end here.
         let engine = engine_with_rich_5m_tier().await;
-        let resp = handle_range(&engine, "rate(g[5m])", 0, 2 * DAY_NS, M5).await;
+        let resp = handle_range(&engine, "rate(g[5m])", 0, 2 * DAY_NS, M5, 2 * DAY_NS).await;
         // It must succeed (routing path intact) and yield a series from the tier.
         assert!(resp.is_ok(), "rate over a sealed window must route + evaluate");
     }
@@ -5481,10 +5575,10 @@ mod tests {
         let expr = parser::parse("rate(g[5m])/rate(g[5m])").unwrap();
         assert_eq!(op_capability(&expr), Capability::Last);
         let engine = engine_with_rich_5m_tier().await;
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, op_capability(&expr));
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, M5, op_capability(&expr), 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
         // And it evaluates (g/g = 1 on the overlapping series).
-        let resp = handle_range(&engine, "rate(g[5m])/rate(g[5m])", 0, 2 * DAY_NS, M5).await;
+        let resp = handle_range(&engine, "rate(g[5m])/rate(g[5m])", 0, 2 * DAY_NS, M5, 2 * DAY_NS).await;
         assert!(resp.is_ok(), "binary rate ratio must route + evaluate");
     }
 
@@ -5521,7 +5615,8 @@ mod tests {
         // the 5m tier. It must route + evaluate.
         let engine = engine_with_rich_5m_tier().await;
         let range = parser::parse("sum(rate(g[3d]))").unwrap();
-        let w = resolve_metric_windows(&engine, -DAY_NS, 2 * DAY_NS, 3 * DAY_NS, op_capability(&range));
+        let w =
+            resolve_metric_windows(&engine, -DAY_NS, 2 * DAY_NS, 3 * DAY_NS, op_capability(&range), 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
         let resp = handle_instant(&engine, "sum(rate(g[3d]))", 2 * DAY_NS, i64::MAX).await;
         assert!(resp.is_ok(), "instant rate over a sealed window must route + evaluate");
@@ -5670,7 +5765,7 @@ mod tests {
 
         // Range path as the reference: a range query over [0, T_last] at 5m step;
         // its last grid point (at T_last) is the verified-correct rate at T_last.
-        let range = handle_range(&engine, "rate(c[5m])", 0, t_last, M5)
+        let range = handle_range(&engine, "rate(c[5m])", 0, t_last, M5, t_last)
             .await
             .unwrap();
         assert_eq!(range.data.result.len(), 1, "one range series: {:?}", range.data.result);
@@ -5698,7 +5793,7 @@ mod tests {
             .unwrap();
         let iv = instant_value(&instant);
 
-        let range = handle_range(&engine, "increase(c[5m])", 0, t_last, M5)
+        let range = handle_range(&engine, "increase(c[5m])", 0, t_last, M5, t_last)
             .await
             .unwrap();
         let rv = range.data.result[0]
@@ -5807,7 +5902,7 @@ mod tests {
         let iv = instant_value(&instant);
         // Range reference evaluated AT the anchor: start so the step grid's last
         // point lands exactly on the anchor (610s − 2·5m = 10s ⇒ grid 10s,310s,610s).
-        let range = handle_range(&engine, "sum(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+        let range = handle_range(&engine, "sum(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5, OFFSET_ANCHOR_NS)
             .await
             .unwrap();
         let rv = range_last_value(&range);
@@ -5830,7 +5925,7 @@ mod tests {
                 .await
                 .unwrap();
         let range =
-            handle_range(&engine, "sum by(service_name)(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+            handle_range(&engine, "sum by(service_name)(rate(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5, OFFSET_ANCHOR_NS)
                 .await
                 .unwrap();
         assert_eq!(instant.data.result.len(), 3, "three svc groups: {:?}", instant.data.result);
@@ -5900,7 +5995,7 @@ mod tests {
                 .await
                 .unwrap();
         let iv = instant_value(&instant);
-        let range = handle_range(&engine, "max(max_over_time(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5)
+        let range = handle_range(&engine, "max(max_over_time(m[5m]))", OFFSET_ANCHOR_NS - 2 * M5, OFFSET_ANCHOR_NS, M5, OFFSET_ANCHOR_NS)
             .await
             .unwrap();
         let rv = range_last_value(&range);
@@ -5932,11 +6027,11 @@ mod tests {
         // raw-only enumeration (no-range fallback → unfiltered raw `metrics`).
         let engine = engine_with_rich_5m_tier().await;
         // Routed (explicit range): sealed day-0 → tier, trailing day-1 → raw.
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last, 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
-        let routed = handle_series(&engine, None, Some((0, 2 * DAY_NS))).await.unwrap();
+        let routed = handle_series(&engine, None, Some((0, 2 * DAY_NS)), 2 * DAY_NS).await.unwrap();
         // Raw-only baseline: no time range → unfiltered raw `metrics` scan.
-        let raw_only = handle_series(&engine, None, None).await.unwrap();
+        let raw_only = handle_series(&engine, None, None, 2 * DAY_NS).await.unwrap();
         assert_eq!(
             routed["data"], raw_only["data"],
             "tier-routed /series must equal raw-only: routed={routed} raw={raw_only}"
@@ -5955,16 +6050,16 @@ mod tests {
         // raw. The tier preserves the full name set, so the routed value set MUST
         // equal the raw-only enumeration.
         let engine = engine_with_rich_5m_tier().await;
-        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last);
+        let w = resolve_metric_windows(&engine, 0, 2 * DAY_NS, i64::MAX, Capability::Last, 2 * DAY_NS);
         assert_eq!(w.first().unwrap().0, "metrics_5m", "sealed window → tier: {w:?}");
         // Routed (explicit range).
-        let routed = handle_label_values(&engine, "__name__", 0, 2 * DAY_NS, None).await.unwrap();
+        let routed = handle_label_values(&engine, "__name__", 0, 2 * DAY_NS, None, 2 * DAY_NS).await.unwrap();
         // Raw-only baseline: a span starting after the sealed boundary
         // (`start > sealed_ns`) resolves to a single raw `metrics` window (no
         // tier) yet still covers the live day-1 sample at `DAY_NS + 60s`.
         let raw_start = DAY_NS + 30_000_000_000; // just before the live sample
         let raw_only =
-            handle_label_values(&engine, "__name__", raw_start, 2 * DAY_NS, None).await.unwrap();
+            handle_label_values(&engine, "__name__", raw_start, 2 * DAY_NS, None, 2 * DAY_NS).await.unwrap();
         assert_eq!(
             routed["data"], raw_only["data"],
             "tier-routed label values must equal raw-only: routed={routed} raw={raw_only}"
@@ -5999,7 +6094,7 @@ mod tests {
             let expr = parser::parse(query).unwrap();
             let cap = op_capability(&expr);
             assert_eq!(cap, Capability::None, "{query}: must classify as Capability::None");
-            let w = resolve_metric_windows(&engine, start, end, i64::MAX, cap);
+            let w = resolve_metric_windows(&engine, start, end, i64::MAX, cap, end);
             assert_eq!(
                 w,
                 vec![("metrics".to_string(), start, end)],

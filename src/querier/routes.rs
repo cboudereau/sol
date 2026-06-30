@@ -20,6 +20,21 @@ fn with_engine(
     warp::any().map(move || Arc::clone(&engine))
 }
 
+/// Wall-clock now in unix nanoseconds, captured at the request boundary. The
+/// core query fns stay clock-free + testable (they take `now_ns` explicitly);
+/// it anchors an omitted instant `time` (see `instant_anchor`) and the
+/// wall-clock sealed/live tier boundary (see `resolve_metric_windows`) so a
+/// historical-`end` query still routes long-sealed days to the rollup tier.
+fn now_unix_ns() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 #[derive(Debug, Deserialize)]
 struct LokiQueryParams {
     query: String,
@@ -129,17 +144,7 @@ async fn prom_instant(
 ) -> Result<warp::reply::Response, Infallible> {
     let t = std::time::Instant::now();
     let time_ns = parse_time_ns(&params.time);
-    // Anchor for an omitted `time` (parse_time_ns → i64::MAX = "latest"): wall-clock
-    // now in unix ns, captured at the boundary so the core fns stay clock-free and
-    // testable. A range-function instant builds a `[T-range, T]` window, which would
-    // land in the year 2262 (empty) if T stayed i64::MAX — see `instant_anchor`.
-    let now_ns = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    )
-    .unwrap_or(i64::MAX);
+    let now_ns = now_unix_ns();
     let r = prometheus::handle_instant(&engine, &params.query, time_ns, now_ns).await;
     rec("prometheus", "metrics", t);
     match r {
@@ -177,7 +182,8 @@ async fn prom_range(
         .map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
     let step_ns = parse_step_ns(&params.step);
-    let r = prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns).await;
+    let now_ns = now_unix_ns();
+    let r = prometheus::handle_range(&engine, &params.query, start_ns, end_ns, step_ns, now_ns).await;
     rec("prometheus", "metrics", t);
     match r {
         Ok(resp) => Ok(warp::reply::json(&resp).into_response()),
@@ -202,7 +208,8 @@ async fn prom_label_values(
     // as the range query; an absent window means "all history" (unchanged).
     let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
     let end_ns = parse_time_ns(&params.end);
-    match prometheus::handle_label_values(&engine, &label, start_ns, end_ns, params.matcher.as_deref()).await {
+    let now_ns = now_unix_ns();
+    match prometheus::handle_label_values(&engine, &label, start_ns, end_ns, params.matcher.as_deref(), now_ns).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -227,7 +234,7 @@ async fn prom_series(
     let time_range = params.start.as_ref().map(|_| {
         (parse_time_ns(&params.start), parse_time_ns(&params.end))
     });
-    match prometheus::handle_series(&engine, params.matcher.as_deref(), time_range).await {
+    match prometheus::handle_series(&engine, params.matcher.as_deref(), time_range, now_unix_ns()).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
