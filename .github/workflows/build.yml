@@ -30,7 +30,7 @@ jobs:
       sol_version: ${{ steps.meta.outputs.sol_version }}
       sol_build_desc: ${{ steps.meta.outputs.sol_build_desc }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/setup
         with:
           rust: true
@@ -50,7 +50,7 @@ jobs:
       SOL_BUILD_DESC: ${{ needs.generate-metadata.outputs.sol_build_desc }}
       RELEASE_BUILDER: "true"
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Bootstrap runner environment
         run: .\scripts\environment\bootstrap-windows-2025.ps1
       - name: Build archive
