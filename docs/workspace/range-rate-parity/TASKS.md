@@ -93,8 +93,8 @@ classDiagram
 - `test_irate_is_per_sample_slope_unchanged` stays green untouched.
 **Verify**: `cargo test -p sol --features querier-backend --lib querier::plan::frame`
 **Acceptance criteria**:
-- [ ] `rate`/`increase` extrapolate per the ADR; the two new tests pass; irate unchanged.
-- [ ] Updated frame.rs rate/increase unit tests pass with documented extrapolated values.
+- [x] `rate`/`increase` extrapolate per the ADR; the two new tests pass; irate unchanged.
+- [x] Updated frame.rs rate/increase unit tests pass with documented extrapolated values.
 **Depends on**: (none)
 **Time-box**: ~90 min
 
@@ -111,8 +111,8 @@ classDiagram
 - `test_range_rate_no_duplicate_timestamps` — the range result has no repeated grid timestamps (lookback region not emitted).
 **Verify**: `cargo test -p sol --features querier-backend --lib querier::prometheus querier::frontend`
 **Acceptance criteria**:
-- [ ] `handle_range` passes `range_ns` lookback + scans from `query_start_ns`; output filtered to the shard window.
-- [ ] The three tests pass; no duplicate timestamps; no left-edge ramp; boundary-continuous.
+- [x] `handle_range` passes `range_ns` lookback + scans from `query_start_ns`; output filtered to the shard window.
+- [x] The three tests pass; no duplicate timestamps; no left-edge ramp; boundary-continuous.
 **Depends on**: 1
 **Time-box**: ~75 min
 
@@ -127,8 +127,8 @@ classDiagram
 - All updated integration tests green; all 4 instant==range parity tests green.
 **Verify**: `cargo test -p sol --features querier-backend --lib querier:: && cargo clippy -p sol --features querier-backend --lib`
 **Acceptance criteria**:
-- [ ] Golden test asserts the analytic Prometheus value and passes.
-- [ ] Every affected integration test updated + green; all 4 parity tests green; full `querier::` green; clippy clean.
+- [x] Golden test asserts the analytic Prometheus value and passes.
+- [x] Every affected integration test updated + green; all 4 parity tests green; full `querier::` green; clippy clean.
 **Depends on**: 1, 2
 **Time-box**: ~60 min
 

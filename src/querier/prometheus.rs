@@ -2207,30 +2207,50 @@ pub async fn handle_range(
     // the sealed span, raw `metrics` for the trailing ≤1-day (unsealed) window.
     let cap = op_capability(eval_expr);
     let resolved = resolve_metric_windows(engine, start_ns, end_ns, step_ns, cap, now_ns);
+    // FR2: a windowed op (`rate`/`increase`/`*_over_time`) at the first grid point
+    // of the query — and of each per-day shard — needs the samples in its
+    // `(t−range, t]` window (plus a LAG predecessor). We therefore scan each shard
+    // from `query_start = shard.start − lookback` (`lookback` = the matrix window)
+    // but emit points only for `[shard.start, shard.end]`, so the lookback region
+    // seeds the window/LAG without double-emitting points that belong to the
+    // previous shard. A bare selector (no matrix window) has `lookback = 0`.
+    let lookback_ns = matrix_range_ns(eval_expr).unwrap_or(0);
     // Within each resolver window, keep the frontend's per-day shard split (for
-    // the historical-shard cache); every shard inherits its window's table.
-    let windows: Vec<(String, i64, i64)> = resolved
+    // the historical-shard cache); every shard inherits its window's table. Each
+    // entry is `(table, query_start, emit_start, emit_end)`.
+    let windows: Vec<(String, i64, i64, i64)> = resolved
         .into_iter()
         .flat_map(|(table, lo, hi)| {
             if super::frontend::should_split(lo, hi) {
                 // Per-day shards aligned to UTC midnight; `split` emits the
                 // shard-count metric. The whole window is one tier, so treat it as
                 // fully sealed for the split (the tier/raw boundary already lives in
-                // the resolver windows).
-                super::frontend::split(lo, hi, 0, hi)
+                // the resolver windows). `lookback_ns` gives each shard its
+                // `query_start_ns = start − lookback` for the left-edge window.
+                super::frontend::split(lo, hi, lookback_ns, hi)
                     .into_iter()
-                    .map(|s| (table.clone(), s.start_ns, s.end_ns))
+                    .map(|s| (table.clone(), s.query_start_ns, s.start_ns, s.end_ns))
                     .collect::<Vec<_>>()
             } else {
-                vec![(table, lo, hi)]
+                // Unsplit (sub-day) window: still scan from `lo − lookback` so the
+                // query's first grid points have a full window, emit only `[lo, hi]`.
+                vec![(table, lo - lookback_ns, lo, hi)]
             }
         })
         .collect();
 
     let mut merged: RangeSeries = BTreeMap::new();
-    for (table, s, e) in windows {
-        match eval_range_window(engine, eval_expr, s, e, &table, step_ns, now_ns).await? {
-            RangeVal::Vector(part) => {
+    for (table, scan_start, s, e) in windows {
+        let win = RangeWindow { scan_start, start: s, end: e };
+        match eval_range_window(engine, eval_expr, win, &table, step_ns, now_ns).await? {
+            RangeVal::Vector(mut part) => {
+                // Emit only points inside this shard's `[s, e]` window; the lookback
+                // region `[scan_start, s)` was scanned solely to seed the window/LAG.
+                #[allow(clippy::cast_precision_loss)]
+                let (lo_s, hi_s) = (s as f64 / 1e9, e as f64 / 1e9);
+                for (_key, (_metric, points)) in part.iter_mut() {
+                    points.retain(|(t, _)| *t >= lo_s - 1e-9 && *t <= hi_s + 1e-9);
+                }
                 for (key, (metric, points)) in part {
                     merged
                         .entry(key)
@@ -2841,6 +2861,19 @@ fn aggregate_range_series(
     out
 }
 
+/// A range shard's scan + emit bounds (FR2). `scan_start ≤ start`: the underlying
+/// scan runs `[scan_start, end]` so a windowed op has its full `(t−range, t]`
+/// window at `start`, while output points are emitted only for `[start, end]`.
+#[derive(Debug, Clone, Copy)]
+struct RangeWindow {
+    /// Scan lower bound `= start − lookback` (seeds the window/LAG at the edge).
+    scan_start: i64,
+    /// First emitted timestamp (inclusive).
+    start: i64,
+    /// Last emitted timestamp (inclusive) and the scan upper bound.
+    end: i64,
+}
+
 /// Evaluate a range sub-expression over one `[s, e]` window against `table`.
 ///
 /// `step_ns` is the query step: the range cross-series aggregate uses it to
@@ -2849,21 +2882,26 @@ fn aggregate_range_series(
 /// [ADR: aggregation-pushdown] "Amendment"). `step_ns <= 0` means no grid
 /// (raw-sample step), in which case the aggregate reduces over the raw points.
 ///
+/// `scan_start` (FR2) is the underlying scan's lower bound — `s − lookback` — so a
+/// windowed op has its full `(t−range, t]` window (and LAG predecessor) at `s`; the
+/// emit/grid window stays `[s, e]`, and the caller filters the returned points to
+/// `[s, e]` so the lookback region isn't double-emitted across shards.
+///
 /// [ADR: aggregation-pushdown]: ../../docs/20260615_promql-pushdown/adrs/2026-06-15_aggregation-pushdown.md
 async fn eval_range_window(
     engine: &super::QueryEngine,
     expr: &Expr,
-    s: i64,
-    e: i64,
+    win: RangeWindow,
     table: &str,
     step_ns: i64,
     now_ns: i64,
 ) -> crate::Result<RangeVal> {
+    let RangeWindow { scan_start, start: s, end: e } = win;
     match expr {
         Expr::NumberLiteral(n) => Ok(RangeVal::Scalar(n.val)),
-        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, s, e, table, step_ns, now_ns)).await,
+        Expr::Paren(p) => Box::pin(eval_range_window(engine, &p.expr, win, table, step_ns, now_ns)).await,
         Expr::Unary(u) => {
-            let v = Box::pin(eval_range_window(engine, &u.expr, s, e, table, step_ns, now_ns)).await?;
+            let v = Box::pin(eval_range_window(engine, &u.expr, win, table, step_ns, now_ns)).await?;
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(-x),
                 RangeVal::Vector(mut m) => {
@@ -2877,8 +2915,8 @@ async fn eval_range_window(
             })
         }
         Expr::Binary(b) => {
-            let l = Box::pin(eval_range_window(engine, &b.lhs, s, e, table, step_ns, now_ns)).await?;
-            let r = Box::pin(eval_range_window(engine, &b.rhs, s, e, table, step_ns, now_ns)).await?;
+            let l = Box::pin(eval_range_window(engine, &b.lhs, win, table, step_ns, now_ns)).await?;
+            let r = Box::pin(eval_range_window(engine, &b.rhs, win, table, step_ns, now_ns)).await?;
             combine_range(b.op, l, r, &b.modifier).map_err(to_err)
         }
         // `scalar(v)` folds to a constant over the window (e.g. a CPU count as a
@@ -2908,7 +2946,7 @@ async fn eval_range_window(
                 .args
                 .get(1)
                 .ok_or_else(|| to_err(format!("{}() requires two arguments", c.func.name)))?;
-            let v = Box::pin(eval_range_window(engine, vec_arg, s, e, table, step_ns, now_ns)).await?;
+            let v = Box::pin(eval_range_window(engine, vec_arg, win, table, step_ns, now_ns)).await?;
             let bound = instant_to_scalar(Box::pin(eval_instant(engine, bound_arg, e, e)).await?);
             Ok(match v {
                 RangeVal::Scalar(x) => RangeVal::Scalar(clamp_value(is_min, x, bound)),
@@ -2941,12 +2979,14 @@ async fn eval_range_window(
             let op = agg_name(agg.op).map_err(to_err)?;
             let grouping = AggGrouping::from(&agg.modifier);
             let inner =
-                Box::pin(eval_range_window(engine, agg.expr.as_ref(), s, e, table, step_ns, now_ns)).await?;
+                Box::pin(eval_range_window(engine, agg.expr.as_ref(), win, table, step_ns, now_ns)).await?;
             let inner = match inner {
                 // A scalar inner has no series to reduce — pass it through.
                 RangeVal::Scalar(x) => return Ok(RangeVal::Scalar(x)),
                 RangeVal::Vector(v) => v,
             };
+            // Grid stays `[s, e]` (the emit window); the inner already scanned back
+            // to `scan_start` so its window is full at the left edge.
             Ok(RangeVal::Vector(aggregate_range_series(
                 op, &grouping, inner, s, e, step_ns,
             )))
@@ -2961,12 +3001,13 @@ async fn eval_range_window(
             } else if let Some((n, is_topk, inner)) = topk_parts(expr) {
                 // topk/bottomk is relational: lower the inner to a DataFrame and
                 // rank whole series by peak via a window (`DENSE_RANK … <= k`),
-                // superseding the Rust sort-truncate.
-                let df = lower_range_df(engine, inner, s, e, table).await?;
+                // superseding the Rust sort-truncate. Scan from `scan_start` for the
+                // left-edge window; the caller filters points back to `[s, e]`.
+                let df = lower_range_df(engine, inner, scan_start, e, table).await?;
                 let df = lower_topk_df(df, n, is_topk)?;
                 Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
             } else {
-                let df = lower_range_df(engine, expr, s, e, table).await?;
+                let df = lower_range_df(engine, expr, scan_start, e, table).await?;
                 Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
             }
             // NB: `step_ns` is unused here — the leaf/topk lowerings emit raw
@@ -3639,14 +3680,29 @@ mod tests {
         assert_eq!(resp.data.result.len(), 1, "one series");
         let s = &resp.data.result[0];
         assert_eq!(s.metric["service_name"], "client");
-        // Windowed Prometheus rate (NOT irate): reset-adjusted increase over the
-        // 5m window / 300s. t=1s is the first sample (delta NULL → no point);
-        // t=2s: 20/300; t=3s: (20+30)/300 = 50/300.
+        // Windowed Prometheus `extrapolatedRate` (NOT irate), 5m (300s) window.
+        // Fixture: t=1s→10, t=2s→30, t=3s→60. t=1s is the first sample (delta NULL
+        // → no point). Hand-derivation of extrapolatedRate (promql/functions.go):
+        //  • t=2s, window (−298,2]: in-window samples {1s:10, 2s:30}; base
+        //    reset-adjusted increase result = 30−10 = 20; first_value = 10; cnt = 2;
+        //    sampledInterval = (2−1) = 1s; avg_gap = 1/(2−1) = 1s.
+        //    durationToStart: raw = first_t − (last_t−range) = 1−(2−300) = 299s, but
+        //    counter zero-clamp caps it — durationToZero = sampledInterval ·
+        //    (first_value/result) = 1·(10/20) = 0.5s < 299 → durationToStart = 0.5s
+        //    (< 1.1·avg_gap, so no boundary cap). durationToEnd = 0.
+        //    factor = (1 + 0.5 + 0)/1 = 1.5; extrapolated = 20·1.5 = 30;
+        //    rate = 30/300 = 0.1.
+        //  • t=3s, window (−297,3]: samples {1s:10, 2s:30, 3s:60}; result = 60−10 =
+        //    50; first_value = 10; cnt = 3; sampledInterval = (3−1) = 2s;
+        //    avg_gap = 2/(3−1) = 1s. durationToZero = 2·(10/50) = 0.4s <
+        //    durationToStart_raw(298) → durationToStart = 0.4s; durationToEnd = 0.
+        //    factor = (2 + 0.4 + 0)/2 = 1.2; extrapolated = 50·1.2 = 60;
+        //    rate = 60/300 = 0.2.
         assert_eq!(
             s.values,
             vec![
-                (2.0, (20.0_f64 / 300.0).to_string()),
-                (3.0, (50.0_f64 / 300.0).to_string())
+                (2.0, (0.1_f64).to_string()),
+                (3.0, (0.2_f64).to_string())
             ]
         );
     }
@@ -3996,11 +4052,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.data.result.len(), 1, "one merged series across shards");
+        // Same `counter_engine` fixture + 5m window as
+        // `test_rate_executes_and_computes_values`, so the same hand-derived
+        // extrapolatedRate points: t=2s → 20·1.5/300 = 0.1, t=3s → 50·1.2/300 = 0.2
+        // (see that test for the full derivation). Split/merge must preserve them.
         assert_eq!(
             resp.data.result[0].values,
             vec![
-                (2.0, (20.0_f64 / 300.0).to_string()),
-                (3.0, (50.0_f64 / 300.0).to_string())
+                (2.0, (0.1_f64).to_string()),
+                (3.0, (0.2_f64).to_string())
             ],
             "split+merge equals the unsplit windowed rate"
         );
@@ -4201,9 +4261,13 @@ mod tests {
             resp.data.result
         );
         assert_eq!(resp.data.result[0].metric["sc"], "a", "the higher series");
-        // Windowed rate over 5m: sc=a increase 20 at t=2s / 300s (t=1s is the
-        // first sample → no point). Still the higher series than sc=b (5/300).
-        assert_eq!(resp.data.result[0].values, vec![(2.0, (20.0_f64 / 300.0).to_string())]);
+        // Windowed extrapolatedRate over 5m (300s): sc=a is {t=1s:10, t=2s:30} — the
+        // same shape as the `counter_engine` t=2s case: result = 30−10 = 20,
+        // first_value = 10, cnt = 2, sampledInterval = 1s; durationToZero =
+        // 1·(10/20) = 0.5s → factor = (1+0.5)/1 = 1.5; extrapolated = 20·1.5 = 30;
+        // rate = 30/300 = 0.1 (t=1s is the first sample → no point). sc=b extrapolates
+        // to a lower rate, so topk(1) keeps sc=a.
+        assert_eq!(resp.data.result[0].values, vec![(2.0, (0.1_f64).to_string())]);
     }
 
     #[tokio::test]
@@ -5745,6 +5809,212 @@ mod tests {
             ..QuerierOptions::default()
         };
         crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    /// A steady counter (`c`, service=client) sampled every 5m over ~30h so it
+    /// straddles a UTC midnight — the range path's per-day `frontend::split`
+    /// produces ≥2 shards. `first_ns` is the timestamp of the first sample; each
+    /// step adds a constant +300 so the steady-state rate is 300/300s = 1/s. Used
+    /// to prove FR2's lookback keeps `rate` continuous across a shard boundary and
+    /// emits no duplicate grid timestamps.
+    async fn across_midnight_counter_engine(first_ns: i64) -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-05-30");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        const STEP_NS: i64 = 300_000_000_000; // 5m sample interval
+        let n = 361usize; // 360 steps × 5m = 30h → crosses one UTC midnight
+        let times: Vec<i64> = (0..n).map(|k| first_ns + (k as i64) * STEP_NS).collect();
+        let vals: Vec<f64> = (0..n).map(|k| 300.0 * k as f64).collect(); // +300/step → 1/s
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"; n])),
+                Arc::new(StringArray::from(vec!["c"; n])),
+                Arc::new(TimestampNanosecondArray::from(times).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                Arc::new(Float64Array::from(vals)),
+                Arc::new(StringArray::from(vec!["c"; n])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("c.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_range_rate_no_left_edge_ramp() {
+        // FR2: a steady counter starting at t=0; query a range that starts well
+        // after the series start (T=300s ≫ 0) at a 15s step. The FIRST grid point's
+        // rate must ≈ a mid-range point (steady state), not ramp up from ~0. Before
+        // the lookback fix the range path scanned only `[300s, 600s]`, so the 300s
+        // window had no earlier samples → a low, ramping value at the left edge.
+        let engine = monotonic_counter_engine().await; // 100/15s → ~6.667/s
+        const S15: i64 = 15_000_000_000;
+        let start = 300_000_000_000i64; // 300s ≫ series start (0)
+        let end = 600_000_000_000i64;
+        let resp = handle_range(&engine, "rate(c[5m])", start, end, S15, end)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let vals: Vec<f64> = resp.data.result[0]
+            .values
+            .iter()
+            .map(|(_, v)| v.parse::<f64>().unwrap())
+            .collect();
+        assert!(vals.len() >= 3, "several grid points: {vals:?}");
+        let first = vals[0];
+        let mid = vals[vals.len() / 2];
+        assert!(
+            (first - mid).abs() < 0.05 * mid,
+            "first grid point ({first}) must be steady-state, not a left-edge ramp \
+             (mid-range = {mid}); values = {vals:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_range_rate_continuous_across_shard_boundary() {
+        // FR2: a range spanning a UTC midnight → `frontend::split` yields ≥2 shards.
+        // The steady counter's rate (1/s) must be continuous across the boundary:
+        // no dip at the first grid point of the second shard (which, pre-fix,
+        // scanned only from midnight and had a truncated window).
+        const DAY: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+        // Series first sample 6h before a UTC midnight; query straddles midnight
+        // over >1 day so the split fires.
+        let midnight = 1_780_704_000_000_000_000i64; // 2026-05-30 00:00 UTC (÷ DAY == 0)
+        let first_ns = midnight - 6 * 3_600_000_000_000; // 18:00 the previous day
+        let engine = across_midnight_counter_engine(first_ns).await;
+        let start = midnight - 3_600_000_000_000; // 23:00 prev day
+        let end = start + DAY + 2 * 3_600_000_000_000; // > 1 day → forces the split
+        let resp = handle_range(&engine, "rate(c[15m])", start, end, M5, end)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let pts = &resp.data.result[0].values;
+        // Find the pair of adjacent grid points straddling midnight and assert the
+        // rate barely changes (a boundary dip would be a sharp drop).
+        let boundary_s = midnight as f64 / 1e9;
+        let mut checked = false;
+        for w in pts.windows(2) {
+            let (t0, v0) = (w[0].0, w[0].1.parse::<f64>().unwrap());
+            let (t1, v1) = (w[1].0, w[1].1.parse::<f64>().unwrap());
+            if t0 < boundary_s && t1 >= boundary_s {
+                assert!(
+                    (v1 - v0).abs() < 0.05 * v0.max(1e-9),
+                    "rate dips across the midnight shard boundary: {v0} → {v1}"
+                );
+                checked = true;
+            }
+        }
+        assert!(checked, "expected a grid-point pair straddling midnight: {pts:?}");
+    }
+
+    #[tokio::test]
+    async fn test_range_rate_no_duplicate_timestamps() {
+        // FR2: the lookback region `[query_start, shard.start)` is scanned only to
+        // seed the window/LAG — it must NOT be emitted, so grid timestamps stay
+        // strictly increasing with no duplicates across shard boundaries.
+        const DAY: i64 = 86_400_000_000_000;
+        const M5: i64 = 300_000_000_000;
+        let midnight = 1_780_704_000_000_000_000i64;
+        let first_ns = midnight - 6 * 3_600_000_000_000;
+        let engine = across_midnight_counter_engine(first_ns).await;
+        let start = midnight - 3_600_000_000_000;
+        let end = start + DAY + 2 * 3_600_000_000_000; // >1 day → ≥2 shards
+        let resp = handle_range(&engine, "rate(c[15m])", start, end, M5, end)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let ts: Vec<f64> = resp.data.result[0].values.iter().map(|(t, _)| *t).collect();
+        for w in ts.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "timestamps must be strictly increasing (no lookback double-emit): \
+                 {:?}",
+                ts
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_matches_prometheus_golden() {
+        // GOLDEN PARITY ANCHOR (Sol↔Mimir): pin the range `rate` to the analytic
+        // Prometheus `extrapolatedRate` (promql/functions.go) on a known steady
+        // counter, asserted within 1e-6. This is the durable regression guard that
+        // fixes Sol's rate math to Prometheus semantics.
+        //
+        // Fixture `monotonic_counter_engine`: perfectly steady counter, sample k at
+        // t_k = 15k s, v_k = 100k (k = 0..40) → true slope 100/15 = 6.6667/s. We
+        // evaluate `rate(c[5m])` at the grid point T = 300s (a 5m window, positioned
+        // so its edges land exactly on sample boundaries — no partial-gap effects).
+        //
+        // Hand-derived extrapolatedRate at T = 300s, window (0, 300]:
+        //   • in-window samples: k = 1..20 (t = 15s..300s), cnt = 20 (k=0 at t=0 is
+        //     excluded by the half-open lower bound).
+        //   • base reset-adjusted increase result = v_last − v_first = v_20 − v_1 =
+        //     2000 − 100 = 1900 (each per-sample delta = 100; sum over k=1..20 = 2000,
+        //     minus the leading first_delta = 100).
+        //   • first_t = 15s, last_t = 300s; sampledInterval = 300 − 15 = 285s;
+        //     avg_gap = 285/(20−1) = 15s.
+        //   • window_start = last_t − range = 300 − 300 = 0; durationToStart_raw =
+        //     first_t − window_start = 15s. durationToEnd = last_t − last_t = 0.
+        //   • counter zero-clamp: durationToZero = sampledInterval·(first_value/result)
+        //     = 285·(100/1900) = 15s. It is NOT < durationToStart_raw(15) (equal, and
+        //     the clamp uses strict `<`), so durationToStart stays 15s. Boundary cap:
+        //     15 is not ≥ 1.1·avg_gap (16.5), so no cap.
+        //   • factor = (285 + 15 + 0)/285 = 300/285; extrapolated = 1900·300/285 = 2000;
+        //     rate = extrapolated / range_s = 2000/300 = 20/3 = 6.6666…/s.
+        // The extrapolation recovers the exact true slope (6.6667/s), as Prometheus
+        // does for a steady counter whose window spans whole gaps.
+        let engine = monotonic_counter_engine().await;
+        let t = 300_000_000_000i64; // T = 300s
+        let resp = handle_range(&engine, "rate(c[5m])", t, t, M5, t)
+            .await
+            .unwrap();
+        assert_eq!(resp.data.result.len(), 1, "one series: {:?}", resp.data.result);
+        let pts = &resp.data.result[0].values;
+        let (grid_t, v_str) = pts
+            .iter()
+            .find(|(gt, _)| (*gt - 300.0).abs() < 1e-9)
+            .expect("a grid point at T = 300s");
+        assert!((grid_t - 300.0).abs() < 1e-9);
+        let v = v_str.parse::<f64>().unwrap();
+        let expected = 20.0_f64 / 3.0; // 2000/300 s⁻¹
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "range rate {v} must equal the analytic Prometheus extrapolatedRate \
+             {expected} within 1e-6"
+        );
     }
 
     #[tokio::test]

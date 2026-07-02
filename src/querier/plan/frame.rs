@@ -14,7 +14,9 @@ use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions_window::lead_lag::lag;
+use datafusion::functions_window::nth_value::first_value_udwf;
 use datafusion::functions_window::rank::dense_rank;
 use datafusion::functions_window::row_number::row_number;
 use datafusion::logical_expr::expr::WindowFunction;
@@ -148,29 +150,36 @@ pub fn irate(
 
 /// P6 — `rate(m[w])` / `increase(m[w])` with **windowed** Prometheus semantics
 /// (Sol↔Mimir parity), NOT the per-sample slope (`irate`). At each sample time
-/// `t` the value is the reset-adjusted increase over the lookback window divided
+/// `t` the value is Prometheus's `extrapolatedRate`: the reset-adjusted in-window
+/// increase, **extrapolated to the window boundaries**, then (for `rate`) divided
 /// by the window seconds (`increase` skips that division — `divide_by_window =
-/// false`):
+/// false`).
+///
 /// 1. per-sample reset-adjusted `delta` via `LAG` (`v − prev_v`, or `v` on a
 ///    counter reset where `v < prev_v`); the first sample of each series has no
 ///    predecessor → its delta is NULL so it never inflates a window sum;
-/// 2. windowed increase = `SUM(delta)` over a `RANGE BETWEEN range_ns PRECEDING
-///    AND CURRENT ROW` frame (the same ns-based RANGE frame as [`over_time`]),
-///    i.e. the reset-adjusted increase across the window's samples;
-/// 3. for `rate`, divide by the window seconds (`range_ns / 1e9`).
+/// 2. over the `RANGE BETWEEN range_ns PRECEDING AND CURRENT ROW` frame (the same
+///    ns-based frame as [`over_time`]) gather: `sum_delta = SUM(delta)`,
+///    `first_delta = FIRST_VALUE(delta)`, `first_value = FIRST_VALUE(v)`,
+///    `first_t`/`last_t` (frame's earliest/latest sample time) and `cnt` (frame
+///    row count);
+/// 3. the base in-window increase is `result = sum_delta − first_delta`: dropping
+///    the leading delta (which reaches back to the sample *before* the window)
+///    yields the reset-adjusted increase between the first and last in-window
+///    samples — Prometheus's base `resultValue`;
+/// 4. extrapolate `result` to the window edges per Prometheus `extrapolatedRate`:
+///    extend by up to half the average inter-sample gap on each side, capped at
+///    the window boundary; for a counter, clamp a start extrapolation that would
+///    imply a value below zero. A single in-window sample (`cnt < 2`) → 0;
+/// 5. for `rate`, divide the extrapolated increase by the window seconds
+///    (`range_ns / 1e9`).
 ///
 /// Output columns: `service_name`, `attributes`, `time_unix_nano`, `v` — the same
 /// shape as [`irate`] so the downstream grid-align + resample are unaffected.
 ///
-/// NB: Prometheus additionally *extrapolates* the rate to the window boundaries
-/// (capped at ~half the mean sample interval), so for a counter sampled sparsely
-/// relative to `w` Prometheus reads slightly higher than `increase/w`. That
-/// extrapolation is a documented follow-up and is deliberately NOT implemented
-/// here; windowed increase / window already removes the `irate`-vs-windowed
-/// deviation, which is the dominant gap.
-///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
+#[allow(clippy::cast_precision_loss)]
 pub fn rate(
     df: DataFrame,
     part: Vec<Expr>,
@@ -194,25 +203,91 @@ pub fn rate(
         .otherwise(col(v_col))?;
     // `with_column` preserves every input column (the partition keys `name`/
     // `service_name`/`attributes` and the time key) and just appends `delta`, so
-    // the SUM window below can still `PARTITION BY part`.
+    // the window aggregates below can still `PARTITION BY part`.
     let win = df.window(vec![prev_v])?.with_column("delta", delta)?;
-    // Windowed reset-adjusted increase: SUM(delta) over (t-range, t] — the same
-    // ns-based RANGE frame as `over_time`. SUM ignores the NULL first-sample delta.
-    let increase_win: Expr = WindowFunction::new(sum_udaf(), vec![col("delta")]).into();
-    let frame = WindowFrame::new_bounds(
-        WindowFrameUnits::Range,
-        WindowFrameBound::Preceding(ScalarValue::Int64(Some(range_ns))),
-        WindowFrameBound::CurrentRow,
-    );
-    let increase = increase_win
-        .partition_by(part)
-        .order_by(vec![ns(time_col).sort(true, false)])
-        .window_frame(frame)
-        .build()?
+    // All the window aggregates below share ONE frame/partition/order — the same
+    // ns-based `(t−range, t]` RANGE frame — so their per-row values are aligned.
+    let frame = || {
+        WindowFrame::new_bounds(
+            WindowFrameUnits::Range,
+            WindowFrameBound::Preceding(ScalarValue::Int64(Some(range_ns))),
+            WindowFrameBound::CurrentRow,
+        )
+    };
+    let over_frame = |f: Expr, alias: &str| -> crate::Result<Expr> {
+        Ok(f.partition_by(part.clone())
+            .order_by(vec![ns(time_col).sort(true, false)])
+            .window_frame(frame())
+            .build()?
+            .alias(alias))
+    };
+    let sum_win: Expr = WindowFunction::new(sum_udaf(), vec![col("delta")]).into();
+    // FIRST_VALUE as a true window UDWF (not the aggregate-as-window path, which
+    // needs a sliding accumulator DataFusion 53 doesn't provide for first_value):
+    // returns the value at the frame's first (earliest-time) row.
+    let first_delta_win: Expr =
+        WindowFunction::new(first_value_udwf(), vec![col("delta")]).into();
+    let first_value_win: Expr = WindowFunction::new(first_value_udwf(), vec![col(v_col)]).into();
+    let min_t_win: Expr = WindowFunction::new(min_udaf(), vec![ns(time_col)]).into();
+    let max_t_win: Expr = WindowFunction::new(max_udaf(), vec![ns(time_col)]).into();
+    let cnt_win: Expr = WindowFunction::new(count_udaf(), vec![col(v_col)]).into();
+    let windowed = win.window(vec![
+        over_frame(sum_win, "sum_delta")?,
+        over_frame(first_delta_win, "first_delta")?,
+        over_frame(first_value_win, "first_value")?,
+        over_frame(min_t_win, "first_t")?,
+        over_frame(max_t_win, "last_t")?,
+        over_frame(cnt_win, "cnt")?,
+    ])?;
+
+    // --- Prometheus `extrapolatedRate` (promql/functions.go) over the frame ---
+    let secs = |ns_expr: Expr| cast(ns_expr, DataType::Float64) / lit(1e9);
+    let cnt = cast(col("cnt"), DataType::Float64);
+    // Base reset-adjusted in-window increase: drop the leading delta (which reaches
+    // to the sample before the window) → increase between first & last in-window.
+    let result = coalesce(vec![col("sum_delta"), lit(0.0_f64)])
+        - coalesce(vec![col("first_delta"), lit(0.0_f64)]);
+    // sampledInterval = (last_t − first_t) seconds; avg_gap = interval / (cnt−1).
+    let sampled_interval = secs(col("last_t") - col("first_t"));
+    let avg_gap = sampled_interval.clone() / (cnt.clone() - lit(1.0_f64));
+    // durationToStart = gap from window start (last_t − range) to the first sample;
+    // durationToEnd = gap from the last sample to the window end (= last_t, since
+    // the frame ends at CURRENT ROW) → 0, kept general for fidelity.
+    let window_start = col("last_t") - lit(ScalarValue::Int64(Some(range_ns)));
+    let duration_to_start_raw = secs(col("first_t") - window_start);
+    let duration_to_end_raw = secs(col("last_t") - col("last_t"));
+    // Counter zero-clamp: if result>0 and first_value>=0, don't extrapolate the
+    // start below the point where the counter would hit zero.
+    let duration_to_zero = sampled_interval.clone() * (col("first_value") / result.clone());
+    let clamp_zero = result
+        .clone()
+        .gt(lit(0.0_f64))
+        .and(col("first_value").gt_eq(lit(0.0_f64)))
+        .and(duration_to_zero.clone().lt(duration_to_start_raw.clone()));
+    let duration_to_start_z = when(clamp_zero, duration_to_zero)
+        .otherwise(duration_to_start_raw.clone())?;
+    // Boundary cap: if the extrapolation reaches ≥1.1× the average gap past the
+    // outermost sample, cap it at half the average gap (Prometheus's heuristic).
+    let cap = |d: Expr| -> crate::Result<Expr> {
+        Ok(
+            when(d.clone().gt_eq(lit(1.1_f64) * avg_gap.clone()), avg_gap.clone() / lit(2.0_f64))
+                .otherwise(d)?,
+        )
+    };
+    let duration_to_start = cap(duration_to_start_z)?;
+    let duration_to_end = cap(duration_to_end_raw)?;
+    let factor = (sampled_interval.clone() + duration_to_start + duration_to_end)
+        / sampled_interval.clone();
+    let extrapolated = result * factor;
+    // A single in-window sample (cnt < 2) has no rate. We emit NULL (not 0) so the
+    // downstream grid-align/resample drops the point — exactly as before, when the
+    // first sample's SUM(delta) was NULL. NULL also guards the /(cnt−1) and
+    // /sampledInterval divisions above (NaN/±inf for cnt<2) from leaking.
+    let increase = when(cnt.lt(lit(2.0_f64)), lit(ScalarValue::Float64(None)))
+        .otherwise(extrapolated)?
         .alias("increase");
-    let windowed = win.window(vec![increase])?;
+    let windowed = windowed.with_column("increase", increase)?;
     // `rate` divides by the window seconds; `increase` keeps the raw increase.
-    #[allow(clippy::cast_precision_loss)]
     let v = if divide_by_window {
         (col("increase") / lit(range_ns as f64 / 1e9)).alias("v")
     } else {
@@ -416,25 +491,156 @@ mod tests {
     async fn test_rate_is_windowed_average_over_the_range() {
         let engine = counter_engine().await;
         let part = vec![col("service_name"), col("attributes")];
-        // Window 5m = 300s covers all preceding samples. Windowed rate at each t is
-        // the reset-adjusted increase over `(t-w, t]` / w:
-        //   t=1s: first sample, delta NULL → SUM is NULL → dropped downstream.
-        //   t=2s: increase = (30-10)=20 → 20/300.
-        //   t=3s: increase = 20 + (60-30)=30 → 50/300.
+        // Window 5m = 300s covers all preceding samples. `rate` now replicates
+        // Prometheus `extrapolatedRate`: the reset-adjusted in-window increase is
+        // extrapolated to the window boundaries, then divided by the full window.
+        // Counter series t=1,2,3s → 10,30,60 (deltas: t=1 NULL, t=2 +20, t=3 +30).
+        //
+        //   t=1s: first sample, `result` NULL → SUM NULL → dropped downstream.
+        //   t=2s: window={1,2}. result = sum_delta(20) - first_delta(NULL→0) = 20.
+        //         cnt=2, first_t=1s, last_t=2s. sampledInterval=1s, avg_gap=1s.
+        //         durationToStart = first_t-(last_t-range) = 1-(2-300) = 299s.
+        //         durationToEnd = last_t-last_t = 0. first_value=10>0, result>0 →
+        //         durationToZero = 1*(10/20)=0.5 < 299 → durationToStart=0.5.
+        //         0.5 < 1.1*avg → no cap. factor=(1+0.5+0)/1=1.5.
+        //         extrapolated=20*1.5=30 → rate=30/300=0.1.
+        //   t=3s: window={1,2,3}. result = 50 - 0 = 50. cnt=3, first_t=1s,
+        //         last_t=3s. sampledInterval=2s, avg_gap=1s. durationToStart=298s.
+        //         durationToEnd=0. durationToZero=2*(10/50)=0.4 < 298 →
+        //         durationToStart=0.4. no cap. factor=(2+0.4+0)/2=1.2.
+        //         extrapolated=50*1.2=60 → rate=60/300=0.2.
         let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, true)
             .unwrap();
         let got = values_by_time(&engine, df).await;
-        assert_eq!(got, vec![20.0 / 300.0, 50.0 / 300.0]);
+        assert_eq!(got, vec![0.1, 0.2]);
     }
 
     #[tokio::test]
     async fn test_increase_is_windowed_sum_without_dividing() {
         let engine = counter_engine().await;
         let part = vec![col("service_name"), col("attributes")];
-        // increase(m[5m]) = reset-adjusted increase over the window, NOT divided.
+        // increase(m[5m]) = the extrapolated in-window increase, NOT divided by the
+        // window. Same extrapolation as `test_rate_is_windowed_average_over_the_range`
+        // → t=2s: 30, t=3s: 60 (the rate values above × 300).
         let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, false)
             .unwrap();
-        assert_eq!(values_by_time(&engine, df).await, vec![20.0, 50.0]);
+        assert_eq!(values_by_time(&engine, df).await, vec![30.0, 60.0]);
+    }
+
+    /// A counter with a caller-supplied (time_ns, value) series for `client` /
+    /// `http_total`, one Parquet row per sample.
+    async fn series_engine(samples: &[(i64, f64)]) -> crate::querier::QueryEngine {
+        use crate::config::querier::{QuerierOptions, StorageConfig};
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = tmp.path().join("metrics").join("dt=2026-06-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+        ]));
+        let n = samples.len();
+        let times: Vec<i64> = samples.iter().map(|(t, _)| *t).collect();
+        let vals: Vec<f64> = samples.iter().map(|(_, v)| *v).collect();
+        let attrs: Vec<&str> = vec!["{}"; n];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["client"; n])),
+                Arc::new(StringArray::from(vec!["http_total"; n])),
+                Arc::new(TimestampNanosecondArray::from(times).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&attrs),
+                Arc::new(Float64Array::from(vals)),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        crate::querier::QueryEngine::new(&opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_rate_extrapolates_to_window_edges() {
+        // A counter sampled sparsely relative to the window: samples at
+        // t=90,100,110,120s → 900,1000,1100,1200 (steady +100 per 10s). Window=60s,
+        // evaluated at the last row t=120s. The first in-window sample (t=90) sits
+        // well after the window start (t=60), so Prometheus extrapolates toward it.
+        //
+        // deltas: t=90 NULL (series first), t=100/110/120 = +100 each.
+        // window (60,120] = {90,100,110,120}. sum_delta=300, first_delta=NULL→0 →
+        // result=300. cnt=4, first_t=90s, last_t=120s.
+        //   sampledInterval=(120-90)=30s, avg_gap=30/3=10s.
+        //   durationToStart = first_t-(last_t-range) = 90-(120-60) = 30s.
+        //   durationToEnd = last_t-last_t = 0.
+        //   counter zero-clamp: first_value=900, durationToZero=30*(900/300)=90s;
+        //     90 < 30? no → durationToStart unchanged (30s).
+        //   cap: durationToStart(30) >= 1.1*avg(11)? yes → durationToStart=avg/2=5s.
+        //     durationToEnd(0) >= 11? no.
+        //   factor=(30+5+0)/30 = 35/30. extrapolated=300*35/30=350.
+        //   rate = 350/60 ≈ 5.8333  (strictly > result/window = 300/60 = 5.0).
+        let samples = [
+            (90_000_000_000i64, 900.0),
+            (100_000_000_000, 1000.0),
+            (110_000_000_000, 1100.0),
+            (120_000_000_000, 1200.0),
+        ];
+        let engine = series_engine(&samples).await;
+        let part = vec![col("service_name"), col("attributes")];
+        let df = rate(base(&engine).await, part, "v", "time_unix_nano", 60_000_000_000, true)
+            .unwrap();
+        let got = values_by_time(&engine, df).await;
+        let last = *got.last().unwrap();
+        let expected = 350.0 / 60.0;
+        assert!(
+            (last - expected).abs() < 1e-9,
+            "extrapolated rate {last} != expected {expected}"
+        );
+        assert!(
+            last > 300.0 / 60.0,
+            "extrapolated rate {last} must exceed result/window {}",
+            300.0 / 60.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_is_smooth_across_grid() {
+        // A steadily-increasing counter: 20 samples at a 15s cadence, +150 each
+        // (→ 10/s). Window=60s. Once the window is full the extrapolated rate is a
+        // near-constant 10/s across successive rows — the old SUM(delta)/window
+        // oscillated as samples crossed the trailing edge; here the zigzag is gone.
+        let samples: Vec<(i64, f64)> = (1..=20)
+            .map(|i| (i * 15_000_000_000i64, (i as f64) * 150.0))
+            .collect();
+        let engine = series_engine(&samples).await;
+        let part = vec![col("service_name"), col("attributes")];
+        let df = rate(base(&engine).await, part, "v", "time_unix_nano", 60_000_000_000, true)
+            .unwrap();
+        let got = values_by_time(&engine, df).await;
+        // Steady-state region: drop the initial window-fill ramp (first 3 points).
+        let steady = &got[3..];
+        let max_jump = steady
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_jump < 1e-6,
+            "rate must be smooth across the grid; max adjacent |Δ| = {max_jump}, series = {steady:?}"
+        );
     }
 
     #[tokio::test]
