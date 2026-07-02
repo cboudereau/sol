@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Prometheus-compatible extrapolated rate/increase
 
