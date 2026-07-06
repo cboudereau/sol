@@ -687,7 +687,7 @@ mod tests {
         )]));
         let vals: Vec<&str> = std::iter::repeat_n("svc", rows).collect();
         let batch =
-            RecordBatch::try_new(schema.clone(), vec![Arc::new(StringArray::from(vals))]).unwrap();
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vals))]).unwrap();
         let file = std::fs::File::create(path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
         writer.write(&batch).unwrap();
@@ -737,7 +737,7 @@ mod tests {
             utf8("body", true),
         ]));
         let batch = RecordBatch::try_new(
-            fixture_schema.clone(),
+            Arc::clone(&fixture_schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client"])),
                 Arc::new(StringArray::from(vec!["hello", "world"])),
@@ -862,7 +862,7 @@ mod tests {
             false,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![Arc::new(StringArray::from(vec!["svc", "svc", "svc"]))],
         )
         .unwrap();

@@ -1120,7 +1120,7 @@ mod tests {
             Field::new("status_code", DataType::Int32, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client"])),
                 Arc::new(

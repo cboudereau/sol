@@ -665,7 +665,7 @@ mod tests {
             Field::new("body", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(TimestampNanosecondArray::from(vec![10i64]).with_timezone("UTC")),

@@ -415,7 +415,7 @@ mod tests {
             Field::new("double_value", DataType::Float64, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client", "client"])),
                 Arc::new(StringArray::from(vec![
@@ -550,7 +550,7 @@ mod tests {
         let vals: Vec<f64> = samples.iter().map(|(_, v)| *v).collect();
         let attrs: Vec<&str> = vec!["{}"; n];
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"; n])),
                 Arc::new(StringArray::from(vec!["http_total"; n])),
@@ -623,6 +623,7 @@ mod tests {
         // (→ 10/s). Window=60s. Once the window is full the extrapolated rate is a
         // near-constant 10/s across successive rows — the old SUM(delta)/window
         // oscillated as samples crossed the trailing edge; here the zigzag is gone.
+        #[allow(clippy::cast_precision_loss)] // small integer test-fixture indices
         let samples: Vec<(i64, f64)> = (1..=20)
             .map(|i| (i * 15_000_000_000i64, (i as f64) * 150.0))
             .collect();

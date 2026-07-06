@@ -139,7 +139,7 @@ mod tests {
             Field::new("trace_id", DataType::FixedSizeBinary(16), true),
         ]));
         let log_batch = RecordBatch::try_new(
-            log_schema.clone(),
+            Arc::clone(&log_schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(
@@ -171,7 +171,7 @@ mod tests {
             Field::new("duration_nanos", DataType::Int64, false),
         ]));
         let trace_batch = RecordBatch::try_new(
-            trace_schema.clone(),
+            Arc::clone(&trace_schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(
@@ -202,7 +202,7 @@ mod tests {
             Field::new("prom_name", DataType::Utf8, false),
         ]));
         let metric_batch = RecordBatch::try_new(
-            metric_schema.clone(),
+            Arc::clone(&metric_schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(StringArray::from(vec!["cpu"])),

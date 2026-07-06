@@ -3295,7 +3295,7 @@ mod tests {
             Field::new("prom_name", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client", "client"])),
                 Arc::new(StringArray::from(vec![
@@ -3736,7 +3736,7 @@ mod tests {
             Field::new("prom_name", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"; 5])),
                 Arc::new(StringArray::from(vec!["http_total"; 5])),
@@ -3973,7 +3973,7 @@ mod tests {
         ]));
         // Two series of the same OTLP metric, differing only by status_code.
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client"])),
                 Arc::new(StringArray::from(vec![
@@ -4101,7 +4101,7 @@ mod tests {
         let mk = |times: &[i64], vals: &[f64]| {
             let n = times.len();
             RecordBatch::try_new(
-                schema.clone(),
+                Arc::clone(&schema),
                 vec![
                     Arc::new(StringArray::from(vec!["s"; n])),
                     Arc::new(StringArray::from(vec!["reqs"; n])),
@@ -4121,7 +4121,7 @@ mod tests {
             &[10.0, 20.0, 30.0, 40.0],
         );
         let f = std::fs::File::create(dir.join("m.parquet")).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
         w.write(&raw).unwrap();
         w.close().unwrap();
         // rollup-5m tier: ONLY the sealed day 0 (the live day is never rolled
@@ -4206,7 +4206,7 @@ mod tests {
         ]));
         // two counter series at t=1s,2s: sc=a rises 10→30 (rate 20), sc=b 5→10 (rate 5)
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["s", "s", "s", "s"])),
                 Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
@@ -4407,7 +4407,7 @@ mod tests {
             Field::new("prom_name", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"])),
                 Arc::new(StringArray::from(vec!["http.server.request.duration"])),
@@ -4502,7 +4502,7 @@ mod tests {
         ]));
         let mk = |counts: &str| {
             RecordBatch::try_new(
-                schema.clone(),
+                Arc::clone(&schema),
                 vec![
                     Arc::new(StringArray::from(vec!["client"])),
                     Arc::new(StringArray::from(vec!["dur"])),
@@ -4523,7 +4523,7 @@ mod tests {
         let tier_batch = mk("[0,0,0,0,0,100]"); // all mass in +Inf → p95 = 50
         // raw day-0 (the "wrong" answer if served from raw).
         let f = std::fs::File::create(dir.join("h.parquet")).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
         w.write(&raw_batch).unwrap();
         w.close().unwrap();
         // rollup-5m tier day-0 (the answer that proves tier routing).
@@ -4601,7 +4601,7 @@ mod tests {
         ]));
         let mk = |ts: i64, counts: &str| {
             RecordBatch::try_new(
-                schema.clone(),
+                Arc::clone(&schema),
                 vec![
                     Arc::new(StringArray::from(vec!["client"])),
                     Arc::new(StringArray::from(vec!["dur"])),
@@ -4631,7 +4631,7 @@ mod tests {
             .join("dt=2026-06-01");
         std::fs::create_dir_all(&d0).unwrap();
         let f = std::fs::File::create(d0.join("h.parquet")).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema.clone(), None).unwrap();
+        let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
         w.write(&raw_d0).unwrap();
         w.write(&raw_d2).unwrap();
         w.close().unwrap();
@@ -4713,7 +4713,7 @@ mod tests {
         ]));
         // two cumulative-increasing snapshots at t=1s and t=2s (bounds [10,20])
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client", "client"])),
                 Arc::new(StringArray::from(vec![
@@ -5063,6 +5063,7 @@ mod tests {
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
         ]));
+        #[allow(clippy::cast_possible_truncation)] // small test-fixture cardinality
         let n = (HC_CARDINALITY * HC_POINTS) as usize;
         let (mut svc, mut name, mut t, mut attrs, mut val, mut pn) = (
             Vec::with_capacity(n),
@@ -5079,6 +5080,7 @@ mod tests {
                 name.push("m");
                 t.push(ts);
                 attrs.push(format!(r#"{{"cpu":"{cpu}","mode":"user"}}"#));
+                #[allow(clippy::cast_precision_loss)] // small test-fixture cpu index
                 val.push(cpu as f64);
                 pn.push("m");
             }
@@ -5123,9 +5125,11 @@ mod tests {
         let at = HC_POINTS * 1_000_000_000;
 
         let by = handle_instant(&engine, "sum by (cpu) (m)", at, i64::MAX).await.unwrap();
+        #[allow(clippy::cast_possible_truncation)] // small test-fixture cardinality
+        let expected_cardinality = HC_CARDINALITY as usize;
         assert_eq!(
             by.data.result.len(),
-            HC_CARDINALITY as usize,
+            expected_cardinality,
             "one series per distinct cpu (bounded by cardinality, not row count)"
         );
         // Each group is a single series, so its sum equals that cpu's value (index).
@@ -5135,6 +5139,7 @@ mod tests {
             .iter()
             .map(|s| {
                 let cpu: i64 = s.metric["cpu"].parse().unwrap();
+                #[allow(clippy::cast_possible_truncation)] // exact small integer sum
                 let v: i64 = s.value.1.parse::<f64>().unwrap() as i64;
                 assert_eq!(v, cpu, "sum of the single cpu={cpu} series is its value");
                 cpu
@@ -5145,7 +5150,9 @@ mod tests {
 
         // `without(mode)` (mode constant) yields the same per-cpu cardinality.
         let without = handle_instant(&engine, "sum without(mode) (m)", at, i64::MAX).await.unwrap();
-        assert_eq!(without.data.result.len(), HC_CARDINALITY as usize);
+        #[allow(clippy::cast_possible_truncation)] // small test-fixture cardinality
+        let expected_without = HC_CARDINALITY as usize;
+        assert_eq!(without.data.result.len(), expected_without);
         assert!(
             without.data.result.iter().all(|s| !s.metric.contains_key("mode")),
             "mode dropped by without()"
@@ -5154,6 +5161,7 @@ mod tests {
         // Grand total `sum(m)` collapses to one series = Σ cpu indices.
         let total = handle_instant(&engine, "sum(m)", at, i64::MAX).await.unwrap();
         assert_eq!(total.data.result.len(), 1, "grand total is one series");
+        #[allow(clippy::cast_precision_loss)] // small test-fixture cpu indices
         let expected: f64 = (0..HC_CARDINALITY).map(|c| c as f64).sum();
         assert_eq!(total.data.result[0].value.1, format!("{expected}"));
     }
@@ -5164,6 +5172,7 @@ mod tests {
     /// `std::time::Instant` only (no criterion dependency added to the run).
     #[tokio::test]
     #[ignore = "timing benchmark — run manually with --ignored --nocapture"]
+    #[allow(clippy::print_stderr)] // benchmark timing output (run with --nocapture)
     async fn bench_aggregate_24h() {
         use std::time::Instant;
         let engine = high_cardinality_engine().await;
@@ -5251,7 +5260,7 @@ mod tests {
         ]));
         let mk = || {
             RecordBatch::try_new(
-                schema.clone(),
+                Arc::clone(&schema),
                 vec![
                     Arc::new(StringArray::from(vec!["s"])),
                     Arc::new(StringArray::from(vec!["reqs"])),
@@ -5265,7 +5274,7 @@ mod tests {
         };
         for f in ["m.parquet", "rollup-5m.parquet"] {
             let file = std::fs::File::create(dir.join(f)).unwrap();
-            let mut w = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+            let mut w = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
             w.write(&mk()).unwrap();
             w.close().unwrap();
         }
@@ -5450,7 +5459,7 @@ mod tests {
         // Day-1 (live) sample at DAY+1m: 5.
         let n = 4usize;
         let raw = RecordBatch::try_new(
-            raw_schema.clone(),
+            Arc::clone(&raw_schema),
             vec![
                 Arc::new(StringArray::from(vec!["s"; n])),
                 Arc::new(StringArray::from(vec!["g"; n])),
@@ -5494,7 +5503,7 @@ mod tests {
         // One sealed bucket row at t=3m. `double_value` (last) = 20 — a wrong value
         // for both max (99) and avg (129/3=43). value_* carry the truth.
         let tier = RecordBatch::try_new(
-            tier_schema.clone(),
+            Arc::clone(&tier_schema),
             vec![
                 Arc::new(StringArray::from(vec!["s"])),
                 Arc::new(StringArray::from(vec!["g"])),
@@ -5782,10 +5791,12 @@ mod tests {
             Field::new("prom_name", DataType::Utf8, false),
         ]));
         let n = 41usize; // 0..40 → 10m at 15s
+        #[allow(clippy::cast_possible_wrap)] // small test-fixture index
         let times: Vec<i64> = (0..n).map(|k| (k as i64) * 15_000_000_000).collect();
+        #[allow(clippy::cast_precision_loss)] // small test-fixture index
         let vals: Vec<f64> = (0..n).map(|k| 100.0 * k as f64).collect();
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"; n])),
                 Arc::new(StringArray::from(vec!["c"; n])),
@@ -5842,10 +5853,12 @@ mod tests {
         ]));
         const STEP_NS: i64 = 300_000_000_000; // 5m sample interval
         let n = 361usize; // 360 steps × 5m = 30h → crosses one UTC midnight
+        #[allow(clippy::cast_possible_wrap)] // small test-fixture index
         let times: Vec<i64> = (0..n).map(|k| first_ns + (k as i64) * STEP_NS).collect();
+        #[allow(clippy::cast_precision_loss)] // small test-fixture index
         let vals: Vec<f64> = (0..n).map(|k| 300.0 * k as f64).collect(); // +300/step → 1/s
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(vec!["client"; n])),
                 Arc::new(StringArray::from(vec!["c"; n])),
@@ -5923,6 +5936,7 @@ mod tests {
         let pts = &resp.data.result[0].values;
         // Find the pair of adjacent grid points straddling midnight and assert the
         // rate barely changes (a boundary dip would be a sharp drop).
+        #[allow(clippy::cast_precision_loss)] // ns→s for the test boundary timestamp
         let boundary_s = midnight as f64 / 1e9;
         let mut checked = false;
         for w in pts.windows(2) {
@@ -6113,13 +6127,15 @@ mod tests {
         for (s, offset_s, inc) in [("a", 0i64, 100.0), ("b", 5, 200.0), ("c", 10, 300.0)] {
             for k in 0..n {
                 svc.push(s);
+                #[allow(clippy::cast_possible_wrap)] // small test-fixture index
                 times.push((k as i64) * 15_000_000_000 + offset_s * 1_000_000_000);
+                #[allow(clippy::cast_precision_loss)] // small test-fixture index
                 vals.push(inc * k as f64);
             }
         }
         let total = svc.len();
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(StringArray::from(svc)),
                 Arc::new(StringArray::from(vec!["m"; total])),

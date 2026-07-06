@@ -851,7 +851,7 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         let s = schema();
         let batch = RecordBatch::try_new(
-            s.clone(),
+            Arc::clone(&s),
             vec![
                 Arc::new(StringArray::from(svc.to_vec())),
                 Arc::new(TimestampNanosecondArray::from(ts.to_vec()).with_timezone("UTC")),
@@ -1037,6 +1037,7 @@ mod tests {
             // one row per file; services in reverse file order so a correct
             // merge/sort is required to produce ascending output.
             let svc = format!("s{:04}", n - 1 - i);
+            #[allow(clippy::cast_possible_wrap)] // small loop index test fixture
             write_raw(
                 &dir,
                 &format!("{i:05}-00-00.parquet"),
@@ -1095,7 +1096,9 @@ mod tests {
                 svcs.push(col.value(i).to_string());
             }
         }
-        assert_eq!(svcs.len(), (files as usize) * 3, "all rows preserved");
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)] // non-negative test count
+        let expected_rows = (files as usize) * 3;
+        assert_eq!(svcs.len(), expected_rows, "all rows preserved");
         let mut sorted = svcs.clone();
         sorted.sort();
         assert_eq!(svcs, sorted, "globally sorted across all files");
@@ -1133,7 +1136,9 @@ mod tests {
                 count += 1;
             }
         }
-        assert_eq!(count, n as usize, "all rows preserved");
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)] // non-negative test count
+        let expected_n = n as usize;
+        assert_eq!(count, expected_n, "all rows preserved");
         assert!(sorted, "output globally sorted");
     }
 
@@ -1158,10 +1163,11 @@ mod tests {
         // Compacted output must be ZSTD, not the default UNCOMPRESSED (else
         // compaction grows on-disk size vs the zstd raw inputs).
         let f = fs::File::open(&compacted).unwrap();
-        let md = ParquetRecordBatchReaderBuilder::try_new(f)
-            .unwrap()
-            .metadata()
-            .clone();
+        let md = Arc::clone(
+            ParquetRecordBatchReaderBuilder::try_new(f)
+                .unwrap()
+                .metadata(),
+        );
         let codec = md.row_group(0).column(0).compression();
         assert!(
             matches!(codec, datafusion::parquet::basic::Compression::ZSTD(_)),
@@ -1297,7 +1303,7 @@ mod tests {
                 Field::new("prom_name", DataType::Utf8, false),
             ]));
             let batch = RecordBatch::try_new(
-                s.clone(),
+                Arc::clone(&s),
                 vec![
                     Arc::new(StringArray::from(vec!["cpu", "cpu"])),
                     Arc::new(StringArray::from(vec!["s", "s"])),

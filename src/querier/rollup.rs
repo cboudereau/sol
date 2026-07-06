@@ -427,10 +427,11 @@ mod tests {
         // rollup reduces 6 raw samples to 3 (one per 5m bucket)
         let rolled_rows: usize = rolled.iter().map(RecordBatch::num_rows).sum();
         assert!(
-            rolled_rows < 6 && rolled_rows >= 1,
+            (1..6).contains(&rolled_rows),
             "downsampled to {rolled_rows} rows"
         );
 
+        #[allow(clippy::cast_precision_loss)] // ns→s over test-fixture timestamps
         let rate = |bs: &[RecordBatch]| {
             let mut pts: Vec<(i64, f64)> = Vec::new();
             for b in bs {
@@ -542,6 +543,7 @@ mod tests {
         let sum: f64 = f64_col(&rolled, "value_sum").iter().sum();
         let count: f64 = f64_col(&rolled, "value_count").iter().sum();
         let tier_avg = sum / count;
+        #[allow(clippy::cast_precision_loss)] // small test-fixture length
         let raw_avg = vals.iter().sum::<f64>() / vals.len() as f64;
         assert!(
             (tier_avg - raw_avg).abs() < 1e-9,
