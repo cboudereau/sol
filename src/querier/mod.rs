@@ -18,6 +18,7 @@ mod catalog;
 pub mod compaction;
 pub mod frontend;
 mod group_key;
+mod inventory;
 pub mod logql;
 pub mod loki;
 pub mod plan;

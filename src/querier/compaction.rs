@@ -39,12 +39,14 @@ const LEVEL_KEY: &str = "sol.compaction.level";
 const SUPERSEDES_KEY: &str = "sol.compaction.supersedes";
 /// Footer key: data resolution (`raw`/`5m`/`1h`/`1d`).
 const RESOLUTION_KEY: &str = "sol.compaction.resolution";
-/// Compacted-file name prefix.
-const COMPACTED_PREFIX: &str = "compacted-";
+/// Compacted-file name prefix. Shared with the file-interval parser
+/// (`super::inventory`), which reads the naming convention back.
+pub(super) const COMPACTED_PREFIX: &str = "compacted-";
 /// Prefix of downsampled rollup-tier files. These back the separate
 /// `metrics_5m/1h/1d` tables and are NOT part of the lossless union, so they
 /// are excluded from [`resolve_files`] (and never fed into a seal merge).
-const ROLLUP_PREFIX: &str = "rollup-";
+/// Shared with the file-interval parser (`super::inventory`).
+pub(super) const ROLLUP_PREFIX: &str = "rollup-";
 /// Memory budget for the seal/merge sort. The merge streams batches from disk
 /// and **spills sorted runs to disk** past this cap, so peak RAM is bounded
 /// regardless of how large a sealed day is — the fix for the midnight day-seal
@@ -541,8 +543,9 @@ fn parse_hour(name: &str) -> Option<u32> {
 }
 
 /// Nanoseconds at the *end* of hour `hour` on `date` (UTC) — i.e. the start of
-/// the next hour. Used for the intra-day compaction watermark.
-fn hour_end_ns(date: NaiveDate, hour: u32) -> i64 {
+/// the next hour. Used for the intra-day compaction watermark and by the
+/// file-interval parser (`super::inventory`) for `compacted-hHH-*` bounds.
+pub(super) fn hour_end_ns(date: NaiveDate, hour: u32) -> i64 {
     date.and_hms_opt(hour, 0, 0)
         .map(|dt| dt + ChronoDuration::hours(1))
         .and_then(|dt| dt.and_utc().timestamp_nanos_opt())

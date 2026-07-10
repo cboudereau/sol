@@ -108,8 +108,8 @@ classDiagram
 - `test_interval_overlap_semantics` — boundary overlap cases incl. margin
 **Verify**: `cargo test --lib querier::inventory && make check-clippy`
 **Acceptance criteria**:
-- [ ] All five tests green; parser lives beside the catalog (new `src/querier/inventory.rs` or module the implementer chooses)
-- [ ] During implementation, verify and document (code comment) whether the gateway file-sink `%H-%M-%S` template stamps write time or event time (check the file sink implementation), per the ADR's ⚠️
+- [x] All five tests green; parser lives beside the catalog (new `src/querier/inventory.rs` or module the implementer chooses)
+- [x] During implementation, verify and document (code comment) whether the gateway file-sink `%H-%M-%S` template stamps write time or event time (check the file sink implementation), per the ADR's ⚠️
 **Depends on**: (none)
 **Time-box**: ~60 min
 
