@@ -113,6 +113,21 @@ classDiagram
 **Depends on**: (none)
 **Time-box**: ~60 min
 
+### 1b. CONDITIONAL — self-describing file names at the gateway ([FR1](./DESIGN.md#fr1), only if [ADR option A′](./adrs/per-query-file-pruning.md) is ratified)
+**Goal**: The Parquet file sink names each metrics/logs/traces file with its batch's exact `time_unix_nano` bounds (`<min_ns>-<max_ns>-<uuid>.parquet`) so the inventory parses exact intervals; requires the demo store wipe at rollout.
+**Types**: gateway file-sink naming + codec exposing batch min/max; `parse_file_interval` extended for the new shape (exact bounds + skew constant)
+**Constraints**:
+- [ADR: per-query file pruning](./adrs/per-query-file-pruning.md) — A rules stay as fallback (unparseable/legacy names → conservative/unbounded); `compacted-*`/`rollup-*` naming untouched
+- Invariant: name bounds are exact min/max of the file's `time_unix_nano` values
+**Tests** (red → green):
+- `test_sink_filename_carries_batch_time_bounds` — encoded batch min/max appear in the produced file name
+- `test_interval_exact_bounds_name` — parser returns `[min, max + skew]` for the new shape
+**Verify**: `cargo test --lib querier::inventory && make check-clippy`
+**Acceptance criteria**:
+- [ ] Both tests green; demo README/compose note the store-wipe requirement for the rollout
+**Depends on**: task 1
+**Time-box**: ~60 min
+
 ### 2. Retained `FileInventory` + `QueryEngine::table_scoped` ([FR1](./DESIGN.md#fr1))
 **Goal**: Refresh retains the per-table file list with intervals; the engine can serve a time-scoped DataFrame over a filtered, unregistered provider.
 **Types**: `FileEntry`, `FileInventory`, `QueryScope`, `QueryEngine::table_scoped`
@@ -226,8 +241,8 @@ classDiagram
 
 ## Sessions
 
-### Session 1 — FR1: file pruning end-to-end (~3.75 H)
-Tasks: 1, 2, 3
+### Session 1 — FR1: file pruning end-to-end (~3.75 H; +1 H if A′)
+Tasks: 1, (1b if ADR A′ ratified), 2, 3
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes — commit after checkpoint passes
