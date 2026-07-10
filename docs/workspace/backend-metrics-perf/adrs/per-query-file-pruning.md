@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Per-query file pruning: retained inventory + time-scoped ephemeral providers
 
@@ -26,7 +26,7 @@ Facts that shape the options (explorer-verified):
 
 ## Decision
 
-**A′ if a store wipe is acceptable (recommended); A otherwise** — the two differ only in how tight the per-file interval is, and A's conservative rules remain A′'s fallback for any non-conforming name (unparseable → unbounded, always included), so A′ strictly contains A. Human choice at ratification since A′ breaks the on-disk layout.
+**Ratified: A′** (human decision, 2026-07-10) — store wipe accepted, sanctioned by the rollup-read-routing clean-cutover precedent. A's conservative rules remain the fallback for any non-conforming name (unparseable → unbounded, always included), so A′ strictly contains A.
 
 Interval rules, parsed once at refresh (A baseline; A′ replaces the raw-file rule with exact `[min_ns, max_ns + skew]` from the name):
 - `dt=YYYY-MM-DD` dir → base interval `[day_start, day_end)`.

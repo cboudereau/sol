@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Cache invalidation scope + single-flight execution
 

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Concurrency guardrail: enforce `max_concurrent_queries` or remove it
 

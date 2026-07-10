@@ -113,7 +113,7 @@ classDiagram
 **Depends on**: (none)
 **Time-box**: ~60 min
 
-### 1b. CONDITIONAL — self-describing file names at the gateway ([FR1](./DESIGN.md#fr1), only if [ADR option A′](./adrs/per-query-file-pruning.md) is ratified)
+### 1b. Self-describing file names at the gateway ([FR1](./DESIGN.md#fr1), [ADR A′ — ratified](./adrs/per-query-file-pruning.md))
 **Goal**: The Parquet file sink names each metrics/logs/traces file with its batch's exact `time_unix_nano` bounds (`<min_ns>-<max_ns>-<uuid>.parquet`) so the inventory parses exact intervals; requires the demo store wipe at rollout.
 **Types**: gateway file-sink naming + codec exposing batch min/max; `parse_file_interval` extended for the new shape (exact bounds + skew constant)
 **Constraints**:
@@ -241,8 +241,8 @@ classDiagram
 
 ## Sessions
 
-### Session 1 — FR1: file pruning end-to-end (~3.75 H; +1 H if A′)
-Tasks: 1, (1b if ADR A′ ratified), 2, 3
+### Session 1 — FR1: file pruning end-to-end (~4.75 H)
+Tasks: 1, 1b, 2, 3
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes — commit after checkpoint passes
