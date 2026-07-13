@@ -414,9 +414,12 @@ struct ScanStats {
 /// `bytes_scanned` is the `bytes_scanned` counter DataFusion's Parquet data
 /// source records per node (`MetricsSet::sum_by_name("bytes_scanned")`). Only
 /// the leaf scan nodes expose it, so summing over the whole tree double-counts
-/// nothing. `files_opened` is approximated by the scan node's output partition
-/// count (one partition per file group) — a robust proxy that avoids downcasting
-/// the trait-object data source, which is fragile across DataFusion versions.
+/// nothing. `files_opened` is the scan node's actual file count (every listed
+/// file has its footer opened at execution, even when its row groups are then
+/// stats-pruned — opening is the per-file cost FR1 eliminates), read from the
+/// `DataSourceExec`'s `FileScanConfig` ([`scan_file_count`]); if that downcast
+/// ever stops matching, it degrades to the output-partition-count proxy (one
+/// partition per file *group*, which under-counts grouped files but stays > 0).
 /// Must run **after** execution so the counters hold real values.
 fn scan_stats_from_plan(
     plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
@@ -427,9 +430,9 @@ fn scan_stats_from_plan(
         let bytes = value.as_usize() as u64;
         if bytes > 0 {
             stats.bytes_scanned += bytes;
-            // A node that reports bytes_scanned is a Parquet scan leaf; its
-            // output partition count is the number of file groups opened.
-            stats.files_opened += plan.output_partitioning().partition_count() as u64;
+            // A node that reports bytes_scanned is a Parquet scan leaf.
+            stats.files_opened += scan_file_count(plan.as_ref())
+                .unwrap_or_else(|| plan.output_partitioning().partition_count() as u64);
         }
     }
     for child in plan.children() {
@@ -438,6 +441,27 @@ fn scan_stats_from_plan(
         stats.files_opened += child_stats.files_opened;
     }
     stats
+}
+
+/// The number of files a scan leaf reads: the summed `FileScanConfig` group
+/// sizes of a `DataSourceExec`. `None` when `plan` is not a file scan (e.g. a
+/// `MemTable` leaf) or the concrete types change across a DataFusion upgrade —
+/// the caller then falls back to the partition-count proxy.
+fn scan_file_count(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> Option<u64> {
+    use datafusion::datasource::physical_plan::FileScanConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    let exec = plan.as_any().downcast_ref::<DataSourceExec>()?;
+    let config = exec
+        .data_source()
+        .as_any()
+        .downcast_ref::<FileScanConfig>()?;
+    Some(
+        config
+            .file_groups
+            .iter()
+            .map(|g| g.len() as u64)
+            .sum::<u64>(),
+    )
 }
 
 /// Derive the dashboard `signal` label from a logical plan's table scans:
@@ -599,17 +623,22 @@ impl QueryEngine {
     /// overlaps `scope` (± the pruning margin) — the per-query file-pruning
     /// entry point (FR1, [ADR](../../docs/workspace/backend-metrics-perf/adrs/per-query-file-pruning.md)).
     ///
-    /// The filtered list backs an **unregistered** `ListingTable` consumed via
-    /// `ctx.read_table`, so the registered tables (and the refresh swap
-    /// protocol) are untouched. Superset guarantee ⇒ result equality: filtered
-    /// to the same window, this returns identical rows to [`Self::table`] —
-    /// pruning is invisible in results. An all-pruned list yields an empty
-    /// `MemTable` with the table's schema; a name unknown to the inventory
-    /// falls back to the registered full table.
+    /// The filtered list backs an **unregistered** `ListingTable`, so the
+    /// registered tables (and the refresh swap protocol) are untouched.
+    /// Superset guarantee ⇒ result equality: filtered to the same window, this
+    /// returns identical rows to [`Self::table`] — pruning is invisible in
+    /// results. An all-pruned list yields an empty `MemTable` with the table's
+    /// schema; a name unknown to the inventory falls back to the registered
+    /// full table.
     ///
-    /// Note for callers caching the collected result: the unregistered scan
-    /// displays as an anonymous table in the logical plan, so the cache key
-    /// must carry the window (e.g. via time-filter literals in the plan).
+    /// Note for callers caching the collected result: the scan is built with
+    /// `name` as its plan-display table name (not `ctx.read_table`'s anonymous
+    /// `?table?`), so cache keys derived from the plan display keep the table
+    /// identity — two same-window scans of `metrics` vs a rollup tier must not
+    /// collide (their values differ). The cache key must additionally carry
+    /// the window itself, via the callers' usual time-filter literals in the
+    /// plan; any residual same-display collision is then between scans of the
+    /// same table over the same window, which result equality makes benign.
     pub async fn table_scoped(
         &self,
         name: &str,
@@ -624,7 +653,13 @@ impl QueryEngine {
         } else {
             listing_provider(&files, schema)?
         };
-        Ok(self.ctx.read_table(provider)?)
+        let source = datafusion::datasource::provider_as_source(provider);
+        let plan =
+            datafusion::logical_expr::LogicalPlanBuilder::scan(name, source, None)?.build()?;
+        Ok(datafusion::dataframe::DataFrame::new(
+            self.ctx.state(),
+            plan,
+        ))
     }
 
     /// Snapshot of the current file inventory (cheap `Arc` clone; the read

@@ -160,8 +160,8 @@ classDiagram
 - Existing `querier::` suite (≈220) is the regression net — all green
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Files-opened for a 15-min query on the multi-day fixture ≤ in-window file count (deterministic proxy for [NFR1](./DESIGN.md#nfr1))
-- [ ] Full `querier::` suite green, tier guard included
+- [x] Files-opened for a 15-min query on the multi-day fixture ≤ in-window file count (deterministic proxy for [NFR1](./DESIGN.md#nfr1))
+- [x] Full `querier::` suite green, tier guard included
 **Depends on**: task 2
 **Time-box**: ~90 min
 

@@ -101,6 +101,16 @@ fn time_between(start_ns: i64, end_ns: i64) -> Expr {
     .between(lit(start_ns), lit(end_ns))
 }
 
+/// The file-pruning scope of a `[start, end]`-windowed logs scan (FR1): every
+/// Loki range path filters `time_unix_nano` to exactly this window, so
+/// `engine.table_scoped("logs", …)` may skip files provably outside it.
+fn log_scope(start_ns: i64, end_ns: i64) -> super::QueryScope {
+    super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    }
+}
+
 /// Label LHS as an `Expr`: promoted `service_name` column, else `prom_attr` on
 /// the `resource_attributes` JSON column.
 fn label_lhs_expr(name: &str) -> Expr {
@@ -231,7 +241,10 @@ pub async fn build_streams(
         datafusion::arrow::datatypes::DataType::Int64,
     )
     .between(lit(start_ns), lit(end_ns));
-    let mut df = engine.table("logs").await?.filter(time)?;
+    let mut df = engine
+        .table_scoped("logs", log_scope(start_ns, end_ns))
+        .await?
+        .filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
@@ -287,7 +300,10 @@ pub async fn build_volume(
         datafusion::arrow::datatypes::DataType::Int64,
     )
     .between(lit(start_ns), lit(end_ns));
-    let mut df = engine.table("logs").await?.filter(time)?;
+    let mut df = engine
+        .table_scoped("logs", log_scope(start_ns, end_ns))
+        .await?
+        .filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
@@ -328,7 +344,10 @@ pub async fn build_series(
         datafusion::arrow::datatypes::DataType::Int64,
     )
     .between(lit(start_ns), lit(end_ns));
-    let mut df = engine.table("logs").await?.filter(time)?;
+    let mut df = engine
+        .table_scoped("logs", log_scope(start_ns, end_ns))
+        .await?
+        .filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
@@ -493,7 +512,7 @@ pub async fn handle_index_stats(
 
     let pred = selector_pred_expr(query).map_err(to_err)?;
     let mut df = engine
-        .table("logs")
+        .table_scoped("logs", log_scope(start_ns, end_ns))
         .await?
         .filter(time_between(start_ns, end_ns))?;
     if let Some(p) = pred {
@@ -539,7 +558,7 @@ pub async fn handle_index_volume(
     let end_s = end_ns as f64 / 1e9;
     let base = {
         let mut df = engine
-            .table("logs")
+            .table_scoped("logs", log_scope(start_ns, end_ns))
             .await?
             .filter(time_between(start_ns, end_ns))?;
         if let Some(p) = &pred {

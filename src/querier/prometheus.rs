@@ -152,7 +152,17 @@ async fn metadata_sources(
     let windows = resolve_metric_windows(engine, start_ns, end_ns, i64::MAX, Capability::Last, now_ns);
     let mut out = Vec::with_capacity(windows.len());
     for (table, lo, hi) in windows {
-        out.push(engine.table(&table).await?.filter(prom_time_between(lo, hi))?);
+        // FR1: each window scan prunes to its own `[lo, hi]` file interval.
+        let scope = super::QueryScope {
+            lo_ns: lo,
+            hi_ns: hi,
+        };
+        out.push(
+            engine
+                .table_scoped(&table, scope)
+                .await?
+                .filter(prom_time_between(lo, hi))?,
+        );
     }
     Ok(out)
 }
@@ -200,7 +210,18 @@ async fn metric_base_df(
         .name
         .as_deref()
         .ok_or_else(|| to_err("metric selector requires a name".to_string()))?;
-    let mut df = engine.table(table).await?.filter(name_pred_expr(name))?;
+    // FR1: prune the scan to the caller's window. `[start_ns, end_ns]` already
+    // includes any lookback the caller computed (shard `query_start_ns` /
+    // `instant_range_windows` LAG extension), so the scope is exactly the scan
+    // window — `table_scoped` must not re-widen beyond its fixed margin.
+    let scope = super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    };
+    let mut df = engine
+        .table_scoped(table, scope)
+        .await?
+        .filter(name_pred_expr(name))?;
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_expr(m) {
             df = df.filter(p)?;
@@ -753,7 +774,17 @@ async fn selector_base_df(
     use datafusion::arrow::datatypes::DataType::Int64;
     use datafusion::logical_expr::expr_fn::cast;
     use datafusion::prelude::{col, lit};
-    let mut df = engine.table(table).await?.filter(name_pred_expr(name))?;
+    // FR1: the `latest ≤ time_ns` base has only an upper bound (the latest
+    // sample may sit arbitrarily far back), so the scope is half-open — it
+    // prunes just the files that provably start after the instant.
+    let scope = super::QueryScope {
+        lo_ns: i64::MIN,
+        hi_ns: time_ns,
+    };
+    let mut df = engine
+        .table_scoped(table, scope)
+        .await?
+        .filter(name_pred_expr(name))?;
     for m in &vs.matchers.matchers {
         if let Some(p) = matcher_expr(m) {
             df = df.filter(p)?;
@@ -1372,7 +1403,15 @@ pub async fn build_label_values(
     // `label_values(up{service_name="X"}, host)` must restrict `host` to that
     // service, not list every host in the store — plus any caller `extra` pred.
     let scan = |table: String, lo: i64, hi: i64, extra: datafusion::prelude::Expr| async move {
-        let df = engine.table(&table).await?.filter(prom_time_between(lo, hi).and(extra))?;
+        // FR1: each window scan prunes to its own `[lo, hi]` file interval.
+        let scope = super::QueryScope {
+            lo_ns: lo,
+            hi_ns: hi,
+        };
+        let df = engine
+            .table_scoped(&table, scope)
+            .await?
+            .filter(prom_time_between(lo, hi).and(extra))?;
         apply_match_selector(df, matcher)
     };
     // UNION the per-window value projections into one distinct, sorted result.
@@ -2127,8 +2166,13 @@ async fn hist_scan(
     lo: i64,
     hi: i64,
 ) -> crate::Result<datafusion::prelude::DataFrame> {
+    // FR1: prune the scan to the resolver window's `[lo, hi]` file interval.
+    let scope = super::QueryScope {
+        lo_ns: lo,
+        hi_ns: hi,
+    };
     let mut df = engine
-        .table(table)
+        .table_scoped(table, scope)
         .await?
         .filter(prom_name_expr().eq(datafusion::prelude::lit(base.to_string())))?;
     for p in preds {
@@ -2434,8 +2478,14 @@ async fn hist_instant_scan(
     use datafusion::arrow::datatypes::DataType::Int64;
     use datafusion::logical_expr::expr_fn::cast as df_cast;
     use datafusion::prelude::{col, lit};
+    // FR1: like `selector_base_df`, the `latest ≤ time_ns` base is half-open —
+    // only files provably starting after the instant are pruned.
+    let scope = super::QueryScope {
+        lo_ns: i64::MIN,
+        hi_ns: time_ns,
+    };
     let mut df = engine
-        .table(table)
+        .table_scoped(table, scope)
         .await?
         .filter(prom_name_expr().eq(lit(name.to_string())))?;
     for m in &vs.matchers.matchers {
@@ -4084,7 +4134,10 @@ mod tests {
         const M5: i64 = 300_000_000_000;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let dir = tmp.path().join("metrics").join("sum").join("dt=2026-06-01");
+        // dt=1970-01-01: the epoch day the fixture's epoch-relative timestamps
+        // actually live in — a `rollup-*.parquet` file's pruning interval (FR1)
+        // is parsed from its `dt=` day, so a mismatched day would prune it out.
+        let dir = tmp.path().join("metrics").join("sum").join("dt=1970-01-01");
         std::fs::create_dir_all(&dir).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
@@ -4479,11 +4532,13 @@ mod tests {
         const M5: i64 = 300_000_000_000;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        // dt=1970-01-01: matches the epoch-relative timestamps (the rollup
+        // file's FR1 pruning interval derives from the `dt=` day).
         let dir = tmp
             .path()
             .join("metrics")
             .join("histogram")
-            .join("dt=2026-06-01");
+            .join("dt=1970-01-01");
         std::fs::create_dir_all(&dir).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
@@ -4624,11 +4679,15 @@ mod tests {
         // in first bucket → p95≈9.5 must come from raw (no tier covers it).
         let raw_d2 = mk(2 * DAY_NS, "[100,0,0,0,0,0]");
 
+        // dt=1970-01-01: matches the epoch-relative timestamps (the rollup
+        // file's FR1 pruning interval derives from the `dt=` day). The raw
+        // `h.parquet` name is interval-unparseable → unbounded, so its day-2
+        // row is reachable from this day-0 dir either way.
         let d0 = tmp
             .path()
             .join("metrics")
             .join("histogram")
-            .join("dt=2026-06-01");
+            .join("dt=1970-01-01");
         std::fs::create_dir_all(&d0).unwrap();
         let f = std::fs::File::create(d0.join("h.parquet")).unwrap();
         let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
@@ -5244,7 +5303,9 @@ mod tests {
         use std::sync::Arc;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let dir = tmp.path().join("metrics").join("sum").join("dt=2026-06-01");
+        // dt=1970-01-01: matches the t=0 sample (the rollup file's FR1 pruning
+        // interval derives from the `dt=` day).
+        let dir = tmp.path().join("metrics").join("sum").join("dt=1970-01-01");
         std::fs::create_dir_all(&dir).unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("service_name", DataType::Utf8, false),
@@ -5439,7 +5500,9 @@ mod tests {
         use std::sync::Arc;
 
         let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let dir = tmp.path().join("metrics").join("gauge").join("dt=2026-06-01");
+        // dt=1970-01-01: matches the epoch-relative timestamps (the rollup
+        // file's FR1 pruning interval derives from the `dt=` day).
+        let dir = tmp.path().join("metrics").join("gauge").join("dt=1970-01-01");
         std::fs::create_dir_all(&dir).unwrap();
 
         // Raw schema (no value_* cols — the catalog adapter nulls them for raw).
@@ -6387,6 +6450,203 @@ mod tests {
                 "{query}: None capability must yield a single raw window, never a tier"
             );
         }
+    }
+
+    // --- backend-metrics-perf task 3: per-query file pruning (FR1) ---
+
+    /// Write an exact-bounds-named gauge file (`<min>-<max>-<uuid>.parquet`,
+    /// task 1b sink naming) under `metrics/dt=<day>/`, one `m` sample per
+    /// timestamp — so the file inventory parses exact per-file intervals and
+    /// `table_scoped` can prune it in/out per query window (FR1 fixtures).
+    fn write_bounded_gauge(root: &std::path::Path, day: &str, times_ns: &[i64]) {
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let (min, max) = (times_ns[0], times_ns[times_ns.len() - 1]);
+        let dir = root.join("metrics").join(format!("dt={day}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!(
+            "{min}-{max}-550e8400-e29b-41d4-a716-446655440000.parquet"
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let n = times_ns.len();
+        #[allow(clippy::cast_precision_loss)]
+        let values: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(TimestampNanosecondArray::from(times_ns.to_vec()).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                Arc::new(Float64Array::from(values)),
+                Arc::new(StringArray::from(vec!["m"; n])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+    }
+
+    fn pruning_opts(path: &std::path::Path) -> crate::config::querier::QuerierOptions {
+        crate::config::querier::QuerierOptions {
+            storage: crate::config::querier::StorageConfig {
+                path: path.into(),
+                url: None,
+            },
+            ..crate::config::querier::QuerierOptions::default()
+        }
+    }
+
+    /// FR1/NFR1 (task 3): a 15-min range query over a 3-day store opens only
+    /// the in-window file. Files-opened is observed via the `DebuggingRecorder`
+    /// pattern (`catalog::test_query_records_real_bytes_scanned` precedent):
+    /// `execute_recording_scan` records the executed plan's scan partition
+    /// count (1 file group per file) as `querier_files_opened` — a
+    /// deterministic proxy for "footers opened". Pre-pruning this scans all 3
+    /// files; scoped, exactly the 1 in-window file.
+    #[test]
+    fn test_range_query_opens_only_window_files() {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        const MINUTE_NS: i64 = 60_000_000_000;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        const DAY_NS: i64 = 24 * HOUR_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+
+        // `with_local_recorder` installs a thread-local recorder, so run the
+        // whole build+query on one dedicated thread whose own current-thread
+        // runtime drives the async work.
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    // 3 days, one exact-bounds file each: 100 one-minute samples
+                    // from noon (enough rows that the scan reports bytes > 0).
+                    for (d, day) in [(0, "2026-06-01"), (1, "2026-06-02"), (2, "2026-06-03")] {
+                        let noon = JUN01_NS + d * DAY_NS + 12 * HOUR_NS;
+                        let times: Vec<i64> = (0..100).map(|i| noon + i * MINUTE_NS).collect();
+                        write_bounded_gauge(tmp.path(), day, &times);
+                    }
+                    let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
+                        .await
+                        .unwrap();
+                    // 15-min query at noon on day 2: the ±1 h pruning margin
+                    // still reaches no other day's file.
+                    let lo = JUN01_NS + DAY_NS + 12 * HOUR_NS;
+                    let hi = lo + 15 * MINUTE_NS;
+                    let resp = handle_range(&engine, "m", lo, hi, MINUTE_NS, hi)
+                        .await
+                        .unwrap();
+                    assert!(
+                        !resp.data.result.is_empty(),
+                        "query must return the day-2 series"
+                    );
+                });
+            });
+        })
+        .join()
+        .unwrap();
+
+        let s = snap.snapshot().into_vec();
+        let files = s.iter().find_map(|(k, _, _, v)| {
+            (k.kind() == MetricKind::Histogram
+                && k.key().name() == "querier_files_opened"
+                && k.key()
+                    .labels()
+                    .any(|l| l.key() == "signal" && l.value() == "metrics"))
+            .then_some(v)
+        });
+        let DebugValue::Histogram(samples) = files.expect("files_opened histogram for metrics")
+        else {
+            panic!("expected histogram value");
+        };
+        let total: f64 = samples.iter().map(|h| h.into_inner()).sum();
+        assert!(
+            (total - 1.0).abs() < f64::EPSILON,
+            "15-min query over the 3-day store must open only the 1 in-window file, \
+             opened: {total} ({samples:?})"
+        );
+    }
+
+    /// FR1 result-equality (task 3): a window spanning a day boundary returns
+    /// results identical to the unscoped path. The baseline engine's inventory
+    /// is emptied so every `table_scoped` call falls back to the registered
+    /// full table — byte-for-byte the pre-pruning behaviour — over the same
+    /// store; the pruned engine must produce the identical matrix.
+    #[tokio::test]
+    async fn test_cross_day_query_correct() {
+        const MINUTE_NS: i64 = 60_000_000_000;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        const DAY_NS: i64 = 24 * HOUR_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        // One exact-bounds file each side of midnight: day 1 23:00–23:49 and
+        // day 2 00:05–00:44, one sample per minute.
+        let d1: Vec<i64> = (0..50)
+            .map(|i| JUN01_NS + 23 * HOUR_NS + i * MINUTE_NS)
+            .collect();
+        write_bounded_gauge(tmp.path(), "2026-06-01", &d1);
+        let d2: Vec<i64> = (5..45).map(|i| JUN01_NS + DAY_NS + i * MINUTE_NS).collect();
+        write_bounded_gauge(tmp.path(), "2026-06-02", &d2);
+
+        let opts = pruning_opts(tmp.path());
+        let pruned = crate::querier::QueryEngine::new(&opts).await.unwrap();
+        let full = crate::querier::QueryEngine::new(&opts).await.unwrap();
+        full.set_inventory_for_test(crate::querier::FileInventory::default());
+
+        let lo = JUN01_NS + 23 * HOUR_NS;
+        let hi = JUN01_NS + DAY_NS + 45 * MINUTE_NS;
+        let step = 5 * MINUTE_NS;
+        let a = handle_range(&pruned, "m", lo, hi, step, hi).await.unwrap();
+        let b = handle_range(&full, "m", lo, hi, step, hi).await.unwrap();
+        let (a, b) = (
+            serde_json::to_value(&a).unwrap(),
+            serde_json::to_value(&b).unwrap(),
+        );
+        assert_eq!(
+            a, b,
+            "pruned result must equal the unscoped full-scan result"
+        );
+
+        // Sanity: the (identical) result actually spans the midnight boundary.
+        let points = a["data"]["result"][0]["values"].as_array().unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let midnight = (JUN01_NS + DAY_NS) as f64 / 1e9;
+        assert!(
+            points.iter().any(|p| p[0].as_f64().unwrap() < midnight),
+            "points before midnight expected: {points:?}"
+        );
+        assert!(
+            points.iter().any(|p| p[0].as_f64().unwrap() >= midnight),
+            "points after midnight expected: {points:?}"
+        );
     }
 
     /// NFR3 (no silent bypass) — source guard, mirroring `no_sql_invariant_tests`

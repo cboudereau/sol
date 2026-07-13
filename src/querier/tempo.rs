@@ -239,7 +239,14 @@ pub async fn build_search(
         datafusion::arrow::datatypes::DataType::Int64,
     )
     .between(lit(start_ns), lit(end_ns));
-    let mut df = engine.table("traces").await?.filter(time)?;
+    // FR1: prune the scan to the search window. Trace file names carry exact
+    // min/max `start_time_unix_nano` bounds (the codec's `span_time_bounds`),
+    // the same column this window filters on.
+    let scope = super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    };
+    let mut df = engine.table_scoped("traces", scope).await?.filter(time)?;
     if let Some(p) = pred {
         df = df.filter(p)?;
     }
