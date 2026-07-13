@@ -143,7 +143,7 @@ classDiagram
 - `test_table_scoped_unknown_table_falls_back` — behaves as `engine.table`
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] All four tests green; no change to registered-table behaviour (existing catalog tests untouched and green)
+- [x] All four tests green; no change to registered-table behaviour (existing catalog tests untouched and green)
 **Depends on**: task 1
 **Time-box**: ~75 min
 

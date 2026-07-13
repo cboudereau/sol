@@ -23,6 +23,7 @@ use datafusion::datasource::listing::{
 use datafusion::execution::context::SessionContext;
 use datafusion::prelude::SessionConfig;
 
+use super::inventory::{FileInventory, QueryScope};
 use crate::config::querier::QuerierOptions;
 
 /// A logical table registered in the query engine, backed by one signal directory.
@@ -204,28 +205,17 @@ impl ParquetCatalog {
     }
 
     /// Build the `(table_name, provider)` set for every signal table + present
-    /// rollup tier, doing the file-listing walk. Pure (no `ctx` mutation), so a
-    /// `refresh` can build the new providers while the old tables stay live, then
-    /// swap them in (see [`refresh`]).
-    async fn build_providers(&self) -> crate::Result<Vec<(String, Arc<dyn TableProvider>)>> {
+    /// rollup tier, doing the file-listing walk — plus the [`FileInventory`]
+    /// over the **same** walked file lists (per-query file-pruning ADR: the
+    /// inventory and the registered tables derive from one walk, so they
+    /// cannot diverge). Pure (no `ctx` mutation), so a `refresh` can build the
+    /// new providers while the old tables stay live, then swap them in (see
+    /// [`refresh`]).
+    async fn build_providers(
+        &self,
+    ) -> crate::Result<(Vec<(String, Arc<dyn TableProvider>)>, FileInventory)> {
         let mut out: Vec<(String, Arc<dyn TableProvider>)> = Vec::new();
-        let listing = |paths: Vec<ListingTableUrl>, schema| -> crate::Result<Arc<dyn TableProvider>> {
-            // Schema is explicit, so don't let DataFusion open every file's footer
-            // for stats at plan time — with thousands of files that exhausts the
-            // fd limit (EMFILE).
-            let options =
-                ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
-            let config = ListingTableConfig::new_with_multi_paths(paths)
-                .with_listing_options(options)
-                .with_schema(schema);
-            Ok(Arc::new(ListingTable::try_new(config)?))
-        };
-        let urls = |files: &[PathBuf]| {
-            files
-                .iter()
-                .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
-                .collect::<Result<Vec<_>, _>>()
-        };
+        let mut inventory = FileInventory::default();
         for table in SignalTable::ALL {
             let dir = self.root.join(table.listing_dir());
             let schema = table.arrow_schema();
@@ -240,12 +230,11 @@ impl ParquetCatalog {
                 Vec::new()
             };
             let provider: Arc<dyn TableProvider> = if files.is_empty() {
-                // Absent/empty → empty table with the declared schema
-                // (one empty partition; MemTable requires ≥1 partition).
-                Arc::new(MemTable::try_new(schema, vec![vec![]])?)
+                empty_provider(schema)?
             } else {
-                listing(urls(&files)?, schema)?
+                listing_provider(&files, schema)?
             };
+            inventory.insert_table(table.table_name(), &files);
             out.push((table.table_name().to_string(), provider));
         }
         // Rollup tier tables (FR6): metrics_5m / metrics_1h / metrics_1d over the
@@ -258,21 +247,22 @@ impl ParquetCatalog {
             if files.is_empty() {
                 continue;
             }
-            out.push((
-                format!("metrics_{tier}"),
-                listing(urls(&files)?, Arc::clone(&metric_schema))?,
-            ));
+            let name = format!("metrics_{tier}");
+            inventory.insert_table(name.as_str(), &files);
+            out.push((name, listing_provider(&files, Arc::clone(&metric_schema))?));
         }
-        Ok(out)
+        Ok((out, inventory))
     }
 
     /// Register every signal table in `ctx`. An absent or empty directory is not an
-    /// error — it registers as an empty table (count == 0).
-    pub async fn register(&self, ctx: &SessionContext) -> crate::Result<()> {
-        for (name, provider) in self.build_providers().await? {
+    /// error — it registers as an empty table (count == 0). Returns the
+    /// [`FileInventory`] built from the same walk as the registered tables.
+    pub async fn register(&self, ctx: &SessionContext) -> crate::Result<FileInventory> {
+        let (providers, inventory) = self.build_providers().await?;
+        for (name, provider) in providers {
             ctx.register_table(name, provider)?;
         }
-        Ok(())
+        Ok(inventory)
     }
 
     /// Re-register tables to pick up newly-created directories / files
@@ -288,8 +278,12 @@ impl ParquetCatalog {
     /// swap each in with a tight `deregister`→`register` pair with **no `await`
     /// between** (catalog map ops), shrinking the unregistered window per table
     /// from the whole walk to effectively nothing.
-    pub async fn refresh(&self, ctx: &SessionContext) -> crate::Result<()> {
-        let providers = self.build_providers().await?;
+    ///
+    /// Returns the new [`FileInventory`] built from the same walk as the
+    /// swapped-in providers; the caller ([`QueryEngine::refresh`]) swaps it in
+    /// right after the table swap — build everything first, then swap both.
+    pub async fn refresh(&self, ctx: &SessionContext) -> crate::Result<FileInventory> {
+        let (providers, inventory) = self.build_providers().await?;
         let present: std::collections::HashSet<&str> =
             providers.iter().map(|(n, _)| n.as_str()).collect();
         for (name, provider) in &providers {
@@ -304,12 +298,50 @@ impl ParquetCatalog {
                 let _ = ctx.deregister_table(name.as_str());
             }
         }
-        Ok(())
+        Ok(inventory)
     }
 }
 
 /// Rollup tier labels matching [`super::rollup::RollupTier::label`].
 const ROLLUP_TIERS: [&str; 3] = ["5m", "1h", "1d"];
+
+/// A `ListingTable` provider over an explicit file list with the declared
+/// schema. Schema is explicit, so don't let DataFusion open every file's
+/// footer for stats at plan time — with thousands of files that exhausts the
+/// fd limit (EMFILE). Used both for the registered tables
+/// ([`ParquetCatalog::build_providers`]) and for the per-query scoped,
+/// **unregistered** providers ([`QueryEngine::table_scoped`]).
+fn listing_provider(files: &[PathBuf], schema: SchemaRef) -> crate::Result<Arc<dyn TableProvider>> {
+    let paths = files
+        .iter()
+        .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
+        .collect::<Result<Vec<_>, _>>()?;
+    let options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
+    let config = ListingTableConfig::new_with_multi_paths(paths)
+        .with_listing_options(options)
+        .with_schema(schema);
+    Ok(Arc::new(ListingTable::try_new(config)?))
+}
+
+/// An empty table with the declared schema (one empty partition; `MemTable`
+/// requires ≥ 1 partition) — for an absent/empty directory or an all-pruned
+/// scoped file list.
+fn empty_provider(schema: SchemaRef) -> crate::Result<Arc<dyn TableProvider>> {
+    Ok(Arc::new(MemTable::try_new(schema, vec![vec![]])?))
+}
+
+/// Declared schema of a registered table name (signal tables + rollup tiers,
+/// which share the metric union schema); `None` for anything else.
+fn table_schema(name: &str) -> Option<SchemaRef> {
+    match name {
+        "logs" => Some(SignalTable::Logs.arrow_schema()),
+        "traces" => Some(SignalTable::Traces.arrow_schema()),
+        "metrics" | "metrics_5m" | "metrics_1h" | "metrics_1d" => {
+            Some(SignalTable::Metrics.arrow_schema())
+        }
+        _ => None,
+    }
+}
 
 /// Collect `rollup-<tier>.parquet` files at any depth under the metrics root.
 fn rollup_tier_files(metrics_root: &std::path::Path, tier: &str) -> Vec<PathBuf> {
@@ -451,6 +483,12 @@ pub struct QueryEngine {
     cache: super::cache::MokaQueryCache,
     storage_root: std::path::PathBuf,
     max_scan_bytes: u64,
+    /// Per-table file inventory for per-query pruning (FR1) — always built
+    /// from the same `build_providers` walk as the registered tables and
+    /// swapped right after them at [`Self::refresh`]. The engine's single
+    /// interior-mutability point: readers snapshot the `Arc` and drop the
+    /// guard before any `await`.
+    inventory: std::sync::RwLock<Arc<FileInventory>>,
 }
 
 impl QueryEngine {
@@ -480,7 +518,7 @@ impl QueryEngine {
         // Metric-name normalization is materialized into the `prom_name` column at
         // write time (codec), so no read-time `prom_metric_name` UDF is registered.
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
-        catalog.register(&ctx).await?;
+        let inventory = catalog.register(&ctx).await?;
         Ok(Self {
             ctx,
             catalog,
@@ -490,6 +528,7 @@ impl QueryEngine {
             ),
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
+            inventory: std::sync::RwLock::new(Arc::new(inventory)),
         })
     }
 
@@ -556,6 +595,59 @@ impl QueryEngine {
         Ok(self.ctx.table(name).await?)
     }
 
+    /// A `DataFrame` over `name` restricted to the files whose interval
+    /// overlaps `scope` (± the pruning margin) — the per-query file-pruning
+    /// entry point (FR1, [ADR](../../docs/workspace/backend-metrics-perf/adrs/per-query-file-pruning.md)).
+    ///
+    /// The filtered list backs an **unregistered** `ListingTable` consumed via
+    /// `ctx.read_table`, so the registered tables (and the refresh swap
+    /// protocol) are untouched. Superset guarantee ⇒ result equality: filtered
+    /// to the same window, this returns identical rows to [`Self::table`] —
+    /// pruning is invisible in results. An all-pruned list yields an empty
+    /// `MemTable` with the table's schema; a name unknown to the inventory
+    /// falls back to the registered full table.
+    ///
+    /// Note for callers caching the collected result: the unregistered scan
+    /// displays as an anonymous table in the logical plan, so the cache key
+    /// must carry the window (e.g. via time-filter literals in the plan).
+    pub async fn table_scoped(
+        &self,
+        name: &str,
+        scope: QueryScope,
+    ) -> crate::Result<datafusion::dataframe::DataFrame> {
+        let files = self.inventory_snapshot().scoped_files(name, scope);
+        let (Some(files), Some(schema)) = (files, table_schema(name)) else {
+            return self.table(name).await;
+        };
+        let provider = if files.is_empty() {
+            empty_provider(schema)?
+        } else {
+            listing_provider(&files, schema)?
+        };
+        Ok(self.ctx.read_table(provider)?)
+    }
+
+    /// Snapshot of the current file inventory (cheap `Arc` clone; the read
+    /// guard never crosses an `await`).
+    pub(crate) fn inventory_snapshot(&self) -> Arc<FileInventory> {
+        Arc::clone(
+            &self
+                .inventory
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Replace the inventory (tests only — e.g. to exercise the
+    /// unknown-to-inventory fallback of [`Self::table_scoped`]).
+    #[cfg(test)]
+    pub(crate) fn set_inventory_for_test(&self, inventory: FileInventory) {
+        *self
+            .inventory
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(inventory);
+    }
+
     /// Execute a built `DataFrame`, collecting Arrow batches — the plan-based twin
     /// of [`Self::sql`]. Cached on the plan's indented display (ADR: plan-cache-keying),
     /// reusing the same moka cache + telemetry contract.
@@ -607,9 +699,18 @@ impl QueryEngine {
     /// Re-list storage for newly written files (called periodically by the
     /// server). Invalidates the query cache so freshly discovered data is
     /// visible immediately rather than after the TTL.
+    ///
+    /// The file inventory is swapped right after the tables, from the same
+    /// `build_providers` walk (built fully before either swap) — the ADR
+    /// invariant "inventory and registered tables derive from the same walk;
+    /// replace both or neither".
     pub async fn refresh(&self) -> crate::Result<()> {
         use super::cache::QueryCache;
-        self.catalog.refresh(&self.ctx).await?;
+        let inventory = self.catalog.refresh(&self.ctx).await?;
+        *self
+            .inventory
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(inventory);
         self.cache.clear();
         Ok(())
     }
@@ -891,6 +992,266 @@ mod tests {
         assert_eq!(signal_of_table("metrics_1h"), Some("metrics"));
         assert_eq!(signal_of_table("metrics_1d"), Some("metrics"));
         assert_eq!(signal_of_table("unknown"), None);
+    }
+
+    // ---- backend-metrics-perf task 2: retained inventory + table_scoped ----
+
+    use crate::querier::inventory::{FileInventory, QueryScope};
+
+    const NS_PER_SEC: i64 = 1_000_000_000;
+    const MINUTE_NS: i64 = 60 * NS_PER_SEC;
+    const HOUR_NS: i64 = 60 * MINUTE_NS;
+    const DAY_NS: i64 = 24 * HOUR_NS;
+    /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+    const JUN01_NS: i64 = 1_780_272_000 * NS_PER_SEC;
+    /// The whole timeline — every parsed interval overlaps it.
+    const ALL_TIME: QueryScope = QueryScope {
+        lo_ns: i64::MIN,
+        hi_ns: i64::MAX,
+    };
+
+    /// Write a minimal log file under `logs/dt=<day>/` with the task-1b
+    /// exact-bounds name `<min>-<max>-<uuid>.parquet` covering
+    /// `[day+12:00, day+12:30]`, so the inventory parses an exact interval.
+    fn write_bounded_log(root: &std::path::Path, day: &str, day_ns: i64, rows: i64) -> PathBuf {
+        let min = day_ns + 12 * HOUR_NS;
+        let max = min + 30 * MINUTE_NS;
+        let times: Vec<i64> = (0..rows).map(|i| min + i * MINUTE_NS).collect();
+        write_timed_log(root, day, min, max, &times)
+    }
+
+    /// Row-count helper for an unregistered (scoped) DataFrame.
+    async fn rows(df: datafusion::dataframe::DataFrame) -> usize {
+        df.collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum()
+    }
+
+    /// Write a log file under `logs/dt=<day>/` with the exact-bounds name
+    /// `<min>-<max>-<uuid>.parquet` and one row per timestamp in `times_ns`
+    /// (the sink invariant: the name carries the batch's true min/max).
+    fn write_timed_log(
+        root: &std::path::Path,
+        day: &str,
+        min_ns: i64,
+        max_ns: i64,
+        times_ns: &[i64],
+    ) -> PathBuf {
+        use datafusion::arrow::array::TimestampNanosecondArray;
+        let dir = root.join("logs").join(format!("dt={day}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!(
+            "{min_ns}-{max_ns}-550e8400-e29b-41d4-a716-446655440000.parquet"
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            ts("time_unix_nano", true),
+        ]));
+        let svc: Vec<&str> = std::iter::repeat_n("svc", times_ns.len()).collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(svc)),
+                Arc::new(TimestampNanosecondArray::from(times_ns.to_vec()).with_timezone("UTC")),
+            ],
+        )
+        .unwrap();
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        path
+    }
+
+    /// `CAST(time_unix_nano AS BIGINT) BETWEEN lo AND hi` (mirrors
+    /// `prometheus::prom_time_between`).
+    fn window_filter(lo_ns: i64, hi_ns: i64) -> datafusion::logical_expr::Expr {
+        use datafusion::logical_expr::expr_fn::cast;
+        use datafusion::prelude::{col, lit};
+        cast(col("time_unix_nano"), DataType::Int64).between(lit(lo_ns), lit(hi_ns))
+    }
+
+    #[tokio::test]
+    async fn test_inventory_built_on_refresh() {
+        // Inventory and registered tables derive from the same build_providers
+        // walk — built at register time, replaced (both) at refresh.
+        let tmp = tempfile::tempdir().unwrap();
+        for (i, day) in [(0, "2026-06-01"), (1, "2026-06-02"), (2, "2026-06-03")] {
+            write_bounded_log(tmp.path(), day, JUN01_NS + i * DAY_NS, 1);
+        }
+        // A rollup tier file is part of the same walk → scoped-capable too.
+        let tier_dir = tmp
+            .path()
+            .join("metrics")
+            .join("gauge")
+            .join("dt=2026-06-01");
+        std::fs::create_dir_all(&tier_dir).unwrap();
+        write_min_log_parquet(&tier_dir.join("rollup-1h.parquet"), 1);
+
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        let inv = engine.inventory_snapshot();
+        assert_eq!(inv.scoped_files("logs", ALL_TIME).unwrap().len(), 3);
+        assert_eq!(inv.scoped_files("traces", ALL_TIME).unwrap().len(), 0);
+        assert_eq!(inv.scoped_files("metrics_1h", ALL_TIME).unwrap().len(), 1);
+        assert!(inv.scoped_files("nope", ALL_TIME).is_none());
+
+        // A 4th day appears; refresh swaps in a new inventory with it.
+        write_bounded_log(tmp.path(), "2026-06-04", JUN01_NS + 3 * DAY_NS, 1);
+        engine.refresh().await.unwrap();
+        let inv = engine.inventory_snapshot();
+        assert_eq!(inv.scoped_files("logs", ALL_TIME).unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_table_scoped_excludes_out_of_window_files() {
+        // 15-min scope over a 3-day fixture: only the in-window file is listed
+        // and scanned; the registered full table is untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let day2 = JUN01_NS + DAY_NS;
+        write_bounded_log(tmp.path(), "2026-06-01", JUN01_NS, 1);
+        let in_window = write_bounded_log(tmp.path(), "2026-06-02", day2, 2);
+        write_bounded_log(tmp.path(), "2026-06-03", JUN01_NS + 2 * DAY_NS, 4);
+
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        // 12:00–12:15 on day 2; the ±1 h margin still reaches no other day.
+        let scope = QueryScope {
+            lo_ns: day2 + 12 * HOUR_NS,
+            hi_ns: day2 + 12 * HOUR_NS + 15 * MINUTE_NS,
+        };
+        assert_eq!(
+            engine
+                .inventory_snapshot()
+                .scoped_files("logs", scope)
+                .unwrap(),
+            vec![in_window.clone()]
+        );
+        let scoped = engine.table_scoped("logs", scope).await.unwrap();
+        assert_eq!(rows(scoped).await, 2);
+        // Empty filtered list → empty MemTable with the table's schema.
+        let empty_scope = QueryScope {
+            lo_ns: 0,
+            hi_ns: 1_000,
+        };
+        let empty = engine.table_scoped("logs", empty_scope).await.unwrap();
+        assert_eq!(empty.schema().fields().len(), 18);
+        assert_eq!(rows(empty).await, 0);
+        // Registered full table behaviour unchanged.
+        assert_eq!(count(&engine, "logs").await, 7);
+    }
+
+    #[tokio::test]
+    async fn test_table_scoped_equals_full_table_filtered() {
+        // Result-equality invariant: the scoped table filtered to the window
+        // returns identical rows to the full registered table under the same
+        // filter — pruning is invisible in results. The scoped file list is a
+        // subset of the full table's files, so scoped rows ⊆ full rows and
+        // count equality ⇒ row equality.
+        let tmp = tempfile::tempdir().unwrap();
+        let day2 = JUN01_NS + DAY_NS;
+        let noon = day2 + 12 * HOUR_NS;
+        // A: straddles the scope's lower boundary (some rows in, some out).
+        write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            noon - 30 * MINUTE_NS,
+            noon + 10 * MINUTE_NS,
+            &[
+                noon - 30 * MINUTE_NS,
+                noon + 5 * MINUTE_NS,
+                noon + 10 * MINUTE_NS,
+            ],
+        );
+        // B: fully inside the scope.
+        write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            noon + MINUTE_NS,
+            noon + 14 * MINUTE_NS,
+            &[
+                noon + MINUTE_NS,
+                noon + 7 * MINUTE_NS,
+                noon + 14 * MINUTE_NS,
+            ],
+        );
+        // D: entirely below the scope but within the 1 h margin → superset
+        // guarantee says it must be INCLUDED (contributes 0 rows post-filter).
+        let d = write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            noon - 70 * MINUTE_NS,
+            noon - 30 * MINUTE_NS,
+            &[noon - 70 * MINUTE_NS, noon - 30 * MINUTE_NS],
+        );
+        // C: a day earlier, outside scope + margin → excluded.
+        write_timed_log(
+            tmp.path(),
+            "2026-06-01",
+            JUN01_NS + 12 * HOUR_NS,
+            JUN01_NS + 12 * HOUR_NS + 30 * MINUTE_NS,
+            &[
+                JUN01_NS + 12 * HOUR_NS,
+                JUN01_NS + 12 * HOUR_NS + 10 * MINUTE_NS,
+            ],
+        );
+
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        let scope = QueryScope {
+            lo_ns: noon,
+            hi_ns: noon + 15 * MINUTE_NS,
+        };
+        let files = engine
+            .inventory_snapshot()
+            .scoped_files("logs", scope)
+            .unwrap();
+        assert_eq!(files.len(), 3, "A, B, and margin-file D: {files:?}");
+        assert!(files.contains(&d), "within-margin file included (superset)");
+
+        let filter = window_filter(scope.lo_ns, scope.hi_ns);
+        let full = engine
+            .table("logs")
+            .await
+            .unwrap()
+            .filter(filter.clone())
+            .unwrap();
+        let scoped = engine
+            .table_scoped("logs", scope)
+            .await
+            .unwrap()
+            .filter(filter)
+            .unwrap();
+        let full_rows = rows(full).await;
+        assert_eq!(full_rows, 5, "A contributes 2, B contributes 3");
+        assert_eq!(rows(scoped).await, full_rows);
+    }
+
+    #[tokio::test]
+    async fn test_table_scoped_unknown_table_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_bounded_log(tmp.path(), "2026-06-01", JUN01_NS, 3);
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        let scope = QueryScope {
+            lo_ns: 0,
+            hi_ns: 1_000,
+        };
+        // A name unknown to both inventory and catalog behaves as engine.table.
+        assert!(engine.table("nope").await.is_err());
+        assert!(engine.table_scoped("nope", scope).await.is_err());
+        // A table absent from the inventory falls back to the REGISTERED full
+        // table — no pruning: the far-out-of-window scope still sees all rows.
+        engine.set_inventory_for_test(FileInventory::default());
+        let df = engine.table_scoped("logs", scope).await.unwrap();
+        assert_eq!(rows(df).await, 3);
     }
 
     #[test]

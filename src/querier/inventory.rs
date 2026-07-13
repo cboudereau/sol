@@ -9,7 +9,8 @@
 //! unbounded interval, so an unknown file is always included — pruning can
 //! only ever skip files proven out-of-window, never lose data.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 
@@ -61,6 +62,72 @@ impl FileInterval {
         let query_lo = lo_ns.saturating_sub(margin_ns);
         let query_hi = hi_ns.saturating_add(margin_ns);
         self.lo_ns <= query_hi && query_lo <= self.hi_ns
+    }
+}
+
+/// One store file retained by the inventory: its path plus the interval
+/// parsed from that path at refresh time (task 2, FR1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileEntry {
+    /// Absolute path of the Parquet file, as walked by `build_providers`.
+    pub(crate) path: PathBuf,
+    /// Conservative event-time bounds parsed from [`Self::path`].
+    pub(crate) interval: FileInterval,
+}
+
+/// A query's time window `[lo_ns, hi_ns]` (closed, UTC epoch ns), threaded
+/// from the handlers into file pruning (and, task 4, cache classification).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryScope {
+    /// Window start (inclusive).
+    pub lo_ns: i64,
+    /// Window end (inclusive).
+    pub hi_ns: i64,
+}
+
+/// Per-table file inventory, retained at refresh from the **same**
+/// `build_providers` walk that backs the registered tables (per-query
+/// file-pruning ADR invariant: the two derive from one walk — a refresh
+/// replaces both or neither, so they cannot diverge).
+#[derive(Debug, Default)]
+pub struct FileInventory {
+    /// Registered table name → its surviving files with parsed intervals.
+    tables: HashMap<String, Vec<FileEntry>>,
+}
+
+impl FileInventory {
+    /// Record `files` (already walked + supersession-resolved) as the
+    /// inventory of table `name`, parsing each path's interval once here.
+    pub(crate) fn insert_table(&mut self, name: impl Into<String>, files: &[PathBuf]) {
+        let entries = files
+            .iter()
+            .map(|path| FileEntry {
+                path: path.clone(),
+                interval: parse_file_interval(path),
+            })
+            .collect();
+        self.tables.insert(name.into(), entries);
+    }
+
+    /// The paths of `table`'s files whose interval overlaps `scope` widened by
+    /// [`INTERVAL_MARGIN_NS`] — the ADR's **superset guarantee**: every file
+    /// that could hold an in-window row (including unparseable → unbounded
+    /// ones) is returned; only files provably out of window are skipped.
+    ///
+    /// `None` ⇔ `table` is unknown to the inventory; the caller falls back to
+    /// the registered full table.
+    pub(crate) fn scoped_files(&self, table: &str, scope: QueryScope) -> Option<Vec<PathBuf>> {
+        let entries = self.tables.get(table)?;
+        Some(
+            entries
+                .iter()
+                .filter(|e| {
+                    e.interval
+                        .overlaps(scope.lo_ns, scope.hi_ns, INTERVAL_MARGIN_NS)
+                })
+                .map(|e| e.path.clone())
+                .collect(),
+        )
     }
 }
 

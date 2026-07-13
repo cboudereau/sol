@@ -32,6 +32,7 @@ pub mod traceql;
 mod udf;
 pub mod units;
 pub use catalog::{ParquetCatalog, QueryEngine, SignalTable};
+pub use inventory::{FileInventory, QueryScope};
 
 use crate::config::{compactor::CompactorOptions, querier::QuerierOptions};
 
