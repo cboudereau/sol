@@ -12,6 +12,7 @@ Lint: `make check-clippy` (`Makefile:478` → `cargo clippy --workspace --all-ta
 | Test | Reason | Action |
 |---|---|---|
 | (1 ignored in `querier::` — pre-existing) | ignored by design | ignore |
+| 6 × `codecs encoding::format::json` metric-serialisation tests under `-p codecs --all-features` | pre-existing at `cc88c6ba7` (verified identical at HEAD before task 1b landed); outside workspace scope | ignore |
 
 ### Measured baseline (live demo, image `sol:ac28543d8`, store: 1,529 metrics files / 7 days)
 | Probe | Sol today | Target |
@@ -124,7 +125,7 @@ classDiagram
 - `test_interval_exact_bounds_name` — parser returns `[min, max + skew]` for the new shape
 **Verify**: `cargo test --lib querier::inventory && make check-clippy`
 **Acceptance criteria**:
-- [ ] Both tests green; demo README/compose note the store-wipe requirement for the rollout
+- [x] Both tests green; demo README/compose note the store-wipe requirement for the rollout
 **Depends on**: task 1
 **Time-box**: ~60 min
 

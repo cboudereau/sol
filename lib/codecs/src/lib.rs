@@ -23,7 +23,8 @@ pub use decoding::{
 pub use decoding::{SyslogDeserializer, SyslogDeserializerConfig};
 pub use encoding::{
     BatchEncoder, BatchSerializer, BytesEncoder, BytesEncoderConfig, CharacterDelimitedEncoder,
-    CharacterDelimitedEncoderConfig, CsvSerializer, CsvSerializerConfig, Encoder, EncoderKind,
+    CharacterDelimitedEncoderConfig, CsvSerializer, CsvSerializerConfig, EncodedFile, Encoder,
+    EncoderKind,
     EncodingConfig, EncodingConfigWithFraming, GelfSerializer, GelfSerializerConfig,
     JsonSerializer, JsonSerializerConfig, LengthDelimitedEncoder, LengthDelimitedEncoderConfig,
     LogfmtSerializer, LogfmtSerializerConfig, NewlineDelimitedEncoder,

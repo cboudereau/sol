@@ -25,6 +25,8 @@ use sol_core::event::otel_metric::OtelMetric;
 use sol_core::event::{Event, OtelLog};
 use std::sync::Arc;
 
+use crate::encoding::EncodedFile;
+
 // ---------------------------------------------------------------------------
 // Column writer helpers (Task 1)
 // ---------------------------------------------------------------------------
@@ -3573,6 +3575,25 @@ impl ParquetSerializer {
         &mut self,
         events: Vec<Event>,
     ) -> Result<Vec<Vec<u8>>, ParquetEncodingError> {
+        Ok(self
+            .encode_files_with_bounds(events)?
+            .into_iter()
+            .map(|f| f.data)
+            .collect())
+    }
+
+    /// Encode events into individual Parquet files, each paired with the exact
+    /// `[min, max]` `time_unix_nano` of its rows ([`EncodedFile`]).
+    ///
+    /// The bounds are the true min/max event time of the rows written to that
+    /// file (backend-metrics-perf FR1, ADR A′) — the read side names files from
+    /// them and prunes on exact per-file intervals. A file whose rows carry no
+    /// non-zero timestamp yields `None` bounds (the sink then keeps a
+    /// conservative timestamped-template name).
+    pub fn encode_files_with_bounds(
+        &mut self,
+        events: Vec<Event>,
+    ) -> Result<Vec<EncodedFile>, ParquetEncodingError> {
         if events.is_empty() {
             return Err(ParquetEncodingError::NoEvents);
         }
@@ -3607,59 +3628,80 @@ impl ParquetSerializer {
         let props = Arc::new(self.writer_props.clone());
 
         if !logs.is_empty() {
-            let buf = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
+            let data = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
                 write_log_columns(rg, &logs)
             })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: log_time_bounds(&logs),
+            });
         }
 
         if !traces.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.trace_schema), Arc::clone(&props), |rg| {
                     write_trace_columns(rg, &traces)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: span_time_bounds(&traces),
+            });
         }
 
         if !gauge_metrics.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.gauge_schema), Arc::clone(&props), |rg| {
                     write_gauge_columns(rg, &gauge_metrics)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&gauge_metrics),
+            });
         }
 
         if !sum_metrics.is_empty() {
-            let buf = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
+            let data = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
                 write_sum_columns(rg, &sum_metrics)
             })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&sum_metrics),
+            });
         }
 
         if !histogram_metrics.is_empty() {
-            let buf = write_parquet_file(
+            let data = write_parquet_file(
                 Arc::clone(&self.histogram_schema),
                 Arc::clone(&props),
                 |rg| write_histogram_columns(rg, &histogram_metrics),
             )?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&histogram_metrics),
+            });
         }
 
         if !exp_histogram_metrics.is_empty() {
-            let buf = write_parquet_file(
+            let data = write_parquet_file(
                 Arc::clone(&self.exp_histogram_schema),
                 Arc::clone(&props),
                 |rg| write_exp_histogram_columns(rg, &exp_histogram_metrics),
             )?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&exp_histogram_metrics),
+            });
         }
 
         if !summary_metrics.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.summary_schema), Arc::clone(&props), |rg| {
                     write_summary_columns(rg, &summary_metrics)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&summary_metrics),
+            });
         }
 
         if files.is_empty() {
@@ -3668,6 +3710,85 @@ impl ParquetSerializer {
 
         Ok(files)
     }
+}
+
+/// Fold one `time_unix_nano` sample into a running `[min, max]`. A `0` sample
+/// is "absent" (the OTLP/schema convention throughout this codec) and never
+/// widens the bounds.
+fn fold_time_bound(bounds: &mut Option<(i64, i64)>, time_unix_nano: u64) {
+    if time_unix_nano == 0 {
+        return;
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "nanosecond timestamps stay well within i64 for any realistic date"
+    )]
+    let t = time_unix_nano as i64;
+    *bounds = Some(match *bounds {
+        Some((lo, hi)) => (lo.min(t), hi.max(t)),
+        None => (t, t),
+    });
+}
+
+/// Exact `[min, max]` `time_unix_nano` over log rows (the column the querier
+/// filters), or `None` if none carried a non-zero timestamp.
+fn log_time_bounds(logs: &[&OtelLog]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for log in logs {
+        fold_time_bound(&mut bounds, log.time_unix_nano());
+    }
+    bounds
+}
+
+/// Exact `[min, max]` `start_time_unix_nano` over span rows — the trace table's
+/// queried/sort column (Tempo/Loki filter on it), so it is the trace analog of
+/// `time_unix_nano`.
+fn span_time_bounds(spans: &[&OtelSpan]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for span in spans {
+        fold_time_bound(&mut bounds, span.start_time_unix_nano());
+    }
+    bounds
+}
+
+/// Exact `[min, max]` `time_unix_nano` over every data point of the metrics in
+/// one subtype partition. Reads the proto in place (no clone) — the per-dp
+/// `time_unix_nano` is a top-level field independent of dp attributes.
+fn metric_time_bounds(metrics: &[&OtelMetric]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for metric in metrics {
+        let Some(data) = metric.metric().data.as_ref() else {
+            continue;
+        };
+        match data {
+            MetricData::Gauge(g) => {
+                for dp in &g.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Sum(s) => {
+                for dp in &s.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Histogram(h) => {
+                for dp in &h.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::ExponentialHistogram(h) => {
+                for dp in &h.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Summary(s) => {
+                for dp in &s.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+        }
+    }
+    bounds
 }
 
 impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {

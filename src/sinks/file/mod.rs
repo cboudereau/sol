@@ -661,19 +661,29 @@ impl BatchFileSink {
             self.transformer.transform(event);
         }
 
-        match self.encoder.encode_files(events) {
+        match self.encoder.encode_files_with_bounds(events) {
             Ok(files) => {
-                let total_byte_size: usize = files.iter().map(|f| f.len()).sum();
+                let total_byte_size: usize = files.iter().map(|f| f.data.len()).sum();
                 // One uniqueness token per flush — distinct writers (and repeat
                 // flushes inside the same second) never target the same file.
                 let token = uuid::Uuid::new_v4().to_string();
                 let mut failed = false;
-                for (i, file_bytes) in files.iter().enumerate() {
-                    let file_path = if files.len() == 1 {
-                        parquet_batch_path(&path, &token, None)
-                    } else {
-                        parquet_batch_path(&path, &token, Some(i))
+                let multi = files.len() > 1;
+                for (i, file) in files.iter().enumerate() {
+                    let index = multi.then_some(i);
+                    // Self-describing name (backend-metrics-perf FR1, ADR A′):
+                    // when the codec computed the batch's exact event-time
+                    // bounds, stamp them into the basename so the querier
+                    // inventory prunes on exact per-file intervals. Otherwise
+                    // (no timestamped rows, or a non-Parquet batch codec) keep
+                    // the legacy timestamped-template name.
+                    let file_path = match file.time_bounds {
+                        Some((min_ns, max_ns)) => {
+                            parquet_bounds_path(&path, min_ns, max_ns, &token, index)
+                        }
+                        None => parquet_batch_path(&path, &token, index),
                     };
+                    let file_bytes = &file.data;
                     let bytes_path = BytesPath::new(file_path.clone());
                     match open_file(bytes_path, false).await {
                         Ok(mut file) => {
@@ -763,6 +773,50 @@ fn parquet_batch_path(path: &[u8], token: &str, index: Option<usize>) -> Bytes {
         None => format!("{stem}-{token}{ext}"),
     };
     Bytes::from(suffixed)
+}
+
+/// Floor for a name-carried epoch-ns bound: a bound below this (< 10 decimal
+/// digits, i.e. before 1970-01-01T00:00:01Z) would be indistinguishable from a
+/// legacy `HH-MM-SS` field and would not round-trip through the querier's
+/// exact-bounds parser (`crate::querier::inventory::EXACT_BOUNDS_MIN_DIGITS`).
+/// Real event timestamps are ~19 digits, so this only guards pathological
+/// inputs; when it trips we fall back to the timestamped-template name.
+#[cfg(feature = "codecs-parquet")]
+const EXACT_BOUNDS_MIN_NS: i64 = 1_000_000_000;
+
+/// Compose a self-describing batch filename carrying the batch's **exact**
+/// event-time bounds (backend-metrics-perf FR1, ADR A′): the timestamped
+/// basename rendered from the path template is replaced with
+/// `<min_ns>-<max_ns>-<token>[-<index>].parquet`, keeping the `dt=YYYY-MM-DD`
+/// directory the template produced. The querier's file inventory parses these
+/// bounds directly (`crate::querier::inventory::parse_file_interval`), pruning
+/// on exact per-file intervals instead of a conservative day/flush estimate.
+///
+/// Falls back to [`parquet_batch_path`] (the legacy name) if the bounds cannot
+/// round-trip through the parser, so a stamped name is always parseable.
+#[cfg(feature = "codecs-parquet")]
+fn parquet_bounds_path(
+    path: &[u8],
+    min_ns: i64,
+    max_ns: i64,
+    token: &str,
+    index: Option<usize>,
+) -> Bytes {
+    if min_ns < EXACT_BOUNDS_MIN_NS || max_ns < min_ns {
+        return parquet_batch_path(path, token, index);
+    }
+    let s = String::from_utf8_lossy(path);
+    // Keep the directory the template rendered (e.g. `dt=2026-07-10/`); replace
+    // only the basename with the exact-bounds name.
+    let (dir, _basename) = match s.rfind('/') {
+        Some(slash) => s.split_at(slash + 1),
+        None => ("", s.as_ref()),
+    };
+    let name = match index {
+        Some(i) => format!("{dir}{min_ns}-{max_ns}-{token}-{i}.parquet"),
+        None => format!("{dir}{min_ns}-{max_ns}-{token}.parquet"),
+    };
+    Bytes::from(name)
 }
 
 #[cfg(feature = "codecs-parquet")]
@@ -1301,6 +1355,91 @@ mod tests {
         assert_eq!(&path[..], b"data/metrics/file-tok-0");
         let path = super::parquet_batch_path(b"data/metrics/file", "tok", None);
         assert_eq!(&path[..], b"data/metrics/file-tok");
+    }
+
+    /// A gauge metric event whose single data point is stamped at
+    /// `time_unix_nano` — the value the Parquet codec writes into the
+    /// `time_unix_nano` column.
+    #[cfg(feature = "codecs-parquet")]
+    fn gauge_event_at(time_unix_nano: u64) -> Event {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric as MetricProto, NumberDataPoint, metric::Data,
+            number_data_point::Value as NdpValue,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use sol_lib::event::{OtelMetric, string_value};
+
+        let proto = MetricProto {
+            name: "test.gauge".to_string(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano,
+                    value: Some(NdpValue::AsInt(1)),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("bounds-svc")),
+            }],
+            ..Default::default()
+        };
+        Event::Metric(OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            EventMetadata::default(),
+        ))
+    }
+
+    /// Task 1b (per-query-file-pruning ADR, option A′): the Parquet batch
+    /// file's name carries the batch's exact min/max `time_unix_nano` —
+    /// `<min_ns>-<max_ns>-<uuid>.parquet` — so the querier's file inventory
+    /// (`crate::querier::inventory`) can parse exact per-file time bounds.
+    #[cfg(feature = "codecs-parquet")]
+    #[tokio::test]
+    async fn test_sink_filename_carries_batch_time_bounds() {
+        let directory = temp_dir();
+        let yaml = format!(
+            r#"
+path: "{}/dt=%Y-%m-%d/%H-%M-%S.parquet"
+batch_encoding:
+  codec: parquet
+"#,
+            directory.display()
+        );
+        let config: FileSinkConfig = serde_yaml::from_str(&yaml).unwrap();
+        let batch_encoding = config.batch_encoding.clone().expect("parquet batch encoding");
+        let mut sink =
+            BatchFileSink::new(&config, &batch_encoding, SinkContext::default()).unwrap();
+
+        // Deliberately put the LATEST event first: the dt= directory template
+        // still renders from the first event, but the file name's bounds must
+        // be the batch's true min/max — not the first event's stamp (the
+        // residual first-event-stale risk task 1b eliminates).
+        let min_ns: u64 = 1_783_652_400_000_000_000; // 2026-07-10T03:00:00Z
+        let max_ns = min_ns + 30_000_000_000; // +30 s
+        let mut buffer = vec![gauge_event_at(max_ns), gauge_event_at(min_ns)];
+        sink.flush_batch(&mut buffer).await;
+
+        // The dt= directory template is untouched (renders the first event's
+        // event time); the basename carries the exact bounds + a uniqueness
+        // token.
+        let day_dir = directory.join("dt=2026-07-10");
+        let names: Vec<String> = std::fs::read_dir(&day_dir)
+            .expect("dt= day directory exists")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "one file per single-signal flush: {names:?}");
+        let name = &names[0];
+        assert!(
+            name.starts_with(&format!("{min_ns}-{max_ns}-")),
+            "file name must start with the batch's exact <min_ns>-<max_ns> bounds: {name}"
+        );
+        assert!(name.ends_with(".parquet"), "{name}");
     }
 
     #[cfg(feature = "codecs-parquet")]

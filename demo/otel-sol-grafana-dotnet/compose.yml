@@ -217,6 +217,14 @@ services:
       - mimir
 
 volumes:
+  # NAMING CUTOVER (backend-metrics-perf task 1b, per-query-file-pruning ADR
+  # A′): the gateway Parquet sink now names each batch file with its exact
+  # event-time bounds — `<min_ns>-<max_ns>-<uuid>.parquet` — instead of the old
+  # `HH-MM-SS-<uuid>.parquet`. Rolling this out requires WIPING this volume so
+  # no pre-cutover files remain: `docker compose down -v` (or
+  # `docker volume rm <project>_parquet-data`) before the first `up` on the new
+  # image. Legacy names still parse (conservative fallback), so a wipe is not
+  # strictly required for correctness — but it is the sanctioned clean cutover.
   parquet-data:
 
 networks:
