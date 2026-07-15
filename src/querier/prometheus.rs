@@ -1304,17 +1304,31 @@ fn instant_anchor(time_ns: i64, now_ns: i64) -> i64 {
     if time_ns == i64::MAX { now_ns } else { time_ns }
 }
 
+/// The cache-classification window of an instant query (FR2): the anchored
+/// evaluation point `[anchor, anchor]`. Sealedness only reads the window's
+/// upper bound, so the point window classifies exactly — an explicit `time`
+/// older than a day → sealed (long TTL), a live/omitted `time` → mutable.
+fn instant_scope(time_ns: i64, now_ns: i64) -> super::QueryScope {
+    let anchor = instant_anchor(time_ns, now_ns);
+    super::QueryScope {
+        lo_ns: anchor,
+        hi_ns: anchor,
+    }
+}
+
 /// Collect the first (string) column of a built `DataFrame`. Shared by the
-/// label/tag-value discovery endpoints (Prometheus, Loki).
+/// label/tag-value discovery endpoints (Prometheus, Loki). `scope` is the
+/// query's window when the caller has one — cache TTL classification (FR2).
 pub(super) async fn string_column_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
+    scope: Option<super::QueryScope>,
 ) -> crate::Result<Vec<String>> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::DataType;
 
-    let batches = engine.collect(df).await?;
+    let batches = engine.collect_scoped(df, scope).await?;
     let mut values: Vec<String> = Vec::new();
     for batch in &batches {
         let col = cast(batch.column(0), &DataType::Utf8)?;
@@ -1334,16 +1348,19 @@ pub(super) async fn distinct_json_keys(
     column: &str,
 ) -> crate::Result<std::collections::BTreeSet<String>> {
     let df = engine.table(table).await?;
-    distinct_json_keys_df(engine, df, column).await
+    // Unbounded discovery scan — no window to classify (short cache TTL).
+    distinct_json_keys_df(engine, df, column, None).await
 }
 
 /// [`distinct_json_keys`] over an already-built source `DataFrame` — the
 /// metrics `/labels` path passes each ranged [`metadata_sources`] window scan
-/// here (FR4) instead of the full registered table.
+/// here (FR4) instead of the full registered table, along with its window
+/// (`scope`) for cache TTL classification (FR2).
 async fn distinct_json_keys_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
     column: &str,
+    scope: Option<super::QueryScope>,
 ) -> crate::Result<std::collections::BTreeSet<String>> {
     // Cap the distinct blobs scanned: label/tag discovery is bounded by
     // label-set cardinality, but a high-cardinality attribute (e.g. a per-request
@@ -1360,7 +1377,7 @@ async fn distinct_json_keys_df(
         .filter(datafusion::prelude::col(column).is_not_null())?
         .select(vec![datafusion::prelude::col(column)])?
         .limit(0, Some(MAX_DISTINCT_BLOBS))?;
-    let batches = engine.collect(df).await?;
+    let batches = engine.collect_scoped(df, scope).await?;
     let mut keys = std::collections::BTreeSet::new();
     for batch in &batches {
         let c = batch.column(0);
@@ -1479,7 +1496,11 @@ pub async fn handle_label_values(
     now_ns: i64,
 ) -> crate::Result<serde_json::Value> {
     let df = build_label_values(engine, label, start_ns, end_ns, matcher, now_ns).await?;
-    let values = string_column_df(engine, df).await?;
+    let scope = super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    };
+    let values = string_column_df(engine, df, Some(scope)).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
 
@@ -1497,8 +1518,12 @@ pub async fn handle_labels(
     now_ns: i64,
 ) -> crate::Result<serde_json::Value> {
     let mut keys = std::collections::BTreeSet::new();
+    let scope = time_range.map(|(lo, hi)| super::QueryScope {
+        lo_ns: lo,
+        hi_ns: hi,
+    });
     for df in metadata_sources(engine, time_range, now_ns).await? {
-        keys.extend(distinct_json_keys_df(engine, df, "attributes").await?);
+        keys.extend(distinct_json_keys_df(engine, df, "attributes", scope).await?);
     }
     let mut names: std::collections::BTreeSet<String> =
         ["__name__".to_string(), "service_name".to_string()].into();
@@ -1519,7 +1544,11 @@ pub async fn handle_series(
     use datafusion::arrow::datatypes::DataType;
 
     let df = build_series(engine, matcher, time_range, now_ns).await?;
-    let batches = engine.collect(df).await?;
+    let scope = time_range.map(|(lo, hi)| super::QueryScope {
+        lo_ns: lo,
+        hi_ns: hi,
+    });
+    let batches = engine.collect_scoped(df, scope).await?;
     let mut series: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
         let name_arr = cast(batch.column(0), &DataType::Utf8)?;
@@ -1618,13 +1647,14 @@ impl PromMatrixResponse {
 /// A grouped range result: label-set debug key → (label set, time-ordered points).
 type RangeSeries = BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)>;
 
-/// Group the rows of an already-built range SQL into per-series point lists.
-/// Group an already-built range `DataFrame`'s rows into per-series point lists.
+/// Group an already-built range `DataFrame`'s rows into per-series point
+/// lists. `scope` is the query's scan window — cache TTL classification (FR2).
 async fn range_series_from_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
+    scope: super::QueryScope,
 ) -> crate::Result<RangeSeries> {
-    let batches = engine.collect(df).await?;
+    let batches = engine.collect_scoped(df, Some(scope)).await?;
     group_range_series(&batches)
 }
 
@@ -1778,7 +1808,11 @@ async fn handle_hist_quantile_range(
     for g in &spec.group_by {
         proj.push(label_lhs_expr(g).alias(sql_ident(g)));
     }
-    let batches = engine.collect(df.select(proj)?).await?;
+    let scope = super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    };
+    let batches = engine.collect_scoped(df.select(proj)?, Some(scope)).await?;
 
     // group key → (label map, ts → summed bucket counts, bounds)
     type Group = (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>, Vec<f64>);
@@ -1935,7 +1969,11 @@ async fn handle_bucket_heatmap(
     for g in &spec.group_by {
         proj.push(label_lhs_expr(g).alias(sql_ident(g)));
     }
-    let batches = engine.collect(df.select(proj)?).await?;
+    let scope = super::QueryScope {
+        lo_ns: start_ns,
+        hi_ns: end_ns,
+    };
+    let batches = engine.collect_scoped(df.select(proj)?, Some(scope)).await?;
 
     // (G-values + le) → ts → cumulative count
     let mut series: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<i64, f64>)> =
@@ -2123,8 +2161,9 @@ pub type MetricWindow = (String, i64, i64);
 /// One day in nanoseconds — the sealed/live boundary offset (rollups only cover
 /// fully-sealed days; the trailing ≤1-day window is always raw). Canonical day
 /// value from [`super::units::DurationNs::DAY`] (canonical-ns ADR — no duplicated
-/// ns literals).
-const SEALED_OFFSET_NS: i64 = super::units::DurationNs::DAY.ns();
+/// ns literals). `pub(super)` so [`super::inventory::QueryScope::is_sealed`]
+/// (FR2 cache classification) shares the exact same wall-clock rule.
+pub(super) const SEALED_OFFSET_NS: i64 = super::units::DurationNs::DAY.ns();
 
 /// The single tier-resolution choke point (FR1, per the
 /// [tier-resolution-choke-point ADR](../../../docs/workspace/rollup-read-routing/adrs/tier-resolution-choke-point.md)):
@@ -3074,10 +3113,18 @@ async fn eval_range_window(
                 // left-edge window; the caller filters points back to `[s, e]`.
                 let df = lower_range_df(engine, inner, scan_start, e, table).await?;
                 let df = lower_topk_df(df, n, is_topk)?;
-                Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
+                let scope = super::QueryScope {
+                    lo_ns: scan_start,
+                    hi_ns: e,
+                };
+                Ok(RangeVal::Vector(range_series_from_df(engine, df, scope).await?))
             } else {
                 let df = lower_range_df(engine, expr, scan_start, e, table).await?;
-                Ok(RangeVal::Vector(range_series_from_df(engine, df).await?))
+                let scope = super::QueryScope {
+                    lo_ns: scan_start,
+                    hi_ns: e,
+                };
+                Ok(RangeVal::Vector(range_series_from_df(engine, df, scope).await?))
             }
             // NB: `step_ns` is unused here — the leaf/topk lowerings emit raw
             // per-series points; only the cross-series aggregate above grid-aligns.
@@ -3086,16 +3133,20 @@ async fn eval_range_window(
 }
 
 /// Run a single-`v`/`time_unix_nano` SQL and group rows into instant samples
-/// (latest value per series via [`LabelCols`]).
+/// (latest value per series via [`LabelCols`]). `scope` is the query's
+/// (anchored) evaluation point — cache TTL classification (FR2): only its
+/// `hi_ns` decides sealedness, so the point window `[anchor, anchor]` is
+/// exact even though the underlying scan looks back below the anchor.
 async fn instant_vector_from_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
+    scope: super::QueryScope,
 ) -> crate::Result<Vec<(BTreeMap<String, String>, f64)>> {
     use datafusion::arrow::array::{Array, AsArray};
     use datafusion::arrow::compute::cast;
     use datafusion::arrow::datatypes::{DataType, Float64Type};
 
-    let batches = engine.collect(df).await?;
+    let batches = engine.collect_scoped(df, Some(scope)).await?;
     let mut out = Vec::new();
     for batch in &batches {
         let schema = batch.schema();
@@ -3271,7 +3322,7 @@ async fn eval_instant(
         Expr::Aggregate(agg) if agg_name(agg.op).is_ok() => {
             let df = lower_aggregate_instant(engine, agg, time_ns, now_ns).await?;
             Ok(InstantVal::Vector(
-                instant_vector_from_df(engine, df).await?,
+                instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns)).await?,
             ))
         }
         _ => {
@@ -3287,7 +3338,7 @@ async fn eval_instant(
             } else {
                 let df = lower_instant_df(engine, expr, time_ns, now_ns).await?;
                 Ok(InstantVal::Vector(
-                    instant_vector_from_df(engine, df).await?,
+                    instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns)).await?,
                 ))
             }
         }

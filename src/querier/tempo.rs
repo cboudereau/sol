@@ -528,7 +528,15 @@ pub async fn handle_search(
     use datafusion::arrow::datatypes::{DataType, Int64Type};
 
     let df = build_search(engine, traceql, start_ns, end_ns, limit).await?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(
+            df,
+            Some(super::QueryScope {
+                lo_ns: start_ns,
+                hi_ns: end_ns,
+            }),
+        )
+        .await?;
     // Only the query-referenced attributes are surfaced on result spans (uniform
     // across spans, like Tempo) — see project_span_attrs.
     let matched = search_matched_attrs(traceql);

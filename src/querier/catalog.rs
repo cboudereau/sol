@@ -595,7 +595,7 @@ impl QueryEngine {
         &self,
         query: &str,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
-        use super::cache::{CacheKey, QueryCache};
+        use super::cache::{CacheKey, QueryCache, TtlClass};
         let key = CacheKey::for_sql(query);
         if let Some(hit) = self.cache.get(&key) {
             super::telemetry::record_cache(true);
@@ -604,7 +604,9 @@ impl QueryEngine {
         super::telemetry::record_cache(false);
         let df = self.ctx.sql(query).await?;
         let batches = self.execute_recording_scan(df).await?;
-        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        // Raw SQL carries no window to classify → short TTL (FR2 safe default).
+        self.cache
+            .insert(key, std::sync::Arc::new(batches.clone()), TtlClass::Mutable);
         super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
     }
@@ -701,13 +703,29 @@ impl QueryEngine {
     }
 
     /// Execute a built `DataFrame`, collecting Arrow batches — the plan-based twin
-    /// of [`Self::sql`]. Cached on the plan's indented display (ADR: plan-cache-keying),
-    /// reusing the same moka cache + telemetry contract.
+    /// of [`Self::sql`]. Equivalent to [`Self::collect_scoped`] with no window:
+    /// the cached entry classifies as mutable → short TTL (FR2 safe default).
     pub async fn collect(
         &self,
         df: datafusion::dataframe::DataFrame,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
-        use super::cache::{CacheKey, QueryCache};
+        self.collect_scoped(df, None).await
+    }
+
+    /// [`Self::collect`] carrying the query's time window for cache TTL
+    /// classification (FR2, [cache-invalidation-scope ADR](../../docs/workspace/backend-metrics-perf/adrs/cache-invalidation-scope.md)):
+    /// a window entirely sealed against wall-clock now (`hi < now − 1 day`,
+    /// [`QueryScope::is_sealed`] — the same rule as the tier boundary) caches
+    /// under the long sealed TTL and so survives catalog refreshes; a mutable
+    /// or absent window keeps the short TTL. Cached on the plan's indented
+    /// display (ADR: plan-cache-keying), reusing the same moka cache +
+    /// telemetry contract.
+    pub async fn collect_scoped(
+        &self,
+        df: datafusion::dataframe::DataFrame,
+        scope: Option<QueryScope>,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use super::cache::{CacheKey, QueryCache, TtlClass};
         let key = CacheKey::for_sql(&df.logical_plan().display_indent().to_string());
         if let Some(hit) = self.cache.get(&key) {
             super::telemetry::record_cache(true);
@@ -715,7 +733,11 @@ impl QueryEngine {
         }
         super::telemetry::record_cache(false);
         let batches = self.execute_recording_scan(df).await?;
-        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        // Wall-clock now: TTL classification is inherently wall-clock, like
+        // the moka TTL it selects (and the tier boundary it mirrors).
+        let class = TtlClass::classify(scope, super::now_unix_ns());
+        self.cache
+            .insert(key, std::sync::Arc::new(batches.clone()), class);
         super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
     }
@@ -730,7 +752,7 @@ impl QueryEngine {
         &self,
         query: &str,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
-        use super::cache::{CacheKey, QueryCache};
+        use super::cache::{CacheKey, QueryCache, TtlClass};
         let key = CacheKey::for_sql(query);
         if let Some(hit) = self.cache.get(&key) {
             super::telemetry::record_cache(true);
@@ -743,27 +765,33 @@ impl QueryEngine {
             .with_allow_statements(false);
         let df = self.ctx.sql_with_options(query, options).await?;
         let batches = self.execute_recording_scan(df).await?;
-        self.cache.insert(key, std::sync::Arc::new(batches.clone()));
+        // Untrusted SQL carries no window to classify → short TTL (FR2 safe
+        // default).
+        self.cache
+            .insert(key, std::sync::Arc::new(batches.clone()), TtlClass::Mutable);
         super::telemetry::set_cache_memory(self.cache.weighted_size());
         Ok(batches)
     }
 
     /// Re-list storage for newly written files (called periodically by the
-    /// server). Invalidates the query cache so freshly discovered data is
-    /// visible immediately rather than after the TTL.
+    /// server). Freshly discovered data becomes visible **within the cache
+    /// TTL** — the same 15s bound the cache key's time bucketing already
+    /// imposes. The cache is deliberately *not* cleared here (FR2,
+    /// [cache-invalidation-scope ADR](../../docs/workspace/backend-metrics-perf/adrs/cache-invalidation-scope.md)):
+    /// a blanket clear every refresh interval meant a dashboard never hit the
+    /// cache; per-entry TTL now bounds staleness instead, and sealed-window
+    /// entries ([`Self::collect_scoped`]) survive refreshes outright.
     ///
     /// The file inventory is swapped right after the tables, from the same
     /// `build_providers` walk (built fully before either swap) — the ADR
     /// invariant "inventory and registered tables derive from the same walk;
     /// replace both or neither".
     pub async fn refresh(&self) -> crate::Result<()> {
-        use super::cache::QueryCache;
         let inventory = self.catalog.refresh(&self.ctx).await?;
         *self
             .inventory
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(inventory);
-        self.cache.clear();
         Ok(())
     }
 }
@@ -849,6 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_catalog_refresh_picks_up_new_file() {
+        use crate::querier::cache::QueryCache;
         let tmp = tempfile::tempdir().unwrap();
         let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
             .await
@@ -861,9 +890,13 @@ mod tests {
         write_min_log_parquet(&logs_dir.join("new.parquet"), 3);
 
         engine.refresh().await.unwrap();
+        // refresh() no longer clears the cache (FR2) — new data is promised
+        // "within the TTL"; model the TTL lapse deterministically.
+        engine.cache.clear();
         assert_eq!(count(&engine, "logs").await, 3);
         // Idempotent: a second refresh keeps the count.
         engine.refresh().await.unwrap();
+        engine.cache.clear();
         assert_eq!(count(&engine, "logs").await, 3);
     }
 
@@ -1304,6 +1337,48 @@ mod tests {
         engine.set_inventory_for_test(FileInventory::default());
         let df = engine.table_scoped("logs", scope).await.unwrap();
         assert_eq!(rows(df).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_sealed_entry_survives_refresh() {
+        // FR2 (cache-invalidation-scope ADR, policy B+D): refresh() no longer
+        // clears the cache — a sealed-classified entry is still a hit after it.
+        use crate::querier::cache::{CacheKey, QueryCache, TtlClass};
+        let tmp = tempfile::tempdir().unwrap();
+        // The fixture covers [12:00, 12:30] of 2026-06-01 — entirely sealed
+        // relative to any real wall clock this test can run under.
+        write_bounded_log(tmp.path(), "2026-06-01", JUN01_NS, 2);
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+
+        // Directly inserted sealed entry: survives refresh (no blanket clear).
+        let sealed_key = CacheKey::for_sql("sealed probe");
+        engine
+            .cache
+            .insert(sealed_key.clone(), Arc::new(Vec::new()), TtlClass::Sealed);
+
+        // End-to-end classification: a collect_scoped over a sealed window
+        // inserts under the sealed TTL via the scope threading.
+        let scope = QueryScope {
+            lo_ns: JUN01_NS,
+            hi_ns: JUN01_NS + DAY_NS,
+        };
+        let df = engine.table_scoped("logs", scope).await.unwrap();
+        let plan_key = CacheKey::for_sql(&df.logical_plan().display_indent().to_string());
+        let batches = engine.collect_scoped(df, Some(scope)).await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(engine.cache.get(&plan_key).is_some(), "inserted on miss");
+
+        engine.refresh().await.unwrap();
+        assert!(
+            engine.cache.get(&sealed_key).is_some(),
+            "sealed entry must survive a catalog refresh"
+        );
+        assert!(
+            engine.cache.get(&plan_key).is_some(),
+            "sealed-scoped collect result must survive a catalog refresh"
+        );
     }
 
     #[test]

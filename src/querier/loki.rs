@@ -389,7 +389,8 @@ pub async fn handle_label_values(
     label: &str,
 ) -> crate::Result<serde_json::Value> {
     let df = build_label_values(engine, label).await?;
-    let values = super::prometheus::string_column_df(engine, df).await?;
+    // Unbounded discovery scan — no window to classify (short cache TTL).
+    let values = super::prometheus::string_column_df(engine, df, None).await?;
     Ok(serde_json::json!({ "status": "success", "data": values }))
 }
 
@@ -415,7 +416,9 @@ pub async fn handle_volume(
     use datafusion::arrow::datatypes::Int64Type;
 
     let df = build_volume(engine, query, start_ns, end_ns, step_ns).await?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+        .await?;
 
     let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for batch in &batches {
@@ -476,7 +479,9 @@ pub async fn handle_series(
     use datafusion::arrow::array::{Array, AsArray};
 
     let df = build_series(engine, matcher, start_ns, end_ns).await?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+        .await?;
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut data: Vec<BTreeMap<String, String>> = Vec::new();
     for batch in &batches {
@@ -526,7 +531,9 @@ pub async fn handle_index_stats(
             bytes_sum().alias("bytes"),
         ],
     )?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+        .await?;
     let (mut streams, mut entries, mut bytes) = (0i64, 0i64, 0i64);
     if let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) {
         streams = batch.column(0).as_primitive::<Int64Type>().value(0);
@@ -579,7 +586,9 @@ pub async fn handle_index_volume(
                 vec![bytes_sum().alias("b")],
             )?
             .sort(vec![col("bkt").sort(true, false)])?;
-        let batches = engine.collect(df).await?;
+        let batches = engine
+            .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+            .await?;
         let mut series: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for batch in &batches {
             let svc = batch.column(0).as_string::<i32>();
@@ -612,7 +621,9 @@ pub async fn handle_index_volume(
         vec![col("service_name").alias("svc")],
         vec![bytes_sum().alias("b")],
     )?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+        .await?;
     let mut result: Vec<serde_json::Value> = Vec::new();
     for batch in &batches {
         let svc = batch.column(0).as_string::<i32>();
@@ -709,7 +720,9 @@ pub async fn handle_query_range(
     use datafusion::arrow::datatypes::{Int32Type, TimestampNanosecondType};
 
     let df = build_streams(engine, query, start_ns, end_ns, limit, forward).await?;
-    let batches = engine.collect(df).await?;
+    let batches = engine
+        .collect_scoped(df, Some(log_scope(start_ns, end_ns)))
+        .await?;
 
     let mut rows: Vec<(String, &'static str, i64, String)> = Vec::new();
     for batch in &batches {

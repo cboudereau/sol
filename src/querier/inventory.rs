@@ -85,6 +85,19 @@ pub struct QueryScope {
     pub hi_ns: i64,
 }
 
+impl QueryScope {
+    /// Whether this window is **entirely sealed**: `hi_ns < now_ns − 1 day`,
+    /// the exact same wall-clock rule as `resolve_metric_windows`' sealed/live
+    /// tier boundary ([`super::prometheus::SEALED_OFFSET_NS`]). A sealed
+    /// window's data can no longer change (the gateway only appends to the
+    /// trailing day; compaction/rollups preserve values), so a query result
+    /// over it stays valid across catalog refreshes — the FR2 cache
+    /// classification ([cache-invalidation-scope ADR](../../../docs/workspace/backend-metrics-perf/adrs/cache-invalidation-scope.md)).
+    pub fn is_sealed(self, now_ns: i64) -> bool {
+        self.hi_ns < now_ns.saturating_sub(super::prometheus::SEALED_OFFSET_NS)
+    }
+}
+
 /// Per-table file inventory, retained at refresh from the **same**
 /// `build_providers` walk that backs the registered tables (per-query
 /// file-pruning ADR invariant: the two derive from one walk — a refresh

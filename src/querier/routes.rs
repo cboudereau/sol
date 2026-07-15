@@ -11,28 +11,13 @@ use std::sync::Arc;
 use serde::Deserialize;
 use warp::{Filter, Reply, filters::BoxedFilter};
 
-use super::{QueryEngine, loki, prometheus, sql, tempo};
+use super::{QueryEngine, loki, now_unix_ns, prometheus, sql, tempo};
 
 /// Inject the shared `QueryEngine` into a filter chain.
 fn with_engine(
     engine: Arc<QueryEngine>,
 ) -> impl Filter<Extract = (Arc<QueryEngine>,), Error = Infallible> + Clone {
     warp::any().map(move || Arc::clone(&engine))
-}
-
-/// Wall-clock now in unix nanoseconds, captured at the request boundary. The
-/// core query fns stay clock-free + testable (they take `now_ns` explicitly);
-/// it anchors an omitted instant `time` (see `instant_anchor`) and the
-/// wall-clock sealed/live tier boundary (see `resolve_metric_windows`) so a
-/// historical-`end` query still routes long-sealed days to the rollup tier.
-fn now_unix_ns() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    )
-    .unwrap_or(i64::MAX)
 }
 
 #[derive(Debug, Deserialize)]

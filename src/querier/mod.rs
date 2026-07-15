@@ -36,6 +36,24 @@ pub use inventory::{FileInventory, QueryScope};
 
 use crate::config::{compactor::CompactorOptions, querier::QuerierOptions};
 
+/// Wall-clock now in unix nanoseconds. Captured at the request boundary by the
+/// routes (the core query fns stay clock-free + testable — they take `now_ns`
+/// explicitly): it anchors an omitted instant `time` (see `instant_anchor`)
+/// and the wall-clock sealed/live tier boundary (see `resolve_metric_windows`)
+/// so a historical-`end` query still routes long-sealed days to the rollup
+/// tier. Also read by the cache's TTL classification
+/// (`QueryEngine::collect_scoped`), which is inherently wall-clock like the
+/// TTL it selects.
+pub(crate) fn now_unix_ns() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 /// Handle to a running Sol querier-backend component (querier or compactor).
 ///
 /// Gracefully shuts down when dropped — the `oneshot` sender closing ends the

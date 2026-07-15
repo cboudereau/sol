@@ -177,7 +177,7 @@ classDiagram
 - `test_unscoped_insert_defaults_to_short_ttl`
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; `refresh()` no longer calls `clear()`; docstring updated
+- [x] Tests green; `refresh()` no longer calls `clear()`; docstring updated
 **Depends on**: task 3 (scope plumbing)
 **Time-box**: ~75 min
 
