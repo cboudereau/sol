@@ -77,14 +77,7 @@ async fn loki_query_range(
     rec("loki", "logs", t);
     match result {
         Ok(resp) => Ok(resp),
-        Err(error) => {
-            let body = serde_json::json!({"status": "error", "error": error.to_string()});
-            Ok(warp::reply::with_status(
-                warp::reply::json(&body),
-                warp::http::StatusCode::BAD_REQUEST,
-            )
-            .into_response())
-        }
+        Err(error) => Ok(error_response(error)),
     }
 }
 
@@ -114,8 +107,41 @@ fn rec(api: &str, signal: &str, t: std::time::Instant) {
     super::telemetry::record_request(api, signal, t.elapsed());
 }
 
+/// `Retry-After` (seconds) sent with an overload 503 (FR5): permits free as
+/// soon as in-flight queries drain, so hint a short retry; Grafana retries on
+/// its own schedule regardless.
+const OVERLOAD_RETRY_AFTER_SECS: &str = "1";
+
+/// True when `msg` is an overload (shed) error — matched by the
+/// [`super::catalog::OVERLOAD_MARKER`] substring because a single-flight
+/// follower receives its leader's overload error stringified, so the typed
+/// error only survives for the request that actually shed (see the marker's
+/// doc for the full contract).
+fn is_overload(msg: &str) -> bool {
+    msg.contains(super::catalog::OVERLOAD_MARKER)
+}
+
+/// HTTP 503 + `Retry-After` for a shed query (FR5,
+/// [concurrency-guardrail ADR](../../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)).
+fn overload_response(msg: &str) -> warp::reply::Response {
+    let body = serde_json::json!({"status": "error", "error": msg});
+    warp::reply::with_header(
+        warp::reply::with_status(
+            warp::reply::json(&body),
+            warp::http::StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        "Retry-After",
+        OVERLOAD_RETRY_AFTER_SECS,
+    )
+    .into_response()
+}
+
 fn error_response(error: impl std::fmt::Display) -> warp::reply::Response {
-    let body = serde_json::json!({"status": "error", "error": error.to_string()});
+    let msg = error.to_string();
+    if is_overload(&msg) {
+        return overload_response(&msg);
+    }
+    let body = serde_json::json!({"status": "error", "error": msg});
     warp::reply::with_status(
         warp::reply::json(&body),
         warp::http::StatusCode::BAD_REQUEST,
@@ -453,6 +479,10 @@ async fn sql_query(
         Ok(value) => Ok(warp::reply::json(&value).into_response()),
         Err(error) => {
             let msg = error.to_string();
+            // FR5 overload sheds surface as HTTP 503 + Retry-After.
+            if is_overload(&msg) {
+                return Ok(overload_response(&msg));
+            }
             // NFR9 guardrail breaches surface as HTTP 422.
             let status = if msg.starts_with("guardrail:") {
                 warp::http::StatusCode::UNPROCESSABLE_ENTITY
@@ -836,6 +866,54 @@ mod tests {
         let body = get_body(&routes, "/prometheus/api/v1/series?start=0").await;
         assert!(body.contains("new-svc"), "recent series present: {body}");
         assert!(body.contains("old-svc"), "explicit start=0 reaches history: {body}");
+    }
+
+    /// FR5 ([concurrency-guardrail ADR](../../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)):
+    /// an overloaded query surfaces at the route level as HTTP 503 with a
+    /// `Retry-After` header; health/static routes are unaffected because the
+    /// permit is acquired at query execution, not per request.
+    #[tokio::test]
+    async fn test_shed_maps_to_503() {
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let mut opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        opts.guardrails.max_concurrent_queries = 1;
+        let mut engine = QueryEngine::new(&opts).await.unwrap();
+        engine.set_permit_acquire_timeout_for_test(std::time::Duration::from_millis(20));
+        let engine = Arc::new(engine);
+        // Saturate the guardrail for the whole request.
+        let _held = engine.hold_query_permit_for_test().await;
+        let routes = make_routes(Arc::clone(&engine));
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/prometheus/api/v1/query?query=up")
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            resp.status(),
+            503,
+            "body: {}",
+            String::from_utf8_lossy(resp.body())
+        );
+        assert_eq!(
+            resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()),
+            Some(OVERLOAD_RETRY_AFTER_SECS),
+            "503 must carry Retry-After"
+        );
+        // Health probe unaffected by exhausted query permits.
+        let ready = warp::test::request()
+            .method("GET")
+            .path("/ready")
+            .reply(&routes)
+            .await;
+        assert_eq!(ready.status(), 200);
     }
 
     #[tokio::test]

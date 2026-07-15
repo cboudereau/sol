@@ -222,7 +222,7 @@ classDiagram
 - `test_permits_released_on_error` — failing query frees its permit
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; `sol_querier_shed_total` (or equivalent) counter emitted
+- [x] Tests green; `sol_querier_shed_total` (or equivalent) counter emitted
 **Depends on**: (none — parallel-safe; scheduled last for merge simplicity)
 **Time-box**: ~60 min
 

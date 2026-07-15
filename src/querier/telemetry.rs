@@ -117,6 +117,13 @@ pub fn record_objectstore(duration: Duration, throttled: bool) {
     histogram!("objectstore_request_duration_seconds").record(duration.as_secs_f64());
 }
 
+/// Record a shed query (FR5 concurrency guardrail): a query could not obtain
+/// an execution permit within the bounded wait and was rejected with 503.
+/// Surfaced as `sol_querier_shed_total`.
+pub fn record_shed() {
+    counter!("querier_shed_total").increment(1);
+}
+
 /// Record a guardrail rejection (NFR9 — `reason` e.g. `range`/`bytes`).
 pub fn record_rejected(reason: &str) {
     counter!("querier_rejected_total", "reason" => reason.to_string()).increment(1);

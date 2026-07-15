@@ -498,6 +498,40 @@ fn signal_of_table(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Marker string carried by every overload (shed) error — **the** contract
+/// `routes::error_response` matches (by substring) to map overload onto
+/// HTTP 503 + `Retry-After`. Substring matching is deliberate: single-flight
+/// followers receive their leader's error *stringified*
+/// ([`super::single_flight`] shares non-`Clone` errors as rendered messages),
+/// so only the request that actually timed out still holds the typed
+/// [`OverloadError`]; a follower whose leader shed sees this marker inside a
+/// plain string error. Keep the text distinctive enough never to appear in an
+/// engine or user-SQL error.
+pub(super) const OVERLOAD_MARKER: &str = "querier overloaded: max_concurrent_queries reached";
+
+/// Typed overload error (FR5,
+/// [concurrency-guardrail ADR](../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)):
+/// a query could not obtain an execution permit within the bounded wait.
+/// Renders as [`OVERLOAD_MARKER`] so the HTTP layer — and single-flight
+/// followers, who only see it stringified — can recognise it.
+#[derive(Debug)]
+pub struct OverloadError;
+
+impl std::fmt::Display for OverloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(OVERLOAD_MARKER)
+    }
+}
+
+impl std::error::Error for OverloadError {}
+
+/// Bounded wait for an execution permit before shedding
+/// ([ADR](../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)
+/// option A: short wait, then 503 + `Retry-After`). Long enough to absorb a
+/// dashboard burst draining, short enough that overload surfaces instead of
+/// queueing unboundedly. Tests override it per engine (tiny, deterministic).
+const PERMIT_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Thin wrapper over a DataFusion `SessionContext` with the signal catalog registered.
 /// Sole query-engine dependency (NFR1); worker pool bounded so queries do not starve
 /// ingestion (NFR5).
@@ -518,6 +552,17 @@ pub struct QueryEngine {
     /// interior-mutability point: readers snapshot the `Arc` and drop the
     /// guard before any `await`.
     inventory: std::sync::RwLock<Arc<FileInventory>>,
+    /// FR5 admission control
+    /// ([ADR](../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)):
+    /// `guardrails.max_concurrent_queries` permits bounding query *execution*
+    /// — every Prometheus/Loki/Tempo/SQL path funnels into
+    /// `sql`/`collect_scoped`/`sql_user`, where the single-flight **leader**
+    /// acquires a permit; coalesced followers wait without consuming capacity.
+    /// `Arc` so tests can hold an owned permit.
+    query_permits: Arc<tokio::sync::Semaphore>,
+    /// Bounded permit wait before shedding with [`OverloadError`]
+    /// (default [`PERMIT_ACQUIRE_TIMEOUT`]; tiny override in tests).
+    permit_acquire_timeout: std::time::Duration,
 }
 
 impl QueryEngine {
@@ -548,6 +593,11 @@ impl QueryEngine {
         // write time (codec), so no read-time `prom_metric_name` UDF is registered.
         let catalog = ParquetCatalog::new(opts.storage.path.clone());
         let inventory = catalog.register(&ctx).await?;
+        // FR5: size the execution-permit pool from the guardrail config
+        // (default 16). An out-of-range value clamps to the semaphore maximum.
+        let max_concurrent = usize::try_from(opts.guardrails.max_concurrent_queries)
+            .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS)
+            .min(tokio::sync::Semaphore::MAX_PERMITS);
         Ok(Self {
             ctx,
             catalog,
@@ -560,7 +610,44 @@ impl QueryEngine {
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
             metadata_default_range_secs: opts.metadata_default_range_secs,
             inventory: std::sync::RwLock::new(Arc::new(inventory)),
+            query_permits: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            permit_acquire_timeout: PERMIT_ACQUIRE_TIMEOUT,
         })
+    }
+
+    /// Acquire an execution permit (FR5) with the bounded wait; on timeout the
+    /// query sheds — records `sol_querier_shed_total` and returns the typed
+    /// [`OverloadError`] (mapped to HTTP 503 + `Retry-After` by the routes
+    /// layer). The permit is RAII: dropped on every exit of the execution it
+    /// guards (success, error, panic), so a failing query never leaks capacity.
+    async fn acquire_query_permit(&self) -> crate::Result<tokio::sync::SemaphorePermit<'_>> {
+        match tokio::time::timeout(self.permit_acquire_timeout, self.query_permits.acquire()).await
+        {
+            Ok(Ok(permit)) => Ok(permit),
+            // Timed out — or the semaphore was closed, which this engine never
+            // does; treat both as overload rather than panic.
+            Ok(Err(_)) | Err(_) => {
+                super::telemetry::record_shed();
+                Err(OverloadError.into())
+            }
+        }
+    }
+
+    /// Override the bounded permit wait (tests only): deterministic shed
+    /// without multi-second sleeps.
+    #[cfg(test)]
+    pub(crate) fn set_permit_acquire_timeout_for_test(&mut self, timeout: std::time::Duration) {
+        self.permit_acquire_timeout = timeout;
+    }
+
+    /// Hold one execution permit (tests only): saturates
+    /// `max_concurrent_queries` from outside the engine.
+    #[cfg(test)]
+    pub(crate) async fn hold_query_permit_for_test(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.query_permits)
+            .acquire_owned()
+            .await
+            .expect("query-permit semaphore is never closed")
     }
 
     /// Storage root (`<root>/<signal>/dt=…`), for scan-size guardrail estimates.
@@ -611,6 +698,10 @@ impl QueryEngine {
         let shared = self
             .single_flight
             .run(key.clone(), move || async move {
+                // FR5: the permit bounds execution, not idle waiting — only
+                // the single-flight leader acquires one; followers coalesce
+                // without consuming capacity. RAII: released on any exit.
+                let _permit = self.acquire_query_permit().await?;
                 let df = self.ctx.sql(query).await?;
                 let batches = self.execute_recording_scan(df).await?;
                 let shared: super::cache::CachedResult = std::sync::Arc::new(batches);
@@ -749,6 +840,8 @@ impl QueryEngine {
         let shared = self
             .single_flight
             .run(key.clone(), move || async move {
+                // FR5: leader-only execution permit (see `Self::sql`).
+                let _permit = self.acquire_query_permit().await?;
                 let batches = self.execute_recording_scan(df).await?;
                 // Wall-clock now: TTL classification is inherently wall-clock,
                 // like the moka TTL it selects (and the tier boundary it
@@ -785,6 +878,8 @@ impl QueryEngine {
         let shared = self
             .single_flight
             .run(key.clone(), move || async move {
+                // FR5: leader-only execution permit (see `Self::sql`).
+                let _permit = self.acquire_query_permit().await?;
                 let options = datafusion::execution::context::SQLOptions::new()
                     .with_allow_ddl(false)
                     .with_allow_dml(false)
@@ -1459,5 +1554,91 @@ mod tests {
         };
         let total: f64 = samples.iter().map(|h| h.into_inner()).sum();
         assert!(total > 0.0, "bytes_scanned must be > 0, samples: {samples:?}");
+    }
+
+    /// FR5 ([concurrency-guardrail ADR](../../docs/workspace/backend-metrics-perf/adrs/concurrency-guardrail.md)):
+    /// with `max_concurrent_queries = 1` and the only permit held, a
+    /// distinct-key query sheds after the (tiny, test-overridden) bounded wait
+    /// with the typed overload error — and records `sol_querier_shed_total`.
+    /// Local-recorder counters need the dedicated-thread current-thread-runtime
+    /// pattern of `test_query_records_real_bytes_scanned`.
+    #[test]
+    fn test_semaphore_limits_concurrency() {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let mut opts = engine_opts(tmp.path().to_path_buf());
+                    opts.guardrails.max_concurrent_queries = 1;
+                    let mut engine = QueryEngine::new(&opts).await.unwrap();
+                    engine.set_permit_acquire_timeout_for_test(
+                        std::time::Duration::from_millis(20),
+                    );
+                    // Saturate the guardrail: hold the only permit.
+                    let held = engine.hold_query_permit_for_test().await;
+                    let err = engine
+                        .sql("SELECT 1")
+                        .await
+                        .expect_err("second query must shed, not wait unboundedly");
+                    assert!(
+                        err.to_string().contains(OVERLOAD_MARKER),
+                        "typed overload error expected, got: {err}"
+                    );
+                    // Capacity restored once the permit is released. (The shed
+                    // failure was not cached and its flight entry is gone, so
+                    // this same-key call re-executes.)
+                    drop(held);
+                    engine
+                        .sql("SELECT 1")
+                        .await
+                        .expect("permit available again after release");
+                });
+            });
+        })
+        .join()
+        .unwrap();
+
+        let s = snap.snapshot().into_vec();
+        let shed = s.iter().find_map(|(k, _, _, v)| {
+            (k.kind() == MetricKind::Counter && k.key().name() == "querier_shed_total")
+                .then_some(v)
+        });
+        let DebugValue::Counter(n) = shed.expect("shed counter emitted") else {
+            panic!("expected counter value");
+        };
+        assert_eq!(*n, 1, "exactly one shed recorded");
+    }
+
+    /// FR5: a failing query frees its permit (RAII `SemaphorePermit`) — with
+    /// `max = 1` and a tiny bounded wait, a leaked permit would make the next
+    /// call shed instead of succeeding.
+    #[tokio::test]
+    async fn test_permits_released_on_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = engine_opts(tmp.path().to_path_buf());
+        opts.guardrails.max_concurrent_queries = 1;
+        let mut engine = QueryEngine::new(&opts).await.unwrap();
+        engine.set_permit_acquire_timeout_for_test(std::time::Duration::from_millis(20));
+        let err = engine
+            .sql("SELECT no_such_col FROM no_such_table")
+            .await
+            .expect_err("query against a missing table fails");
+        assert!(
+            !err.to_string().contains(OVERLOAD_MARKER),
+            "failure must be the query error, not overload: {err}"
+        );
+        engine
+            .sql("SELECT 1")
+            .await
+            .expect("the failed query must have released its permit");
     }
 }
