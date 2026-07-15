@@ -31,6 +31,13 @@ pub struct QuerierOptions {
 
     /// Per-signal query guardrails (max range, max bytes scanned, max concurrency).
     pub guardrails: GuardrailsConfig,
+
+    /// Default lookback window (seconds) for Prometheus metadata endpoints
+    /// (`/labels`, `/label/:name/values`, `/series`) when the request carries no
+    /// explicit `start`: the default `start` becomes `now − this` instead of 0
+    /// (all history). An explicit client `start` — including `start=0` — always
+    /// wins. Default 3 days.
+    pub metadata_default_range_secs: u64,
 }
 
 /// Where the query backend discovers Parquet files written by the codec. Shared
@@ -92,6 +99,7 @@ impl Default for QuerierOptions {
             cache: CacheConfig::default(),
             refresh_interval_secs: 15,
             guardrails: GuardrailsConfig::default(),
+            metadata_default_range_secs: 3 * DAY,
         }
     }
 }

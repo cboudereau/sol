@@ -1333,6 +1333,18 @@ pub(super) async fn distinct_json_keys(
     table: &str,
     column: &str,
 ) -> crate::Result<std::collections::BTreeSet<String>> {
+    let df = engine.table(table).await?;
+    distinct_json_keys_df(engine, df, column).await
+}
+
+/// [`distinct_json_keys`] over an already-built source `DataFrame` — the
+/// metrics `/labels` path passes each ranged [`metadata_sources`] window scan
+/// here (FR4) instead of the full registered table.
+async fn distinct_json_keys_df(
+    engine: &super::QueryEngine,
+    df: datafusion::dataframe::DataFrame,
+    column: &str,
+) -> crate::Result<std::collections::BTreeSet<String>> {
     // Cap the distinct blobs scanned: label/tag discovery is bounded by
     // label-set cardinality, but a high-cardinality attribute (e.g. a per-request
     // id embedded in the JSON) would otherwise make this an unbounded scan +
@@ -1344,9 +1356,7 @@ pub(super) async fn distinct_json_keys(
     // column can't be `.distinct()`-ed, so we cap rows via `limit` (the key set
     // dedups). Discovery is bounded by label-set cardinality, so the cap sits far
     // above any real schema's distinct label sets.
-    let df = engine
-        .table(table)
-        .await?
+    let df = df
         .filter(datafusion::prelude::col(column).is_not_null())?
         .select(vec![datafusion::prelude::col(column)])?
         .limit(0, Some(MAX_DISTINCT_BLOBS))?;
@@ -1475,12 +1485,21 @@ pub async fn handle_label_values(
 
 /// Run `labels` (label-name discovery for Grafana's metric browser): the
 /// promoted columns plus the Prometheus-normalized metric attribute keys.
-pub async fn handle_labels(engine: &super::QueryEngine) -> crate::Result<serde_json::Value> {
-    // FR5 no-range fallback: `/labels` carries no `[start, end]` params, so there
-    // is no sealed/live split to compute and the active day lives only in raw —
-    // keep the raw `metrics` scan (conservative and correct). The documented
-    // exception to the "no hardcoded `metrics` literal" rule for metadata paths.
-    let keys = distinct_json_keys(engine, "metrics", "attributes").await?;
+///
+/// With a `[start, end]` range (the route always supplies one now — FR4
+/// defaults an absent `start` to a bounded recent window) the key discovery
+/// runs over the ranged [`metadata_sources`] windows: sealed span → rollup
+/// tier, trailing live window → raw, each scan pruned to its file interval
+/// (FR1). `None` keeps the historical unbounded raw scan.
+pub async fn handle_labels(
+    engine: &super::QueryEngine,
+    time_range: Option<(i64, i64)>,
+    now_ns: i64,
+) -> crate::Result<serde_json::Value> {
+    let mut keys = std::collections::BTreeSet::new();
+    for df in metadata_sources(engine, time_range, now_ns).await? {
+        keys.extend(distinct_json_keys_df(engine, df, "attributes").await?);
+    }
     let mut names: std::collections::BTreeSet<String> =
         ["__name__".to_string(), "service_name".to_string()].into();
     names.extend(keys.into_iter().map(|k| super::udf::normalize(&k)));

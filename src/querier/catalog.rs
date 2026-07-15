@@ -507,6 +507,7 @@ pub struct QueryEngine {
     cache: super::cache::MokaQueryCache,
     storage_root: std::path::PathBuf,
     max_scan_bytes: u64,
+    metadata_default_range_secs: u64,
     /// Per-table file inventory for per-query pruning (FR1) — always built
     /// from the same `build_providers` walk as the registered tables and
     /// swapped right after them at [`Self::refresh`]. The engine's single
@@ -552,6 +553,7 @@ impl QueryEngine {
             ),
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
+            metadata_default_range_secs: opts.metadata_default_range_secs,
             inventory: std::sync::RwLock::new(Arc::new(inventory)),
         })
     }
@@ -564,6 +566,21 @@ impl QueryEngine {
     /// Configured maximum bytes a single query may scan (NFR9).
     pub fn max_scan_bytes(&self) -> u64 {
         self.max_scan_bytes
+    }
+
+    /// Default `start` (unix ns) for a Prometheus metadata request without an
+    /// explicit `start` (FR4): `now − metadata_default_range_secs`. A bounded
+    /// default lets the metadata paths take the ranged branch — sealed-span
+    /// tier routing plus FR1's scoped file listing — instead of scanning all
+    /// history. An explicit client `start` (including `start=0`) always wins;
+    /// this is only the absent-`start` fallback.
+    pub fn metadata_default_start_ns(&self, now_ns: i64) -> i64 {
+        let range_ns = i64::try_from(
+            self.metadata_default_range_secs
+                .saturating_mul(1_000_000_000),
+        )
+        .unwrap_or(i64::MAX);
+        now_ns.saturating_sub(range_ns)
     }
 
     /// Whether a table is registered (e.g. a rollup tier table `metrics_1h`).

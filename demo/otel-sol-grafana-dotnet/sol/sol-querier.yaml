@@ -20,6 +20,7 @@ querier:
     metrics_max_range_secs: 34128000 # 13 months
     max_bytes_scanned: 1073741824 # 1 GB
     max_concurrent_queries: 16
+  metadata_default_range_secs: 259200 # 3 days: default start for /labels, /label/:name/values, /series without an explicit start (explicit start, even 0, wins)
 
 sources:
   self_metrics:

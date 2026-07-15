@@ -199,16 +199,28 @@ struct PromLabelParams {
     matcher: Option<String>,
 }
 
+/// Metadata `start` (FR4): an explicit client `start` — including `start=0` —
+/// always wins; absent, it defaults to a bounded recent window
+/// (`now − querier.metadata_default_range_secs`) instead of 0 (all history), so
+/// the metadata paths take the ranged branch (sealed-span tier routing + FR1
+/// scoped file listing) rather than scanning every file ever written.
+fn metadata_start_ns(start: &Option<String>, engine: &QueryEngine, now_ns: i64) -> i64 {
+    match start {
+        Some(_) => parse_time_ns(start),
+        None => engine.metadata_default_start_ns(now_ns),
+    }
+}
+
 async fn prom_label_values(
     label: String,
     params: PromLabelParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    // start defaults to 0 (all past), end to now/latest — same window convention
-    // as the range query; an absent window means "all history" (unchanged).
-    let start_ns = params.start.as_ref().map_or(0, |_| parse_time_ns(&params.start));
-    let end_ns = parse_time_ns(&params.end);
+    // end defaults to now/latest — same window convention as the range query;
+    // start defaults to the bounded metadata window (see `metadata_start_ns`).
     let now_ns = now_unix_ns();
+    let start_ns = metadata_start_ns(&params.start, &engine, now_ns);
+    let end_ns = parse_time_ns(&params.end);
     match prometheus::handle_label_values(&engine, &label, start_ns, end_ns, params.matcher.as_deref(), now_ns).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
@@ -227,21 +239,31 @@ async fn prom_series(
     params: SeriesParams,
     engine: Arc<QueryEngine>,
 ) -> Result<warp::reply::Response, Infallible> {
-    // An explicit `[start, end]` range routes the sealed span to the rollup tier
-    // (FR5); an absent start (no range) keeps the raw scan. Mirror the
-    // label-values convention: start defaults to 0 only to bound the window when
-    // end is given — `time_range` is `Some` only when at least `start` is present.
-    let time_range = params.start.as_ref().map(|_| {
-        (parse_time_ns(&params.start), parse_time_ns(&params.end))
-    });
-    match prometheus::handle_series(&engine, params.matcher.as_deref(), time_range, now_unix_ns()).await {
+    // The `[start, end]` range routes the sealed span to the rollup tier (FR5);
+    // an absent `start` defaults to the bounded metadata window (FR4, see
+    // `metadata_start_ns`), so `/series` always takes the ranged branch here —
+    // an explicit `start` (including `start=0`) wins unchanged.
+    let now_ns = now_unix_ns();
+    let time_range = Some((
+        metadata_start_ns(&params.start, &engine, now_ns),
+        parse_time_ns(&params.end),
+    ));
+    match prometheus::handle_series(&engine, params.matcher.as_deref(), time_range, now_ns).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
 }
 
-async fn prom_labels(engine: Arc<QueryEngine>) -> Result<warp::reply::Response, Infallible> {
-    match prometheus::handle_labels(&engine).await {
+async fn prom_labels(
+    params: PromLabelParams,
+    engine: Arc<QueryEngine>,
+) -> Result<warp::reply::Response, Infallible> {
+    // FR4: same defaulted window as `/label/:name/values` — an absent `start`
+    // bounds discovery to the recent window; explicit `start` (even 0) wins.
+    let now_ns = now_unix_ns();
+    let start_ns = metadata_start_ns(&params.start, &engine, now_ns);
+    let end_ns = parse_time_ns(&params.end);
+    match prometheus::handle_labels(&engine, Some((start_ns, end_ns)), now_ns).await {
         Ok(body) => Ok(warp::reply::json(&body).into_response()),
         Err(error) => Ok(error_response(error)),
     }
@@ -493,6 +515,7 @@ pub fn make_routes(engine: Arc<QueryEngine>) -> BoxedFilter<(impl Reply,)> {
 
     let prom_labels = warp::path!("prometheus" / "api" / "v1" / "labels")
         .and(warp::get().or(warp::post()).unify())
+        .and(warp::query::<PromLabelParams>())
         .and(with_engine(Arc::clone(&engine)))
         .and_then(prom_labels);
 
@@ -729,6 +752,105 @@ mod tests {
         // flat shape: top-level entries/streams/bytes, no status wrapper.
         assert!(body.contains(r#""entries":1"#), "body: {body}");
         assert!(!body.contains("status"), "flat, not wrapped: {body}");
+    }
+
+    /// Metrics fixture for the FR4 bounded-metadata tests: two services, one
+    /// sampled far in the past (outside any recent default window) and one one
+    /// hour ago (inside it). File names are non-parseable on purpose — the
+    /// bounding under test is the row-level time filter from the defaulted
+    /// `start`, not FR1 file pruning.
+    async fn metadata_fixture_engine() -> Arc<QueryEngine> {
+        use datafusion::arrow::array::Float64Array;
+
+        let tmp = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let recent_ns = now_unix_ns() - 3_600_000_000_000; // one hour ago
+        let old_ns = 1_000_000_000i64; // 1970 — outside every recent window
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        for (day, svc, t_ns, attrs) in [
+            ("dt=1970-01-01", "old-svc", old_ns, r#"{"old_label":"x"}"#),
+            ("dt=2026-07-13", "new-svc", recent_ns, r#"{"new_label":"y"}"#),
+        ] {
+            let dir = tmp.path().join("metrics").join(day);
+            std::fs::create_dir_all(&dir).unwrap();
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(StringArray::from(vec![svc])),
+                    Arc::new(StringArray::from(vec!["up"])),
+                    Arc::new(TimestampNanosecondArray::from(vec![t_ns]).with_timezone("UTC")),
+                    crate::querier::udf::tests::json_map_array(&[attrs]),
+                    Arc::new(Float64Array::from(vec![1.0])),
+                    Arc::new(StringArray::from(vec!["up"])),
+                ],
+            )
+            .unwrap();
+            let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+            let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
+            w.write(&batch).unwrap();
+            w.close().unwrap();
+        }
+
+        let opts = QuerierOptions {
+            storage: StorageConfig {
+                path: tmp.path().into(),
+                url: None,
+            },
+            ..QuerierOptions::default()
+        };
+        Arc::new(QueryEngine::new(&opts).await.unwrap())
+    }
+
+    async fn get_body(routes: &BoxedFilter<(impl Reply + 'static,)>, path: &str) -> String {
+        let resp = warp::test::request().method("GET").path(path).reply(routes).await;
+        assert_eq!(resp.status(), 200, "GET {path}");
+        String::from_utf8(resp.body().to_vec()).unwrap()
+    }
+
+    /// FR4: `/label/:name/values` (and `/labels`) without `start` defaults to a
+    /// bounded recent window (`now − metadata_default_range_secs`) — history
+    /// outside it is not enumerated; an explicit `start` (even `0`) always wins.
+    #[tokio::test]
+    async fn test_label_values_default_start_bounded() {
+        let routes = make_routes(metadata_fixture_engine().await);
+        // No `start` → default bounded window: only the recent service.
+        let body = get_body(&routes, "/prometheus/api/v1/label/service_name/values").await;
+        assert!(body.contains("new-svc"), "recent value present: {body}");
+        assert!(!body.contains("old-svc"), "old value bounded out: {body}");
+        // Explicit `start=0` wins → all history.
+        let body =
+            get_body(&routes, "/prometheus/api/v1/label/service_name/values?start=0").await;
+        assert!(body.contains("new-svc"), "recent value present: {body}");
+        assert!(body.contains("old-svc"), "explicit start=0 reaches history: {body}");
+        // Same defaulted window for label-name discovery (`/labels`).
+        let body = get_body(&routes, "/prometheus/api/v1/labels").await;
+        assert!(body.contains("new_label"), "recent label key present: {body}");
+        assert!(!body.contains("old_label"), "old label key bounded out: {body}");
+        let body = get_body(&routes, "/prometheus/api/v1/labels?start=0").await;
+        assert!(body.contains("old_label"), "explicit start=0 reaches history: {body}");
+    }
+
+    /// FR4: `/series` without `start` defaults to the same bounded recent
+    /// window; an explicit `start` (even `0`) always wins.
+    #[tokio::test]
+    async fn test_series_default_start_bounded() {
+        let routes = make_routes(metadata_fixture_engine().await);
+        let body = get_body(&routes, "/prometheus/api/v1/series").await;
+        assert!(body.contains("new-svc"), "recent series present: {body}");
+        assert!(!body.contains("old-svc"), "old series bounded out: {body}");
+        let body = get_body(&routes, "/prometheus/api/v1/series?start=0").await;
+        assert!(body.contains("new-svc"), "recent series present: {body}");
+        assert!(body.contains("old-svc"), "explicit start=0 reaches history: {body}");
     }
 
     #[tokio::test]

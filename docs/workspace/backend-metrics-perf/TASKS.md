@@ -207,7 +207,7 @@ classDiagram
 - `test_series_default_start_bounded` — same for `/series`
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; config field documented in the demo `sol-querier.yaml` comment style
+- [x] Tests green; config field documented in the demo `sol-querier.yaml` comment style
 **Depends on**: task 3
 **Time-box**: ~45 min
 
