@@ -54,6 +54,16 @@ pub fn record_cache(hit: bool) {
     counter!("querier_cache_requests_total", "cache" => "result", "result" => result).increment(1);
 }
 
+/// Record a coalesced execution (FR3 single-flight): a concurrent identical
+/// query awaited the in-flight leader's result instead of executing the plan
+/// again. Mirrors [`record_cache`]'s counter with `result="coalesced"` —
+/// surfaced as `sol_querier_cache_requests_total`; the dashboard's hit-ratio
+/// panel filters `result="hit|miss"`, so this extra variant does not skew it.
+pub fn record_coalesced() {
+    counter!("querier_cache_requests_total", "cache" => "result", "result" => "coalesced")
+        .increment(1);
+}
+
 /// Set the current cache memory footprint (bytes).
 #[allow(clippy::cast_precision_loss)]
 pub fn set_cache_memory(bytes: u64) {

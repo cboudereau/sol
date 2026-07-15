@@ -192,7 +192,7 @@ classDiagram
 - `test_single_flight_distinct_keys_parallel` — different keys don't serialise
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; coalesced-hit counter emitted via `sol_querier_*` telemetry (`src/querier/telemetry.rs` conventions)
+- [x] Tests green; coalesced-hit counter emitted via `sol_querier_*` telemetry (`src/querier/telemetry.rs` conventions)
 **Depends on**: task 4
 **Time-box**: ~60 min
 

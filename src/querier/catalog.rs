@@ -505,6 +505,10 @@ pub struct QueryEngine {
     ctx: SessionContext,
     catalog: ParquetCatalog,
     cache: super::cache::MokaQueryCache,
+    /// Request coalescing in front of the cache-backed execution (FR3): N
+    /// concurrent identical cache misses execute the plan once; followers
+    /// share the leader's result.
+    single_flight: super::single_flight::SingleFlight,
     storage_root: std::path::PathBuf,
     max_scan_bytes: u64,
     metadata_default_range_secs: u64,
@@ -551,6 +555,7 @@ impl QueryEngine {
                 opts.cache.max_bytes,
                 std::time::Duration::from_secs(opts.cache.ttl_secs),
             ),
+            single_flight: super::single_flight::SingleFlight::new(),
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
             metadata_default_range_secs: opts.metadata_default_range_secs,
@@ -590,7 +595,8 @@ impl QueryEngine {
 
     /// Run a SQL query, collecting all result batches. Results are cached
     /// (FR5/NFR6) keyed by the SQL text; a repeat query within the TTL is
-    /// served from memory without re-hitting DataFusion.
+    /// served from memory without re-hitting DataFusion. Concurrent identical
+    /// misses coalesce onto one execution (FR3, single-flight).
     pub async fn sql(
         &self,
         query: &str,
@@ -602,13 +608,21 @@ impl QueryEngine {
             return Ok((*hit).clone());
         }
         super::telemetry::record_cache(false);
-        let df = self.ctx.sql(query).await?;
-        let batches = self.execute_recording_scan(df).await?;
-        // Raw SQL carries no window to classify → short TTL (FR2 safe default).
-        self.cache
-            .insert(key, std::sync::Arc::new(batches.clone()), TtlClass::Mutable);
-        super::telemetry::set_cache_memory(self.cache.weighted_size());
-        Ok(batches)
+        let shared = self
+            .single_flight
+            .run(key.clone(), move || async move {
+                let df = self.ctx.sql(query).await?;
+                let batches = self.execute_recording_scan(df).await?;
+                let shared: super::cache::CachedResult = std::sync::Arc::new(batches);
+                // Raw SQL carries no window to classify → short TTL (FR2 safe
+                // default). Inserted only on success — a failure is never cached.
+                self.cache
+                    .insert(key, std::sync::Arc::clone(&shared), TtlClass::Mutable);
+                super::telemetry::set_cache_memory(self.cache.weighted_size());
+                Ok(shared)
+            })
+            .await?;
+        Ok((*shared).clone())
     }
 
     /// Execute a `DataFrame` via its physical plan, recording the per-signal
@@ -732,14 +746,23 @@ impl QueryEngine {
             return Ok((*hit).clone());
         }
         super::telemetry::record_cache(false);
-        let batches = self.execute_recording_scan(df).await?;
-        // Wall-clock now: TTL classification is inherently wall-clock, like
-        // the moka TTL it selects (and the tier boundary it mirrors).
-        let class = TtlClass::classify(scope, super::now_unix_ns());
-        self.cache
-            .insert(key, std::sync::Arc::new(batches.clone()), class);
-        super::telemetry::set_cache_memory(self.cache.weighted_size());
-        Ok(batches)
+        let shared = self
+            .single_flight
+            .run(key.clone(), move || async move {
+                let batches = self.execute_recording_scan(df).await?;
+                // Wall-clock now: TTL classification is inherently wall-clock,
+                // like the moka TTL it selects (and the tier boundary it
+                // mirrors).
+                let class = TtlClass::classify(scope, super::now_unix_ns());
+                let shared: super::cache::CachedResult = std::sync::Arc::new(batches);
+                // Inserted only on success — a failure is never cached (FR3).
+                self.cache
+                    .insert(key, std::sync::Arc::clone(&shared), class);
+                super::telemetry::set_cache_memory(self.cache.weighted_size());
+                Ok(shared)
+            })
+            .await?;
+        Ok((*shared).clone())
     }
 
     /// Run **untrusted** user SQL (the cross-signal `/api/v1/sql` endpoint).
@@ -759,18 +782,26 @@ impl QueryEngine {
             return Ok((*hit).clone());
         }
         super::telemetry::record_cache(false);
-        let options = datafusion::execution::context::SQLOptions::new()
-            .with_allow_ddl(false)
-            .with_allow_dml(false)
-            .with_allow_statements(false);
-        let df = self.ctx.sql_with_options(query, options).await?;
-        let batches = self.execute_recording_scan(df).await?;
-        // Untrusted SQL carries no window to classify → short TTL (FR2 safe
-        // default).
-        self.cache
-            .insert(key, std::sync::Arc::new(batches.clone()), TtlClass::Mutable);
-        super::telemetry::set_cache_memory(self.cache.weighted_size());
-        Ok(batches)
+        let shared = self
+            .single_flight
+            .run(key.clone(), move || async move {
+                let options = datafusion::execution::context::SQLOptions::new()
+                    .with_allow_ddl(false)
+                    .with_allow_dml(false)
+                    .with_allow_statements(false);
+                let df = self.ctx.sql_with_options(query, options).await?;
+                let batches = self.execute_recording_scan(df).await?;
+                let shared: super::cache::CachedResult = std::sync::Arc::new(batches);
+                // Untrusted SQL carries no window to classify → short TTL (FR2
+                // safe default). Inserted only on success — a failure is never
+                // cached.
+                self.cache
+                    .insert(key, std::sync::Arc::clone(&shared), TtlClass::Mutable);
+                super::telemetry::set_cache_memory(self.cache.weighted_size());
+                Ok(shared)
+            })
+            .await?;
+        Ok((*shared).clone())
     }
 
     /// Re-list storage for newly written files (called periodically by the

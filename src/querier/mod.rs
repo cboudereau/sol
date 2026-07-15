@@ -25,6 +25,7 @@ pub mod plan;
 pub mod prometheus;
 pub mod rollup;
 mod routes;
+mod single_flight;
 pub mod sql;
 pub mod telemetry;
 pub mod tempo;
