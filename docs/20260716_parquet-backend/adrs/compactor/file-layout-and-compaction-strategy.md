@@ -1,13 +1,13 @@
 ---
-status: draft
+status: accepted
 ---
 # File layout and compaction strategy
 
-Addresses: [FR7](../../DESIGN.md#fr7), [NFR5](../../DESIGN.md#nfr5), [NFR6](../../DESIGN.md#nfr6)
+Addresses: [FR7](../../designs/parquet-backend.md#fr7), [NFR5](../../designs/parquet-backend.md#nfr5), [NFR6](../../designs/parquet-backend.md#nfr6)
 
 ## Problem
 
-Sol's Parquet codec flushes **one small file per batch per signal type**. At ~100 events/s with a few-second batch interval, this produces hundreds of small files per hour per signal. DataFusion's `ListingTable` must list, open, and parse the footer of every matching file on each query that is not fully pruned. This "small-files problem" is the dominant CPU and latency cost (the [InfluxDB comparison](../../DESIGN.md#influxdb-30-iox--fdap-stack--the-reference-use-case) shows InfluxDB built an entire compactor component to solve exactly this; fragmented deployments hit a 432-file query limit).
+Sol's Parquet codec flushes **one small file per batch per signal type**. At ~100 events/s with a few-second batch interval, this produces hundreds of small files per hour per signal. DataFusion's `ListingTable` must list, open, and parse the footer of every matching file on each query that is not fully pruned. This "small-files problem" is the dominant CPU and latency cost (the [InfluxDB comparison](../../designs/parquet-backend.md#influxdb-30-iox--fdap-stack--the-reference-use-case) shows InfluxDB built an entire compactor component to solve exactly this; fragmented deployments hit a 432-file query limit).
 
 We must bound file count and per-query scan cost to meet NFR5 (resource budget) and NFR6 (response time), **without** importing InfluxDB's distributed compactor/catalog/GC complexity — Sol is single-node, ~100 events/s.
 
@@ -34,10 +34,10 @@ The decision is fundamentally a set of **cost/latency trade-offs**.
 
 Retention pruning (delete files past a configured age) runs in the same background task.
 
-> **Extended for long-range metrics + standalone compaction** (see [NFR7](../../DESIGN.md#nfr7), [long-range-metrics-strategy](./long-range-metrics-strategy.md), [compaction-consistency](./compaction-consistency.md)):
+> **Extended for long-range metrics + standalone compaction** (see [NFR7](../../designs/parquet-backend.md#nfr7), [long-range-metrics-strategy](./long-range-metrics-strategy.md), [compaction-consistency](./compaction-consistency.md)):
 > - Files are written under per-signal/subtype directories with a **time-partitioned sub-path** (`…/logs/dt=YYYY-MM-DD/*.parquet`, `…/metrics/gauge/dt=…/`) so the catalog prunes whole days by path. (Current sink writes flat `…/logs/%Y-%m-%d-%H-%M-%S.parquet`; `dt=` + per-subtype dirs are the proposed hint — see [datafusion-table-discovery](../querier/datafusion-table-discovery.md).)
-> - The numbers traces 30d (7d opt-in) / logs 30d / metrics 13mo (2y opt-in) are **query intervals** ([NFR7](../../DESIGN.md#nfr7)), *not* retention TTLs. **Retention** (deletion policy) is a separate, configurable per-signal knob enforced by the compactor's GC, ≥ the query interval.
-> - For metrics, compaction additionally produces **rollup tiers** (5m/1h/1d, [FR6](../../DESIGN.md#fr6)) for the cold tail, storing bucket counts / counter values (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct.
+> - The numbers traces 30d (7d opt-in) / logs 30d / metrics 13mo (2y opt-in) are **query intervals** ([NFR7](../../designs/parquet-backend.md#nfr7)), *not* retention TTLs. **Retention** (deletion policy) is a separate, configurable per-signal knob enforced by the compactor's GC, ≥ the query interval.
+> - For metrics, compaction additionally produces **rollup tiers** (5m/1h/1d, [FR6](../../designs/parquet-backend.md#fr6)) for the cold tail, storing bucket counts / counter values (not pre-computed quantiles) to keep `histogram_quantile`/`rate` correct.
 > - Compaction is a **standalone Parquet→Parquet component**, run as the **singleton** compactor role on a **sealed-day cadence** with footer-provenance consistency — see [compaction-consistency](./compaction-consistency.md), which supersedes the embedded-background-task framing above.
 > - Partitioning **at scale** (many services) and the **file-naming convention** (raw UUID token vs deterministic, no-GUID compacted/rollup names; the `parse_hour` ⇄ path-template coupling) are decided in [partitioning-and-file-naming](./partitioning-and-file-naming.md).
 > - The seal/merge runs as a **bounded-memory, disk-spilling streaming sort** (not a full in-RAM sort) — see [bounded-memory-seal-merge](./bounded-memory-seal-merge.md), the fix for the day-seal OOM.
@@ -47,7 +47,7 @@ Retention pruning (delete files past a configured age) runs in the same backgrou
 - **The cost/latency balance is explicit and tunable**: compaction interval + target file size + cache budget + refresh interval are the four knobs. Defaults favour co-existing with ingestion (NFR5) over absolute minimum latency; all are configurable per deployment.
 - **Bounded query cost as data grows**: file count per query is held roughly constant by compaction, so NFR6 targets do not degrade over time (the failure mode InfluxDB documents).
 - **Write amplification**: compaction re-writes data once per merge — modest background CPU/IO, cheap at the demo target, disable-able for write-heavy/low-query deployments.
-- **Freshness unchanged**: compaction operates only on finalized files; the flush + refresh interval still defines freshness (hot data remains a [non-goal](../../DESIGN.md#non-goals)).
+- **Freshness unchanged**: compaction operates only on finalized files; the flush + refresh interval still defines freshness (hot data remains a [non-goal](../../designs/parquet-backend.md#non-goals)).
 - **Coupling**: sort order is a contract between the write side (codec/sink) and read side. If the sink cannot sort cheaply, compaction still produces sorted output, so pruning benefits are recovered after the first compaction pass even on unsorted input.
 - This ADR makes compaction part of the read-backend workspace's scope (FR7). It is sequenced **after** the read path works (so its benefit can be measured), and **before** FR6 pre-computation (which is only justified if compaction + caching still miss NFR6).
 
@@ -57,8 +57,8 @@ The "lightweight compaction" of Decision §2 landed as **time-tiered leveled
 compaction**, not the count-triggered "merge when >N files" sketch:
 
 - **Levels** L0 raw → **L1 hourly** → **L2 daily**, recorded in the footer
-  `level`/`supersedes`; `resolve_files` dedups transitively. See [FR7](../../DESIGN.md#fr7)
-  and the [signal lifecycle](../../DESIGN.md#signal-lifecycle) sequence diagram.
+  `level`/`supersedes`; `resolve_files` dedups transitively. See [FR7](../../designs/parquet-backend.md#fr7)
+  and the [signal lifecycle](../../designs/parquet-backend.md#signal-lifecycle) sequence diagram.
 - **Intra-day** compaction was added because leaving the **active day** fully raw
   (the original sealed-day-only design) let it accumulate thousands of files and
   exhaust the querier's **file descriptors** (EMFILE). Each *completed* hour of

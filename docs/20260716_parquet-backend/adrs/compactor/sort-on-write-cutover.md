@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Sort-on-write cutover: zero-resort seal merge
 
-Addresses: [FR7](../../DESIGN.md#fr7), [NFR5](../../DESIGN.md#nfr5)
+Addresses: [FR7](../../designs/parquet-backend.md#fr7), [NFR5](../../designs/parquet-backend.md#nfr5)
 
 Realises the "Future optimisation" of [bounded-memory-seal-merge](./bounded-memory-seal-merge.md): now that the codec sorts **every** signal on write — metrics via `sort_dp_rows`, logs/traces via `sort_logs`/`sort_spans` (commit `86c5a764b`) — the seal can stop re-sorting.
 

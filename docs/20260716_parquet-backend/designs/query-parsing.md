@@ -20,7 +20,7 @@ TraceQL) but cannot express the full grammars: LogQL parser pipelines
 (`| json | label_format …`), label-filter expressions, binary ops; TraceQL
 spanset combinators (`>>`, `||`), pipelines (`| count() > 2`), aggregates. PromQL
 already has a real parser, so its surface is far more complete (see
-[CONFORMANCE.md](./CONFORMANCE.md) C-Pbin/C-P3).
+[CONFORMANCE.md](./conformance.md) C-Pbin/C-P3).
 
 This note is the groundwork for closing that gap deliberately rather than by
 growing the string-slicer.

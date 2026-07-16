@@ -144,7 +144,7 @@ Driver = **point lookup** (trace-by-id) + bounded search over the window (`Qᵢ 
 
 **Conclusion T1 — traces are still the cheapest signal to get right.** At the 30 d default the resident set is ~4× the old 7 d figure but bounded; the verdict holds. **No rollups; splitting optional** (a 30 d trace search benefits from the same per-day splitting as logs, but the dominant path is the point lookup). The decisive lever is the **`trace_id` bloom filter** ([FR4](./DESIGN.md#fr4)) for sub-150ms point lookups (without it, trace-by-id is a full scan). TraceQL search is a pushdown scan over ≤30 d with `json_extract` on attributes (cost-flagged, §9). Sol matches Tempo architecturally (same Parquet + bloom, same 30 d retention); the differentiator is unified SQL + cross-signal JOINs, not trace storage.
 
-## 9. Mapping trade-offs surfaced by the model (feeds [QUERY-MAPPING.md](./QUERY-MAPPING.md))
+## 9. Mapping trade-offs surfaced by the model (feeds [QUERY-MAPPING.md](./query-mapping.md))
 
 The model flags LogQL/PromQL constructs whose naive translation breaks NFR5/NFR6 — these get a *restricted/costly* decision rather than blind support:
 
@@ -155,7 +155,7 @@ The model flags LogQL/PromQL constructs whose naive translation breaks NFR5/NFR6
 | LogQL query-time `json`/`logfmt` parse + high-card `sum by` | per-row parse + cardinality blowup | ⚠️ supported, bounded by `limit`/series cap |
 | PromQL `histogram_quantile` over raw long-range | UNNEST over huge scan | ✅ via rollups (FR6) + splitting (FR8); raw only for recent |
 | PromQL subqueries / `predict_linear`/`holt_winters` | unbounded inner range eval | ⛔ deferred (NFR) |
-| PromQL `absent` / `absent_over_time` | needs full series catalog | ⛔ deferred (consistent with [QUERY-MAPPING §2.3](./QUERY-MAPPING.md)) |
+| PromQL `absent` / `absent_over_time` | needs full series catalog | ⛔ deferred (consistent with [QUERY-MAPPING §2.3](./query-mapping.md)) |
 | Selective `{service_name=…}` | — | ✅ bloom + row-group pruning (C4) |
 
 ## 10. What this model proves (and the validation method)

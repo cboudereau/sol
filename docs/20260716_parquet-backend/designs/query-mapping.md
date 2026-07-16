@@ -1,6 +1,6 @@
 # Query Mapping — PromQL / LogQL / TraceQL → DataFusion SQL
 
-> Gate: completed with [COMPLEXITY.md](./COMPLEXITY.md) **before** implementation ([TASKS.md](./TASKS.md) Phase 4a gate).
+> Gate: completed with [COMPLEXITY.md](./complexity.md) **before** implementation ([TASKS.md](./TASKS.md) Phase 4a gate).
 > Design: [DESIGN.md](./DESIGN.md). Methodology per the user directive: **translate to SQL, do not embed an existing engine**; cover the full language surface but make a **trade-off decision per construct** rather than supporting everything blindly.
 
 ## Legend (the trade-off decision per construct)
@@ -96,7 +96,7 @@ Target tables: `gauge`, `sum`, `histogram`, `exp_histogram`, `summary`. Query in
 
 | PromQL | SQL | Decision |
 |---|---|---|
-| `rate/irate/increase/delta/idelta(v[d])` | `LAG()` window `PARTITION BY series ORDER BY time`; counter-reset rule ([PromQL ADR](./adrs/querier/promql-parsing-strategy.md)) | ✅ |
+| `rate/irate/increase/delta/idelta(v[d])` | `LAG()` window `PARTITION BY series ORDER BY time`; counter-reset rule ([PromQL ADR](../adrs/querier/promql-parsing-strategy.md)) | ✅ |
 | `*_over_time` (`avg/min/max/sum/count/last/present/stddev/stdvar/quantile`) | windowed aggregate `OVER (… ROWS …)` | ✅ |
 | `histogram_quantile(φ, …)` | CTE + `UNNEST` bucket arrays + cumulative window + interpolation; or **rollup tier** for long tail | ⚠️ ([rabbit hole 5](./DESIGN.md#rabbit-holes); raw-native fallback) |
 | `label_replace/label_join` | `regexp_replace` / `concat` into output labels | ✅ |
@@ -137,7 +137,7 @@ Target table: `traces`. Query interval 30 d ([NFR7](./DESIGN.md#nfr7)).
 | aggregates `count() / avg(duration) > …` (span-set) | `GROUP BY trace_id HAVING …` | ⚠️ |
 | `select(...)` | column projection | ✅ |
 | structural `>>` (descendant), `>` (child), `~` (sibling) | self-join on `parent_span_id`/`trace_id` (recursive) | ⛔ defer v1 ([rabbit hole 2](./DESIGN.md#rabbit-holes)) |
-| **TraceQL metrics** (`rate`/`quantile_over_time`/`histogram_over_time` over spans, `/api/metrics/query_range`) | window/aggregate SQL over `traces` (same family as PromQL) | ⚠️ defer — sizeable, not in pcap ([API-SPEC.md §3](./API-SPEC.md)) |
+| **TraceQL metrics** (`rate`/`quantile_over_time`/`histogram_over_time` over spans, `/api/metrics/query_range`) | window/aggregate SQL over `traces` (same family as PromQL) | ⚠️ defer — sizeable, not in pcap ([API-SPEC.md §3](./api-spec.md)) |
 
 **TraceQL verdict**: attribute-filter search, trace-by-id, and tag discovery (the pcap surface) are covered. **Structural/span-set operators are ⛔ deferred** — they require recursive self-joins on the span tree, expensive and rare for dashboards. Trace-by-id is bloom-accelerated.
 

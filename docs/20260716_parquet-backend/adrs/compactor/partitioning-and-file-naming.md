@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Partitioning and file naming at scale
 
-Addresses: [FR7](../../DESIGN.md#fr7), [NFR4](../../DESIGN.md#nfr4), [NFR5](../../DESIGN.md#nfr5), [NFR10](../../DESIGN.md#nfr10)
+Addresses: [FR7](../../designs/parquet-backend.md#fr7), [NFR4](../../designs/parquet-backend.md#nfr4), [NFR5](../../designs/parquet-backend.md#nfr5), [NFR10](../../designs/parquet-backend.md#nfr10)
 
 Extends [file-layout-and-compaction-strategy](./file-layout-and-compaction-strategy.md) and [compaction-consistency](./compaction-consistency.md).
 
@@ -49,7 +49,7 @@ count**. Service count never multiplies directories or same-named files.
 
 | Option | Per-service prune | File/dir count | Verdict |
 |---|---|---|---|
-| `service=<svc>/` directory level | path-level, exact | **unbounded**, tiny-file explosion on the long tail; high S3 `LIST` ([NFR10](../../DESIGN.md#nfr10)) | rejected |
+| `service=<svc>/` directory level | path-level, exact | **unbounded**, tiny-file explosion on the long tail; high S3 `LIST` ([NFR10](../../designs/parquet-backend.md#nfr10)) | rejected |
 | sort + row-group stats + bloom (today) | intra-file, near-exact | bounded | **default** |
 | `bucket=hash(service)%N` | path-level, 1/N coarse | bounded by `N` | **escalation** when a day-partition is too large |
 
@@ -95,7 +95,7 @@ count**. Service count never multiplies directories or same-named files.
 - **Object store (S3):** deterministic names still resolve (final-key PUT is
   last-writer-wins), but the POSIX stage→rename atomicity does not translate —
   an S3 backend needs PUT-atomicity or a copy-commit, an atomicity concern
-  ([NFR10](../../DESIGN.md#nfr10)), not a naming one.
+  ([NFR10](../../designs/parquet-backend.md#nfr10)), not a naming one.
 - **`parse_hour` ⇄ path-template coupling (risk to harden).** Intra-day hourly
   compaction derives the hour with `name.split('-').next()` (first token),
   which is correct **only because** the date lives in the `dt=` dir and the

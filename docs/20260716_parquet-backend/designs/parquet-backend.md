@@ -172,8 +172,8 @@ Two further InfluxDB facts shape Sol's cost/latency NFRs:
 | DataFusion over Parquet | **Adopt** | Core of [NFR1](#nfr1). |
 | Sorted Parquet (low-cardinality columns first) | **Adopt** (write-side hint + read-side assumption) | Cheapest large win for pruning + compression. |
 | Compactor split from ingester | **Adopt** — standalone Parquet→Parquet component (sealed days), gateway stays dumb | Fixes the small-files problem without slowing ingest; the ingester/compactor split is InfluxDB's core lever ([FR7](#fr7)). |
-| Footer/file-level provenance instead of a catalog DB | **Adopt** — supersession metadata in the compacted Parquet footer | Gets compaction consistency without Iceberg/Delta ([compaction-consistency ADR](./adrs/compactor/compaction-consistency.md)). |
-| Bounded Parquet/metadata memory cache + query-result cache | **Adopt** (bounded, see [caching ADR](./adrs/querier/query-caching-strategy.md)) | The memory⇄latency trade-off the user asked to balance. |
+| Footer/file-level provenance instead of a catalog DB | **Adopt** — supersession metadata in the compacted Parquet footer | Gets compaction consistency without Iceberg/Delta ([compaction-consistency ADR](../adrs/compactor/compaction-consistency.md)). |
+| Bounded Parquet/metadata memory cache + query-result cache | **Adopt** (bounded, see [caching ADR](../adrs/querier/query-caching-strategy.md)) | The memory⇄latency trade-off the user asked to balance. |
 | Catalog DB, distributed ingester/querier/compactor split, Apache Flight | **Skip** | Over-engineered for single-node; Grafana talks HTTP, not Flight. |
 | Deduplication / merge-on-read | **Skip** | Sol's Parquet output is append-only (no updates/upserts) → nothing to dedupe. |
 | Querier reading unpersisted hot data (ingester-memory hot tier) | **Skip (v1)** | Hot data is a [non-goal](#non-goals); **this is precisely what caps Sol's freshness at the flush interval**. Loki/Mimir queriers read recent data from ingester RAM to get instant freshness; adding such a hot tier is the documented future escape ([NFR6](#nfr6) balance #2). |
@@ -188,7 +188,7 @@ Implement the Prometheus HTTP API endpoints observed in the pcap:
 - `GET /prometheus/api/v1/label/:name/values` — label value discovery
 - `GET /prometheus/api/v1/series` — series existence check
 
-Translate PromQL to DataFusion SQL over metric Parquet tables (gauge, sum, histogram, exp_histogram, summary). Full endpoint surface + response schemas: [API-SPEC.md §1](./API-SPEC.md).
+Translate PromQL to DataFusion SQL over metric Parquet tables (gauge, sum, histogram, exp_histogram, summary). Full endpoint surface + response schemas: [API-SPEC.md §1](./api-spec.md).
 
 ### <a id="fr2"></a>FR2 — Tempo-compatible HTTP API
 
@@ -198,14 +198,14 @@ Implement the Tempo HTTP API endpoints observed in the pcap:
 - `GET /api/v2/search/tags` — list available tag names
 - `GET /api/v2/search/tag/:tag/values` — tag value discovery with TraceQL filter
 
-Translate TraceQL to DataFusion SQL over the traces Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §3](./API-SPEC.md).
+Translate TraceQL to DataFusion SQL over the traces Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §3](./api-spec.md).
 
 ### <a id="fr3"></a>FR3 — Loki-compatible HTTP API
 
 Implement the Loki HTTP API endpoints observed in the pcap:
 - `GET /loki/api/v1/query_range` — log range query with LogQL filter
 
-Translate LogQL to DataFusion SQL over the logs Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §2](./API-SPEC.md).
+Translate LogQL to DataFusion SQL over the logs Parquet table. Full endpoint surface + response schemas: [API-SPEC.md §2](./api-spec.md).
 
 ### <a id="fr4"></a>FR4 — DataFusion query engine integration
 
@@ -248,7 +248,7 @@ Bound the small-files problem (the dominant cost driver per the InfluxDB compari
 - **Supersession is transitive:** L2 supersedes L1 supersedes L0. `resolve_files` returns the surviving set (drop any file named in a superseding file's `supersedes`, regardless of level; rollups excluded), so a querier reads each datum exactly once.
 - **Disk reclaim (deferred GC):** once a superseding compacted file is older than `delete_grace_secs` (default 60 s, **must exceed the querier `refresh_interval_secs`** so no querier still references the inputs in a registered table), the superseded inputs are **deleted** — reclaiming disk/inodes intra-day, not only at retention. POSIX unlink-while-open keeps in-flight scans safe. Reclaiming superseded inputs is GC, not correctness.
 - **Crash safety:** each compacted file is staged to a hidden `.tmp`, **fsync'd**, renamed, then the directory is fsync'd — so a deletion never outlives a non-durable merge. Footer metadata is written before close, in the same fsync.
-- **Consistency without a catalog:** all of the above lives in **Parquet footer key-value metadata** (`level`, `supersedes`), not an external catalog. Coverage references input *provenance*, not an event-time range, so late data stays orthogonal. See [compaction-consistency ADR](./adrs/compactor/compaction-consistency.md).
+- **Consistency without a catalog:** all of the above lives in **Parquet footer key-value metadata** (`level`, `supersedes`), not an external catalog. Coverage references input *provenance*, not an event-time range, so late data stays orthogonal. See [compaction-consistency ADR](../adrs/compactor/compaction-consistency.md).
 - Compaction is configurable (`compactor.intraday`, `grace_days`, `hour_grace_secs`, `delete_superseded`, `delete_grace_secs`, `retention_days`, `rollups`) and the whole component is disabled by simply omitting the `compactor:` section (write-heavy / low-query deployments).
 
 ### <a id="fr8"></a>FR8 — Time-range query splitting (query-frontend)
@@ -274,7 +274,7 @@ Expose the DataFusion `SessionContext` directly as a SQL endpoint, alongside the
 
 Use Apache DataFusion (Rust-native) as the sole query engine. No JVM (Spark), no embedded databases (DuckDB), no external query services. DataFusion is embeddable and proven for Parquet-stored observability data (InfluxDB 3.0, GreptimeDB). (It *can* scale via Ballista for single-query distribution, but that is a [non-goal](#non-goals); read scaling here is by stateless querier replicas, [NFR8](#nfr8).)
 
-**DataFusion extension crates from its own ecosystem are in scope** (they extend the engine, they do not replace it): `datafusion-functions-json` provides the JSON attribute extraction DataFusion core lacks ([JSON extraction ADR](./adrs/querier/json-attribute-extraction.md)). The pinned set is datafusion / datafusion-functions-json / object_store / promql-parser.
+**DataFusion extension crates from its own ecosystem are in scope** (they extend the engine, they do not replace it): `datafusion-functions-json` provides the JSON attribute extraction DataFusion core lacks ([JSON extraction ADR](../adrs/querier/json-attribute-extraction.md)). The pinned set is datafusion / datafusion-functions-json / object_store / promql-parser.
 
 ### <a id="nfr2"></a>NFR2 — Grafana-compatible response formats
 
@@ -283,7 +283,7 @@ All API responses must be compatible with Grafana's data source plugins:
 - Tempo API: JSON response format per Tempo HTTP API spec
 - Loki API: JSON response format per Loki HTTP API spec
 
-No custom Grafana plugins — standard Prometheus, Tempo, and Loki data sources must work unchanged. The exact endpoint contracts (request params + response JSON schemas, with real bodies extracted from the pcap) are specified in [API-SPEC.md](./API-SPEC.md) — the acceptance target for the response builders.
+No custom Grafana plugins — standard Prometheus, Tempo, and Loki data sources must work unchanged. The exact endpoint contracts (request params + response JSON schemas, with real bodies extracted from the pcap) are specified in [API-SPEC.md](./api-spec.md) — the acceptance target for the response builders.
 
 ### <a id="nfr3"></a>NFR3 — Dashboard refresh latency (superseded by [NFR6](#nfr6))
 
@@ -334,7 +334,7 @@ This **query interval** — how far back a query reaches, *not* how long data is
 | **Metrics** | **13 months** (~395 d) | **2 years** | 13 mo retention | day → week/month (cold) | **required** ([FR8](#fr8)) | **required** ([FR6](#fr6)) |
 
 - **Traces**: 30 d matches Grafana Cloud (an earlier draft used 7 d). 7 d remains available as a cost-saving config; 30 d is the default, for parity.
-- **Metrics**: 13 mo default matches Grafana Cloud. **2 y is opt-in** and requires a **rollup-only cold tail** beyond ~395 d (raw aged out) — see [COMPLEXITY.md §7](./COMPLEXITY.md) (M2: 2 y raw at high cardinality is impractical).
+- **Metrics**: 13 mo default matches Grafana Cloud. **2 y is opt-in** and requires a **rollup-only cold tail** beyond ~395 d (raw aged out) — see [COMPLEXITY.md §7](./complexity.md) (M2: 2 y raw at high cardinality is impractical).
 - **Query interval ≠ retention.** Retention (deletion TTL) is a separate configurable policy enforced by the compactor GC ([FR7](#fr7)); it must be ≥ the query interval but is not defined by these numbers. The max range is enforced as a hard guardrail ([NFR9](#nfr9)). Metrics are the scaling case; traces/logs are short-interval special cases that skip the heavy long-range machinery.
 
 ### <a id="nfr8"></a>NFR8 — Horizontal read scalability (role separation)
@@ -359,19 +359,19 @@ On breach, return a clear Grafana-compatible error (e.g. HTTP 422 with a message
 
 ### <a id="nfr10"></a>NFR10 — Object-store (S3) request-rate limits
 
-The backend's cost/latency budgets assume S3-compatible object storage ([NFR4](#nfr4)), which imposes hard **per-prefix request-rate limits**: ~**5 500 GET/HEAD per second** and ~**3 500 PUT/POST/DELETE per second per prefix**, returning **`503 SlowDown`** when exceeded ([S3 performance guidelines](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html)). These limits — not just $ — constrain the design (quantified in [COMPLEXITY.md §3a](./COMPLEXITY.md): a single dashboard refresh can approach the per-prefix GET ceiling, and is **100×+ over it without compaction**). Required mitigations, all already part of the design:
+The backend's cost/latency budgets assume S3-compatible object storage ([NFR4](#nfr4)), which imposes hard **per-prefix request-rate limits**: ~**5 500 GET/HEAD per second** and ~**3 500 PUT/POST/DELETE per second per prefix**, returning **`503 SlowDown`** when exceeded ([S3 performance guidelines](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html)). These limits — not just $ — constrain the design (quantified in [COMPLEXITY.md §3a](./complexity.md): a single dashboard refresh can approach the per-prefix GET ceiling, and is **100×+ over it without compaction**). Required mitigations, all already part of the design:
 
 - **Prefix sharding**: the `dt=YYYY-MM-DD/` + per-signal/subtype layout ([FR7](#fr7)) spreads requests across prefixes; S3 scales rate *per prefix*, so aggregate throughput rises with prefix count.
 - **Fewer files**: compaction ([FR7](#fr7)) cuts GETs-per-query by orders of magnitude — an S3-rate argument on top of latency.
 - **Caching**: the query-result + per-day immutable cache ([FR5](#fr5)/[FR8](#fr8)) serve repeat refreshes with zero object-store requests — without it the 15 s refresh would hammer a single hot prefix.
 - **Backoff & retry**: the querier/compactor must retry `503 SlowDown` with exponential backoff + jitter (the `object_store` crate provides this; it must be configured, not disabled).
-- **Bounded LIST**: file discovery ([datafusion-table-discovery ADR](./adrs/querier/datafusion-table-discovery.md)) uses paginated LIST (1 000 keys/page, rate-limited); the re-list interval and per-prefix object count are bounded by compaction + the refresh interval.
+- **Bounded LIST**: file discovery ([datafusion-table-discovery ADR](../adrs/querier/datafusion-table-discovery.md)) uses paginated LIST (1 000 keys/page, rate-limited); the re-list interval and per-prefix object count are bounded by compaction + the refresh interval.
 
 Local-filesystem deployments are not subject to these limits (sub-ms opens, no per-prefix cap); the constraints apply to the S3/object-store production target ([NFR8](#nfr8)).
 
 ## Non-goals
 
-- **Query/API coverage**: the **full read/query API surface** of Mimir/Loki/Tempo is targeted ([API-SPEC.md](./API-SPEC.md)), and the **full query-language surface** is mapped with explicit per-construct trade-off decisions ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) — *not* just the pcap subset. What stays out: genuinely unbounded or hot-data constructs (`predict_linear`/`holt_winters`/subqueries, `absent*`, TraceQL structural operators, TraceQL metrics, live tail) — deferred, with the [SQL endpoint (FR9)](#fr9) as the escape hatch. Ingestion and admin/ring/config endpoints are out (read-only backend).
+- **Query/API coverage**: the **full read/query API surface** of Mimir/Loki/Tempo is targeted ([API-SPEC.md](./api-spec.md)), and the **full query-language surface** is mapped with explicit per-construct trade-off decisions ([QUERY-MAPPING.md](./query-mapping.md)) — *not* just the pcap subset. What stays out: genuinely unbounded or hot-data constructs (`predict_linear`/`holt_winters`/subqueries, `absent*`, TraceQL structural operators, TraceQL metrics, live tail) — deferred, with the [SQL endpoint (FR9)](#fr9) as the escape hatch. Ingestion and admin/ring/config endpoints are out (read-only backend).
 - **Single-query distribution (Ballista)**: splitting *one* query across nodes (intra-query parallelism) is deferred — the workload is many *small* queries, not one giant scan. **Horizontal scaling for query concurrency is NOT a non-goal** — it is required (see [NFR8](#nfr8)): the backend runs as stateless querier replicas over shared object storage, scaled behind a load balancer. The two are different axes; only Ballista-style single-query distribution is out of scope.
 - **Write-ahead log / hot data**: queries run over finalized Parquet files only. Real-time tail (last few seconds of data not yet flushed to Parquet) is out of scope — the batch flush interval defines the query freshness boundary.
 - **Multi-tenancy**: single-tenant deployment. Tenant isolation is a future concern.
@@ -385,7 +385,7 @@ Local-filesystem deployments are not subject to these limits (sub-ms opens, no p
 
 3. **Parquet file lifecycle**: as new Parquet files are written, the query engine must discover them. **Constraint**: simple file-system / object-store re-listing, not a catalog system (Iceberg/Delta Lake). Consistency between raw and compacted files uses footer-level supersession metadata on the sealed-day boundary ([FR7](#fr7), rabbit hole 6), not a transactional catalog.
 
-4. **JSON attribute extraction performance**: every query that filters on span/metric attributes requires `json_extract` on the `attributes` column. This defeats Parquet predicate pushdown. **Constraint**: accept the performance cost for v1, using the `datafusion-functions-json` extension ([JSON extraction ADR](./adrs/querier/json-attribute-extraction.md)) — its `jiter`-backed lazy parser is materially cheaper than full `serde_json` document parsing, but it still parses per row. **State of the art (deferred — would supersede the JSON-string design, own ADR):** stop storing attributes as a JSON string at all. Two industry approaches: (a) **ClickHouse `JSON`/`Object` columns** auto-materialise frequently-seen keys into real *subcolumns* on write, so `attributes.host` reads as a native column (O(1) columnar, no per-row parse) — the InfluxDB 3 / GreptimeDB equivalent is promoting tags to top-level columns; (b) the **Parquet/Arrow `VARIANT` type + shredding spec** (Spark 4, 2024–25 Arrow/Parquet) stores semi-structured data in a binary, partially-columnarised form with the same effect. Sol's "attribute promotion" (materialising hot attributes as top-level Parquet columns at compaction time) is the pragmatic on-ramp to (a) and the recommended future optimisation.
+4. **JSON attribute extraction performance**: every query that filters on span/metric attributes requires `json_extract` on the `attributes` column. This defeats Parquet predicate pushdown. **Constraint**: accept the performance cost for v1, using the `datafusion-functions-json` extension ([JSON extraction ADR](../adrs/querier/json-attribute-extraction.md)) — its `jiter`-backed lazy parser is materially cheaper than full `serde_json` document parsing, but it still parses per row. **State of the art (deferred — would supersede the JSON-string design, own ADR):** stop storing attributes as a JSON string at all. Two industry approaches: (a) **ClickHouse `JSON`/`Object` columns** auto-materialise frequently-seen keys into real *subcolumns* on write, so `attributes.host` reads as a native column (O(1) columnar, no per-row parse) — the InfluxDB 3 / GreptimeDB equivalent is promoting tags to top-level columns; (b) the **Parquet/Arrow `VARIANT` type + shredding spec** (Spark 4, 2024–25 Arrow/Parquet) stores semi-structured data in a binary, partially-columnarised form with the same effect. Sol's "attribute promotion" (materialising hot attributes as top-level Parquet columns at compaction time) is the pragmatic on-ramp to (a) and the recommended future optimisation.
 
 5. **Histogram bucket unnesting**: DataFusion's `UNNEST` over JSON-parsed arrays may have performance issues for large batch sizes. **Constraint**: benchmark with realistic histogram cardinality before committing to the JSON-unnest approach. Fall back to Rust-native histogram computation if SQL is too slow. **Decision (v1, task 6):** Rust-native chosen up front. DataFusion 53 cannot reliably *zip* two parallel JSON-array string columns (`bucket_counts`, `explicit_bounds`) via `UNNEST` — there is no `json_parse`→array, and multiple `UNNEST`s in one projection have zip-vs-cross-join ambiguity. So `handle_histogram` selects the latest OTLP histogram row per series and interpolates the quantile in Rust (`histogram_quantile(φ, counts, bounds)` — linear within the matched bucket, `+Inf` bucket → last finite bound, empty → `None`). Bounded, unit-testable, no UNNEST risk; the SQL-UNNEST path stays available if a future benchmark justifies it.
 
@@ -519,7 +519,7 @@ rather than lingering until retention.
 
 ### Query translation layer
 
-Each query language is translated to DataFusion SQL. The **authoritative, full-surface mapping** (every construct, with its ✅ native / ⚠️ cost-flagged / ⛔ restricted decision) lives in [QUERY-MAPPING.md](./QUERY-MAPPING.md); the table below is an illustrative excerpt:
+Each query language is translated to DataFusion SQL. The **authoritative, full-surface mapping** (every construct, with its ✅ native / ⚠️ cost-flagged / ⛔ restricted decision) lives in [QUERY-MAPPING.md](./query-mapping.md); the table below is an illustrative excerpt:
 
 | Source language | Target | Key functions |
 |---|---|---|
@@ -548,21 +548,21 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
 
 ### Decisions
 
-- [Query backend process integration](./adrs/shared/querier-backend-process-integration.md) — how the server embeds in the Sol process (mirrors `src/api/`)
-- [DataFusion table registration and Parquet file discovery](./adrs/querier/datafusion-table-discovery.md) — `ListingTable` per signal, periodic re-listing, dependency gating
-- [File layout and compaction strategy](./adrs/compactor/file-layout-and-compaction-strategy.md) — sort order, lightweight compaction, cache budget (the NFR5/NFR6 cost/latency balance)
-- [Deployment roles and horizontal read scaling](./adrs/shared/deployment-roles-and-read-scaling.md) — querier / query-frontend / singleton compactor; dual-runtime isolation (NFR8)
-- [Long-range metrics strategy](./adrs/compactor/long-range-metrics-strategy.md) — time-partitioned layout, per-day time-splitting, rollup tiers (FR6/FR8/NFR7)
-- [Compaction consistency](./adrs/compactor/compaction-consistency.md) — standalone Parquet→Parquet compactor, sealed-day cadence, footer supersession metadata (no catalog)
-- [PromQL parsing strategy](./adrs/querier/promql-parsing-strategy.md)
-- [Query caching strategy](./adrs/querier/query-caching-strategy.md)
-- [JSON attribute extraction](./adrs/querier/json-attribute-extraction.md) — `datafusion-functions-json` extension over a hand-rolled UDF; attribute-promotion / Variant as the deferred SOTA (rabbit hole #4)
-- [Grafana datasource API conformance](./adrs/querier/grafana-datasource-api-conformance.md) — what response contract Sol targets (no single OpenAPI; Mimir OpenAPI + Tempo `tempopb` + Grafana `pkg/tsdb`/datasource source), validated by paired-diff against the real backends ([NFR2](#nfr2))
+- [Query backend process integration](../adrs/shared/querier-backend-process-integration.md) — how the server embeds in the Sol process (mirrors `src/api/`)
+- [DataFusion table registration and Parquet file discovery](../adrs/querier/datafusion-table-discovery.md) — `ListingTable` per signal, periodic re-listing, dependency gating
+- [File layout and compaction strategy](../adrs/compactor/file-layout-and-compaction-strategy.md) — sort order, lightweight compaction, cache budget (the NFR5/NFR6 cost/latency balance)
+- [Deployment roles and horizontal read scaling](../adrs/shared/deployment-roles-and-read-scaling.md) — querier / query-frontend / singleton compactor; dual-runtime isolation (NFR8)
+- [Long-range metrics strategy](../adrs/compactor/long-range-metrics-strategy.md) — time-partitioned layout, per-day time-splitting, rollup tiers (FR6/FR8/NFR7)
+- [Compaction consistency](../adrs/compactor/compaction-consistency.md) — standalone Parquet→Parquet compactor, sealed-day cadence, footer supersession metadata (no catalog)
+- [PromQL parsing strategy](../adrs/querier/promql-parsing-strategy.md)
+- [Query caching strategy](../adrs/querier/query-caching-strategy.md)
+- [JSON attribute extraction](../adrs/querier/json-attribute-extraction.md) — `datafusion-functions-json` extension over a hand-rolled UDF; attribute-promotion / Variant as the deferred SOTA (rabbit hole #4)
+- [Grafana datasource API conformance](../adrs/querier/grafana-datasource-api-conformance.md) — what response contract Sol targets (no single OpenAPI; Mimir OpenAPI + Tempo `tempopb` + Grafana `pkg/tsdb`/datasource source), validated by paired-diff against the real backends ([NFR2](#nfr2))
 
 **Analysis artifacts (Phase 4a gate, before implementation):**
-- [COMPLEXITY.md](./COMPLEXITY.md) — cost/complexity model (logs/metrics/traces) at demo / midpoint / ceiling vs AWS pricing; validates compaction/rollups/splitting and the beat-Loki / parity-Tempo / lose-to-Mimir-on-storage verdicts.
-- [QUERY-MAPPING.md](./QUERY-MAPPING.md) — full-surface PromQL/LogQL/TraceQL → SQL with per-construct trade-off decisions.
-- [API-SPEC.md](./API-SPEC.md) — Grafana-compatible HTTP contracts per backend (request params + response JSON), grounded in real pcap response bodies; the NFR2 acceptance target.
+- [COMPLEXITY.md](./complexity.md) — cost/complexity model (logs/metrics/traces) at demo / midpoint / ceiling vs AWS pricing; validates compaction/rollups/splitting and the beat-Loki / parity-Tempo / lose-to-Mimir-on-storage verdicts.
+- [QUERY-MAPPING.md](./query-mapping.md) — full-surface PromQL/LogQL/TraceQL → SQL with per-construct trade-off decisions.
+- [API-SPEC.md](./api-spec.md) — Grafana-compatible HTTP contracts per backend (request params + response JSON), grounded in real pcap response bodies; the NFR2 acceptance target.
 
 > **Note (analysis):** Sol's existing [`lib/prometheus-parser`](../../../lib/prometheus-parser/) parses the Prometheus **text exposition format**, not PromQL queries. The `promql-parser` crate decision is unaffected — the two solve different problems.
 
@@ -582,7 +582,7 @@ Query → hash(query, time_range_bucket) → LRU cache lookup
   | `sol_querier_cache_requests_total` | counter | `cache(result\|metadata\|shard),result(hit\|miss)` | [FR5](#fr5)/[FR8](#fr8) hit rate |
   | `sol_querier_cache_memory_bytes`, `sol_querier_inflight` | gauge | — | [NFR5](#nfr5) budget / concurrency |
   | `sol_querier_rejected_total` | counter | `reason(range\|bytes\|concurrency)` | [NFR9](#nfr9) guardrails |
-  | `sol_querier_unsupported_total` | counter | `lang,construct` | ⛔/⚠️ usage ([QUERY-MAPPING.md](./QUERY-MAPPING.md)) |
+  | `sol_querier_unsupported_total` | counter | `lang,construct` | ⛔/⚠️ usage ([QUERY-MAPPING.md](./query-mapping.md)) |
   | `sol_objectstore_requests_total` | counter | `op(get\|list\|put),status` | [NFR10](#nfr10) request rate |
   | `sol_objectstore_throttled_total` | counter | — | [NFR10](#nfr10) `503 SlowDown` |
   | `sol_objectstore_request_duration_seconds` | histogram | `op` | object-store latency |

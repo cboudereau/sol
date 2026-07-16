@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Query backend process integration
 
-Addresses: [FR1](../../DESIGN.md#fr1), [FR2](../../DESIGN.md#fr2), [FR3](../../DESIGN.md#fr3), [NFR2](../../DESIGN.md#nfr2)
+Addresses: [FR1](../../designs/parquet-backend.md#fr1), [FR2](../../designs/parquet-backend.md#fr2), [FR3](../../designs/parquet-backend.md#fr3), [NFR2](../../designs/parquet-backend.md#nfr2)
 
 ## Problem
 
@@ -42,5 +42,5 @@ Rationale:
 - The query backend is configured under a `query:` block, e.g. `query: { address: "0.0.0.0:9009", storage: { path: "/var/lib/sol/parquet" } }`.
 - Startup/shutdown plumbing is added in `app.rs` and `topology/controller.rs` parallel to the `api` server — these are the only two pipeline-integration touch points.
 - HTTP routing uses **warp** filters (the framework already used by `src/api/server.rs` and the OTLP HTTP source), so no new HTTP framework dependency.
-- Because it is decoupled from the topology graph, the query backend has no acknowledgement or backpressure contract to satisfy — it only reads finalized Parquet files (consistent with the write-ahead-log non-goal in [DESIGN.md](../../DESIGN.md#non-goals)).
+- Because it is decoupled from the topology graph, the query backend has no acknowledgement or backpressure contract to satisfy — it only reads finalized Parquet files (consistent with the write-ahead-log non-goal in [DESIGN.md](../../designs/parquet-backend.md#non-goals)).
 - The three APIs (Prometheus/Tempo/Loki) are mounted as sub-routers on the single `querier::Server` listener, distinguished by path prefix (`/prometheus`, `/api`, `/loki`).

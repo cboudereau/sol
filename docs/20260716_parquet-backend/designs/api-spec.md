@@ -1,13 +1,13 @@
 # API Specification — Grafana-compatible HTTP contracts
 
-> The wire contract for [FR1](./DESIGN.md#fr1) (Prometheus), [FR2](./DESIGN.md#fr2) (Tempo), [FR3](./DESIGN.md#fr3) (Loki), enforcing [NFR2](./DESIGN.md#nfr2) (standard Grafana data sources work unchanged). [QUERY-MAPPING.md](./QUERY-MAPPING.md) covers *query → SQL*; this covers *HTTP request params → response JSON*.
+> The wire contract for [FR1](./DESIGN.md#fr1) (Prometheus), [FR2](./DESIGN.md#fr2) (Tempo), [FR3](./DESIGN.md#fr3) (Loki), enforcing [NFR2](./DESIGN.md#nfr2) (standard Grafana data sources work unchanged). [QUERY-MAPPING.md](./query-mapping.md) covers *query → SQL*; this covers *HTTP request params → response JSON*.
 > Response examples marked **(pcap)** are real bodies extracted from `883cbd10a4e1.pcap` (Grafana ↔ Mimir/Tempo/Loki); others are from the upstream API specs. Endpoints marked **[pcap]** were observed in the capture.
 
 Conventions: all responses `Content-Type: application/json`. Errors return the backend's native error envelope (below). Guardrail breaches ([NFR9](./DESIGN.md#nfr9)) use the same envelope with HTTP 422.
 
 ### Coverage policy (full surface, with trade-off decisions)
 
-We target the **full read/query surface** of each backend's HTTP API ([Prometheus](https://prometheus.io/docs/prometheus/latest/querying/api/), [Loki](https://grafana.com/docs/loki/latest/reference/loki-http-api/), [Tempo](https://grafana.com/docs/tempo/latest/api_docs/)), with a per-endpoint decision — same discipline as [QUERY-MAPPING.md](./QUERY-MAPPING.md):
+We target the **full read/query surface** of each backend's HTTP API ([Prometheus](https://prometheus.io/docs/prometheus/latest/querying/api/), [Loki](https://grafana.com/docs/loki/latest/reference/loki-http-api/), [Tempo](https://grafana.com/docs/tempo/latest/api_docs/)), with a per-endpoint decision — same discipline as [QUERY-MAPPING.md](./query-mapping.md):
 
 | Mark | Meaning |
 |---|---|

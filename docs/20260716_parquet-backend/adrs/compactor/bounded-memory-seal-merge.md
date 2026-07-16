@@ -1,9 +1,9 @@
 ---
-status: draft
+status: accepted
 ---
 # Bounded-memory seal/merge (streaming, spilling sort)
 
-Addresses: [FR7](../../DESIGN.md#fr7), [NFR5](../../DESIGN.md#nfr5)
+Addresses: [FR7](../../designs/parquet-backend.md#fr7), [NFR5](../../designs/parquet-backend.md#nfr5)
 
 Extends [file-layout-and-compaction-strategy](./file-layout-and-compaction-strategy.md) and [compaction-consistency](./compaction-consistency.md).
 
@@ -21,7 +21,7 @@ seal's `merge_inputs` loaded the **entire partition into RAM twice**:
 
 For the demo's largest partition (logs, 164 MB ZSTD-9 → ~1–2.5 GB decoded, ×2)
 this exceeded the shared WSL/Docker host budget → the cgroup killed the
-compactor. This is the [NFR3](../../DESIGN.md#nfr3)/no-spill risk made real.
+compactor. This is the [NFR3](../../designs/parquet-backend.md#nfr3)/no-spill risk made real.
 
 ## Options
 
@@ -39,7 +39,7 @@ compactor. This is the [NFR3](../../DESIGN.md#nfr3)/no-spill risk made real.
   `read_batches` into a `Vec`), unions them, and applies one global `.sort()`;
 - runs on a `merge_ctx` `SessionContext` configured with a bounded
   **`FairSpillPool`** (`MERGE_MEM_BUDGET_BYTES`, 128 MB — well under
-  [NFR5](../../DESIGN.md#nfr5)'s cache budget) **plus a `DiskManager`**, so the
+  [NFR5](../../designs/parquet-backend.md#nfr5)'s cache budget) **plus a `DiskManager`**, so the
   sort spills to disk instead of OOMing. `sort_spill_reservation_bytes` is tied
   to the budget so a small budget can still merge its spilled runs;
 - reads all inputs in **one scan as a single partition** (`target_partitions =

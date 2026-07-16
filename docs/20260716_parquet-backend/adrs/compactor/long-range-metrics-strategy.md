@@ -1,13 +1,13 @@
 ---
-status: draft
+status: accepted
 ---
 # Long-range metrics: time-split + rollups + time-partitioned layout
 
-Addresses: [FR8](../../DESIGN.md#fr8), [FR6](../../DESIGN.md#fr6), [NFR7](../../DESIGN.md#nfr7), [NFR6](../../DESIGN.md#nfr6)
+Addresses: [FR8](../../designs/parquet-backend.md#fr8), [FR6](../../designs/parquet-backend.md#fr6), [NFR7](../../designs/parquet-backend.md#nfr7), [NFR6](../../designs/parquet-backend.md#nfr6)
 
 ## Problem
 
-Metrics are queried over **13 months by default, up to 2 years opt-in** ([NFR7](../../DESIGN.md#nfr7)), and Grafana re-issues the same range every ~15s. Two failure modes:
+Metrics are queried over **13 months by default, up to 2 years opt-in** ([NFR7](../../designs/parquet-backend.md#nfr7)), and Grafana re-issues the same range every ~15s. Two failure modes:
 1. A long-range (13mo–2y) scan at raw resolution is infeasible (cost, memory) — even with pruning.
 2. The result cache keyed on the whole range ([caching ADR](../querier/query-caching-strategy.md)) **misses on every refresh**, because `end` advances each time.
 
@@ -27,11 +27,11 @@ These are complementary, not alternatives — the decision is to use all three f
 
 **Adopt time-partitioned layout + per-day time-splitting + resolution-tier rollups for metrics.**
 
-1. **Layout** — metric Parquet is written under `dt=YYYY-MM-DD/` partitions so day-level pruning is a path filter ([FR7](../../DESIGN.md#fr7)).
+1. **Layout** — metric Parquet is written under `dt=YYYY-MM-DD/` partitions so day-level pruning is a path filter ([FR7](../../designs/parquet-backend.md#fr7)).
 
-2. **Splitting** ([FR8](../../DESIGN.md#fr8)) — the query-frontend splits a metric `query_range` into per-day shards aligned to UTC midnight and `step`, executes across stateless queriers ([roles ADR](../shared/deployment-roles-and-read-scaling.md)), and merges. **Completed historical shards are cached permanently** (immutable); only the in-progress day is uncacheable. This fixes the whole-range cache defect and makes a long-range refresh ≈ 1 live shard + N cache hits (N ≈ 394 at the 13mo default, 729 at the 2y opt-in).
+2. **Splitting** ([FR8](../../designs/parquet-backend.md#fr8)) — the query-frontend splits a metric `query_range` into per-day shards aligned to UTC midnight and `step`, executes across stateless queriers ([roles ADR](../shared/deployment-roles-and-read-scaling.md)), and merges. **Completed historical shards are cached permanently** (immutable); only the in-progress day is uncacheable. This fixes the whole-range cache defect and makes a long-range refresh ≈ 1 live shard + N cache hits (N ≈ 394 at the 13mo default, 729 at the 2y opt-in).
 
-3. **Rollups** ([FR6](../../DESIGN.md#fr6)) — the compactor produces coarser-resolution metric Parquet (e.g. 5m, 1h, 1d) for the cold tail. The query-frontend selects the tier from `(range, step)`: recent ranges → raw; long ranges → rollups. Rollups store **bucket counts** (not pre-computed quantiles) and **counter values** so `histogram_quantile` and `rate` stay correct after merge.
+3. **Rollups** ([FR6](../../designs/parquet-backend.md#fr6)) — the compactor produces coarser-resolution metric Parquet (e.g. 5m, 1h, 1d) for the cold tail. The query-frontend selects the tier from `(range, step)`: recent ranges → raw; long ranges → rollups. Rollups store **bucket counts** (not pre-computed quantiles) and **counter values** so `histogram_quantile` and `rate` stay correct after merge.
 
 **Correctness rules (the hard part):**
 - Range-vector functions (`rate`, `increase`) overlap each shard by the lookback/range window and stitch at boundaries — never split disjointly.
@@ -42,10 +42,10 @@ These are complementary, not alternatives — the decision is to use all three f
 ## Consequences
 
 - The query-frontend ([roles ADR](../shared/deployment-roles-and-read-scaling.md)) owns splitting + merge + tier selection; queriers stay simple (execute one SQL shard).
-- Rollup generation is compactor work — ingest/compaction CPU + extra storage traded for read latency on the long tail ([NFR6](../../DESIGN.md#nfr6) balance).
+- Rollup generation is compactor work — ingest/compaction CPU + extra storage traded for read latency on the long tail ([NFR6](../../designs/parquet-backend.md#nfr6) balance).
 - Raw real-time computation remains the correctness baseline and the fallback when a rollup tier is missing or the range is recent.
 - This applies to metrics only. Traces/logs are registered as day-partitioned tables **without splitting/rollups** ("plain" = no long-range machinery; they are still subject to the same `resolve_files` footer-supersession resolution post-compaction, [compaction-consistency](./compaction-consistency.md)).
-- Freshness unchanged: the in-progress shard reads finalized Parquet at the flush/refresh interval; hot data stays a [non-goal](../../DESIGN.md#non-goals).
+- Freshness unchanged: the in-progress shard reads finalized Parquet at the flush/refresh interval; hot data stays a [non-goal](../../designs/parquet-backend.md#non-goals).
 
 ## Implementation note (reconciliation with what shipped)
 

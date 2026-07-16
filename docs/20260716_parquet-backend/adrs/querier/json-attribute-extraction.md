@@ -3,7 +3,7 @@ status: accepted
 ---
 # JSON attribute extraction via the datafusion-functions-json extension
 
-Addresses: [FR3](../../DESIGN.md#fr3), [FR1](../../DESIGN.md#fr1), [NFR1](../../DESIGN.md#nfr1), [NFR5](../../DESIGN.md#nfr5)
+Addresses: [FR3](../../designs/parquet-backend.md#fr3), [FR1](../../designs/parquet-backend.md#fr1), [NFR1](../../designs/parquet-backend.md#nfr1), [NFR5](../../designs/parquet-backend.md#nfr5)
 
 ## Problem
 
@@ -34,7 +34,7 @@ the `querier-backend` feature) and register it via
 `datafusion_functions_json::register_all(&mut ctx)` in `QueryEngine::new`. The
 custom UDF (`src/querier/udf.rs`) is removed.
 
-This is consistent with [NFR1](../../DESIGN.md#nfr1): the crate is a **DataFusion
+This is consistent with [NFR1](../../designs/parquet-backend.md#nfr1): the crate is a **DataFusion
 extension** from the DataFusion ecosystem (datafusion-contrib), not a separate
 query engine, JVM, or embedded database. NFR1's intent — DataFusion as the sole
 engine — is preserved. The crate is added to the pinned dependency set

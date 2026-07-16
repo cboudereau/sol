@@ -1,14 +1,14 @@
 ---
-status: draft
+status: accepted
 ---
 # Grafana datasource API conformance — what contract Sol targets
 
-Addresses: [NFR2](../../DESIGN.md#nfr2), [FR1](../../DESIGN.md#fr1), [FR2](../../DESIGN.md#fr2), [FR3](../../DESIGN.md#fr3)
+Addresses: [NFR2](../../designs/parquet-backend.md#nfr2), [FR1](../../designs/parquet-backend.md#fr1), [FR2](../../designs/parquet-backend.md#fr2), [FR3](../../designs/parquet-backend.md#fr3)
 
 ## Problem
 
 Sol serves the Prometheus, Tempo, and Loki HTTP APIs so Grafana's stock
-datasources render against it unchanged ([NFR2](../../DESIGN.md#nfr2)). To do that
+datasources render against it unchanged ([NFR2](../../designs/parquet-backend.md#nfr2)). To do that
 correctly we need an authoritative definition of each response shape. Which
 spec do we build (and test) against? The prose API docs are incomplete: real
 Grafana failures (`Cannot read properties of undefined (reading '0')`,
