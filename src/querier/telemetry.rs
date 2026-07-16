@@ -124,6 +124,20 @@ pub fn record_shed() {
     counter!("querier_shed_total").increment(1);
 }
 
+/// Record one plan-pipeline stage duration (promql-plan-cache FR1 profiling
+/// seam). `stage` is one of `parse` (PromQL text → AST), `lower` (AST →
+/// logical `DataFrame` plan), `optimize` (DataFusion logical optimization),
+/// `physical` (physical planning), `execute` (physical-plan collect). Surfaced
+/// as `sol_querier_plan_stage_duration_seconds{stage=…}`; per-stage shares
+/// decide which stage the plan cache reuses
+/// ([ADR](../../docs/workspace/promql-plan-cache/adrs/plan-cache-mechanism.md)).
+/// A result-cache hit records only `parse`/`lower` — the later stages are
+/// skipped, which the seam makes visible rather than papering over.
+pub fn record_plan_stage(stage: &'static str, duration: Duration) {
+    histogram!("querier_plan_stage_duration_seconds", "stage" => stage)
+        .record(duration.as_secs_f64());
+}
+
 /// Record a guardrail rejection (NFR9 — `reason` e.g. `range`/`bytes`).
 pub fn record_rejected(reason: &str) {
     counter!("querier_rejected_total", "reason" => reason.to_string()).increment(1);
@@ -289,6 +303,26 @@ mod tests {
                 "objectstore_request_duration_seconds"
             )
             .is_some()
+        );
+    }
+
+    #[test]
+    fn test_plan_stage_histogram_emitted() {
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            record_plan_stage("optimize", Duration::from_millis(3));
+        });
+        let s = snap.snapshot().into_vec();
+        let labels = has_metric(
+            &s,
+            MetricKind::Histogram,
+            "querier_plan_stage_duration_seconds",
+        )
+        .expect("plan-stage duration histogram emitted");
+        assert!(
+            labels.contains(&("stage".to_string(), "optimize".to_string())),
+            "labels: {labels:?}"
         );
     }
 

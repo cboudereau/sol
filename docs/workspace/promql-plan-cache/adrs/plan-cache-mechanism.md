@@ -1,5 +1,5 @@
 ---
-status: draft
+status: proposed
 ---
 # Plan-cache mechanism: which pipeline stage to reuse, and how
 
@@ -23,10 +23,31 @@ Addresses: [FR2](../DESIGN.md#fr2), [NFR1](../DESIGN.md#nfr1), [NFR2](../DESIGN.
 
 Key completeness (whatever option wins): expression text ⊕ step/window-shape bucket ⊕ resolved table set (tier routing outcome) ⊕ inventory snapshot generation ⊕ relevant config (lookback constants). Each component gets a "changing it misses" test.
 
+## FR1 profile (release build, demo-scale fixture: 1,505 gauge + 40 histogram exact-bounds files / 7 days; ms)
+
+| shape | run | total | parse | lower | optimize | physical | execute | files |
+|---|---|---|---|---|---|---|---|---|
+| `rate(m[5m])` | cold | 178.8 | 1.9 | 11.9 | 25.9 | 67.4 | 68.3 | 24 |
+| `rate(m[5m])` | shape-warm | 109–118 | 0.3 | 3.7 | ~29 | 48–61 | 22–26 | 24 |
+| `rate(m[5m])` | result-cache hit | 5.8 | 0.3 | 4.4 | 0 | 0 | 0 | 0 |
+| bare `m` | cold | 29.5 | 0.2 | 0.7 | 4.0 | 6.4 | 16.9 | 23 |
+| `histogram_quantile` | cold | 113.1 | 0.4 | 0.7 | 1.3 | 9.8 | **99.7** | 45 |
+| `histogram_quantile` | shape-warm | 36–45 | 0.3 | 0.6 | 1.3 | ~11 | 23–30 | 45 |
+
+Cold `rate()` shares: parse 1 % · lower 7 % · optimize 14 % · **physical 38 %** · execute 38 %. Shape-warm (the dashboard-refresh case, page cache hot): **planning ≈ 74 %** (optimize ≈ 26 % + physical ≈ 48 %), execute ≈ 21 %. Stage sums within 1–3 % of totals. Debug ≈ 9× inflated, same ordering. `histogram_quantile` is execution-bound (88 % cold) — a plan cache barely helps it; the result cache covers its repeats.
+
 ## Decision
 
-Pending FR1 profile. Expected shape of the decision: the option (or combination) that removes ≥ 80 % of the measured hot stage while keeping the correctness bar (byte-identical results, complete key). Recommendation will be written here with the profile table attached.
+**Proposed: A′ + E.** The profile overturns the draft's framing: the optimizer is NOT the dominant stage — **physical planning is** (48 % shape-warm), and it scales with plan size (bare selector pays ~8 ms where `rate()` pays ~55 ms over the same store).
+
+- **A′ — cache the *optimized* logical plan, rebind literals, skip re-optimize**: key = (expr text, step bucket, resolved table set, inventory generation, lookback config); rebind the window's time literals via a TreeNode rewrite of the cached plan; then call `query_planner().create_physical_plan()` directly — the seam split in `execute_recording_scan` (task 1) already exposes exactly this hook. Removes lower+optimize ≈ 33 ms/query. Plain A (rebind then re-optimize) would save only ~4 ms — rejected. B (placeholder plans) is unnecessary given A′; C (optimizer trimming) is subsumed; D (physical-plan cache) is not viable — its key must include the scoped file list, which changes on every window slide.
+- **E — shrink the `rate()` lowering** (fewer/fused window aggregates; the instant==range parity and extrapolation golden tests are the correctness bar): the only lever that attacks the dominant physical stage (and execute), including first-shape and ad-hoc queries. Expected combined landing: repeated-shape `rate()` ≈ 60–80 ms on the fixture; A′ alone lands ~80 ms (borderline for [NFR1](../DESIGN.md#nfr1), likely above it live at ~1.4× fixture).
+
+Sequencing if ratified: A′ first (mechanical, low risk), re-profile, then E sized by what remains.
 
 ## Consequences
 
-(To be completed with the decision. Known regardless of option: a new `sol_querier_plan_cache_*` telemetry pair; a second cache keyspace beside the result cache; the first occurrence of each shape after restart stays cold.)
+- New `sol_querier_plan_cache_*` hit/miss counters; a second keyspace beside the result cache; first occurrence of each shape after restart stays cold.
+- A′'s rebind rewrite must be provably total for our generated plans (every time literal it must touch is produced by `prom_time_between`/window frames — a test asserts rebound-plan == freshly-built-plan for each query shape).
+- E re-opens `plan/frame.rs` — the parity/golden suites gate it; if E's cut proves insufficient, the remaining lever is the write-side series-key column (kept deferred).
+- `histogram_quantile` stays execution-bound — out of this ADR's blast radius by design.

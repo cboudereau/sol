@@ -1799,6 +1799,9 @@ async fn handle_hist_quantile_range(
 
     use datafusion::prelude::col;
     // Sealed windows from the rollup tier (coarse step), trailing day from raw.
+    // Profiling seam (promql-plan-cache FR1): the tier-routed scan + projection
+    // construction is this path's logical lowering (`lower` stage).
+    let t = std::time::Instant::now();
     let df = hist_source(engine, &spec.base, &spec.preds, start_ns, end_ns, step_ns, now_ns).await?;
     let mut proj = vec![
         col("time_unix_nano"),
@@ -1808,11 +1811,13 @@ async fn handle_hist_quantile_range(
     for g in &spec.group_by {
         proj.push(label_lhs_expr(g).alias(sql_ident(g)));
     }
+    let df = df.select(proj)?;
+    super::telemetry::record_plan_stage("lower", t.elapsed());
     let scope = super::QueryScope {
         lo_ns: start_ns,
         hi_ns: end_ns,
     };
-    let batches = engine.collect_scoped(df.select(proj)?, Some(scope)).await?;
+    let batches = engine.collect_scoped(df, Some(scope)).await?;
 
     // group key → (label map, ts → summed bucket counts, bounds)
     type Group = (BTreeMap<String, String>, BTreeMap<i64, Vec<f64>>, Vec<f64>);
@@ -2281,7 +2286,10 @@ pub async fn handle_range(
     step_ns: i64,
     now_ns: i64,
 ) -> crate::Result<PromMatrixResponse> {
+    // Profiling seam (promql-plan-cache FR1): time the PromQL parse stage.
+    let t = std::time::Instant::now();
     let parsed = parser::parse(query).map_err(to_err)?;
+    super::telemetry::record_plan_stage("parse", t.elapsed());
     // Classic-histogram queries are computed from OTLP array buckets:
     // histogram_quantile(…) and bare `_bucket`-by-`le` heatmaps.
     if let Some(spec) = detect_hist_quantile(&parsed) {
@@ -3111,15 +3119,22 @@ async fn eval_range_window(
                 // rank whole series by peak via a window (`DENSE_RANK … <= k`),
                 // superseding the Rust sort-truncate. Scan from `scan_start` for the
                 // left-edge window; the caller filters points back to `[s, e]`.
+                // Profiling seam (promql-plan-cache FR1): the logical lowering —
+                // AST → `DataFrame` plan construction — is the `lower` stage.
+                let t = std::time::Instant::now();
                 let df = lower_range_df(engine, inner, scan_start, e, table).await?;
                 let df = lower_topk_df(df, n, is_topk)?;
+                super::telemetry::record_plan_stage("lower", t.elapsed());
                 let scope = super::QueryScope {
                     lo_ns: scan_start,
                     hi_ns: e,
                 };
                 Ok(RangeVal::Vector(range_series_from_df(engine, df, scope).await?))
             } else {
+                // Profiling seam (promql-plan-cache FR1): `lower` stage, as above.
+                let t = std::time::Instant::now();
                 let df = lower_range_df(engine, expr, scan_start, e, table).await?;
+                super::telemetry::record_plan_stage("lower", t.elapsed());
                 let scope = super::QueryScope {
                     lo_ns: scan_start,
                     hi_ns: e,
@@ -6574,6 +6589,69 @@ mod tests {
         w.close().unwrap();
     }
 
+    /// Write an exact-bounds-named OTLP array-histogram file (task 14b subtype
+    /// layout: `metrics/histogram/dt=<day>/<min>-<max>-<uuid>.parquet`), one
+    /// `hist_seconds` sample per timestamp. Per-bucket cumulative counts grow
+    /// with `count_base + i` so consecutive files form a monotonic counter —
+    /// the `histogram_quantile(φ, sum(rate(<base>_bucket[w])) by (le))` bench
+    /// shape reads these via [`hist_source`].
+    fn write_bounded_histogram(
+        root: &std::path::Path,
+        day: &str,
+        times_ns: &[i64],
+        count_base: u64,
+    ) {
+        use datafusion::arrow::array::{StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use std::sync::Arc;
+
+        let (min, max) = (times_ns[0], times_ns[times_ns.len() - 1]);
+        let dir = root.join("metrics").join("histogram").join(format!("dt={day}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!(
+            "{min}-{max}-550e8400-e29b-41d4-a716-446655440001.parquet"
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("prom_name", DataType::Utf8, false),
+        ]));
+        let n = times_ns.len();
+        let counts: Vec<String> = (0..n)
+            .map(|i| {
+                let c = count_base + i as u64;
+                format!("[{c},{c},{c},{c},{c},{c}]")
+            })
+            .collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["hist"; n])),
+                Arc::new(TimestampNanosecondArray::from(times_ns.to_vec()).with_timezone("UTC")),
+                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                Arc::new(StringArray::from(counts)),
+                Arc::new(StringArray::from(vec!["[10,20,30,40,50]"; n])),
+                Arc::new(StringArray::from(vec!["hist_seconds"; n])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+    }
+
     fn pruning_opts(path: &std::path::Path) -> crate::config::querier::QuerierOptions {
         crate::config::querier::QuerierOptions {
             storage: crate::config::querier::StorageConfig {
@@ -6582,6 +6660,116 @@ mod tests {
             },
             ..crate::config::querier::QuerierOptions::default()
         }
+    }
+
+    /// Drain the recorder snapshot **once**, returning (a) the per-stage
+    /// plan-pipeline seconds (`querier_plan_stage_duration_seconds`, summed per
+    /// `stage` label — one sample per executed scan/shard, so sums are
+    /// per-interval totals) and (b) the `signal="metrics"` files-opened count,
+    /// both from the same drained interval. `Snapshotter::snapshot()` drains
+    /// histogram samples, so a single call must serve both readings — calling
+    /// [`metrics_files_opened`] first would discard the stage samples.
+    fn drain_plan_stages_and_files(
+        snap: &metrics_util::debugging::Snapshotter,
+    ) -> (BTreeMap<String, f64>, f64) {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::DebugValue;
+        let mut stages: BTreeMap<String, f64> = BTreeMap::new();
+        let mut files = 0.0;
+        for (k, _, _, v) in snap.snapshot().into_vec() {
+            if k.kind() != MetricKind::Histogram {
+                continue;
+            }
+            let DebugValue::Histogram(samples) = v else {
+                continue;
+            };
+            let sum: f64 = samples.iter().map(|h| h.into_inner()).sum();
+            match k.key().name() {
+                "querier_plan_stage_duration_seconds" => {
+                    if let Some(stage) = k
+                        .key()
+                        .labels()
+                        .find(|l| l.key() == "stage")
+                        .map(|l| l.value().to_string())
+                    {
+                        *stages.entry(stage).or_insert(0.0) += sum;
+                    }
+                }
+                "querier_files_opened"
+                    if k.key()
+                        .labels()
+                        .any(|l| l.key() == "signal" && l.value() == "metrics") =>
+                {
+                    files += sum;
+                }
+                _ => {}
+            }
+        }
+        (stages, files)
+    }
+
+    /// Profiling-seam sanity (promql-plan-cache task 1, FR1): on a tiny fixture
+    /// a cold `rate()` range query records all five pipeline stages
+    /// (parse/lower/optimize/physical/execute) with non-zero durations, and the
+    /// stage sum never exceeds the end-to-end wall time — the stages nest
+    /// inside the request without double-counting. The residual
+    /// (merge/resample/cache bookkeeping) is deliberately not bounded here:
+    /// on a µs-scale fixture its share is scheduling noise; the ±10 % check
+    /// lives in the demo-scale bench table.
+    #[test]
+    fn test_plan_stage_seam_sums_within_total() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        const MINUTE_NS: i64 = 60_000_000_000;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        let (stages, total_s) = std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let noon = JUN01_NS + 12 * HOUR_NS;
+                    let times: Vec<i64> = (0..30).map(|i| noon + i * MINUTE_NS).collect();
+                    write_bounded_gauge(tmp.path(), "2026-06-01", &times);
+                    let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
+                        .await
+                        .unwrap();
+                    let lo = noon + 10 * MINUTE_NS;
+                    let hi = noon + 25 * MINUTE_NS;
+                    let t = std::time::Instant::now();
+                    let resp = handle_range(&engine, "rate(m[5m])", lo, hi, MINUTE_NS, hi)
+                        .await
+                        .unwrap();
+                    let total_s = t.elapsed().as_secs_f64();
+                    assert!(!resp.data.result.is_empty(), "query must return data");
+                    let (stages, _files) = drain_plan_stages_and_files(&snap);
+                    (stages, total_s)
+                })
+            })
+        })
+        .join()
+        .unwrap();
+
+        for stage in ["parse", "lower", "optimize", "physical", "execute"] {
+            let d = stages.get(stage).copied().unwrap_or(0.0);
+            assert!(
+                d > 0.0,
+                "stage `{stage}` must be recorded with a non-zero duration, got {stages:?}"
+            );
+        }
+        let sum: f64 = stages.values().sum();
+        assert!(
+            sum <= total_s,
+            "stage sum {sum:.6}s must not exceed the end-to-end total {total_s:.6}s \
+             (stages nest inside the request): {stages:?}"
+        );
     }
 
     /// Sum of the `querier_files_opened` histogram samples for
@@ -6807,15 +6995,21 @@ mod tests {
         );
     }
 
-    /// Task 8 (NFR1/NFR2 evidence): demo-scale bench — 1,505 exact-bounds
-    /// Parquet files across 7 `dt=` days (matching the live store's ~1,529
-    /// files / 7 days), 3 tiny rows each. PRINTS cold/warm latency and cold
-    /// files-opened for a 15-min `rate()` range query and a bare-selector
-    /// range query; deliberately asserts nothing about wall-clock (CI
-    /// variance). Run on demand:
+    /// Task 8 (NFR1/NFR2 evidence) + promql-plan-cache task 1 (FR1): demo-scale
+    /// bench — 1,505 exact-bounds gauge Parquet files across 7 `dt=` days
+    /// (matching the live store's ~1,529 files / 7 days), 3 tiny rows each,
+    /// plus 40 histogram files on the last day (15:00–19:00 slots, ≥ 2 h away
+    /// from the noon gauge window so the ±1 h pruning margin keeps the gauge
+    /// probes' scoped file set unchanged). PRINTS a per-stage plan-pipeline
+    /// table (parse/lower/optimize/physical/execute vs end-to-end total) for
+    /// three query shapes — `rate()`, bare selector, `histogram_quantile` —
+    /// 3 sliding runs each (run 0 = shape-cold, runs 1–2 = shape-warm; the
+    /// window slides one step per run so the RESULT cache misses, isolating
+    /// what a PLAN cache would save) plus one same-window repeat (result-cache
+    /// hit). Deliberately asserts nothing about wall-clock (CI variance). Run:
     /// `cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture`
     #[test]
-    #[ignore = "demo-scale bench: generates 1,505 Parquet files; prints measurements, no assertions"]
+    #[ignore = "demo-scale bench: generates 1,545 Parquet files; prints measurements, no assertions"]
     #[allow(clippy::print_stderr)] // benchmark timing output (run with --nocapture)
     fn bench_cold_range_query_demo_scale() {
         use std::time::Instant;
@@ -6830,6 +7024,7 @@ mod tests {
         const JUN01_NS: i64 = 1_780_272_000_000_000_000;
         const DAYS: i64 = 7;
         const FILES_PER_DAY: i64 = 215; // 7 × 215 = 1,505 ≥ demo scale
+        const HIST_FILES: i64 = 40; // last day, 6-min slots from 15:00
 
         let recorder = DebuggingRecorder::new();
         let snap = recorder.snapshotter();
@@ -6855,9 +7050,23 @@ mod tests {
                             );
                         }
                     }
+                    // Histogram series (promql-plan-cache task 1): 6-min slots
+                    // on the last day from 15:00, mirroring the gauge slot
+                    // shape; cumulative counts keep growing across files.
+                    let last_day = format!("2026-06-{DAYS:02}");
+                    let last_day_ns = JUN01_NS + (DAYS - 1) * DAY_NS;
+                    for i in 0..HIST_FILES {
+                        let start = last_day_ns + 15 * HOUR_NS + i * 6 * MINUTE_NS;
+                        write_bounded_histogram(
+                            tmp.path(),
+                            &last_day,
+                            &[start, start + 30 * SEC_NS, start + 60 * SEC_NS],
+                            (i * 3).unsigned_abs() * 10,
+                        );
+                    }
                     eprintln!(
-                        "bench_cold_range_query_demo_scale: store={} files / {DAYS} dt= days, \
-                         generated in {:.1} s",
+                        "bench_cold_range_query_demo_scale: store={} gauge + {HIST_FILES} \
+                         histogram files / {DAYS} dt= days, generated in {:.1} s",
                         DAYS * FILES_PER_DAY,
                         t.elapsed().as_secs_f64()
                     );
@@ -6869,23 +7078,63 @@ mod tests {
                         "engine build (walk + register): {:.1} ms",
                         t.elapsed().as_secs_f64() * 1e3
                     );
-                    // The live probe: a 15-min window ending at noon of the
-                    // last (active) day.
+                    // The live probes: 15-min windows on the last (active) day —
+                    // gauge shapes end at noon, the histogram shape at 18:00
+                    // (inside its 15:00–19:00 slot coverage).
                     let hi = JUN01_NS + (DAYS - 1) * DAY_NS + 12 * HOUR_NS;
                     let lo = hi - 15 * MINUTE_NS;
-                    for query in ["rate(m[5m])", "m"] {
-                        let base = metrics_files_opened(&snap);
-                        let t = Instant::now();
-                        handle_range(&engine, query, lo, hi, MINUTE_NS, hi).await.unwrap();
-                        let cold_ms = t.elapsed().as_secs_f64() * 1e3;
-                        let files_cold = metrics_files_opened(&snap) - base;
-                        let t = Instant::now();
-                        handle_range(&engine, query, lo, hi, MINUTE_NS, hi).await.unwrap();
-                        let warm_ms = t.elapsed().as_secs_f64() * 1e3;
-                        eprintln!(
-                            "{query} 15-min window: cold={cold_ms:.1} ms \
-                             files_opened_cold={files_cold} warm={warm_ms:.1} ms"
-                        );
+                    let hist_hi = last_day_ns + 18 * HOUR_NS;
+                    let hist_lo = hist_hi - 15 * MINUTE_NS;
+                    let shapes: [(&str, i64, i64); 3] = [
+                        ("rate(m[5m])", lo, hi),
+                        ("m", lo, hi),
+                        (
+                            "histogram_quantile(0.95, sum(rate(hist_seconds_bucket[5m])) by (le))",
+                            hist_lo,
+                            hist_hi,
+                        ),
+                    ];
+                    eprintln!(
+                        "{:<68} {:>10} {:>9} {:>8} {:>8} {:>9} {:>9} {:>8} {:>10} {:>9} {:>6}",
+                        "shape", "run", "total_ms", "parse", "lower", "optimize", "physical",
+                        "execute", "stage_sum", "residual", "files"
+                    );
+                    for (query, lo0, hi0) in shapes {
+                        // 3 sliding runs (result-cache miss each time) + 1
+                        // same-window repeat (result-cache hit).
+                        for run in 0..4 {
+                            let slide = i64::from(run.min(2)) * MINUTE_NS;
+                            let (lo, hi) = (lo0 + slide, hi0 + slide);
+                            let label = match run {
+                                0 => "cold",
+                                3 => "rcache",
+                                _ => "warm",
+                            };
+                            // Drain the recorder so this run's samples stand alone.
+                            let _ = drain_plan_stages_and_files(&snap);
+                            let t = Instant::now();
+                            let resp = handle_range(&engine, query, lo, hi, MINUTE_NS, hi)
+                                .await
+                                .unwrap();
+                            let total_ms = t.elapsed().as_secs_f64() * 1e3;
+                            assert!(
+                                !resp.data.result.is_empty(),
+                                "{query}: bench query must return data"
+                            );
+                            let (stages, files) = drain_plan_stages_and_files(&snap);
+                            let ms = |s: &str| stages.get(s).copied().unwrap_or(0.0) * 1e3;
+                            let stage_sum: f64 = stages.values().sum::<f64>() * 1e3;
+                            eprintln!(
+                                "{query:<68} {run}:{label:<7} {total_ms:>9.1} {:>8.2} {:>8.2} \
+                                 {:>9.2} {:>9.2} {:>8.1} {stage_sum:>10.1} {:>9.1} {files:>6}",
+                                ms("parse"),
+                                ms("lower"),
+                                ms("optimize"),
+                                ms("physical"),
+                                ms("execute"),
+                                total_ms - stage_sum,
+                            );
+                        }
                     }
                 });
             });

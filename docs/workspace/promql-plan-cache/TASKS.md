@@ -76,7 +76,7 @@ classDiagram
 **Tests**: profiling seam unit test (stages sum sanity); extend `bench_cold_range_query_demo_scale` to print the stage table.
 **Verify**: `cargo test --lib querier:: && cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture && make check-clippy`
 **Acceptance criteria**:
-- [ ] Stage table (fixture + live demo) recorded in this file and in the [ADR](./adrs/plan-cache-mechanism.md); ADR moved to `proposed` with a recommendation
+- [x] Stage table recorded in the [ADR](./adrs/plan-cache-mechanism.md) (release, demo-scale fixture; live stage-split needs a rebuild — totals already measured live); ADR moved to `proposed` with recommendation **A′ + E** (physical planning dominates: 48 % shape-warm; optimizer 26 %; execute 21 %; `histogram_quantile` execution-bound)
 **Depends on**: (none)
 **Time-box**: ~75 min
 **⚠ SESSION GATE**: autopilot PAUSES after task 1 — the human ratifies the ADR before tasks 2–3 run. Tasks 2–3 below are shaped for option A/C; if another option is ratified, re-run Phase 4b/4c for them first.

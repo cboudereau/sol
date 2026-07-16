@@ -720,15 +720,36 @@ impl QueryEngine {
     /// scan volume (bytes/files) observed from the executed plan metrics (NFR5).
     /// Going through the physical plan (rather than `DataFrame::collect`) keeps
     /// the executed plan in hand so its scan counters can be read afterwards.
+    ///
+    /// Profiling seam (promql-plan-cache FR1): `DataFrame::create_physical_plan`
+    /// bundles logical optimization + physical planning, so it is split here into
+    /// its two constituent `SessionState` calls — `optimize` then the session's
+    /// `QueryPlanner` on the *already-optimized* plan — which is byte-identical
+    /// to the bundled call (it does exactly `optimize` → `query_planner
+    /// .create_physical_plan`). Each stage (plus execution) records a
+    /// [`super::telemetry::record_plan_stage`] duration; the seam only wraps
+    /// timing around the existing steps and never changes a query result.
     async fn execute_recording_scan(
         &self,
         df: datafusion::dataframe::DataFrame,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use std::time::Instant;
         let signal = signal_of_plan(df.logical_plan());
-        let plan = df.create_physical_plan().await?;
+        let (state, logical) = df.into_parts();
+        let t = Instant::now();
+        let optimized = state.optimize(&logical)?;
+        super::telemetry::record_plan_stage("optimize", t.elapsed());
+        let t = Instant::now();
+        let plan = state
+            .query_planner()
+            .create_physical_plan(&optimized, &state)
+            .await?;
+        super::telemetry::record_plan_stage("physical", t.elapsed());
+        let t = Instant::now();
         let batches =
             datafusion::physical_plan::collect(std::sync::Arc::clone(&plan), self.ctx.task_ctx())
                 .await?;
+        super::telemetry::record_plan_stage("execute", t.elapsed());
         let stats = scan_stats_from_plan(&plan);
         if stats.bytes_scanned > 0 || stats.files_opened > 0 {
             super::telemetry::record_scan(signal, stats.bytes_scanned, stats.files_opened);
