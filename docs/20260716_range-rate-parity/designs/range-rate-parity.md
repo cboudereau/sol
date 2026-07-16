@@ -56,7 +56,7 @@ then compute `extrapolated_increase` per Prometheus (extrapolate to window start
 FR2: the range path's scan lower bound is extended by `range` (pre-window lookback) so per-grid-point windows are complete at the left edge — mirroring `instant_range_windows`' LAG-margin, applied to `handle_range`'s source window.
 
 Decisions:
-- [Prometheus-compatible extrapolated rate](./adrs/extrapolated-rate.md)
+- [Prometheus-compatible extrapolated rate](../adrs/extrapolated-rate.md)
 
 ## Cross-cutting Concerns
 - **Observability**: none new; rate values shift to match Prometheus.

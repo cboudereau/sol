@@ -3,7 +3,7 @@ status: accepted
 ---
 # Prometheus-compatible extrapolated rate/increase
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR1](../designs/range-rate-parity.md#fr1), [NFR1](../designs/range-rate-parity.md#nfr1)
 
 ## Problem
 Sol's `rate()`/`increase()` sum per-sample reset-adjusted deltas over the `(t−range, t]` frame and divide by the **fixed** `range_ns`. Because the summed increase actually spans from the sample just before the window to the last sample in it — a time that oscillates between ≈`range` and ≈`range+scrape` as the eval grid slides — dividing by a fixed window makes the per-second rate oscillate by ≈±(scrape/range). That is the dashboard zigzag; Mimir is smooth. How do we make Sol's range rate/increase match Mimir?
