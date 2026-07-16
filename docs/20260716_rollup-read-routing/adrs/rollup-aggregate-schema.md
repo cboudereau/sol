@@ -3,10 +3,10 @@ status: accepted
 ---
 # Rollup aggregate schema
 
-Addresses: [FR6](../DESIGN.md#fr6), [FR7](../DESIGN.md#fr7), [NFR1](../DESIGN.md#nfr1), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR6](../designs/rollup-read-routing.md#fr6), [FR7](../designs/rollup-read-routing.md#fr7), [NFR1](../designs/rollup-read-routing.md#nfr1), [NFR2](../designs/rollup-read-routing.md#nfr2)
 
 ## Problem
-[FR6](../DESIGN.md#fr6) needs the rollup to carry per-bucket `{last, min, max, sum, count}` for the scalar metric value. Today `rollup_plan` (`rollup.rs:117`) emits `last_value(col ORDER BY time)` for **every** column, and the tier tables are registered over the **same** `metric_union_schema` as raw (`catalog.rs:248`). How do we add the aggregate columns without forking the schema (which would break the shared `ListingTable` registration and the supersession reads) or double-counting?
+[FR6](../designs/rollup-read-routing.md#fr6) needs the rollup to carry per-bucket `{last, min, max, sum, count}` for the scalar metric value. Today `rollup_plan` (`rollup.rs:117`) emits `last_value(col ORDER BY time)` for **every** column, and the tier tables are registered over the **same** `metric_union_schema` as raw (`catalog.rs:248`). How do we add the aggregate columns without forking the schema (which would break the shared `ListingTable` registration and the supersession reads) or double-counting?
 
 ## Options
 | Option | Pros | Cons |

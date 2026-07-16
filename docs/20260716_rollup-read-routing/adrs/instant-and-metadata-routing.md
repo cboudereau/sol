@@ -3,7 +3,7 @@ status: accepted
 ---
 # Instant & metadata tier routing
 
-Addresses: [FR4](../DESIGN.md#fr4), [FR5](../DESIGN.md#fr5)
+Addresses: [FR4](../designs/rollup-read-routing.md#fr4), [FR5](../designs/rollup-read-routing.md#fr5)
 
 ## Problem
 Beyond range queries, two metric read families read raw and never touch a tier: **instant** queries (`handle_instant`, instant `handle_histogram`) and **metadata** (`/series`, `/label/:name/values`). Should they route through the choke point, and on what resolution input?

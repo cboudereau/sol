@@ -3,7 +3,7 @@ status: accepted
 ---
 # Operator → capability classifier + rich rollup
 
-Addresses: [FR2](../DESIGN.md#fr2), [FR6](../DESIGN.md#fr6), [FR7](../DESIGN.md#fr7), [NFR1](../DESIGN.md#nfr1)
+Addresses: [FR2](../designs/rollup-read-routing.md#fr2), [FR6](../designs/rollup-read-routing.md#fr6), [FR7](../designs/rollup-read-routing.md#fr7), [NFR1](../designs/rollup-read-routing.md#nfr1)
 
 ## Problem
 The rollup keeps the **last raw sample per (series, time-bucket)**. That is exact for operators that only need the last cumulative value (`rate`/`increase`/`histogram_quantile`) but **lossy** for operators needing intra-bucket detail (`max/min/avg/sum/count_over_time`). The original router picked a tier by **step alone**, so `max_over_time(m[…])` at a coarse step read the 5m tier and silently under-reported peaks. Which operators may route to a tier — and must we forfeit the tier's acceleration for the lossy ones?

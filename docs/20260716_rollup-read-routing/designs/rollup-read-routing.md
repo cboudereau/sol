@@ -25,7 +25,7 @@ Each operator declares the **rollup capability** it needs to be answered exactly
 - **`SumCount`** — `avg_over_time` (`sum(sum)/sum(count)`), `sum_over_time` (`sum(sum)`), `count_over_time` (`sum(count)`).
 - **`None` (force raw)** — `irate` (last-two-sample slope, sampling-dependent), `quantile_over_time`/`stddev`/`stdvar` (need the distribution), and any unknown/unimplemented/unclassified operator (conservative default). `delta`/`resets`/`last_over_time` map to `Last` once implemented.
 
-With FR6, every tier carries `{Last, MinMax, SumCount}`, so all of the above except the `None` set route to a tier. See the [operator → capability ADR](./adrs/operator-safety-allowlist.md).
+With FR6, every tier carries `{Last, MinMax, SumCount}`, so all of the above except the `None` set route to a tier. See the [operator → capability ADR](../adrs/operator-safety-allowlist.md).
 
 ### <a id="fr3"></a>FR3 — Route the range paths through the choke point
 `handle_range`'s rate/agg path and the range histogram/heatmap handlers both obtain their source windows from FR1, replacing both `select_range_table` (the rate/agg copy) and `tiered_hist_source` (the histogram copy from `40149d8fa`). One routing implementation, used by both.
@@ -95,10 +95,10 @@ flowchart TD
 - **value selection** (FR7): for a tier window the handler projects the per-op aggregate column (`value_max`/`value_min`/`value_sum`/`value_count`) and the merge agg; for a raw window, the coalesced `v` and the natural agg. The rest of each handler's filter/project/aggregate logic is unchanged; only the *source table* and the *value expression* change.
 
 Decisions:
-- [Single tier-resolution choke point](./adrs/tier-resolution-choke-point.md)
-- [Operator → capability classifier + rich rollup](./adrs/operator-safety-allowlist.md)
-- [Rollup aggregate schema](./adrs/rollup-aggregate-schema.md)
-- [Instant & metadata tier routing](./adrs/instant-and-metadata-routing.md)
+- [Single tier-resolution choke point](../adrs/tier-resolution-choke-point.md)
+- [Operator → capability classifier + rich rollup](../adrs/operator-safety-allowlist.md)
+- [Rollup aggregate schema](../adrs/rollup-aggregate-schema.md)
+- [Instant & metadata tier routing](../adrs/instant-and-metadata-routing.md)
 
 ## Cross-cutting Concerns
 - **Observability**: the existing `querier_bytes_scanned`/`files_opened` telemetry will show the drop on routed paths; no new metrics required (a follow-up could label by table tier).

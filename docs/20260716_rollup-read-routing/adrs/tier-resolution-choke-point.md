@@ -3,7 +3,7 @@ status: accepted
 ---
 # Single tier-resolution choke point
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR3](../DESIGN.md#fr3), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR1](../designs/rollup-read-routing.md#fr1), [FR3](../designs/rollup-read-routing.md#fr3), [NFR3](../designs/rollup-read-routing.md#nfr3)
 
 ## Problem
 Rollup-tier routing is duplicated and inconsistent across the querier's metric handlers: `handle_range` (rate/agg) routes via `select_range_table`; the range histogram/heatmap handlers got a *second* copy (`tiered_hist_source`, `40149d8fa`); instant + metadata don't route at all. Each new handler re-implements, forgets, or mis-applies the routing — the structural cause of the write-ahead-of-read gap. Where should the routing live?
