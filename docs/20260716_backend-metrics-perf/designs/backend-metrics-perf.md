@@ -4,10 +4,10 @@
 
 Live measurement on the demo (`demo/otel-sol-grafana-dotnet`, image `sol:ac28543d8`, store: 1,529 metrics Parquet files across 7 partition days, ~479 MB) shows Sol-Prometheus dashboard panels are slow because of **fixed per-query overhead multiplied by dashboard fan-out**, not data volume:
 
-- A single cold `rate()` range query: **0.24–0.41 s regardless of range width** (5 m → 3 h nearly flat); a query for a **nonexistent metric costs 0.27 s**. Mimir: ~1.5 ms.
+- A single cold `rate()` range query: **0.24–0.41 s regardless of range width** (5 m → 3 h nearly flat); a query for a **nonexistent metric costs 0.27 s**. Mimir: measured later at ~20–30 ms (the baseline's "~1.5 ms" timed a refused connection — wrong port 8080 vs Mimir's 9009; corrected 2026-07-16, see VERIFY).
 - `EXPLAIN ANALYZE` via `POST /api/v1/sql` proves the mechanism: for a 15-minute query, `files_ranges_pruned_statistics=1.35 K` — DataFusion opens **every file's footer at execution time**, reads its stats, and prunes ~1,350 of them. Pruning itself works (the optimiser unwraps the `CAST(time_unix_nano AS BIGINT)` predicate, `src/querier/prometheus.rs:177-183`); the cost is the O(all-files) footer reads.
 - Root cause in code: `ParquetCatalog::build_providers` registers each signal table as a `ListingTable` over an explicit list of **every surviving file, all days** (`src/querier/catalog.rs:229-249`) with `.with_collect_stat(false)` (`catalog.rs:216-218`) — deliberate (EMFILE), but it defers all pruning to per-query execution-time footer reads.
-- The RED dashboard fires ~20 concurrent range queries + 6 `label_values` variable queries per refresh: measured **~2.3 s wall at ~968 % CPU** (Mimir: ~9 ms). No coalescing — identical concurrent plans all execute (get → execute → insert, `catalog.rs:598-604`).
+- The RED dashboard fires ~20 concurrent range queries + 6 `label_values` variable queries per refresh: measured **~2.3 s wall at ~968 % CPU** (Mimir, corrected measurement: burst worst ~36 ms). No coalescing — identical concurrent plans all execute (get → execute → insert, `catalog.rs:598-604`).
 - The result cache is structurally useless for live dashboards: `refresh()` runs every `refresh_interval_secs` (15 s in the demo) and calls `cache.clear()` on the **entire** cache (`catalog.rs:608-615`), and the TTL is also 15 s. Warm-cache latency is 4 ms — that is what is being thrown away every 15 s.
 - Metadata endpoints (`/label/:name/values`, `/series`, `/labels`) default to `start=0` = all history (`src/querier/routes.rs:204-209`); measured 0.57 s for `__name__` values, 0.37 s for `series`, on every dashboard load.
 - `guardrails.max_concurrent_queries` is parsed (`src/config/querier.rs:80,124`) but referenced nowhere else in `src/` — a configured guardrail that is silently unimplemented.
@@ -42,7 +42,7 @@ Ranked by measured impact on the demo goal; the plan implements 1→4 in this or
 | 5. Stats at refresh | Deferred (non-goal). Revisit trigger: [NFR1](#nfr1) misses after FR1. |
 | 6. Write-side small files | Deferred (non-goal). Revisit trigger: multi-hour raw-window latency after FR1. |
 | 7. Write-side series key | Deferred (non-goal). Revisit trigger: `rate()` row-work dominates profiles after FR1. |
-| In-memory recent-samples buffer | Non-goal (architecture change; demo goal does not need ~1 ms). |
+| In-memory recent-samples buffer | Non-goal (architecture change; demo goal does not need to beat Mimir's real ~25 ms). |
 | (not in the list) `max_concurrent_queries` | [FR5](#fr5) — last, cuttable; surfaced by verification (dead config). |
 
 ## Non-Functional Requirements
@@ -58,7 +58,7 @@ All existing `querier::` tests stay green; Sol↔Mimir live parity (gauges/max/a
 
 ## Non-goals
 
-- **In-memory recent-samples buffer** (Mimir-style head): would close the last ~10× to Mimir's ~1 ms but is an architecture change; excluded for cost/complexity — revisit only if NFR1/NFR2 targets prove insufficient in practice.
+- **In-memory recent-samples buffer** (Mimir-style head): would close the last gap to Mimir's real ~25 ms (corrected 2026-07-16) but is an architecture change; excluded for cost/complexity — revisit only if NFR1/NFR2 targets prove insufficient in practice.
 - **Write-side changes**: materialising `prom_series_key` as a column, gateway flush cadence, and intra-day (closed-hour) compaction of the active day. These attack the same symptom (many small files / per-row UDF partitioning) from the write side; FR1 already removes the O(files) cost read-side. Deferred, not rejected — a follow-up workspace if `rate()` CPU (window plan, `src/querier/plan/frame.rs:183-241`) still dominates after this work.
 - **`collect_stat(true)` / stats caching at refresh**: FR1 makes per-query footer reads O(matching files); amortising stats collection into refresh is a second-order optimisation on top. Excluded to keep scope small; note it as the next lever if NFR1 misses.
 - **`rate()` physical-plan cost** (LAG + six RANGE-frame window aggregates, per-row `prom_series_key` UDF): pre-existing, correctness-critical (extrapolation parity just landed in `2d07c34e2`), and not the measured bottleneck at demo scale. Out of scope.

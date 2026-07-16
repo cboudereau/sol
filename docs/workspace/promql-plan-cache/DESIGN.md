@@ -36,7 +36,7 @@ Relaxed from the predecessor's 50 ms to the measured scan+execute floor (58 ms b
 
 ## Non-goals
 
-- **In-memory recent-samples buffer** — unchanged from predecessor (architecture change; 60–80 ms cold is indistinguishable for dashboard users).
+- **In-memory recent-samples buffer** — unchanged from predecessor (architecture change; 60–80 ms cold is indistinguishable for dashboard users, and within ~3× of Mimir's corrected real latency of ~25 ms).
 - **Simplified `rate()` lowering (lever b) and write-side `prom_series_key` column (lever c)** — deferred unless FR1's profile shows execution (not planning) dominates; revisit trigger: post-FR2 profile still > NFR1 with planning removed.
 - **Loki/Tempo plan caching** — same mechanism would apply, but metrics own the fired trigger; extend later by analogy.
 - **Parquet/rollup retro-compat** — permanently out of scope (standing directive): any layout/schema change ships as a clean cutover with a store wipe; no dual-format read paths, no migration code.

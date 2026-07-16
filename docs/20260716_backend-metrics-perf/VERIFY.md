@@ -15,7 +15,7 @@ Store/image at measurement: `sol:401e8eb90` (S1+S2; T7 not yet in image), demo s
 | `/series` (no start) | 370 ms | **113 ms** | bounded | ✅ (FR4) |
 | `__name__` values (no start) | 570 ms | 625 ms | bounded | ~flat — see note |
 | Simple SQL `COUNT(*)` full store (unscoped by design) | — | 220 ms | — | reference |
-| Mimir reference (same query) | 1.5–9 ms | 1.6 ms | — | structural gap unchanged |
+| Mimir reference (same query) | ~~1.5–9 ms~~ (artifact: timed refused connections — port 8080; Mimir listens on 9009) | **20–30 ms single; burst worst 36 ms** (corrected, port 9009) | — | real gap ≈ 10× cold, and Sol's 5 ms warm path beats Mimir |
 
 ## Root-cause decomposition of the residual constant (~0.25 s)
 
@@ -32,6 +32,11 @@ Measured discriminators (idle host):
 - **`rate()` plan cost dominates profiles after FR1** → FIRED. Follow-up workspace levers, in expected-impact order: (a) plan caching keyed by (expr shape, table, window bucket) — the warm path proves 5 ms is achievable; (b) simplified rate lowering (fewer window aggregates); (c) write-side `prom_series_key` column (deferred item 7). NFR1 (≤ 50 ms cold `rate()`) and NFR2 (≤ 0.5 s burst) are re-owned by that follow-up — the burst is 20 × the same plan constant.
 - Minor, same family: instant-path half-open scope (full-store scan per instant query) — bound it with a staleness lookback (Prometheus uses 5 m) in the follow-up.
 - Micro: `scoped_files` widens the *query* window by the 1 h legacy margin for all files, including exact-bounds ones (double margin — parse-time skew + query-time lateness). Harmless for correctness (superset), costs a few extra files per query; fold into the follow-up.
+
+## Corrections (2026-07-16)
+
+- **Mimir port**: every earlier "Mimir ~1.5–9 ms" figure (baseline session and this file's first version) timed a TCP connection-refused on `mimir:8080`; Mimir's HTTP port in this demo is **9009** (`mimir/mimir.yaml:43`). Real Mimir: ~20–30 ms/query, burst worst ~36 ms. Consequence: the structural Sol↔Mimir gap is ~10× cold (250 vs 25 ms), not ~100×; the promql-plan-cache target (≤ 80 ms) lands within ~3× of real Mimir, and the warm path (5 ms) is already faster.
+- **range-rate-parity live check (closed here)**: Sol `rate()` jitter = 1.8 % of mean (historic zigzag ~37 %), Mimir = 0.5 %, means agree within eval-instant tolerance — the extrapolation fix holds live.
 
 ## Reproduce
 
