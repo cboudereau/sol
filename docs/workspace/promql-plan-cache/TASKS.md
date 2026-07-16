@@ -59,7 +59,7 @@ classDiagram
 | `PlanStageProfile` + profiling seam | [FR1](./DESIGN.md#fr1) | Timing spans around the 5 pipeline stages; bench-visible |
 | `PlanCache`, `PlanCacheKey` | [FR2](./DESIGN.md#fr2) | Mechanism per [ADR](./adrs/plan-cache-mechanism.md) after FR1 |
 | `StalenessLookback` in `selector_base_df`/`hist_instant_scan` | [FR3](./DESIGN.md#fr3) | Prometheus 5 m semantics, configurable |
-| per-shape parse-time margins in `inventory.rs` | [FR4](./DESIGN.md#fr4) | Removes query-time 1 h widening for exact-bounds files |
+| deleted legacy raw-file rule + zero query-time widening in `inventory.rs` | [FR4](./DESIGN.md#fr4) | No retro-compat (standing directive) — exact-bounds / compactor shapes / unbounded fallback only |
 
 ### Transformations
 | Function | Input → Output | Invariant / Rule |
@@ -67,7 +67,7 @@ classDiagram
 | profile run | (query shape) → `PlanStageProfile` table | Stages sum ≈ total (±10 %); reproducible on the fixture |
 | `PlanCache::get/insert` | key → cached stage artefact | Hit ⇒ byte-identical response to miss; every key component has a changing-it-misses test |
 | instant lower bound | `time → [time − lookback, time]` | Series with a sample inside lookback: identical result; staler series: absent (Prometheus semantics) |
-| `parse_file_interval` (FR4) | `&Path → FileInterval` | Margins live entirely in parse-time intervals per shape; `scoped_files` widens by 0 |
+| `parse_file_interval` (FR4) | `&Path → FileInterval` | Legacy `HH-MM-SS` rule deleted; exact-bounds / `compacted-*` / `rollup-*` / unbounded only; `scoped_files` widens by 0 |
 
 ## Tasks
 
@@ -90,9 +90,9 @@ classDiagram
 **Depends on**: task 1 + ADR ratification
 **Time-box**: ~90 min
 
-### 3. Instant staleness lookback + margin cleanup ([FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4))
-**Goal**: Bound instant scans; move margins fully to parse time.
-**Tests** (red first): `test_instant_selector_bounded_scan` (files-opened drops; in-lookback series identical, staler series absent); `test_exact_bounds_files_no_query_margin` (15-min scope over exact-bounds fixture includes only true-overlap files); existing parity suite green
+### 3. Instant staleness lookback + legacy-margin deletion ([FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4))
+**Goal**: Bound instant scans; delete the legacy raw-file rule and all query-time widening (no retro-compat — standing directive).
+**Tests** (red first): `test_instant_selector_bounded_scan` (files-opened drops; in-lookback series identical, staler series absent); `test_exact_bounds_files_no_query_margin` (15-min scope over exact-bounds fixture includes only true-overlap files); `test_legacy_raw_name_falls_back_unbounded` (an old-style name is simply unbounded-included, no special rule); existing parity suite green
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
 - [ ] Tests green; instant selector live probe ≤ 90 ms recorded here

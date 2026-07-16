@@ -21,8 +21,8 @@ Whatever stage(s) FR1 convicts, repeated executions of the same *query shape* (s
 ### <a id="fr3"></a>FR3 — Instant-path scan bound
 `selector_base_df` / `hist_instant_scan` currently scope `[i64::MIN, time]` — a full-store scan per instant query (measured 385 ms). Bound the lower edge with a staleness lookback (Prometheus semantics: 5 m default), configurable, preserving latest-≤ correctness for series with samples inside the lookback (Prometheus itself returns nothing for staler series).
 
-### <a id="fr4"></a>FR4 — Exact-bounds files stop paying the legacy query margin
-`scoped_files` widens every query window by the 1 h legacy lateness margin even for exact-bounds-named files (double margin — parse-time skew already covers them). Move margin responsibility entirely into parse-time intervals (per-shape), drop the query-time widening. Micro-win, closes the known over-inclusion.
+### <a id="fr4"></a>FR4 — Delete the legacy raw-file margin machinery
+No parquet retro-compat (standing directive: clean cutover + store wipe is always sanctioned). Delete the legacy `HH-MM-SS-*` conservative interval rule and the 1 h `INTERVAL_MARGIN_NS` query-time widening outright: intervals are exact-bounds names, `compacted-*`/`rollup-*` (current compactor output), or the unbounded safety fallback; `scoped_files` widens by nothing. Simpler parser, tighter pruning, no dual-path.
 
 ## Non-Functional Requirements
 
@@ -39,6 +39,7 @@ Relaxed from the predecessor's 50 ms to the measured scan+execute floor (58 ms b
 - **In-memory recent-samples buffer** — unchanged from predecessor (architecture change; 60–80 ms cold is indistinguishable for dashboard users).
 - **Simplified `rate()` lowering (lever b) and write-side `prom_series_key` column (lever c)** — deferred unless FR1's profile shows execution (not planning) dominates; revisit trigger: post-FR2 profile still > NFR1 with planning removed.
 - **Loki/Tempo plan caching** — same mechanism would apply, but metrics own the fired trigger; extend later by analogy.
+- **Parquet/rollup retro-compat** — permanently out of scope (standing directive): any layout/schema change ships as a clean cutover with a store wipe; no dual-format read paths, no migration code.
 
 ## Rabbit holes
 
