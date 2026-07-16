@@ -3,7 +3,7 @@ status: accepted
 ---
 # Per-query file pruning: retained inventory + time-scoped ephemeral providers
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR1](../designs/backend-metrics-perf.md#fr1), [NFR1](../designs/backend-metrics-perf.md#nfr1), [NFR3](../designs/backend-metrics-perf.md#nfr3)
 
 ## Problem
 
@@ -20,9 +20,9 @@ Facts that shape the options (explorer-verified):
 | Option | Pros | Cons |
 |---|---|---|
 | A. **Retained inventory + scoped ephemeral provider**: refresh keeps a per-table `Vec<FileEntry{path, conservative [lo,hi]}>` (swap via `arc_swap`-style `RwLock<Arc<…>>`); new `engine.table_scoped(name, lo, hi)` filters the inventory and builds an unregistered `ListingTable` consumed via `ctx.read_table(provider)`; windowless callers keep the registered full table | Surgical: no schema change, no predicate-generation change, SQL endpoint untouched; pruning granularity as fine as the path encodes (day + intra-day flush time); fallback is the existing behaviour | New engine state to keep in sync with the registered tables (single `build_providers` source makes this atomic); per-query provider construction (no I/O, µs-scale) |
-| B. **DataFusion `dt` partition column** + synthesized `dt` predicate in `prom_time_between` | Native mechanism; plan-time file pruning | Day granularity only (no intra-day pruning — active-day queries still open all ~250–460 of the day's footers, likely missing [NFR1](../DESIGN.md#nfr1)); adds a visible `dt` column to every table (leaks into SQL results and `SELECT *`); every query path must emit the extra predicate; reworks `new_with_multi_paths` registration |
+| B. **DataFusion `dt` partition column** + synthesized `dt` predicate in `prom_time_between` | Native mechanism; plan-time file pruning | Day granularity only (no intra-day pruning — active-day queries still open all ~250–460 of the day's footers, likely missing [NFR1](../designs/backend-metrics-perf.md#nfr1)); adds a visible `dt` column to every table (leaks into SQL results and `SELECT *`); every query path must emit the extra predicate; reworks `new_with_multi_paths` registration |
 | C. **Per-day table registration** (`metrics_2026_07_10`, …) with query-time union | Plan-time pruning | Explodes table names and breaks `resolve_metric_windows`' `(table, lo, hi)` contract; large blast radius |
-| A′. **A + self-describing file names** (layout break, store wipe): the gateway sink names each file with its batch's exact `time_unix_nano` bounds, e.g. `<min_ns>-<max_ns>-<uuid>.parquet`; the inventory parses exact intervals, margin only for clock skew | Exact pruning — no lateness margin, no write-time-vs-event-time ambiguity (kills task 1's ⚠️); worst-case gateway flush cadence no longer threatens [NFR1](../DESIGN.md#nfr1); compactor provenance naming untouched (`compacted-*`/`rollup-*` rules unchanged) | Not read-side-only anymore (one gateway/sink task + codec exposing batch min/max); requires a store wipe (sanctioned precedent: the rollup-read-routing clean cutover); path convention becomes a read↔write contract (it already is, informally) |
+| A′. **A + self-describing file names** (layout break, store wipe): the gateway sink names each file with its batch's exact `time_unix_nano` bounds, e.g. `<min_ns>-<max_ns>-<uuid>.parquet`; the inventory parses exact intervals, margin only for clock skew | Exact pruning — no lateness margin, no write-time-vs-event-time ambiguity (kills task 1's ⚠️); worst-case gateway flush cadence no longer threatens [NFR1](../designs/backend-metrics-perf.md#nfr1); compactor provenance naming untouched (`compacted-*`/`rollup-*` rules unchanged) | Not read-side-only anymore (one gateway/sink task + codec exposing batch min/max); requires a store wipe (sanctioned precedent: the rollup-read-routing clean cutover); path convention becomes a read↔write contract (it already is, informally) |
 
 ## Decision
 

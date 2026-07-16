@@ -3,7 +3,7 @@ status: accepted
 ---
 # Cache invalidation scope + single-flight execution
 
-Addresses: [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR2](../designs/backend-metrics-perf.md#fr2), [FR3](../designs/backend-metrics-perf.md#fr3), [NFR2](../designs/backend-metrics-perf.md#nfr2)
 
 ## Problem
 
@@ -35,7 +35,7 @@ Constraint discovered during analysis: the hot path keys with `CacheKey::for_sql
 - moka is compiled with **only the `sync` feature** (`Cargo.toml:461`, `moka::sync::Cache` in `src/querier/cache.rs:67-69`). Option E (`moka::future` `get_with`) would require enabling a new feature on a pinned dependency, and `moka::sync::Cache::get_with` blocks the executor thread inside async handlers — both strikes. So FR3 is a small hand-rolled async single-flight (F): a `Mutex<HashMap<CacheKey, …>>` of in-flight shared results in front of the existing cache, entry removed when its leader completes, errors propagated to all waiters and **not** cached.
 - The cached entry points are `QueryEngine::sql`/`collect`/`sql_user` (`src/querier/catalog.rs:519-528, 566-576, 591-604`) and none receives the query's time window today — so FR2's classification needs the window plumbed in. This is the **same plumbing FR1 introduces** (`table_scoped(name, lo, hi)` callers all know their window): a single `QueryScope { lo_ns, hi_ns }` passed down once serves both file pruning and cache classification. Windowless paths (raw SQL, unbounded metadata) classify as mutable — the safe direction.
 
-Policy: remove the blanket `clear()` from `refresh()`; entries whose window is entirely sealed (`hi < now − 1 day`, same wall-clock rule as `resolve_metric_windows`' `SEALED_OFFSET_NS`, `src/querier/prometheus.rs:2069`) get a long per-entry TTL via moka's `Expiry` (e.g. 15 min — the byte-budget weigher still bounds memory); mutable-window and unclassified entries keep the 15 s TTL. Freshness for live data is unchanged (≤ 15 s via TTL + 15 s key bucketing); sealed results survive refreshes, which is exactly [FR2](../DESIGN.md#fr2)'s intent.
+Policy: remove the blanket `clear()` from `refresh()`; entries whose window is entirely sealed (`hi < now − 1 day`, same wall-clock rule as `resolve_metric_windows`' `SEALED_OFFSET_NS`, `src/querier/prometheus.rs:2069`) get a long per-entry TTL via moka's `Expiry` (e.g. 15 min — the byte-budget weigher still bounds memory); mutable-window and unclassified entries keep the 15 s TTL. Freshness for live data is unchanged (≤ 15 s via TTL + 15 s key bucketing); sealed results survive refreshes, which is exactly [FR2](../designs/backend-metrics-perf.md#fr2)'s intent.
 
 ## Consequences
 

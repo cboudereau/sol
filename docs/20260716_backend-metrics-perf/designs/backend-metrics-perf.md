@@ -27,7 +27,7 @@ Concurrent requests producing the same `CacheKey` must execute the underlying pl
 `/labels`, `/label/:name/values`, and `/series` without an explicit `start` must default to a bounded recent window (configurable; default covering the mutable window plus the sealed span served by rollup tiers — the tier routing for the sealed span already exists, `src/querier/prometheus.rs:1351-1370`) instead of `start=0` unbounded raw history. **FR4 is an FR1 enabler, not polish**: a windowless metadata query can never use FR1's scoped listing (no window → full-table fallback), so without FR4 the six dashboard-variable queries stay at the measured 0.37–0.57 s.
 
 ### <a id="fr5"></a>FR5 — `max_concurrent_queries` enforced or removed
-The configured guardrail must do what it says: either enforce admission (semaphore around query execution, overload → fast 429/503 rather than collapse) or be deleted from the config schema. Decision in [ADR: concurrency guardrail](./adrs/concurrency-guardrail.md). **Lowest priority — truthfulness/robustness, not a performance win**; explicitly cuttable if scope must shrink.
+The configured guardrail must do what it says: either enforce admission (semaphore around query execution, overload → fast 429/503 rather than collapse) or be deleted from the config schema. Decision in [ADR: concurrency guardrail](../adrs/concurrency-guardrail.md). **Lowest priority — truthfulness/robustness, not a performance win**; explicitly cuttable if scope must shrink.
 
 ## Priority (review against the original 7-item recommendation)
 
@@ -66,9 +66,9 @@ All existing `querier::` tests stay green; Sol↔Mimir live parity (gauges/max/a
 
 ## Rabbit holes
 
-- **DataFusion-native partition columns** (`dt` as a Hive partition column with injected `dt` predicates): plausible alternative to explicit list filtering, but it changes table schemas and every query's predicate generation. Cap: evaluate on paper in [ADR: file pruning](./adrs/per-query-file-pruning.md); do **not** prototype both routes.
+- **DataFusion-native partition columns** (`dt` as a Hive partition column with injected `dt` predicates): plausible alternative to explicit list filtering, but it changes table schemas and every query's predicate generation. Cap: evaluate on paper in [ADR: file pruning](../adrs/per-query-file-pruning.md); do **not** prototype both routes.
 - **Late-data margin**: how far a file's path-encoded time can lie about its contents. Cap: reuse the established wall-clock margin convention from rollup-read-routing (`sealed_ns = now − 1 day` kept a safe 24 h margin); pick one margin constant, document it, and enforce the include-on-unparseable rule. No per-file footer verification pass.
-- **Cache invalidation cleverness**: generational/versioned keys can grow into a GC project. Cap: staleness is already bounded at 15 s by TTL + bucketed keys; the simplest scheme that stops wiping sealed-data entries wins ([ADR: cache invalidation](./adrs/cache-invalidation-scope.md)).
+- **Cache invalidation cleverness**: generational/versioned keys can grow into a GC project. Cap: staleness is already bounded at 15 s by TTL + bucketed keys; the simplest scheme that stops wiping sealed-data entries wins ([ADR: cache invalidation](../adrs/cache-invalidation-scope.md)).
 - **Fairness/queueing policy for FR5**: no priority queues; a plain semaphore + immediate shed is enough for a guardrail.
 
 ## Design
@@ -80,9 +80,9 @@ FR2/FR3 live entirely in the cache layer: refresh stops calling `clear()` blanke
 FR4 is a routes-level default change plus config knob. FR5 is a semaphore in the request path (or config removal).
 
 Decisions:
-- [Per-query file pruning mechanism](./adrs/per-query-file-pruning.md)
-- [Cache invalidation scope + single-flight](./adrs/cache-invalidation-scope.md)
-- [Concurrency guardrail: enforce or remove](./adrs/concurrency-guardrail.md)
+- [Per-query file pruning mechanism](../adrs/per-query-file-pruning.md)
+- [Cache invalidation scope + single-flight](../adrs/cache-invalidation-scope.md)
+- [Concurrency guardrail: enforce or remove](../adrs/concurrency-guardrail.md)
 
 ## Cross-cutting Concerns
 

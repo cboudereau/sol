@@ -3,7 +3,7 @@ status: accepted
 ---
 # Concurrency guardrail: enforce `max_concurrent_queries` or remove it
 
-Addresses: [FR5](../DESIGN.md#fr5), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR5](../designs/backend-metrics-perf.md#fr5), [NFR2](../designs/backend-metrics-perf.md#nfr2)
 
 ## Problem
 
@@ -20,7 +20,7 @@ Addresses: [FR5](../DESIGN.md#fr5), [NFR2](../DESIGN.md#nfr2)
 
 ## Decision
 
-**Recommendation: A.** Acquire with a short bounded wait (e.g. 5 s, constant documented in code); on timeout return 503 with `Retry-After`. Placement (explorer-verified): an `Arc<tokio::sync::Semaphore>` on `QueryEngine`, acquired inside the execution entry points `sql`/`collect`/`sql_user` (`src/querier/catalog.rs:519, 566, 591`) — this covers every query path (Prometheus/Loki/Tempo/SQL) at the choke point where work actually starts, mirrors how `max_bytes_scanned` already lands on the engine (`catalog.rs:492`), and leaves health/static routes untouched. The existing `InflightGuard` `warp::wrap_fn` (`src/querier/routes.rs:636-641`) stays as the per-request gauge; the semaphore is not a warp filter so internal callers are bounded too. With [FR1](../DESIGN.md#fr1)+[FR3](../DESIGN.md#fr3) landed, 16 in-flight queries are far below saturation, so the limit should be invisible in normal operation and bite only under genuine overload.
+**Recommendation: A.** Acquire with a short bounded wait (e.g. 5 s, constant documented in code); on timeout return 503 with `Retry-After`. Placement (explorer-verified): an `Arc<tokio::sync::Semaphore>` on `QueryEngine`, acquired inside the execution entry points `sql`/`collect`/`sql_user` (`src/querier/catalog.rs:519, 566, 591`) — this covers every query path (Prometheus/Loki/Tempo/SQL) at the choke point where work actually starts, mirrors how `max_bytes_scanned` already lands on the engine (`catalog.rs:492`), and leaves health/static routes untouched. The existing `InflightGuard` `warp::wrap_fn` (`src/querier/routes.rs:636-641`) stays as the per-request gauge; the semaphore is not a warp filter so internal callers are bounded too. With [FR1](../designs/backend-metrics-perf.md#fr1)+[FR3](../designs/backend-metrics-perf.md#fr3) landed, 16 in-flight queries are far below saturation, so the limit should be invisible in normal operation and bite only under genuine overload.
 
 ## Consequences
 
