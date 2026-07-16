@@ -6584,17 +6584,42 @@ mod tests {
         }
     }
 
+    /// Sum of the `querier_files_opened` histogram samples for
+    /// `signal="metrics"` in the recorder's current snapshot — how many
+    /// Parquet files the executed metric scans have opened so far (0 before
+    /// any scan). One sample is recorded per executed scan
+    /// (`execute_recording_scan`, 1 file group per file). NOTE:
+    /// `Snapshotter::snapshot()` drains the histogram's samples, so every
+    /// call returns the count accumulated SINCE THE PREVIOUS snapshot — a
+    /// deterministic per-interval proxy for "footers opened".
+    fn metrics_files_opened(snap: &metrics_util::debugging::Snapshotter) -> f64 {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::DebugValue;
+        snap.snapshot()
+            .into_vec()
+            .into_iter()
+            .find_map(|(k, _, _, v)| {
+                (k.kind() == MetricKind::Histogram
+                    && k.key().name() == "querier_files_opened"
+                    && k.key()
+                        .labels()
+                        .any(|l| l.key() == "signal" && l.value() == "metrics"))
+                .then_some(v)
+            })
+            .map_or(0.0, |v| match v {
+                DebugValue::Histogram(samples) => samples.iter().map(|h| h.into_inner()).sum(),
+                _ => 0.0,
+            })
+    }
+
     /// FR1/NFR1 (task 3): a 15-min range query over a 3-day store opens only
     /// the in-window file. Files-opened is observed via the `DebuggingRecorder`
     /// pattern (`catalog::test_query_records_real_bytes_scanned` precedent):
-    /// `execute_recording_scan` records the executed plan's scan partition
-    /// count (1 file group per file) as `querier_files_opened` — a
-    /// deterministic proxy for "footers opened". Pre-pruning this scans all 3
+    /// see [`metrics_files_opened`]. Pre-pruning this scans all 3
     /// files; scoped, exactly the 1 in-window file.
     #[test]
     fn test_range_query_opens_only_window_files() {
-        use metrics_util::MetricKind;
-        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        use metrics_util::debugging::DebuggingRecorder;
 
         const MINUTE_NS: i64 = 60_000_000_000;
         const HOUR_NS: i64 = 60 * MINUTE_NS;
@@ -6642,24 +6667,11 @@ mod tests {
         .join()
         .unwrap();
 
-        let s = snap.snapshot().into_vec();
-        let files = s.iter().find_map(|(k, _, _, v)| {
-            (k.kind() == MetricKind::Histogram
-                && k.key().name() == "querier_files_opened"
-                && k.key()
-                    .labels()
-                    .any(|l| l.key() == "signal" && l.value() == "metrics"))
-            .then_some(v)
-        });
-        let DebugValue::Histogram(samples) = files.expect("files_opened histogram for metrics")
-        else {
-            panic!("expected histogram value");
-        };
-        let total: f64 = samples.iter().map(|h| h.into_inner()).sum();
+        let total = metrics_files_opened(&snap);
         assert!(
             (total - 1.0).abs() < f64::EPSILON,
             "15-min query over the 3-day store must open only the 1 in-window file, \
-             opened: {total} ({samples:?})"
+             opened: {total}"
         );
     }
 
@@ -6717,6 +6729,169 @@ mod tests {
             points.iter().any(|p| p[0].as_f64().unwrap() >= midnight),
             "points after midnight expected: {points:?}"
         );
+    }
+
+    /// Task 8 (NFR1 evidence): files opened scale with the QUERY WINDOW, not
+    /// the store size. Same store, same PromQL, two windows: the 15-min
+    /// window opens exactly the 1 in-window file; the 3-day window opens all
+    /// 3 day files — deterministic counts from the fixture layout, observed
+    /// as [`metrics_files_opened`] snapshot deltas (`DebuggingRecorder`
+    /// pattern). Bare selector `m` classifies as `Capability::None`, so every
+    /// window routes raw — no tier table can absorb part of the scan.
+    #[test]
+    fn test_files_opened_scales_with_window_not_store() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        const MINUTE_NS: i64 = 60_000_000_000;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        const DAY_NS: i64 = 24 * HOUR_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        let (files_15m, files_3d) = std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    // 3 `dt=` days, one exact-bounds-named file each: 100
+                    // one-minute samples from noon.
+                    for (d, day) in [(0, "2026-06-01"), (1, "2026-06-02"), (2, "2026-06-03")] {
+                        let noon = JUN01_NS + d * DAY_NS + 12 * HOUR_NS;
+                        let times: Vec<i64> = (0..100).map(|i| noon + i * MINUTE_NS).collect();
+                        write_bounded_gauge(tmp.path(), day, &times);
+                    }
+                    let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
+                        .await
+                        .unwrap();
+                    // 15-min window at noon on day 2: the ±1 h pruning margin
+                    // still reaches no other day's file.
+                    let lo = JUN01_NS + DAY_NS + 12 * HOUR_NS;
+                    let hi = lo + 15 * MINUTE_NS;
+                    let resp = handle_range(&engine, "m", lo, hi, MINUTE_NS, hi).await.unwrap();
+                    assert!(!resp.data.result.is_empty(), "15-min query must return data");
+                    let files_15m = metrics_files_opened(&snap);
+                    // Same PromQL over a 3-day window covering every day file.
+                    let lo3 = JUN01_NS + 12 * HOUR_NS;
+                    let hi3 = JUN01_NS + 2 * DAY_NS + 14 * HOUR_NS;
+                    let resp = handle_range(&engine, "m", lo3, hi3, HOUR_NS, hi3)
+                        .await
+                        .unwrap();
+                    assert!(!resp.data.result.is_empty(), "3-day query must return data");
+                    // `Snapshotter::snapshot()` DRAINS histogram samples, so each
+                    // read is already the delta since the previous snapshot — do
+                    // not subtract `files_15m` again (empirically: 4 executions
+                    // × 1 file = snapshots of 1 then 3).
+                    (files_15m, metrics_files_opened(&snap))
+                })
+            })
+        })
+        .join()
+        .unwrap();
+
+        assert!(
+            (files_15m - 1.0).abs() < f64::EPSILON,
+            "15-min window must open exactly the 1 in-window file, opened: {files_15m}"
+        );
+        assert!(
+            (files_3d - 3.0).abs() < f64::EPSILON,
+            "3-day window must open all 3 day files, opened: {files_3d}"
+        );
+        assert!(
+            files_15m < files_3d,
+            "files opened must scale with the window: 15-min {files_15m} vs 3-day {files_3d}"
+        );
+    }
+
+    /// Task 8 (NFR1/NFR2 evidence): demo-scale bench — 1,505 exact-bounds
+    /// Parquet files across 7 `dt=` days (matching the live store's ~1,529
+    /// files / 7 days), 3 tiny rows each. PRINTS cold/warm latency and cold
+    /// files-opened for a 15-min `rate()` range query and a bare-selector
+    /// range query; deliberately asserts nothing about wall-clock (CI
+    /// variance). Run on demand:
+    /// `cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture`
+    #[test]
+    #[ignore = "demo-scale bench: generates 1,505 Parquet files; prints measurements, no assertions"]
+    #[allow(clippy::print_stderr)] // benchmark timing output (run with --nocapture)
+    fn bench_cold_range_query_demo_scale() {
+        use std::time::Instant;
+
+        use metrics_util::debugging::DebuggingRecorder;
+
+        const SEC_NS: i64 = 1_000_000_000;
+        const MINUTE_NS: i64 = 60 * SEC_NS;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        const DAY_NS: i64 = 24 * HOUR_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+        const DAYS: i64 = 7;
+        const FILES_PER_DAY: i64 = 215; // 7 × 215 = 1,505 ≥ demo scale
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let t = Instant::now();
+                    for d in 0..DAYS {
+                        let day = format!("2026-06-{:02}", d + 1);
+                        let day_ns = JUN01_NS + d * DAY_NS;
+                        for i in 0..FILES_PER_DAY {
+                            // One exact-bounds file per 6-min slot, 3 samples.
+                            let start = day_ns + i * 6 * MINUTE_NS;
+                            write_bounded_gauge(
+                                tmp.path(),
+                                &day,
+                                &[start, start + 30 * SEC_NS, start + 60 * SEC_NS],
+                            );
+                        }
+                    }
+                    eprintln!(
+                        "bench_cold_range_query_demo_scale: store={} files / {DAYS} dt= days, \
+                         generated in {:.1} s",
+                        DAYS * FILES_PER_DAY,
+                        t.elapsed().as_secs_f64()
+                    );
+                    let t = Instant::now();
+                    let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
+                        .await
+                        .unwrap();
+                    eprintln!(
+                        "engine build (walk + register): {:.1} ms",
+                        t.elapsed().as_secs_f64() * 1e3
+                    );
+                    // The live probe: a 15-min window ending at noon of the
+                    // last (active) day.
+                    let hi = JUN01_NS + (DAYS - 1) * DAY_NS + 12 * HOUR_NS;
+                    let lo = hi - 15 * MINUTE_NS;
+                    for query in ["rate(m[5m])", "m"] {
+                        let base = metrics_files_opened(&snap);
+                        let t = Instant::now();
+                        handle_range(&engine, query, lo, hi, MINUTE_NS, hi).await.unwrap();
+                        let cold_ms = t.elapsed().as_secs_f64() * 1e3;
+                        let files_cold = metrics_files_opened(&snap) - base;
+                        let t = Instant::now();
+                        handle_range(&engine, query, lo, hi, MINUTE_NS, hi).await.unwrap();
+                        let warm_ms = t.elapsed().as_secs_f64() * 1e3;
+                        eprintln!(
+                            "{query} 15-min window: cold={cold_ms:.1} ms \
+                             files_opened_cold={files_cold} warm={warm_ms:.1} ms"
+                        );
+                    }
+                });
+            });
+        })
+        .join()
+        .unwrap();
     }
 
     /// NFR3 (no silent bypass) — source guard, mirroring `no_sql_invariant_tests`

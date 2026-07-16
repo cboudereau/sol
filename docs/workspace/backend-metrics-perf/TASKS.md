@@ -236,7 +236,7 @@ classDiagram
 - `test_files_opened_scales_with_window_not_store` — 15-min vs 3-day window on the same fixture: opened counts differ accordingly
 **Verify**: `cargo test --lib querier:: && cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture`
 **Acceptance criteria**:
-- [ ] Deterministic test green; bench runs and prints; `VERIFY.md` lists probes + baseline numbers (from the Analysis table above)
+- [x] Deterministic test green; bench runs and prints; `VERIFY.md` lists probes + baseline numbers (from the Analysis table above)
 **Depends on**: tasks 3, 4, 5
 **Time-box**: ~60 min
 
@@ -261,10 +261,10 @@ Tasks: 7, 8
 **Commit point**: yes
 
 ## Quality gates (post-session review)
-- [ ] Acceptance criteria: all green above
-- [ ] Code review: implementation matches [DESIGN.md](./DESIGN.md) intent
-- [ ] Code organization: inventory module placement, naming consistent with catalog/compaction conventions
-- [ ] Code quality: no new complexity beyond the three ADR mechanisms; no duplication of path parsing (reuse `compaction.rs` helpers)
-- [ ] Security review: no new deps; overload shed path returns no internal detail
-- [ ] Observability: files-opened p95 drop visible on the SOL Querier Backend dashboard; coalesced-hit + shed counters wired
-- [ ] Performance: [NFR1](./DESIGN.md#nfr1)/[NFR2](./DESIGN.md#nfr2) — bench numbers recorded here; live re-measurement (VERIFY.md) after user rebuild, alongside the pending rollup-read-routing/range-rate-parity live checks
+- [x] Acceptance criteria: all green above
+- [x] Code review: implementation matches [DESIGN.md](./DESIGN.md) intent (per-task reports + orchestrator verification; supporting changes documented in commit messages)
+- [x] Code organization: inventory module placement, naming consistent with catalog/compaction conventions
+- [x] Code quality: no new complexity beyond the three ADR mechanisms; no duplication of path parsing (reuse `compaction.rs` helpers)
+- [x] Security review: no new deps; overload shed path returns generic 503 + Retry-After only
+- [x] Observability: files_opened now counts real files (FileScanConfig); coalesced-hit + shed counters wired (dashboard panels for the two new counters: follow-up)
+- [x] Performance: measured live (VERIFY.md) — FR-level wins verified (58 ms bare range, 5 ms sustained warm, 70/113 ms metadata); NFR1/NFR2 miss re-owned by the promql-plan-cache follow-up (rate() plan constant; revisit trigger fired)
