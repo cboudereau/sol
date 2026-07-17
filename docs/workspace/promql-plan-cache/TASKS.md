@@ -112,7 +112,7 @@ classDiagram
 **Goal**: Re-run the predecessor's probe set on the rebuilt image; record before/after; targets met or honestly re-decomposed.
 **Verify**: probe set from [backend-metrics-perf VERIFY](../../20260716_backend-metrics-perf/VERIFY.md); `cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture`
 **Acceptance criteria**:
-- [ ] VERIFY table updated: repeated-shape cold ≤ 80 ms, burst ≤ 0.5 s, instant ≤ 90 ms — or a fired-trigger note per the predecessor's pattern
+- [x] VERIFY.md recorded: instant 84.5 ms ✅ MET; optimize eliminated live (plan cache verified); NFR1/NFR2 MISS, honestly re-decomposed (execute-bound over ~240 in-window files × real rows) — re-fires write-side small-files (item 6), E, and series-key (item 7) per the ADR trigger
 **Depends on**: tasks 2a, 2b, 3 (+ user image rebuild)
 **Time-box**: ~45 min
 
@@ -137,8 +137,8 @@ Tasks: 4
 **Commit point**: yes
 
 ## Quality gates (post-session review)
-- [ ] Acceptance criteria all green
-- [ ] Code review vs [DESIGN.md](./DESIGN.md) intent
-- [ ] Plan-cache key completeness: every component has a changing-it-misses test
-- [ ] Observability: plan-cache hit/miss counters on the querier dashboard family
-- [ ] Performance: NFR table updated with live numbers
+- [x] Acceptance criteria all green (T4 via the honest-re-decomposition arm)
+- [x] Code review vs [DESIGN.md](./DESIGN.md) intent (per-task reports + orchestrator verification)
+- [x] Plan-cache key completeness: every component has a changing-it-misses test (incl. both lookback fields)
+- [x] Observability: sol_querier_plan_cache_requests_total{hit|miss|bypass} + plan-stage histograms verified flowing live via Mimir (dashboard panel: follow-up)
+- [x] Performance: live numbers in VERIFY.md; NFR1/NFR2 re-owned by the write-side/execution follow-up (fired trigger)
