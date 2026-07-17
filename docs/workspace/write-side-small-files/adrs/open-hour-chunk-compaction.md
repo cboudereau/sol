@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Open-hour compaction: chunked write-once, not rolling-partial, not cadence
 
