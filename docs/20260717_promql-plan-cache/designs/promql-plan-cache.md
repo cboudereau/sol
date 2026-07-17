@@ -13,7 +13,7 @@ The declared revisit trigger from backend-metrics-perf ("rate() plan cost domina
 ## Functional Requirements
 
 ### <a id="fr1"></a>FR1 — Plan-pipeline cost profile
-Instrumented, reproducible measurement (demo-scale fixture, plus the live demo) splitting the cold `rate()` range-query cost into: PromQL parse, logical-plan lowering, optimizer, physical planning, execution — for `rate()`, a bare selector, and one `histogram_quantile` query. Output: a table in the workspace + the decision data for the [mechanism ADR](./adrs/plan-cache-mechanism.md).
+Instrumented, reproducible measurement (demo-scale fixture, plus the live demo) splitting the cold `rate()` range-query cost into: PromQL parse, logical-plan lowering, optimizer, physical planning, execution — for `rate()`, a bare selector, and one `histogram_quantile` query. Output: a table in the workspace + the decision data for the [mechanism ADR](../adrs/plan-cache-mechanism.md).
 
 ### <a id="fr2"></a>FR2 — Reuse the expensive plan stage across repeated query shapes
 Whatever stage(s) FR1 convicts, repeated executions of the same *query shape* (same PromQL expression, step, and table routing — only the time window sliding) must not re-pay it. Candidate mechanisms (ADR decides after FR1): logical-plan template cache with literal rebinding; cached optimized plan with parameter placeholders; optimizer-pass trimming for our plan shapes; pre-built plan fragments for the `rate()` lowering. Correctness bar: results byte-identical to the uncached path; the cache key must capture everything that changes the plan (expression text, step/window shape, resolved table set + inventory snapshot generation, config knobs).
@@ -50,10 +50,10 @@ Relaxed from the predecessor's 50 ms to the measured scan+execute floor (58 ms b
 
 ## Design
 
-FR1 instruments the existing path (timing spans around parse/lower/optimize/physical/execute in `handle_range`'s pipeline) behind a test/bench seam — no runtime overhead in release paths beyond cheap `Instant` reads. Its output ratifies the [plan-cache mechanism ADR](./adrs/plan-cache-mechanism.md) (drafted with the option space now, decided after FR1 data). FR2 implements the ratified option inside `QueryEngine` beside the existing result cache + single-flight (same `CacheKey` discipline, separate keyspace). FR3/FR4 are small scoped changes in `prometheus.rs` / `inventory.rs` with their own tests, independent of the ADR.
+FR1 instruments the existing path (timing spans around parse/lower/optimize/physical/execute in `handle_range`'s pipeline) behind a test/bench seam — no runtime overhead in release paths beyond cheap `Instant` reads. Its output ratifies the [plan-cache mechanism ADR](../adrs/plan-cache-mechanism.md) (drafted with the option space now, decided after FR1 data). FR2 implements the ratified option inside `QueryEngine` beside the existing result cache + single-flight (same `CacheKey` discipline, separate keyspace). FR3/FR4 are small scoped changes in `prometheus.rs` / `inventory.rs` with their own tests, independent of the ADR.
 
 Decisions:
-- [Plan-cache mechanism](./adrs/plan-cache-mechanism.md) — `draft` until FR1 data lands, then `proposed` for ratification.
+- [Plan-cache mechanism](../adrs/plan-cache-mechanism.md) — `draft` until FR1 data lands, then `proposed` for ratification.
 
 ## Cross-cutting Concerns
 

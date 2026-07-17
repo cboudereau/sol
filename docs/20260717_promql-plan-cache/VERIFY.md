@@ -27,4 +27,4 @@ Dashboard UX today: first refresh of a cold shape ~0.4 s/panel, every subsequent
 
 ## Reproduce
 
-Same probe shapes as [backend-metrics-perf VERIFY](../../20260716_backend-metrics-perf/VERIFY.md); plan-cache counters: `sum by (result) (sol_querier_plan_cache_requests_total)`; stage means: `sum by (stage) (increase(sol_querier_plan_stage_duration_seconds_sum[3m])) / sum by (stage) (increase(sol_querier_plan_stage_duration_seconds_count[3m]))` via Mimir (port 9009).
+Same probe shapes as [backend-metrics-perf VERIFY](../20260716_backend-metrics-perf/VERIFY.md); plan-cache counters: `sum by (result) (sol_querier_plan_cache_requests_total)`; stage means: `sum by (stage) (increase(sol_querier_plan_stage_duration_seconds_sum[3m])) / sum by (stage) (increase(sol_querier_plan_stage_duration_seconds_count[3m]))` via Mimir (port 9009).
