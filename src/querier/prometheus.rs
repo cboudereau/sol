@@ -1649,12 +1649,18 @@ type RangeSeries = BTreeMap<String, (BTreeMap<String, String>, Vec<(f64, f64)>)>
 
 /// Group an already-built range `DataFrame`'s rows into per-series point
 /// lists. `scope` is the query's scan window — cache TTL classification (FR2).
+/// `step_ns` is the query step, a plan-cache key component (promql-plan-cache
+/// task 2a) — the lowered plan itself is step-free (gridding happens in Rust),
+/// so the step rides along solely to keep the key complete.
 async fn range_series_from_df(
     engine: &super::QueryEngine,
     df: datafusion::dataframe::DataFrame,
     scope: super::QueryScope,
+    step_ns: i64,
 ) -> crate::Result<RangeSeries> {
-    let batches = engine.collect_scoped(df, Some(scope)).await?;
+    let batches = engine
+        .collect_scoped_stepped(df, Some(scope), step_ns)
+        .await?;
     group_range_series(&batches)
 }
 
@@ -3129,7 +3135,9 @@ async fn eval_range_window(
                     lo_ns: scan_start,
                     hi_ns: e,
                 };
-                Ok(RangeVal::Vector(range_series_from_df(engine, df, scope).await?))
+                Ok(RangeVal::Vector(
+                    range_series_from_df(engine, df, scope, step_ns).await?,
+                ))
             } else {
                 // Profiling seam (promql-plan-cache FR1): `lower` stage, as above.
                 let t = std::time::Instant::now();
@@ -3139,7 +3147,9 @@ async fn eval_range_window(
                     lo_ns: scan_start,
                     hi_ns: e,
                 };
-                Ok(RangeVal::Vector(range_series_from_df(engine, df, scope).await?))
+                Ok(RangeVal::Vector(
+                    range_series_from_df(engine, df, scope, step_ns).await?,
+                ))
             }
             // NB: `step_ns` is unused here — the leaf/topk lowerings emit raw
             // per-series points; only the cross-series aggregate above grid-aligns.
@@ -3839,6 +3849,86 @@ mod tests {
                 (2.0, (0.1_f64).to_string()),
                 (3.0, (0.2_f64).to_string())
             ]
+        );
+    }
+
+    /// promql-plan-cache task 2a (ADR A′): per cached shape — rate range, bare
+    /// selector range, sum-by — REBINDING the cached optimized plan onto a new
+    /// window (window-literal rewrite + provider swap) must produce exactly
+    /// the plan a fresh build+optimize would, display-level. Two engines over
+    /// identical stores: the optimizer's alias generator is session-scoped, so
+    /// displays only compare across fresh sessions.
+    #[tokio::test]
+    async fn test_rebound_plan_equals_fresh_plan() {
+        use crate::querier::plan_cache;
+        for query in [
+            "rate(http_total[2s])",
+            "http_total",
+            "sum by (service_name) (rate(http_total[2s]))",
+        ] {
+            let expr = parser::parse(query).unwrap();
+            let engine_a = counter_engine().await;
+            let engine_b = counter_engine().await;
+            // Same shape, slid (and resized) window.
+            let df_a = lower_range_df(&engine_a, &expr, 1_000_000_000, 3_000_000_000, "metrics")
+                .await
+                .unwrap();
+            let df_b = lower_range_df(&engine_b, &expr, 61_000_000_000, 64_000_000_000, "metrics")
+                .await
+                .unwrap();
+            let (state_a, plan_a) = df_a.into_parts();
+            let (state_b, plan_b) = df_b.into_parts();
+            let shape_a = plan_cache::analyze(&plan_a).unwrap();
+            let shape_b = plan_cache::analyze(&plan_b).unwrap();
+            assert_eq!(
+                shape_a.shape, shape_b.shape,
+                "window slide must not change the shape key for {query}"
+            );
+            let cached = plan_cache::CachedPlan {
+                optimized: state_a.optimize(&plan_a).unwrap(),
+                window_values: shape_a.window_values,
+            };
+            let rebound = plan_cache::rebind(&cached, &shape_b)
+                .unwrap_or_else(|| panic!("rebind must be total for {query}"));
+            let fresh = state_b.optimize(&plan_b).unwrap();
+            assert_eq!(
+                rebound.display_indent().to_string(),
+                fresh.display_indent().to_string(),
+                "rebound cached plan must equal freshly-optimized plan for {query}"
+            );
+        }
+    }
+
+    /// promql-plan-cache task 2a: a plan-cache HIT must serve a byte-identical
+    /// HTTP-level response to a cold (miss) evaluation of the same query. Two
+    /// engines over identical stores: on the first, window A warms the shape
+    /// and window B is served via the rebound cached plan; on the second,
+    /// window B runs cold. The serialized responses must match byte-for-byte.
+    #[tokio::test]
+    async fn test_plan_cache_hit_result_identical() {
+        let (q, step, now) = ("rate(http_total[2s])", 1_000_000_000, 10_000_000_000);
+        let warmed = counter_engine().await;
+        let _a = handle_range(&warmed, q, 1_000_000_000, 3_000_000_000, step, now)
+            .await
+            .unwrap();
+        let b_hit = handle_range(&warmed, q, 2_000_000_000, 3_000_000_000, step, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            warmed.plan_cache_counts(),
+            (1, 1, 0),
+            "(hits, misses, bypasses): window B must be served via the plan cache"
+        );
+
+        let cold = counter_engine().await;
+        let b_cold = handle_range(&cold, q, 2_000_000_000, 3_000_000_000, step, now)
+            .await
+            .unwrap();
+        assert_eq!(cold.plan_cache_counts(), (0, 1, 0), "cold engine misses");
+        assert_eq!(
+            serde_json::to_vec(&b_hit).unwrap(),
+            serde_json::to_vec(&b_cold).unwrap(),
+            "hit and miss must serve byte-identical responses"
         );
     }
 

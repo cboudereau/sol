@@ -86,7 +86,7 @@ classDiagram
 **Tests** (red first): `test_rebound_plan_equals_fresh_plan` (per shape: rebound optimized plan == freshly-built+optimized plan, display-level); `test_plan_cache_hit_result_identical` (hit vs miss byte-equality); `test_plan_cache_key_components_miss` (each key component change ⇒ miss); `test_plan_cache_hit_skips_optimize` (deterministic proxy: optimize-stage counter/histogram, not wall-clock)
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; `sol_querier_plan_cache_*` hit/miss counters emitted; if the rebind cannot be made provably total for a shape, that shape BYPASSES the cache (correct-but-slow) and is listed in the report
+- [x] Tests green (252/0/2, +6); `sol_querier_plan_cache_requests_total{result=hit|miss|bypass}` emitted; insert-time identity-rebind self-check ⇒ non-total shapes never cached (bypass); no bypassing shapes observed in the suite
 **Depends on**: task 1 (ADR ratified 2026-07-17)
 **Time-box**: ~90 min
 

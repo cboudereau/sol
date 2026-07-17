@@ -138,6 +138,15 @@ pub fn record_plan_stage(stage: &'static str, duration: Duration) {
         .record(duration.as_secs_f64());
 }
 
+/// Record a plan-cache lookup outcome (promql-plan-cache task 2a): `result`
+/// is `hit` (cached optimized plan rebound and served — optimize skipped),
+/// `miss` (no entry; optimized fresh and inserted), or `bypass` (rebind not
+/// provably total; optimized fresh, never guessed). Surfaced as
+/// `sol_querier_plan_cache_requests_total{result=…}`.
+pub fn record_plan_cache(result: &'static str) {
+    counter!("querier_plan_cache_requests_total", "result" => result).increment(1);
+}
+
 /// Record a guardrail rejection (NFR9 — `reason` e.g. `range`/`bytes`).
 pub fn record_rejected(reason: &str) {
     counter!("querier_rejected_total", "reason" => reason.to_string()).increment(1);

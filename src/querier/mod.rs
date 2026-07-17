@@ -22,6 +22,7 @@ mod inventory;
 pub mod logql;
 pub mod loki;
 pub mod plan;
+mod plan_cache;
 pub mod prometheus;
 pub mod rollup;
 mod routes;

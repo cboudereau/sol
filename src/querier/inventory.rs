@@ -106,9 +106,34 @@ impl QueryScope {
 pub struct FileInventory {
     /// Registered table name → its surviving files with parsed intervals.
     tables: HashMap<String, Vec<FileEntry>>,
+    /// Snapshot generation (promql-plan-cache task 2a): identifies the
+    /// inventory **content** across swaps — [`QueryEngine::refresh`] carries
+    /// the previous generation over when [`Self::same_files`] holds and bumps
+    /// it otherwise, so a no-change refresh does not invalidate plan-cache
+    /// keys while any real store change does.
+    ///
+    /// [`QueryEngine::refresh`]: super::QueryEngine::refresh
+    generation: u64,
 }
 
 impl FileInventory {
+    /// Snapshot generation — a component of the plan-cache key.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Stamp this snapshot's generation (set once at the refresh swap).
+    pub(crate) fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
+    /// Whether both snapshots hold exactly the same files (paths + parsed
+    /// intervals) for the same tables — the "content unchanged" test deciding
+    /// whether a refresh keeps or bumps the generation.
+    pub(crate) fn same_files(&self, other: &FileInventory) -> bool {
+        self.tables == other.tables
+    }
+
     /// Record `files` (already walked + supersession-resolved) as the
     /// inventory of table `name`, parsing each path's interval once here.
     pub(crate) fn insert_table(&mut self, name: impl Into<String>, files: &[PathBuf]) {

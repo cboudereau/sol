@@ -539,6 +539,13 @@ pub struct QueryEngine {
     ctx: SessionContext,
     catalog: ParquetCatalog,
     cache: super::cache::MokaQueryCache,
+    /// Optimized-logical-plan cache (promql-plan-cache task 2a, ADR A′):
+    /// repeated query shapes skip lower's re-optimize — the cached
+    /// post-`optimize()` plan is rebound (window literals + scoped providers)
+    /// to the current window and physically planned directly. Sits *behind*
+    /// the result cache and single-flight: a result-cache hit never touches
+    /// it.
+    plan_cache: super::plan_cache::PlanCache,
     /// Request coalescing in front of the cache-backed execution (FR3): N
     /// concurrent identical cache misses execute the plan once; followers
     /// share the leader's result.
@@ -605,6 +612,7 @@ impl QueryEngine {
                 opts.cache.max_bytes,
                 std::time::Duration::from_secs(opts.cache.ttl_secs),
             ),
+            plan_cache: super::plan_cache::PlanCache::new(),
             single_flight: super::single_flight::SingleFlight::new(),
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
@@ -739,10 +747,104 @@ impl QueryEngine {
         let t = Instant::now();
         let optimized = state.optimize(&logical)?;
         super::telemetry::record_plan_stage("optimize", t.elapsed());
+        self.physical_and_collect(signal, &state, &optimized).await
+    }
+
+    /// [`Self::execute_recording_scan`] with the optimized-plan cache in front
+    /// of the optimize stage (promql-plan-cache task 2a, ADR A′). On a shape
+    /// hit the cached optimized plan is REBOUND — window literals rewritten,
+    /// every `TableScan` swapped to the current window's scoped provider — and
+    /// goes straight to physical planning; `optimize` is skipped (and its
+    /// stage histogram not recorded, the deterministic hit proxy). On a miss
+    /// the plan optimizes as usual and is inserted iff its rebind is provably
+    /// total (identity self-check); otherwise the shape bypasses forever
+    /// (correct-but-slow, never guessed). Used by the `DataFrame` paths
+    /// ([`Self::collect_scoped`]); the raw-SQL paths keep
+    /// [`Self::execute_recording_scan`].
+    async fn execute_plan_cached(
+        &self,
+        df: datafusion::dataframe::DataFrame,
+        step_ns: i64,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use super::plan_cache::{self, CachedPlan, PlanCacheKey, PlanCacheOutcome};
+        use std::time::Instant;
+        let signal = signal_of_plan(df.logical_plan());
+        let (state, logical) = df.into_parts();
+        let shape = plan_cache::analyze(&logical);
+        let optimized = match shape {
+            Err(_) => {
+                // Unanalyzable plan (never expected for our lowerings): bypass
+                // the cache, optimize fresh — correctness over reuse.
+                self.plan_cache.note(PlanCacheOutcome::Bypass);
+                let t = Instant::now();
+                let optimized = state.optimize(&logical)?;
+                super::telemetry::record_plan_stage("optimize", t.elapsed());
+                optimized
+            }
+            Ok(shape) => {
+                let key = PlanCacheKey {
+                    shape: shape.shape.clone(),
+                    step_ns,
+                    tables: shape.tables.clone(),
+                    inventory_generation: self.inventory_snapshot().generation(),
+                    lookback_cfg: self.metadata_default_range_secs,
+                };
+                let cached = self.plan_cache.get(&key);
+                let rebound = cached
+                    .as_ref()
+                    .and_then(|hit| plan_cache::rebind(hit, &shape));
+                match (rebound, cached) {
+                    // Hit: serve the rebound plan; optimize skipped entirely.
+                    (Some(rebound), _) => {
+                        self.plan_cache.note(PlanCacheOutcome::Hit);
+                        rebound
+                    }
+                    // An entry existed but could not be rebound onto this
+                    // window: bypass (fresh optimize), never guess.
+                    (None, Some(_)) => {
+                        self.plan_cache.note(PlanCacheOutcome::Bypass);
+                        let t = Instant::now();
+                        let optimized = state.optimize(&logical)?;
+                        super::telemetry::record_plan_stage("optimize", t.elapsed());
+                        optimized
+                    }
+                    // Miss: optimize fresh; insert only when the identity
+                    // rebind round-trips (proves every window literal in the
+                    // *optimized* plan is covered and every scan swappable).
+                    (None, None) => {
+                        self.plan_cache.note(PlanCacheOutcome::Miss);
+                        let t = Instant::now();
+                        let optimized = state.optimize(&logical)?;
+                        super::telemetry::record_plan_stage("optimize", t.elapsed());
+                        let candidate = CachedPlan {
+                            optimized: optimized.clone(),
+                            window_values: shape.window_values.clone(),
+                        };
+                        if plan_cache::rebind(&candidate, &shape).is_some() {
+                            self.plan_cache.insert(key, std::sync::Arc::new(candidate));
+                        }
+                        optimized
+                    }
+                }
+            }
+        };
+        self.physical_and_collect(signal, &state, &optimized).await
+    }
+
+    /// Shared tail of the execution pipeline: physical-plan the (already
+    /// optimized or rebound) logical plan, collect, and record the
+    /// `physical`/`execute` stages plus per-signal scan volume.
+    async fn physical_and_collect(
+        &self,
+        signal: &'static str,
+        state: &datafusion::execution::session_state::SessionState,
+        optimized: &datafusion::logical_expr::LogicalPlan,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        use std::time::Instant;
         let t = Instant::now();
         let plan = state
             .query_planner()
-            .create_physical_plan(&optimized, &state)
+            .create_physical_plan(optimized, state)
             .await?;
         super::telemetry::record_plan_stage("physical", t.elapsed());
         let t = Instant::now();
@@ -851,6 +953,21 @@ impl QueryEngine {
         df: datafusion::dataframe::DataFrame,
         scope: Option<QueryScope>,
     ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+        self.collect_scoped_stepped(df, scope, 0).await
+    }
+
+    /// [`Self::collect_scoped`] carrying the query's `step_ns` (0 when the
+    /// path has none) — a plan-cache key component (promql-plan-cache task 2a:
+    /// the range paths pass their step so shapes never alias across steps).
+    /// The plan cache runs *inside* the single-flight leader, so the result
+    /// cache and request coalescing stay in front of it: a result-cache hit
+    /// never touches the plan cache.
+    pub async fn collect_scoped_stepped(
+        &self,
+        df: datafusion::dataframe::DataFrame,
+        scope: Option<QueryScope>,
+        step_ns: i64,
+    ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
         use super::cache::{CacheKey, QueryCache, TtlClass};
         let key = CacheKey::for_sql(&df.logical_plan().display_indent().to_string());
         if let Some(hit) = self.cache.get(&key) {
@@ -863,7 +980,7 @@ impl QueryEngine {
             .run(key.clone(), move || async move {
                 // FR5: leader-only execution permit (see `Self::sql`).
                 let _permit = self.acquire_query_permit().await?;
-                let batches = self.execute_recording_scan(df).await?;
+                let batches = self.execute_plan_cached(df, step_ns).await?;
                 // Wall-clock now: TTL classification is inherently wall-clock,
                 // like the moka TTL it selects (and the tier boundary it
                 // mirrors).
@@ -934,12 +1051,30 @@ impl QueryEngine {
     /// invariant "inventory and registered tables derive from the same walk;
     /// replace both or neither".
     pub async fn refresh(&self) -> crate::Result<()> {
-        let inventory = self.catalog.refresh(&self.ctx).await?;
+        let mut inventory = self.catalog.refresh(&self.ctx).await?;
+        // Plan-cache generation (promql-plan-cache task 2a): the generation
+        // identifies the inventory *content* — an unchanged walk keeps it (so
+        // no-change refreshes don't evict rebindable plans), any file-set
+        // change bumps it. The generation is a plan-cache key component, so a
+        // bump makes every cached plan unreachable; drop them eagerly too.
+        let previous = self.inventory_snapshot();
+        if inventory.same_files(&previous) {
+            inventory.set_generation(previous.generation());
+        } else {
+            inventory.set_generation(previous.generation().wrapping_add(1));
+            self.plan_cache.invalidate_all();
+        }
         *self
             .inventory
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(inventory);
         Ok(())
+    }
+
+    /// Plan-cache `(hits, misses, bypasses)` — test observability.
+    #[cfg(test)]
+    pub(crate) fn plan_cache_counts(&self) -> (u64, u64, u64) {
+        self.plan_cache.counts()
     }
 }
 
@@ -1332,11 +1467,22 @@ mod tests {
         assert_eq!(inv.scoped_files("metrics_1h", ALL_TIME).unwrap().len(), 1);
         assert!(inv.scoped_files("nope", ALL_TIME).is_none());
 
-        // A 4th day appears; refresh swaps in a new inventory with it.
+        // A 4th day appears; refresh swaps in a new inventory with it. The
+        // file-set change bumps the snapshot generation (plan-cache key
+        // component, promql-plan-cache task 2a)…
+        assert_eq!(inv.generation(), 0);
         write_bounded_log(tmp.path(), "2026-06-04", JUN01_NS + 3 * DAY_NS, 1);
         engine.refresh().await.unwrap();
         let inv = engine.inventory_snapshot();
         assert_eq!(inv.scoped_files("logs", ALL_TIME).unwrap().len(), 4);
+        assert_eq!(inv.generation(), 1, "changed file set bumps generation");
+        // …while a no-change refresh keeps it (cached plans stay reachable).
+        engine.refresh().await.unwrap();
+        assert_eq!(
+            engine.inventory_snapshot().generation(),
+            1,
+            "unchanged file set keeps the generation"
+        );
     }
 
     #[tokio::test]
@@ -1526,6 +1672,115 @@ mod tests {
             engine.cache.get(&plan_key).is_some(),
             "sealed-scoped collect result must survive a catalog refresh"
         );
+    }
+
+    /// promql-plan-cache task 2a: a second same-shape query over a slid
+    /// window must HIT the plan cache and skip `state.optimize()` — proxied
+    /// deterministically by the `optimize` stage histogram receiving exactly
+    /// ONE sample across the two executions (`physical` gets two), plus the
+    /// `sol_querier_plan_cache_requests_total{result=hit|miss}` counters. No
+    /// wall-clock assertions. Local-recorder pattern as in
+    /// [`test_query_records_real_bytes_scanned`].
+    #[test]
+    fn test_plan_cache_hit_skips_optimize() {
+        use metrics_util::MetricKind;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    // Exact-bounds fixture covering [12:00, 12:30].
+                    write_bounded_log(tmp.path(), "2026-06-01", JUN01_NS, 3);
+                    let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+                        .await
+                        .unwrap();
+                    let noon = JUN01_NS + 12 * HOUR_NS;
+                    // Two same-shape windows (both overlap the fixture file, so
+                    // both scope to the same ListingTable provider shape); the
+                    // differing window literals defeat the result cache but
+                    // not the plan cache.
+                    let windows = [
+                        (noon, noon + 5 * MINUTE_NS),
+                        (noon + 10 * MINUTE_NS, noon + 15 * MINUTE_NS),
+                    ];
+                    for (lo, hi) in windows {
+                        let scope = QueryScope {
+                            lo_ns: lo,
+                            hi_ns: hi,
+                        };
+                        let df = engine
+                            .table_scoped("logs", scope)
+                            .await
+                            .unwrap()
+                            .filter(window_filter(lo, hi))
+                            .unwrap();
+                        engine.collect_scoped(df, Some(scope)).await.unwrap();
+                    }
+                    assert_eq!(
+                        engine.plan_cache_counts(),
+                        (1, 1, 0),
+                        "(hits, misses, bypasses): first window misses+inserts, second rebinds"
+                    );
+                });
+            });
+        })
+        .join()
+        .unwrap();
+
+        let s = snap.snapshot().into_vec();
+        let stage_samples = |stage: &str| {
+            s.iter()
+                .find_map(|(k, _, _, v)| {
+                    (k.kind() == MetricKind::Histogram
+                        && k.key().name() == "querier_plan_stage_duration_seconds"
+                        && k.key()
+                            .labels()
+                            .any(|l| l.key() == "stage" && l.value() == stage))
+                    .then_some(v)
+                })
+                .map_or(0, |v| {
+                    let DebugValue::Histogram(samples) = v else {
+                        panic!("expected histogram value for stage {stage}");
+                    };
+                    samples.len()
+                })
+        };
+        assert_eq!(
+            stage_samples("physical"),
+            2,
+            "both executions are physically planned"
+        );
+        assert_eq!(
+            stage_samples("optimize"),
+            1,
+            "the plan-cache hit must skip (and not record) the optimize stage"
+        );
+        let plan_cache_count = |result: &str| {
+            s.iter()
+                .find_map(|(k, _, _, v)| {
+                    (k.kind() == MetricKind::Counter
+                        && k.key().name() == "querier_plan_cache_requests_total"
+                        && k.key()
+                            .labels()
+                            .any(|l| l.key() == "result" && l.value() == result))
+                    .then_some(v)
+                })
+                .map_or(0, |v| {
+                    let DebugValue::Counter(n) = v else {
+                        panic!("expected counter value for result {result}");
+                    };
+                    *n
+                })
+        };
+        assert_eq!(plan_cache_count("miss"), 1, "first execution misses");
+        assert_eq!(plan_cache_count("hit"), 1, "second execution hits");
     }
 
     #[test]
