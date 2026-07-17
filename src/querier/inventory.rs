@@ -16,15 +16,6 @@ use chrono::NaiveDate;
 
 use super::compaction::{COMPACTED_PREFIX, ROLLUP_PREFIX, hour_end_ns};
 
-/// Lateness/skew allowance, in nanoseconds (1 h wall-clock).
-///
-/// Generous relative to the ~30 s gateway flush cadence and consistent with
-/// the 24 h-margin philosophy of `SEALED_OFFSET_NS`
-/// (`src/querier/prometheus.rs`). One documented constant — both the parse-time
-/// widening of hour-compacted intervals and the query-time widening in
-/// [`FileInterval::overlaps`] use it.
-pub(crate) const INTERVAL_MARGIN_NS: i64 = 60 * 60 * 1_000_000_000;
-
 /// Clock-skew allowance for exact name-carried bounds, in nanoseconds (5 s).
 ///
 /// Task 1b (ADR A′): the gateway Parquet batch sink stamps each file name with
@@ -32,10 +23,10 @@ pub(crate) const INTERVAL_MARGIN_NS: i64 = 60 * 60 * 1_000_000_000;
 /// (`src/sinks/file/mod.rs::parquet_bounds_path`), so no lateness margin is
 /// needed — a file provably contains nothing outside its named bounds. This
 /// small constant only cushions cross-host wall-clock skew between the
-/// stamping gateway and whatever clock anchors a query window; it is
-/// deliberately distinct from (and much smaller than) the 1 h
-/// [`INTERVAL_MARGIN_NS`] lateness allowance that legacy `HH-MM-SS-*` names
-/// still require.
+/// stamping gateway and whatever clock anchors a query window. It is the only
+/// lateness-style allowance left: the legacy 1 h `INTERVAL_MARGIN_NS`
+/// query-time widening was deleted with the `HH-MM-SS-*` rule it served
+/// (promql-plan-cache FR4, no retro-compat).
 pub(crate) const EXACT_BOUNDS_SKEW_NS: i64 = 5 * 1_000_000_000;
 
 /// Conservative `[lo_ns, hi_ns]` event-time bounds for one store file,
@@ -55,13 +46,12 @@ impl FileInterval {
         hi_ns: i64::MAX,
     };
 
-    /// Include-this-file test: does the query window `[lo_ns, hi_ns]`, widened
-    /// by `margin_ns` on both sides, overlap this interval? (ADR rule:
-    /// include iff `[lo − margin, hi + margin]` overlaps.)
-    pub(crate) fn overlaps(&self, lo_ns: i64, hi_ns: i64, margin_ns: i64) -> bool {
-        let query_lo = lo_ns.saturating_sub(margin_ns);
-        let query_hi = hi_ns.saturating_add(margin_ns);
-        self.lo_ns <= query_hi && query_lo <= self.hi_ns
+    /// Include-this-file test: does the query window `[lo_ns, hi_ns]` overlap
+    /// this interval? No query-time widening (promql-plan-cache FR4): every
+    /// remaining margin is baked into the interval at parse time
+    /// ([`EXACT_BOUNDS_SKEW_NS`], the `hour_end_ns`/full-day conventions).
+    pub(crate) fn overlaps(&self, lo_ns: i64, hi_ns: i64) -> bool {
+        self.lo_ns <= hi_ns && lo_ns <= self.hi_ns
     }
 }
 
@@ -147,10 +137,12 @@ impl FileInventory {
         self.tables.insert(name.into(), entries);
     }
 
-    /// The paths of `table`'s files whose interval overlaps `scope` widened by
-    /// [`INTERVAL_MARGIN_NS`] — the ADR's **superset guarantee**: every file
-    /// that could hold an in-window row (including unparseable → unbounded
-    /// ones) is returned; only files provably out of window are skipped.
+    /// The paths of `table`'s files whose interval overlaps `scope` — the
+    /// ADR's **superset guarantee**: every file that could hold an in-window
+    /// row (including unparseable → unbounded ones) is returned; only files
+    /// provably out of window are skipped. The scope is used as-is: parse-time
+    /// bounds already carry every needed allowance (promql-plan-cache FR4 —
+    /// no query-time widening).
     ///
     /// `None` ⇔ `table` is unknown to the inventory; the caller falls back to
     /// the registered full table.
@@ -159,10 +151,7 @@ impl FileInventory {
         Some(
             entries
                 .iter()
-                .filter(|e| {
-                    e.interval
-                        .overlaps(scope.lo_ns, scope.hi_ns, INTERVAL_MARGIN_NS)
-                })
+                .filter(|e| e.interval.overlaps(scope.lo_ns, scope.hi_ns))
                 .map(|e| e.path.clone())
                 .collect(),
         )
@@ -171,16 +160,15 @@ impl FileInventory {
 
 /// Parse a store file path into its [`FileInterval`].
 ///
-/// Interval rules (ADR A′, ratified):
+/// Interval rules (ADR A′ + promql-plan-cache FR4 — no legacy raw rule):
 /// - exact-bounds `<min_ns>-<max_ns>-<uuid>[-<i>].parquet` (task 1b, written
 ///   by the gateway Parquet batch sink) → `[min, max + skew]` — see
 ///   [`parse_exact_bounds`];
-/// - `dt=YYYY-MM-DD` ancestor dir → base interval `[day_start, day_end)`;
-/// - legacy raw `HH-MM-SS-<uuid>[-<i>].parquet` → `[day_start, flush + margin]`;
-/// - `compacted-hHH-*` → that hour widened by the margin (reuses the
-///   [`hour_end_ns`] convention);
-/// - `compacted-<date>` / `rollup-<tier>` → the full day;
-/// - anything else → [`FileInterval::UNBOUNDED`] (always included).
+/// - `compacted-hHH-*` under a `dt=YYYY-MM-DD` dir → `[hour_start, next_hour]`
+///   (the [`hour_end_ns`] convention);
+/// - `compacted-<date>` / `rollup-<tier>` under a `dt=` dir → the full day;
+/// - anything else — including pre-cutover `HH-MM-SS-<uuid>` raw names —
+///   → [`FileInterval::UNBOUNDED`] (always included).
 ///
 /// Total: never errors, never excludes by default.
 pub(crate) fn parse_file_interval(path: &Path) -> FileInterval {
@@ -209,17 +197,18 @@ fn interval_of(path: &Path) -> Option<FileInterval> {
     }
     if let Some(rest) = name.strip_prefix(COMPACTED_PREFIX) {
         if let Some(hour_part) = rest.strip_prefix('h') {
-            // compacted-hHH-<date>.parquet: that hour ± margin. The margin is
-            // baked in at parse time (ADR: "widened by margin") because an
-            // hour merge may carry late events stamped just outside the hour.
+            // compacted-hHH-<date>.parquet: exactly that hour, widened only by
+            // the hour_end_ns convention (the end is the start of the next
+            // hour). Its inputs carry exact bounds, so no lateness margin
+            // (promql-plan-cache FR4 deleted the legacy ±1 h).
             let hour: u32 = hour_part.split('-').next()?.parse().ok()?;
             let lo = date
                 .and_hms_opt(hour, 0, 0)? // also validates hour < 24
                 .and_utc()
                 .timestamp_nanos_opt()?;
             return Some(FileInterval {
-                lo_ns: lo.saturating_sub(INTERVAL_MARGIN_NS),
-                hi_ns: hour_end_ns(date, hour).saturating_add(INTERVAL_MARGIN_NS),
+                lo_ns: lo,
+                hi_ns: hour_end_ns(date, hour),
             });
         }
         // compacted-<date>.parquet: lossless merge of the whole sealed day.
@@ -229,30 +218,10 @@ fn interval_of(path: &Path) -> Option<FileInterval> {
         });
     }
 
-    // LEGACY raw gateway file `HH-MM-SS-<uuid>[-<i>].parquet` (pre-cutover;
-    // since task 1b the Parquet batch sink writes exact-bounds names instead —
-    // this rule survives only for files written before the store wipe).
-    //
-    // Verified (task 1 acceptance criterion 2): the sink's `%H-%M-%S` path
-    // template stamps **event time**, not write time — `Template::render` →
-    // `render_timestamp` (`src/template.rs:579-594`) formats the event's own
-    // timestamp (log timestamp / `Metric::timestamp()` / trace
-    // `time_unix_nano`), falling back to `Utc::now()` only when the event has
-    // none; the Parquet batch sink renders the path from the **first event of
-    // the flushed batch** (`src/sinks/file/mod.rs`, `flush_batch`).
-    // So the name's stamp is the first batched event's event time. Later
-    // events in the same batch can post-date it by at most the batch flush
-    // window (~30 s cadence, ≪ the 1 h margin), so `hi = stamp + margin`
-    // holds for in-order traffic; the residual risk — a batch whose *first*
-    // event is stamped far in the past while later events are current — is
-    // exactly what the exact-bounds naming ([`parse_exact_bounds`], ADR A′)
-    // eliminates for newly written files. The lower bound stays `day_start`:
-    // a batch may carry late events from earlier in the day.
-    let flush_ns = parse_flush_ns(name, date)?;
-    Some(FileInterval {
-        lo_ns: day_lo,
-        hi_ns: flush_ns.saturating_add(INTERVAL_MARGIN_NS),
-    })
+    // No other shape is recognised (the pre-cutover `HH-MM-SS-<uuid>` raw rule
+    // was deleted — promql-plan-cache FR4, no retro-compat): unparseable, so
+    // the caller's unbounded fallback keeps the file always included.
+    None
 }
 
 /// Fewest decimal digits a name-carried epoch-ns bound may have (10 digits =
@@ -314,20 +283,6 @@ fn day_start_ns(date: NaiveDate) -> Option<i64> {
     date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_nanos_opt()
 }
 
-/// Wall-clock nanoseconds of the `HH-MM-SS` stamp of a raw file name on
-/// `date`. `None` unless the name starts with a valid `HH-MM-SS` triple
-/// (`and_hms_opt` rejects out-of-range fields).
-fn parse_flush_ns(name: &str, date: NaiveDate) -> Option<i64> {
-    let stem = name.strip_suffix(".parquet").unwrap_or(name);
-    let mut parts = stem.split('-');
-    let hour: u32 = parts.next()?.parse().ok()?;
-    let minute: u32 = parts.next()?.parse().ok()?;
-    let second: u32 = parts.next()?.parse().ok()?;
-    date.and_hms_opt(hour, minute, second)?
-        .and_utc()
-        .timestamp_nanos_opt()
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -347,31 +302,12 @@ mod tests {
     }
 
     #[test]
-    fn test_interval_raw_file_bounds() {
-        // Raw gateway flush: lower bound = day start (late events from earlier
-        // in the day), upper bound = the HH-MM-SS stamp + margin.
-        let got = interval(
-            "/store/metrics/gauge/dt=2026-07-10/12-18-28-550e8400-e29b-41d4-a716-446655440000.parquet",
-        );
-        let stamp = JUL10_NS + 12 * HOUR_NS + (18 * 60 + 28) * NS_PER_SEC;
-        assert_eq!(got.lo_ns, JUL10_NS);
-        assert_eq!(got.hi_ns, stamp + INTERVAL_MARGIN_NS);
-
-        // Multi-part batch suffix `-<i>` parses the same way.
-        let multi = interval(
-            "/store/logs/dt=2026-07-10/00-00-05-550e8400-e29b-41d4-a716-446655440000-3.parquet",
-        );
-        assert_eq!(multi.lo_ns, JUL10_NS);
-        assert_eq!(multi.hi_ns, JUL10_NS + 5 * NS_PER_SEC + INTERVAL_MARGIN_NS);
-    }
-
-    #[test]
     fn test_interval_compacted_hour() {
-        // compacted-h07 → [07:00 − margin, 08:00 + margin] of that day
-        // (hour_end_ns convention: the end is the start of the next hour).
+        // compacted-h07 → [07:00, 08:00] of that day (hour_end_ns convention:
+        // the end is the start of the next hour) — no lateness margin (FR4).
         let got = interval("/store/logs/dt=2026-06-02/compacted-h07-2026-06-02.parquet");
-        assert_eq!(got.lo_ns, JUN02_NS + 7 * HOUR_NS - INTERVAL_MARGIN_NS);
-        assert_eq!(got.hi_ns, JUN02_NS + 8 * HOUR_NS + INTERVAL_MARGIN_NS);
+        assert_eq!(got.lo_ns, JUN02_NS + 7 * HOUR_NS);
+        assert_eq!(got.hi_ns, JUN02_NS + 8 * HOUR_NS);
     }
 
     #[test]
@@ -404,7 +340,8 @@ mod tests {
             // dt= present but the name matches no known shape.
             "/store/logs/dt=2026-07-10/README.txt",
             "/store/logs/dt=2026-07-10/notes.parquet",
-            // Out-of-range HH-MM-SS fields are not a valid raw stamp.
+            // HH-MM-SS-ish fields are not a recognised shape (FR4: the legacy
+            // raw rule is gone), whatever their ranges.
             "/store/logs/dt=2026-07-10/25-00-00-uuid.parquet",
             "/store/logs/dt=2026-07-10/12-61-00-uuid.parquet",
             // Bad hour digits after compacted-h.
@@ -416,8 +353,8 @@ mod tests {
             let got = interval(path);
             assert_eq!(got, FileInterval::UNBOUNDED, "{path}");
             // Always included, whatever the window.
-            assert!(got.overlaps(0, 0, 0), "{path}");
-            assert!(got.overlaps(i64::MIN, i64::MAX, INTERVAL_MARGIN_NS), "{path}");
+            assert!(got.overlaps(0, 0), "{path}");
+            assert!(got.overlaps(i64::MIN, i64::MAX), "{path}");
         }
     }
 
@@ -468,12 +405,22 @@ mod tests {
             interval(&format!("/store/logs/dt=2026-07-10/{min}-{max}.parquet")),
             FileInterval::UNBOUNDED
         );
-        // Legacy raw names keep task 1's conservative rule (regression pin;
-        // full coverage in test_interval_raw_file_bounds).
-        let legacy = interval(
+    }
+
+    #[test]
+    fn test_legacy_raw_name_falls_back_unbounded() {
+        // FR4 (promql-plan-cache task 3, no retro-compat): the pre-cutover
+        // `HH-MM-SS-<uuid>` raw naming has no special interval rule any more —
+        // it is simply unparseable, so the total parser's unbounded fallback
+        // keeps such a file always included (never a widened stamp interval).
+        for path in [
             "/store/metrics/gauge/dt=2026-07-10/12-18-28-550e8400-e29b-41d4-a716-446655440000.parquet",
-        );
-        assert_eq!(legacy.lo_ns, JUL10_NS);
+            "/store/logs/dt=2026-07-10/00-00-05-550e8400-e29b-41d4-a716-446655440000-3.parquet",
+        ] {
+            let got = interval(path);
+            assert_eq!(got, FileInterval::UNBOUNDED, "{path}");
+            assert!(got.overlaps(0, 0), "{path}: always included");
+        }
     }
 
     #[test]
@@ -482,21 +429,16 @@ mod tests {
             lo_ns: 1_000,
             hi_ns: 2_000,
         };
-        // Zero margin: closed-interval touch counts as overlap.
-        assert!(iv.overlaps(2_000, 3_000, 0));
-        assert!(iv.overlaps(0, 1_000, 0));
-        assert!(iv.overlaps(1_200, 1_800, 0)); // fully inside
-        assert!(iv.overlaps(0, 5_000, 0)); // fully covering
-        assert!(!iv.overlaps(2_001, 3_000, 0));
-        assert!(!iv.overlaps(0, 999, 0));
-        // Margin widens the query window on both sides.
-        assert!(iv.overlaps(2_100, 3_000, 100)); // 2_100 − 100 touches hi
-        assert!(!iv.overlaps(2_101, 3_000, 100));
-        assert!(iv.overlaps(0, 900, 100)); // 900 + 100 touches lo
-        assert!(!iv.overlaps(0, 899, 100));
-        // Saturation: extreme windows + margin must not wrap.
-        assert!(FileInterval::UNBOUNDED.overlaps(i64::MIN, i64::MAX, i64::MAX));
-        assert!(!iv.overlaps(i64::MIN, i64::MIN, 100));
-        assert!(!iv.overlaps(i64::MAX, i64::MAX, 100));
+        // Closed-interval touch counts as overlap; no query-time widening (FR4).
+        assert!(iv.overlaps(2_000, 3_000));
+        assert!(iv.overlaps(0, 1_000));
+        assert!(iv.overlaps(1_200, 1_800)); // fully inside
+        assert!(iv.overlaps(0, 5_000)); // fully covering
+        assert!(!iv.overlaps(2_001, 3_000));
+        assert!(!iv.overlaps(0, 999));
+        // Extreme windows must not wrap.
+        assert!(FileInterval::UNBOUNDED.overlaps(i64::MIN, i64::MAX));
+        assert!(!iv.overlaps(i64::MIN, i64::MIN));
+        assert!(!iv.overlaps(i64::MAX, i64::MAX));
     }
 }

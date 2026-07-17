@@ -731,6 +731,7 @@ async fn latest_selected_df(
     engine: &super::QueryEngine,
     vs: &VectorSelector,
     time_ns: i64,
+    now_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::prelude::col;
     let name = vs
@@ -740,12 +741,16 @@ async fn latest_selected_df(
     // Bare selectors evaluate the latest sample only: no lookback window
     // (resolution 0) and capability None ⇒ a single raw window naturally.
     // Capability::None short-circuits to a single raw window before the
-    // wall-clock sealed boundary is used, so the `now_ns` arg is value-irrelevant
-    // here; pass `time_ns` (in scope) rather than widen this fn's signature.
+    // wall-clock sealed boundary is used, so the resolver's `now_ns` arg is
+    // value-irrelevant here; pass `time_ns` rather than pretend it matters.
     let windows = resolve_metric_windows(engine, time_ns, time_ns, 0, Capability::None, time_ns);
+    // FR3 (staleness lookback): the scan's lower bound. Anchored so an
+    // omitted `time` (the i64::MAX sentinel) measures the lookback from
+    // wall-clock now, not from the sentinel (which would prune everything).
+    let lo_ns = instant_anchor(time_ns, now_ns).saturating_sub(engine.instant_lookback_ns());
     let mut base: Option<datafusion::dataframe::DataFrame> = None;
     for (table, _lo, hi) in windows {
-        let part = selector_base_df(engine, vs, name, &table, hi).await?;
+        let part = selector_base_df(engine, vs, name, &table, lo_ns, hi).await?;
         base = Some(match base {
             Some(acc) => acc.union(part)?,
             None => part,
@@ -764,21 +769,23 @@ async fn latest_selected_df(
 /// One filtered `<= time_ns` scan of `table` for the bare-selector instant base:
 /// the matched series' identity columns + the coalesced value `v`. Factored out
 /// of [`latest_selected_df`] so each resolver window contributes a union arm.
+/// `lo_ns` is the staleness-lookback lower bound (promql-plan-cache FR3):
+/// Prometheus's instant semantics only admit series with a sample inside the
+/// lookback, so the scan is bounded to `[lo_ns, time_ns]` instead of all
+/// history — staler series' files are pruned and the series disappear.
 async fn selector_base_df(
     engine: &super::QueryEngine,
     vs: &VectorSelector,
     name: &str,
     table: &str,
+    lo_ns: i64,
     time_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::arrow::datatypes::DataType::Int64;
     use datafusion::logical_expr::expr_fn::cast;
     use datafusion::prelude::{col, lit};
-    // FR1: the `latest ≤ time_ns` base has only an upper bound (the latest
-    // sample may sit arbitrarily far back), so the scope is half-open — it
-    // prunes just the files that provably start after the instant.
     let scope = super::QueryScope {
-        lo_ns: i64::MIN,
+        lo_ns,
         hi_ns: time_ns,
     };
     let mut df = engine
@@ -894,10 +901,11 @@ async fn lower_aggregate_instant(
     }
 
     // Leaf selector inner (`sum(m)`): latest sample per series, then aggregate.
-    // A bare selector's `latest ≤ time_ns` is correct at i64::MAX (newest), so it
-    // keeps `time_ns` — only the range-window paths need the anchor.
+    // A bare selector's `latest ≤ time_ns` upper bound is correct at i64::MAX
+    // (newest), so it keeps `time_ns`; `now_ns` anchors only the FR3 staleness
+    // lower bound inside `latest_selected_df`.
     if let Some(vs) = aggregate_inner_selector(agg.expr.as_ref()) {
-        let inner = latest_selected_df(engine, vs, time_ns).await?;
+        let inner = latest_selected_df(engine, vs, time_ns, now_ns).await?;
         let key = agg_group_key_expr(&inner, &grouping).alias("prom_group_key");
         return Ok(inner.aggregate(vec![key], vec![v])?);
     }
@@ -1003,7 +1011,7 @@ async fn lower_instant_df(
     match expr {
         // A bare selector's `latest ≤ time_ns` is correct at i64::MAX, so it keeps
         // `time_ns`; only the range-window paths below need the anchor.
-        Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns).await,
+        Expr::VectorSelector(vs) => latest_selected_df(engine, vs, time_ns, now_ns).await,
         Expr::Paren(p) => Box::pin(lower_instant_df(engine, &p.expr, time_ns, now_ns)).await,
         Expr::Aggregate(agg) => lower_aggregate_instant(engine, agg, time_ns, now_ns).await,
         // Bare range function at an instant (`rate(metric[5m])`): evaluate over the
@@ -1305,13 +1313,14 @@ fn instant_anchor(time_ns: i64, now_ns: i64) -> i64 {
 }
 
 /// The cache-classification window of an instant query (FR2): the anchored
-/// evaluation point `[anchor, anchor]`. Sealedness only reads the window's
-/// upper bound, so the point window classifies exactly — an explicit `time`
-/// older than a day → sealed (long TTL), a live/omitted `time` → mutable.
-fn instant_scope(time_ns: i64, now_ns: i64) -> super::QueryScope {
+/// staleness-lookback window `[anchor − lookback, anchor]` — the window the
+/// instant scans actually read (promql-plan-cache FR3). Sealedness only reads
+/// the window's upper bound, so classification is unchanged — an explicit
+/// `time` older than a day → sealed (long TTL), a live/omitted `time` → mutable.
+fn instant_scope(time_ns: i64, now_ns: i64, lookback_ns: i64) -> super::QueryScope {
     let anchor = instant_anchor(time_ns, now_ns);
     super::QueryScope {
-        lo_ns: anchor,
+        lo_ns: anchor.saturating_sub(lookback_ns),
         hi_ns: anchor,
     }
 }
@@ -2545,15 +2554,17 @@ async fn hist_instant_scan(
     vs: &VectorSelector,
     name: &str,
     table: &str,
+    lo_ns: i64,
     time_ns: i64,
 ) -> crate::Result<datafusion::dataframe::DataFrame> {
     use datafusion::arrow::datatypes::DataType::Int64;
     use datafusion::logical_expr::expr_fn::cast as df_cast;
     use datafusion::prelude::{col, lit};
-    // FR1: like `selector_base_df`, the `latest ≤ time_ns` base is half-open —
-    // only files provably starting after the instant are pruned.
+    // Like `selector_base_df`, the `latest ≤ time_ns` base is bounded below by
+    // the staleness lookback `lo_ns` (promql-plan-cache FR3) — only files that
+    // can hold a sample inside the lookback are opened.
     let scope = super::QueryScope {
-        lo_ns: i64::MIN,
+        lo_ns,
         hi_ns: time_ns,
     };
     let mut df = engine
@@ -2601,9 +2612,11 @@ async fn handle_histogram(
     // now so the latest-sample filter and the response timestamp are sensible.
     let anchor = instant_anchor(time_ns, now_ns);
     let windows = resolve_metric_windows(engine, anchor, anchor, 0, Capability::Last, now_ns);
+    // FR3: staleness-lookback lower bound for the latest-≤ scan.
+    let lo_ns = anchor.saturating_sub(engine.instant_lookback_ns());
     let mut base: Option<datafusion::dataframe::DataFrame> = None;
     for (table, _lo, hi) in windows {
-        let part = hist_instant_scan(engine, vs, name, &table, hi).await?;
+        let part = hist_instant_scan(engine, vs, name, &table, lo_ns, hi).await?;
         base = Some(match base {
             Some(acc) => acc.union(part)?,
             None => part,
@@ -3347,7 +3360,7 @@ async fn eval_instant(
         Expr::Aggregate(agg) if agg_name(agg.op).is_ok() => {
             let df = lower_aggregate_instant(engine, agg, time_ns, now_ns).await?;
             Ok(InstantVal::Vector(
-                instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns)).await?,
+                instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns, engine.instant_lookback_ns())).await?,
             ))
         }
         _ => {
@@ -3363,7 +3376,7 @@ async fn eval_instant(
             } else {
                 let df = lower_instant_df(engine, expr, time_ns, now_ns).await?;
                 Ok(InstantVal::Vector(
-                    instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns)).await?,
+                    instant_vector_from_df(engine, df, instant_scope(time_ns, now_ns, engine.instant_lookback_ns())).await?,
                 ))
             }
         }
@@ -6634,6 +6647,12 @@ mod tests {
     /// timestamp — so the file inventory parses exact per-file intervals and
     /// `table_scoped` can prune it in/out per query window (FR1 fixtures).
     fn write_bounded_gauge(root: &std::path::Path, day: &str, times_ns: &[i64]) {
+        write_bounded_gauge_attrs(root, day, times_ns, "{}");
+    }
+
+    /// [`write_bounded_gauge`] with an explicit `attributes` JSON per row — the
+    /// FR3 staleness fixtures distinguish series by an attribute label.
+    fn write_bounded_gauge_attrs(root: &std::path::Path, day: &str, times_ns: &[i64], attrs: &str) {
         use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::arrow::record_batch::RecordBatch;
@@ -6667,7 +6686,7 @@ mod tests {
                 Arc::new(StringArray::from(vec!["svc"; n])),
                 Arc::new(StringArray::from(vec!["m"; n])),
                 Arc::new(TimestampNanosecondArray::from(times_ns.to_vec()).with_timezone("UTC")),
-                crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
+                crate::querier::udf::tests::json_map_array(&vec![attrs; n]),
                 Arc::new(Float64Array::from(values)),
                 Arc::new(StringArray::from(vec!["m"; n])),
             ],
@@ -6928,8 +6947,7 @@ mod tests {
                     let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
                         .await
                         .unwrap();
-                    // 15-min query at noon on day 2: the ±1 h pruning margin
-                    // still reaches no other day's file.
+                    // 15-min query at noon on day 2: only day 2's file overlaps.
                     let lo = JUN01_NS + DAY_NS + 12 * HOUR_NS;
                     let hi = lo + 15 * MINUTE_NS;
                     let resp = handle_range(&engine, "m", lo, hi, MINUTE_NS, hi)
@@ -6950,6 +6968,84 @@ mod tests {
             (total - 1.0).abs() < f64::EPSILON,
             "15-min query over the 3-day store must open only the 1 in-window file, \
              opened: {total}"
+        );
+    }
+
+    /// FR3 (promql-plan-cache task 3): an instant query is bounded to the
+    /// staleness lookback `[time − lookback, time]` (default 300 s, Prometheus
+    /// semantics) instead of `[i64::MIN, time]`. Over a 3-day exact-bounds
+    /// store it opens only the lookback-window file (files-opened proxy, the
+    /// [`metrics_files_opened`] `DebuggingRecorder` pattern); a series with a
+    /// sample inside the lookback keeps its value; a series whose last sample
+    /// is older than the lookback disappears — exactly what Prometheus's
+    /// staleness window does.
+    #[test]
+    fn test_instant_selector_bounded_scan() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        const MINUTE_NS: i64 = 60_000_000_000;
+        const HOUR_NS: i64 = 60 * MINUTE_NS;
+        const DAY_NS: i64 = 24 * HOUR_NS;
+        /// 2026-06-01T00:00:00Z (anchored: `date -u -d '2026-06-01' +%s`).
+        const JUN01_NS: i64 = 1_780_272_000_000_000_000;
+
+        let recorder = DebuggingRecorder::new();
+        let snap = recorder.snapshotter();
+        std::thread::spawn(move || {
+            metrics::with_local_recorder(&recorder, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    // Stale series m{host="stale"}: last sample on day 1.
+                    // Fresh series m{host="fresh"}: samples on days 2 and 3 —
+                    // its latest sits inside the lookback at eval time.
+                    for (d, day, attrs) in [
+                        (0, "2026-06-01", r#"{"host":"stale"}"#),
+                        (1, "2026-06-02", r#"{"host":"fresh"}"#),
+                        (2, "2026-06-03", r#"{"host":"fresh"}"#),
+                    ] {
+                        let noon = JUN01_NS + d * DAY_NS + 12 * HOUR_NS;
+                        let times: Vec<i64> = (0..30).map(|i| noon + i * MINUTE_NS).collect();
+                        write_bounded_gauge_attrs(tmp.path(), day, &times, attrs);
+                    }
+                    let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
+                        .await
+                        .unwrap();
+                    // Eval 1 min after the newest sample (day 3, noon+29m): the
+                    // 5 m lookback reaches only the day-3 file.
+                    let t = JUN01_NS + 2 * DAY_NS + 12 * HOUR_NS + 30 * MINUTE_NS;
+                    let resp = handle_instant(&engine, "m", t, t).await.unwrap();
+                    assert_eq!(
+                        resp.data.result.len(),
+                        1,
+                        "only the in-lookback series survives (staler series absent): {:?}",
+                        resp.data.result
+                    );
+                    let series = &resp.data.result[0];
+                    assert_eq!(
+                        series.metric.get("host").map(String::as_str),
+                        Some("fresh"),
+                        "the surviving series is the fresh one: {:?}",
+                        series.metric
+                    );
+                    let v = instant_value(&resp);
+                    assert!(
+                        (v - 29.0).abs() < 1e-9,
+                        "in-lookback series keeps its latest value 29, got {v}"
+                    );
+                });
+            });
+        })
+        .join()
+        .unwrap();
+
+        let files = metrics_files_opened(&snap);
+        assert!(
+            (files - 1.0).abs() < f64::EPSILON,
+            "instant query must open only the 1 lookback-window file, opened: {files}"
         );
     }
 
@@ -7046,8 +7142,7 @@ mod tests {
                     let engine = crate::querier::QueryEngine::new(&pruning_opts(tmp.path()))
                         .await
                         .unwrap();
-                    // 15-min window at noon on day 2: the ±1 h pruning margin
-                    // still reaches no other day's file.
+                    // 15-min window at noon on day 2: only day 2's file overlaps.
                     let lo = JUN01_NS + DAY_NS + 12 * HOUR_NS;
                     let hi = lo + 15 * MINUTE_NS;
                     let resp = handle_range(&engine, "m", lo, hi, MINUTE_NS, hi).await.unwrap();

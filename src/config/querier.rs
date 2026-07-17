@@ -38,6 +38,12 @@ pub struct QuerierOptions {
     /// (all history). An explicit client `start` — including `start=0` — always
     /// wins. Default 3 days.
     pub metadata_default_range_secs: u64,
+
+    /// Staleness lookback (seconds) for Prometheus instant queries: an instant
+    /// vector at `time` only includes series with a sample in
+    /// `[time − this, time]`, and the scan is bounded to that window instead of
+    /// all history. Matches Prometheus's 5-minute staleness default (300).
+    pub instant_lookback_secs: u64,
 }
 
 /// Where the query backend discovers Parquet files written by the codec. Shared
@@ -100,6 +106,7 @@ impl Default for QuerierOptions {
             refresh_interval_secs: 15,
             guardrails: GuardrailsConfig::default(),
             metadata_default_range_secs: 3 * DAY,
+            instant_lookback_secs: 300, // Prometheus's 5 m staleness window
         }
     }
 }
@@ -150,5 +157,6 @@ storage:
         assert_eq!(opts.address.port(), 9009);
         assert_eq!(opts.storage.path, PathBuf::from("/data/parquet"));
         assert_eq!(opts.refresh_interval_secs, 15);
+        assert_eq!(opts.instant_lookback_secs, 300, "Prometheus 5 m staleness");
     }
 }

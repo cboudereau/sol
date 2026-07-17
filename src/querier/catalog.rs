@@ -553,6 +553,9 @@ pub struct QueryEngine {
     storage_root: std::path::PathBuf,
     max_scan_bytes: u64,
     metadata_default_range_secs: u64,
+    /// Staleness lookback (seconds) bounding instant scans (promql-plan-cache
+    /// FR3): an instant vector at `time` only reads `[time − this, time]`.
+    instant_lookback_secs: u64,
     /// Per-table file inventory for per-query pruning (FR1) — always built
     /// from the same `build_providers` walk as the registered tables and
     /// swapped right after them at [`Self::refresh`]. The engine's single
@@ -617,6 +620,7 @@ impl QueryEngine {
             storage_root: opts.storage.path.clone(),
             max_scan_bytes: opts.guardrails.max_bytes_scanned,
             metadata_default_range_secs: opts.metadata_default_range_secs,
+            instant_lookback_secs: opts.instant_lookback_secs,
             inventory: std::sync::RwLock::new(Arc::new(inventory)),
             query_permits: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             permit_acquire_timeout: PERMIT_ACQUIRE_TIMEOUT,
@@ -681,6 +685,16 @@ impl QueryEngine {
         )
         .unwrap_or(i64::MAX);
         now_ns.saturating_sub(range_ns)
+    }
+
+    /// Staleness lookback for instant queries, in nanoseconds
+    /// (promql-plan-cache FR3, Prometheus 5 m semantics by default): the
+    /// instant scan's lower bound is `anchor − this`, so only files that can
+    /// hold a sample inside the staleness window are opened, and series whose
+    /// last sample is older correctly disappear.
+    pub(crate) fn instant_lookback_ns(&self) -> i64 {
+        i64::try_from(self.instant_lookback_secs.saturating_mul(1_000_000_000))
+            .unwrap_or(i64::MAX)
     }
 
     /// Whether a table is registered (e.g. a rollup tier table `metrics_1h`).
@@ -787,7 +801,7 @@ impl QueryEngine {
                     step_ns,
                     tables: shape.tables.clone(),
                     inventory_generation: self.inventory_snapshot().generation(),
-                    lookback_cfg: self.metadata_default_range_secs,
+                    lookback_cfg: (self.metadata_default_range_secs, self.instant_lookback_secs),
                 };
                 let cached = self.plan_cache.get(&key);
                 let rebound = cached
@@ -867,8 +881,9 @@ impl QueryEngine {
     }
 
     /// A `DataFrame` over `name` restricted to the files whose interval
-    /// overlaps `scope` (± the pruning margin) — the per-query file-pruning
-    /// entry point (FR1, [ADR](../../docs/workspace/backend-metrics-perf/adrs/per-query-file-pruning.md)).
+    /// overlaps `scope` — the per-query file-pruning entry point (FR1,
+    /// [ADR](../../docs/workspace/backend-metrics-perf/adrs/per-query-file-pruning.md);
+    /// no query-time widening since promql-plan-cache FR4).
     ///
     /// The filtered list backs an **unregistered** `ListingTable`, so the
     /// registered tables (and the refresh swap protocol) are untouched.
@@ -1498,7 +1513,7 @@ mod tests {
         let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
             .await
             .unwrap();
-        // 12:00–12:15 on day 2; the ±1 h margin still reaches no other day.
+        // 12:00–12:15 on day 2: only day 2's file truly overlaps.
         let scope = QueryScope {
             lo_ns: day2 + 12 * HOUR_NS,
             hi_ns: day2 + 12 * HOUR_NS + 15 * MINUTE_NS,
@@ -1558,8 +1573,8 @@ mod tests {
                 noon + 14 * MINUTE_NS,
             ],
         );
-        // D: entirely below the scope but within the 1 h margin → superset
-        // guarantee says it must be INCLUDED (contributes 0 rows post-filter).
+        // D: ends 30 min below the scope → no true overlap, EXCLUDED (FR4:
+        // exact bounds are trusted, no query-time widening).
         let d = write_timed_log(
             tmp.path(),
             "2026-06-02",
@@ -1567,7 +1582,7 @@ mod tests {
             noon - 30 * MINUTE_NS,
             &[noon - 70 * MINUTE_NS, noon - 30 * MINUTE_NS],
         );
-        // C: a day earlier, outside scope + margin → excluded.
+        // C: a day earlier, far outside the scope → excluded.
         write_timed_log(
             tmp.path(),
             "2026-06-01",
@@ -1590,8 +1605,11 @@ mod tests {
             .inventory_snapshot()
             .scoped_files("logs", scope)
             .unwrap();
-        assert_eq!(files.len(), 3, "A, B, and margin-file D: {files:?}");
-        assert!(files.contains(&d), "within-margin file included (superset)");
+        assert_eq!(files.len(), 2, "true-overlap files A and B only: {files:?}");
+        assert!(
+            !files.contains(&d),
+            "no query-time widening: the 30-min-away file is excluded (FR4)"
+        );
 
         let filter = window_filter(scope.lo_ns, scope.hi_ns);
         let full = engine
@@ -1609,6 +1627,48 @@ mod tests {
         let full_rows = rows(full).await;
         assert_eq!(full_rows, 5, "A contributes 2, B contributes 3");
         assert_eq!(rows(scoped).await, full_rows);
+    }
+
+    #[tokio::test]
+    async fn test_exact_bounds_files_no_query_margin() {
+        // FR4 (promql-plan-cache task 3): exact-bounds intervals are trusted
+        // as written — `scoped_files` applies NO query-time widening, so a
+        // file whose interval ends 30 min before the scope (well inside the
+        // old 1 h margin, which would have included it) is excluded; only
+        // true-overlap files are listed.
+        let tmp = tempfile::tempdir().unwrap();
+        let noon = JUN01_NS + 12 * HOUR_NS;
+        // A: straddles the scope's lower boundary → true overlap, included.
+        let a = write_timed_log(
+            tmp.path(),
+            "2026-06-01",
+            noon - 30 * MINUTE_NS,
+            noon + 10 * MINUTE_NS,
+            &[noon - 30 * MINUTE_NS, noon + 10 * MINUTE_NS],
+        );
+        // B: ends 30 min before the scope → no overlap, excluded.
+        write_timed_log(
+            tmp.path(),
+            "2026-06-01",
+            noon - 70 * MINUTE_NS,
+            noon - 30 * MINUTE_NS,
+            &[noon - 70 * MINUTE_NS, noon - 30 * MINUTE_NS],
+        );
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        let scope = QueryScope {
+            lo_ns: noon,
+            hi_ns: noon + 15 * MINUTE_NS,
+        };
+        assert_eq!(
+            engine
+                .inventory_snapshot()
+                .scoped_files("logs", scope)
+                .unwrap(),
+            vec![a],
+            "only the true-overlap file A survives — no 1 h widening"
+        );
     }
 
     #[tokio::test]

@@ -104,7 +104,7 @@ classDiagram
 **Tests** (red first): `test_instant_selector_bounded_scan` (files-opened drops; in-lookback series identical, staler series absent); `test_exact_bounds_files_no_query_margin` (15-min scope over exact-bounds fixture includes only true-overlap files); `test_legacy_raw_name_falls_back_unbounded` (an old-style name is simply unbounded-included, no special rule); existing parity suite green
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; instant selector live probe ≤ 90 ms recorded here
+- [x] Tests green (254/0/2: +3 new, −1 legacy-rule test deleted); instant selector live probe deferred to task 4 (needs the rebuilt image)
 **Depends on**: (none — parallel-safe with 2)
 **Time-box**: ~75 min
 

@@ -95,9 +95,10 @@ pub(crate) struct PlanCacheKey {
     /// [`super::inventory::FileInventory`] generation the plan was built
     /// against; a store change bumps it, making stale entries unreachable.
     pub(crate) inventory_generation: u64,
-    /// Lookback-relevant engine config (`metadata_default_range_secs` today;
-    /// FR3's staleness lookback joins it when it lands).
-    pub(crate) lookback_cfg: u64,
+    /// Lookback-relevant engine config:
+    /// `(metadata_default_range_secs, instant_lookback_secs)` — changing
+    /// either shifts window arithmetic, so either change must miss (FR3).
+    pub(crate) lookback_cfg: (u64, u64),
 }
 
 /// A cached optimized plan plus the window-bound values (in deterministic
@@ -462,7 +463,7 @@ mod tests {
             step_ns: 30_000_000_000,
             tables: vec!["metrics".to_string()],
             inventory_generation: 1,
-            lookback_cfg: 3_600,
+            lookback_cfg: (3_600, 300),
         };
         cache.insert(base.clone(), dummy_entry());
         assert!(cache.get(&base).is_some(), "sanity: exact key hits");
@@ -497,9 +498,16 @@ mod tests {
                 },
             ),
             (
-                "lookback config",
+                "metadata lookback config",
                 PlanCacheKey {
-                    lookback_cfg: 300,
+                    lookback_cfg: (300, 300),
+                    ..base.clone()
+                },
+            ),
+            (
+                "instant staleness lookback config (FR3)",
+                PlanCacheKey {
+                    lookback_cfg: (3_600, 60),
                     ..base.clone()
                 },
             ),
