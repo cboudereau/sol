@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Plan-cache mechanism: which pipeline stage to reuse, and how
 
@@ -38,7 +38,7 @@ Cold `rate()` shares: parse 1 % · lower 7 % · optimize 14 % · **physical 38 %
 
 ## Decision
 
-**Proposed: A′ + E.** The profile overturns the draft's framing: the optimizer is NOT the dominant stage — **physical planning is** (48 % shape-warm), and it scales with plan size (bare selector pays ~8 ms where `rate()` pays ~55 ms over the same store).
+**Ratified: A′ + E, sequenced** (human decision, 2026-07-17): A′ first, re-profile, E sized by what remains — E may shrink to nothing if A′ + the FR3/FR4 wins meet NFR1 live. The profile overturns the draft's framing: the optimizer is NOT the dominant stage — **physical planning is** (48 % shape-warm), and it scales with plan size (bare selector pays ~8 ms where `rate()` pays ~55 ms over the same store).
 
 - **A′ — cache the *optimized* logical plan, rebind literals, skip re-optimize**: key = (expr text, step bucket, resolved table set, inventory generation, lookback config); rebind the window's time literals via a TreeNode rewrite of the cached plan; then call `query_planner().create_physical_plan()` directly — the seam split in `execute_recording_scan` (task 1) already exposes exactly this hook. Removes lower+optimize ≈ 33 ms/query. Plain A (rebind then re-optimize) would save only ~4 ms — rejected. B (placeholder plans) is unnecessary given A′; C (optimizer trimming) is subsumed; D (physical-plan cache) is not viable — its key must include the scoped file list, which changes on every window slide.
 - **E — shrink the `rate()` lowering** (fewer/fused window aggregates; the instant==range parity and extrapolation golden tests are the correctness bar): the only lever that attacks the dominant physical stage (and execute), including first-shape and ad-hoc queries. Expected combined landing: repeated-shape `rate()` ≈ 60–80 ms on the fixture; A′ alone lands ~80 ms (borderline for [NFR1](../DESIGN.md#nfr1), likely above it live at ~1.4× fixture).

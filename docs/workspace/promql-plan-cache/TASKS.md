@@ -81,14 +81,23 @@ classDiagram
 **Time-box**: ~75 min
 **⚠ SESSION GATE**: autopilot PAUSES after task 1 — the human ratifies the ADR before tasks 2–3 run. Tasks 2–3 below are shaped for option A/C; if another option is ratified, re-run Phase 4b/4c for them first.
 
-### 2. Plan-stage reuse per the ratified ADR ([FR2](./DESIGN.md#fr2))
-**Goal**: Implement the ratified mechanism; repeated shapes skip the hot stage.
-**Tests** (red first): `test_plan_cache_hit_result_identical` (hit vs miss byte-equality); `test_plan_cache_key_components_miss` (each key component change ⇒ miss); `test_plan_cache_repeated_shape_faster` (deterministic proxy: hot-stage counter, not wall-clock)
+### 2a. A′ — optimized-logical-plan cache + rebind ([FR2](./DESIGN.md#fr2), [ADR ratified](./adrs/plan-cache-mechanism.md))
+**Goal**: Repeated query shapes skip lower+optimize: cache the post-`state.optimize()` plan keyed by (expr text, step bucket, resolved table set, inventory generation, lookback config); on hit, REBIND the window — rewrite the time literals AND swap each `TableScan`'s scoped provider to the current window's scoped table (the cached plan embeds the previous window's file list — stale files served otherwise); then `query_planner().create_physical_plan()` directly (the task-1 seam hook).
+**Tests** (red first): `test_rebound_plan_equals_fresh_plan` (per shape: rebound optimized plan == freshly-built+optimized plan, display-level); `test_plan_cache_hit_result_identical` (hit vs miss byte-equality); `test_plan_cache_key_components_miss` (each key component change ⇒ miss); `test_plan_cache_hit_skips_optimize` (deterministic proxy: optimize-stage counter/histogram, not wall-clock)
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; `sol_querier_plan_cache_*` counters emitted; bench shows repeated-shape cold ≤ the bare-selector band on the fixture
-**Depends on**: task 1 + ADR ratification
+- [ ] Tests green; `sol_querier_plan_cache_*` hit/miss counters emitted; if the rebind cannot be made provably total for a shape, that shape BYPASSES the cache (correct-but-slow) and is listed in the report
+**Depends on**: task 1 (ADR ratified 2026-07-17)
 **Time-box**: ~90 min
+
+### 2b. Re-profile; E sized by the remainder ([FR2](./DESIGN.md#fr2), [NFR1](./DESIGN.md#nfr1))
+**Goal**: Run the stage bench post-A′; if repeated-shape `rate()` ≤ 80 ms on the fixture, record the table and SKIP E (note in ADR); else shrink the `rate()` lowering (fuse/eliminate window aggregates) until the physical+execute remainder fits, gated by the extrapolation golden test + instant==range parity matrix.
+**Tests**: existing golden/parity suites are the bar for E; bench table recorded here either way
+**Verify**: `cargo test --lib querier:: && cargo test --release --lib querier::prometheus::tests::bench_cold_range_query_demo_scale -- --ignored --exact --nocapture && make check-clippy`
+**Acceptance criteria**:
+- [ ] Post-A′ stage table recorded here; E implemented or explicitly skipped-with-numbers; parity/golden suites green
+**Depends on**: task 2a
+**Time-box**: ~90 min (skip path: ~20 min)
 
 ### 3. Instant staleness lookback + legacy-margin deletion ([FR3](./DESIGN.md#fr3), [FR4](./DESIGN.md#fr4))
 **Goal**: Bound instant scans; delete the legacy raw-file rule and all query-time widening (no retro-compat — standing directive).
@@ -104,7 +113,7 @@ classDiagram
 **Verify**: probe set from [backend-metrics-perf VERIFY](../../20260716_backend-metrics-perf/VERIFY.md); `cargo test --lib querier:: -- --ignored bench_cold_range_query_demo_scale --nocapture`
 **Acceptance criteria**:
 - [ ] VERIFY table updated: repeated-shape cold ≤ 80 ms, burst ≤ 0.5 s, instant ≤ 90 ms — or a fired-trigger note per the predecessor's pattern
-**Depends on**: tasks 2, 3 (+ user image rebuild)
+**Depends on**: tasks 2a, 2b, 3 (+ user image rebuild)
 **Time-box**: ~45 min
 
 ## Sessions
@@ -115,8 +124,8 @@ Tasks: 1
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes — then STOP for ADR ratification (severity-3 style gate, planned not accidental)
 
-### Session 2 — Mechanism + instant/margin (~3 H)
-Tasks: 2, 3
+### Session 2 — A′ → re-profile → (E?) + instant/margin (~4 H)
+Tasks: 2a, 2b, 3
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes
