@@ -95,7 +95,7 @@ classDiagram
 **Tests**: existing golden/parity suites are the bar for E; bench table recorded here either way
 **Verify**: `cargo test --lib querier:: && cargo test --release --lib querier::prometheus::tests::bench_cold_range_query_demo_scale -- --ignored --exact --nocapture && make check-clippy`
 **Acceptance criteria**:
-- [ ] Post-A′ stage table recorded here; E implemented or explicitly skipped-with-numbers; parity/golden suites green
+- [x] Post-A′ release stage table (fixture, idle host): `rate()` cold 51.6 ms (optimize 5.7 / physical 23.3 / execute 18.5); **shape-warm 22–26 ms with optimize = 0.00** (plan-cache hit); result-cache hit 1.3 ms; bare `m` warm 6.5 ms; `histogram_quantile` warm 9–10 ms. **E SKIPPED with numbers**: repeated-shape is ≤ 80 ms with ~3× headroom (≈35 ms at the 1.4× live factor). Caveat recorded: absolute cross-run comparison vs the task-1 table is load-contaminated; the within-run cold→warm delta (optimize eliminated, physical ~15–17 ms remains) is the decision signal. Suites unchanged since 2a's green gates (no code in the skip path).
 **Depends on**: task 2a
 **Time-box**: ~90 min (skip path: ~20 min)
 

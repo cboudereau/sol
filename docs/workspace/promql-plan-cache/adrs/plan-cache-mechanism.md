@@ -49,5 +49,5 @@ Sequencing if ratified: A′ first (mechanical, low risk), re-profile, then E si
 
 - New `sol_querier_plan_cache_*` hit/miss counters; a second keyspace beside the result cache; first occurrence of each shape after restart stays cold.
 - A′'s rebind rewrite must be provably total for our generated plans (every time literal it must touch is produced by `prom_time_between`/window frames — a test asserts rebound-plan == freshly-built-plan for each query shape).
-- E re-opens `plan/frame.rs` — the parity/golden suites gate it; if E's cut proves insufficient, the remaining lever is the write-side series-key column (kept deferred).
+- E re-opens `plan/frame.rs` — the parity/golden suites gate it; if E's cut proves insufficient, the remaining lever is the write-side series-key column (kept deferred). **Outcome (2026-07-17, task 2b): E skipped per the ratified sequencing** — post-A′ repeated-shape `rate()` = 22–26 ms on the fixture (optimize 0.00 on hits), ~3× inside NFR1; revisit only if S3 live verification misses.
 - `histogram_quantile` stays execution-bound — out of this ADR's blast radius by design.
