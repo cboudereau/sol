@@ -33,6 +33,8 @@ use datafusion::parquet::file::metadata::KeyValue;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::StreamExt;
 
+/// Nanoseconds per second, for name-carried bound arithmetic.
+const NS_PER_SEC: i64 = 1_000_000_000;
 /// Footer key: compaction level (`0`=raw, `1`=day-merge, `2`=rollup…).
 const LEVEL_KEY: &str = "sol.compaction.level";
 /// Footer key: comma-separated input file names this file supersedes.
@@ -42,6 +44,14 @@ const RESOLUTION_KEY: &str = "sol.compaction.resolution";
 /// Compacted-file name prefix. Shared with the file-interval parser
 /// (`super::inventory`), which reads the naming convention back.
 pub(super) const COMPACTED_PREFIX: &str = "compacted-";
+/// Uniqueness-token marker of open-hour chunk outputs:
+/// `<min_ns>-<max_ns>-chunk-<uuid>.parquet` (write-side-small-files FR1).
+/// Still the exact-bounds shape the inventory parses unchanged (the token
+/// field is free-form — a gateway uuid segment is 8 hex chars, never
+/// `"chunk"`), but cheaply recognisable by name so the supersession/GC scans
+/// read only chunk + `compacted-*` footers — never every raw's — and so the
+/// chunk pass never re-chunks its own outputs (chunks are write-once).
+pub(super) const CHUNK_TOKEN: &str = "chunk";
 /// Prefix of downsampled rollup-tier files. These back the separate
 /// `metrics_5m/1h/1d` tables and are NOT part of the lossless union, so they
 /// are excluded from [`resolve_files`] (and never fed into a seal merge).
@@ -86,6 +96,15 @@ pub struct CompactorConfig {
     pub intraday: bool,
     /// Grace before a completed hour is compacted, for late-arriving data.
     pub hour_grace_secs: i64,
+    /// Compact closed chunks of the OPEN hour into write-once level-1 chunk
+    /// files (exact-bounds names), bounding the live window's file count
+    /// (write-side-small-files FR1). Requires `intraday`.
+    pub open_hour_chunks: bool,
+    /// Chunk length (seconds) for open-hour chunk compaction.
+    pub chunk_secs: i64,
+    /// Grace after a chunk ends before it is compacted, for in-flight flushes.
+    /// A chunk is closed once `now ≥ chunk_end + this`.
+    pub chunk_grace_secs: i64,
     /// Delete inputs once superseded (after `delete_grace_secs`).
     pub delete_superseded: bool,
     /// How long a superseding file must exist before its inputs are deleted.
@@ -99,6 +118,9 @@ impl Default for CompactorConfig {
             retention_days: 30,
             intraday: true,
             hour_grace_secs: 600,
+            open_hour_chunks: true,
+            chunk_secs: 300,
+            chunk_grace_secs: 120,
             delete_superseded: true,
             delete_grace_secs: 60,
         }
@@ -322,11 +344,13 @@ impl Compactor {
         Ok(Some(rows))
     }
 
-    /// Intra-day compaction: within the active (current-day) partition, merge
-    /// each *completed* hour's raw files into one level-1 file, leaving the
-    /// in-progress hour raw. An hour `H` is eligible once
-    /// `now > end(H) + hour_grace_secs` (late-data watermark). Bounds the active
-    /// day's file count so queriers open few files. No-op when `intraday` is off.
+    /// Intra-day compaction: within the active (current-day) partition, first
+    /// run the open-hour chunk pass ([`Self::compact_open_hour`]), then merge
+    /// each *completed* hour's surviving files (raw + chunk outputs) into one
+    /// level-1 file, leaving the in-progress hour to the chunk pass. An hour
+    /// `H` is eligible once `now > end(H) + hour_grace_secs` (late-data
+    /// watermark). Bounds the active day's file count so queriers open few
+    /// files. No-op when `intraday` is off.
     pub async fn compact_active_day(
         &self,
         signal: &str,
@@ -339,14 +363,20 @@ impl Compactor {
         let start = Instant::now();
         let today = now.date_naive();
         let now_ns = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
-        let grace_ns = self.config.hour_grace_secs.saturating_mul(1_000_000_000);
+        let grace_ns = self.config.hour_grace_secs.saturating_mul(NS_PER_SEC);
 
         for (date, dir) in self.partition_dirs(signal) {
             if date != today {
                 continue; // sealed/past days are handled by seal_signal
             }
-            let superseded = superseded_inputs(&dir)?;
-            // Group the not-yet-compacted raw files by their hour-of-day.
+            let mut superseded = superseded_inputs(&dir)?;
+            // Open-hour chunk pass FIRST (write-side-small-files FR1): its
+            // outputs land as exact-bounds level-1 files that the hourly
+            // grouping below absorbs once the hour completes, and its inputs
+            // join `superseded` so the hourly pass never double-reads them.
+            self.compact_open_hour(&dir, date, now, &mut superseded, &mut report)
+                .await?;
+            // Group the not-yet-compacted surviving files by their hour-of-day.
             let mut by_hour: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
             for entry in fs::read_dir(&dir)?.flatten() {
                 let path = entry.path();
@@ -359,7 +389,16 @@ impl Compactor {
                 if superseded.contains(name) {
                     continue;
                 }
-                if let Some(hour) = parse_hour(name) {
+                // Legacy `HH-MM-SS-*` names carry their hour; exact-bounds
+                // names (task-1b gateway raws AND chunk outputs) derive it
+                // from the name bounds — only when fully inside one hour, so
+                // `compacted-hHH`'s claimed interval stays truthful (a
+                // boundary-spanning file waits for the day seal).
+                let hour = parse_hour(name).or_else(|| {
+                    super::inventory::exact_bounds_fields(name)
+                        .and_then(|(min_ns, max_ns, _)| contained_hour(date, min_ns, max_ns))
+                });
+                if let Some(hour) = hour {
                     by_hour.entry(hour).or_default().push(path);
                 }
             }
@@ -396,6 +435,126 @@ impl Compactor {
         Ok(report)
     }
 
+    /// Open-hour chunk pass (write-side-small-files FR1, [open-hour-chunk-compaction ADR](../../../docs/workspace/write-side-small-files/adrs/open-hour-chunk-compaction.md)
+    /// option A): within the active partition, merge each *closed* chunk
+    /// (`chunk_secs`, default 300 s) of the **current hour's** exact-bounds
+    /// raw files into one write-once level-1 chunk file, so a live query
+    /// window opens a handful of files instead of one per gateway flush.
+    ///
+    /// - Grouping: by chunk index of the name-carried `max_ns`
+    ///   (`max_ns / chunk_ns` — epoch-aligned); legacy/unparseable names are
+    ///   left alone (the hourly pass sweeps them).
+    /// - Eligibility: `now_ns ≥ chunk_end_ns + chunk_grace_secs` AND ≥ 2
+    ///   not-yet-superseded inputs (a lone file gains nothing).
+    /// - Output: the exact-bounds shape `<min>-<max>-chunk-<uuid>.parquet`
+    ///   where min/max are the TRUE bounds folded from the input names (the
+    ///   sink invariant: names carry true row bounds); footer level 1,
+    ///   supersedes exactly the inputs.
+    /// - Write-once: a compacted chunk's inputs are superseded so its group
+    ///   never re-forms, and chunk outputs themselves are excluded
+    ///   ([`is_chunk_file`]) — a late raw stays raw until the hourly pass;
+    ///   chunks are never rewritten.
+    /// - Error isolation (`run_once` pattern): a failing chunk merge is
+    ///   counted in `report.failures` and the pass continues.
+    ///
+    /// Merged input names are added to `superseded` so the same-pass hourly
+    /// grouping never double-reads them. No-op when `open_hour_chunks` is off.
+    async fn compact_open_hour(
+        &self,
+        dir: &Path,
+        date: NaiveDate,
+        now: DateTime<Utc>,
+        superseded: &mut std::collections::HashSet<String>,
+        report: &mut CompactionReport,
+    ) -> crate::Result<()> {
+        use chrono::Timelike;
+        let chunk_ns = self.config.chunk_secs.saturating_mul(NS_PER_SEC);
+        if !self.config.open_hour_chunks || chunk_ns <= 0 {
+            return Ok(());
+        }
+        let now_ns = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
+        let grace_ns = self.config.chunk_grace_secs.saturating_mul(NS_PER_SEC);
+        let hour = now.hour();
+        let Some(hour_lo) = date
+            .and_hms_opt(hour, 0, 0)
+            .and_then(|dt| dt.and_utc().timestamp_nanos_opt())
+        else {
+            return Ok(());
+        };
+        let hour_hi = hour_end_ns(date, hour);
+
+        // Group the current hour's not-yet-superseded exact-bounds raws by
+        // the chunk index of their max_ns, carrying the true name bounds.
+        let mut by_chunk: BTreeMap<i64, Vec<(PathBuf, i64, i64)>> = BTreeMap::new();
+        for entry in fs::read_dir(dir)?.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".parquet")
+                || name.starts_with(COMPACTED_PREFIX)
+                || name.starts_with(ROLLUP_PREFIX)
+                || superseded.contains(name)
+                || is_chunk_file(name)
+            {
+                continue;
+            }
+            let Some((min_ns, max_ns, _)) = super::inventory::exact_bounds_fields(name) else {
+                continue; // legacy/unparseable name: the hourly pass owns it
+            };
+            if max_ns < hour_lo || max_ns >= hour_hi {
+                continue; // not the open hour
+            }
+            by_chunk
+                .entry(max_ns.div_euclid(chunk_ns))
+                .or_default()
+                .push((path, min_ns, max_ns));
+        }
+
+        for (idx, mut files) in by_chunk {
+            let chunk_end_ns = idx.saturating_add(1).saturating_mul(chunk_ns);
+            if now_ns < chunk_end_ns.saturating_add(grace_ns) || files.len() < 2 {
+                continue; // open chunk, or nothing to gain
+            }
+            files.sort();
+            let Some(min_ns) = files.iter().map(|(_, lo, _)| *lo).min() else {
+                continue;
+            };
+            let Some(max_ns) = files.iter().map(|(_, _, hi)| *hi).max() else {
+                continue;
+            };
+            let out = format!(
+                "{min_ns}-{max_ns}-{CHUNK_TOKEN}-{}.parquet",
+                uuid::Uuid::new_v4()
+            );
+            let inputs: Vec<PathBuf> = files.iter().map(|(p, ..)| p.clone()).collect();
+            let names: Vec<String> = inputs
+                .iter()
+                .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
+                .collect();
+            match self.merge_inputs(dir, &inputs, &names, &out, 1).await {
+                Ok(Some(rows)) => {
+                    report.partitions_sealed += 1;
+                    report.files_input += inputs.len();
+                    report.files_output += 1;
+                    report.rows += rows;
+                    superseded.extend(names);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    // run_once error-isolation pattern: count and continue —
+                    // one bad chunk never blocks the rest of the pass.
+                    report.failures += 1;
+                    tracing::warn!(
+                        "compactor: open-hour chunk merge failed for {}: {e}",
+                        dir.display()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Delete inputs that a compacted file supersedes, once that compacted file
     /// has existed at least `delete_grace_secs` — long enough for every querier
     /// (which re-registers its file list every `refresh_interval_secs` and
@@ -421,7 +580,7 @@ impl Compactor {
                 let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if !name.starts_with(COMPACTED_PREFIX) || !name.ends_with(".parquet") {
+                if !is_superseder_name(name) {
                     continue;
                 }
                 let modified = fs::metadata(&path)?
@@ -540,6 +699,31 @@ impl Compactor {
 fn parse_hour(name: &str) -> Option<u32> {
     let hour: u32 = name.split('-').next()?.parse().ok()?;
     (hour < 24).then_some(hour)
+}
+
+/// Whether `name` is an open-hour chunk output: the exact-bounds shape whose
+/// uniqueness token is [`CHUNK_TOKEN`].
+fn is_chunk_file(name: &str) -> bool {
+    super::inventory::exact_bounds_fields(name).is_some_and(|(_, _, token)| token == CHUNK_TOKEN)
+}
+
+/// Whether `name` may carry a `supersedes` provenance footer (i.e. is a
+/// compactor output): an hourly/daily `compacted-*` file or an open-hour
+/// chunk file. The supersession and GC scans read footers of exactly these —
+/// never of gateway raws, whose count is unbounded.
+fn is_superseder_name(name: &str) -> bool {
+    name.ends_with(".parquet") && (name.starts_with(COMPACTED_PREFIX) || is_chunk_file(name))
+}
+
+/// Hour-of-day on `date` that fully contains `[min_ns, max_ns]`, or `None`
+/// when the bounds cross an hour (or day) boundary — such a file waits for
+/// the day seal, keeping `compacted-hHH`'s claimed `[H, H+1)` interval
+/// truthful (the inventory prunes by it with no lateness margin).
+fn contained_hour(date: NaiveDate, min_ns: i64, max_ns: i64) -> Option<u32> {
+    const HOUR_NS: i64 = 3_600 * NS_PER_SEC;
+    let day_lo = date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_nanos_opt()?;
+    let hour = u32::try_from(min_ns.checked_sub(day_lo)?.div_euclid(HOUR_NS)).ok()?;
+    (hour < 24 && max_ns < hour_end_ns(date, hour)).then_some(hour)
 }
 
 /// Nanoseconds at the *end* of hour `hour` on `date` (UTC) — i.e. the start of
@@ -790,7 +974,9 @@ fn read_provenance(path: &Path) -> crate::Result<(i32, Vec<String>)> {
     Ok((level, supersedes))
 }
 
-/// The set of raw input names superseded by compacted files in `dir`.
+/// The set of input names superseded by compactor outputs in `dir` —
+/// hourly/daily `compacted-*` files and open-hour chunk files (which carry
+/// exact-bounds names, so they are recognised by their [`CHUNK_TOKEN`]).
 fn superseded_inputs(dir: &Path) -> crate::Result<std::collections::HashSet<String>> {
     let mut set = std::collections::HashSet::new();
     for entry in fs::read_dir(dir)?.flatten() {
@@ -798,7 +984,7 @@ fn superseded_inputs(dir: &Path) -> crate::Result<std::collections::HashSet<Stri
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name.starts_with(COMPACTED_PREFIX) && name.ends_with(".parquet") {
+        if is_superseder_name(name) {
             let (_, supersedes) = read_provenance(&path)?;
             set.extend(supersedes);
         }
@@ -866,6 +1052,47 @@ mod tests {
         let mut w = ArrowWriter::try_new(f, s, None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
+    }
+
+    /// Exact-bounds raw fixture (the task-1b gateway shape): one row per
+    /// timestamp, named `<min>-<max>-<uuid>.parquet` with the true bounds.
+    /// Returns the generated file name.
+    fn write_bounded_raw(dir: &Path, min_ns: i64, max_ns: i64, times: &[i64]) -> String {
+        let name = format!("{min_ns}-{max_ns}-{}.parquet", uuid::Uuid::new_v4());
+        let svc: Vec<&str> = times.iter().map(|_| "s").collect();
+        let vals: Vec<i64> = times.iter().map(|_| 1).collect();
+        write_raw(dir, &name, &svc, times, &vals);
+        name
+    }
+
+    /// Names of open-hour chunk outputs in `dir`.
+    fn chunk_files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| is_chunk_file(n))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Surviving file names per `resolve_files` (what the querier reads).
+    fn resolved_names(dir: &Path) -> Vec<String> {
+        resolve_files(dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into())
+            .collect()
+    }
+
+    /// UTC epoch-ns at `h:m:s` on `date`.
+    fn ns_at(date: NaiveDate, h: u32, m: u32, s: u32) -> i64 {
+        date.and_hms_opt(h, m, s)
+            .unwrap()
+            .and_utc()
+            .timestamp_nanos_opt()
+            .unwrap()
     }
 
     fn count_parquet(dir: &Path, compacted: bool) -> usize {
@@ -1631,6 +1858,283 @@ mod tests {
             "deletion disabled"
         );
         assert_eq!(count_parquet(&dir, false), 2, "raw inputs retained");
+    }
+
+    // ---- write-side-small-files task 1: open-hour chunk compaction ----
+
+    #[tokio::test]
+    async fn test_chunk_compacts_closed_chunks_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        // chunk [10:00, 10:05): two raws — closed at 10:05, eligible 10:07.
+        let a_lo = ns_at(date, 10, 0, 10);
+        let b_hi = ns_at(date, 10, 1, 30);
+        let a = write_bounded_raw(&dir, a_lo, ns_at(date, 10, 0, 40), &[a_lo]);
+        let b = write_bounded_raw(&dir, ns_at(date, 10, 1, 0), b_hi, &[b_hi]);
+        // chunk [10:05, 10:10): still open at now = 10:08.
+        let c = write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 5, 10),
+            ns_at(date, 10, 5, 40),
+            &[ns_at(date, 10, 5, 10)],
+        );
+        let d = write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 6, 0),
+            ns_at(date, 10, 6, 30),
+            &[ns_at(date, 10, 6, 0)],
+        );
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        let now = date.and_hms_opt(10, 8, 0).unwrap().and_utc();
+        let report = compactor.compact_active_day("metrics", now).await.unwrap();
+
+        assert_eq!(report.files_output, 1, "only the closed chunk compacted");
+        let chunks = chunk_files(&dir);
+        assert_eq!(chunks.len(), 1, "one chunk output: {chunks:?}");
+        // Footer: level 1, supersedes exactly its two inputs.
+        let (level, supersedes) = read_provenance(&dir.join(&chunks[0])).unwrap();
+        assert_eq!(level, 1, "chunk output is level 1");
+        let mut expect = vec![a.clone(), b.clone()];
+        expect.sort();
+        assert_eq!(supersedes, expect);
+        // Name carries the TRUE folded bounds of the merged rows…
+        assert!(
+            chunks[0].starts_with(&format!("{a_lo}-{b_hi}-{CHUNK_TOKEN}-")),
+            "chunk name must carry the true merged bounds: {}",
+            chunks[0]
+        );
+        // …and parses as exact bounds in the inventory (acceptance criterion).
+        let interval = crate::querier::inventory::parse_file_interval(&dir.join(&chunks[0]));
+        assert_eq!(interval.lo_ns, a_lo, "inventory lo = true min");
+        assert_eq!(
+            interval.hi_ns,
+            b_hi + crate::querier::inventory::EXACT_BOUNDS_SKEW_NS,
+            "inventory hi = true max + skew cushion"
+        );
+        // Querier view: closed chunk's raws superseded, open chunk's raws kept.
+        let names = resolved_names(&dir);
+        assert!(!names.contains(&a) && !names.contains(&b), "{names:?}");
+        assert!(names.contains(&c) && names.contains(&d), "{names:?}");
+        // No data lost.
+        let rows: usize = read_batches(&dir.join(&chunks[0]))
+            .unwrap()
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum();
+        assert_eq!(rows, 2, "chunk carries both inputs' rows");
+    }
+
+    #[tokio::test]
+    async fn test_chunk_respects_grace_watermark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("logs").join("dt=2026-06-02");
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 0, 10),
+            ns_at(date, 10, 0, 40),
+            &[ns_at(date, 10, 0, 10)],
+        );
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 1, 0),
+            ns_at(date, 10, 1, 30),
+            &[ns_at(date, 10, 1, 0)],
+        );
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        // 10:06 — the chunk ended at 10:05, within the 120 s grace: not yet.
+        let early = date.and_hms_opt(10, 6, 0).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("logs", early)
+                .await
+                .unwrap()
+                .files_output,
+            0,
+            "within chunk grace: untouched"
+        );
+        // 10:07:01 — past `chunk_end + chunk_grace_secs`: eligible.
+        let late = date.and_hms_opt(10, 7, 1).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("logs", late)
+                .await
+                .unwrap()
+                .files_output,
+            1,
+            "past chunk grace: compacted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chunk_is_write_once_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 0, 10),
+            ns_at(date, 10, 0, 40),
+            &[ns_at(date, 10, 0, 10)],
+        );
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 1, 0),
+            ns_at(date, 10, 1, 30),
+            &[ns_at(date, 10, 1, 0)],
+        );
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        let now = date.and_hms_opt(10, 8, 0).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("metrics", now)
+                .await
+                .unwrap()
+                .files_output,
+            1
+        );
+        // Second pass: the chunk's inputs are superseded, the group can't
+        // re-form — nothing new is written (write-once).
+        let later = date.and_hms_opt(10, 9, 0).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("metrics", later)
+                .await
+                .unwrap()
+                .files_output,
+            0,
+            "idempotent re-run"
+        );
+        assert_eq!(chunk_files(&dir).len(), 1, "still exactly one chunk file");
+
+        // A late raw landing in the already-compacted chunk stays raw (a lone
+        // non-superseded input < 2): the chunk is never rewritten. The hourly
+        // pass sweeps it up later.
+        let late_raw = write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 4, 0),
+            ns_at(date, 10, 4, 30),
+            &[ns_at(date, 10, 4, 0)],
+        );
+        let again = date.and_hms_opt(10, 10, 0).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("metrics", again)
+                .await
+                .unwrap()
+                .files_output,
+            0,
+            "late raw alone does not re-form the chunk"
+        );
+        assert_eq!(chunk_files(&dir).len(), 1, "chunk never rewritten");
+        assert!(
+            resolved_names(&dir).contains(&late_raw),
+            "late raw stays a queryable survivor"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hourly_absorbs_chunks_and_leftover_raws() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        // hour 08: two raws in chunk [08:00, 08:05) + one leftover raw in the
+        // hour's tail (its chunk never gets a 2nd file).
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 8, 0, 10),
+            ns_at(date, 8, 0, 40),
+            &[ns_at(date, 8, 0, 10)],
+        );
+        write_bounded_raw(
+            &dir,
+            ns_at(date, 8, 1, 0),
+            ns_at(date, 8, 1, 30),
+            &[ns_at(date, 8, 1, 0)],
+        );
+        let leftover = write_bounded_raw(
+            &dir,
+            ns_at(date, 8, 50, 0),
+            ns_at(date, 8, 50, 30),
+            &[ns_at(date, 8, 50, 0)],
+        );
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        // 08:08 — the chunk pass compacts chunk [08:00, 08:05).
+        let in_hour = date.and_hms_opt(8, 8, 0).unwrap().and_utc();
+        compactor
+            .compact_active_day("metrics", in_hour)
+            .await
+            .unwrap();
+        let chunks = chunk_files(&dir);
+        assert_eq!(chunks.len(), 1, "chunk written during the open hour");
+
+        // 10:30 — hour 08 is past the hourly watermark: the hourly pass must
+        // absorb the chunk file + the leftover raw into one level-1 hourly.
+        let later = date.and_hms_opt(10, 30, 0).unwrap().and_utc();
+        let report = compactor
+            .compact_active_day("metrics", later)
+            .await
+            .unwrap();
+        assert_eq!(report.files_output, 1, "one hourly output");
+        let hourly = "compacted-h08-2026-06-02.parquet".to_string();
+        let (_, supersedes) = read_provenance(&dir.join(&hourly)).unwrap();
+        let mut expect = vec![chunks[0].clone(), leftover.clone()];
+        expect.sort();
+        assert_eq!(
+            supersedes, expect,
+            "hourly supersedes exactly the chunk + leftover raw"
+        );
+        // Transitive supersession: the querier reads only the hourly file.
+        assert_eq!(resolved_names(&dir), vec![hourly.clone()]);
+        let rows: usize = read_batches(&dir.join(&hourly))
+            .unwrap()
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum();
+        assert_eq!(rows, 3, "no data lost across raw → chunk → hourly");
+    }
+
+    #[tokio::test]
+    async fn test_chunk_disabled_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        let a = write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 0, 10),
+            ns_at(date, 10, 0, 40),
+            &[ns_at(date, 10, 0, 10)],
+        );
+        let b = write_bounded_raw(
+            &dir,
+            ns_at(date, 10, 1, 0),
+            ns_at(date, 10, 1, 30),
+            &[ns_at(date, 10, 1, 0)],
+        );
+        let compactor = Compactor::new(
+            tmp.path(),
+            CompactorConfig {
+                open_hour_chunks: false,
+                ..Default::default()
+            },
+        );
+        let now = date.and_hms_opt(10, 8, 0).unwrap().and_utc();
+        assert_eq!(
+            compactor
+                .compact_active_day("metrics", now)
+                .await
+                .unwrap()
+                .files_output,
+            0,
+            "chunk pass disabled: nothing written"
+        );
+        assert!(chunk_files(&dir).is_empty(), "no chunk file");
+        let names = resolved_names(&dir);
+        assert!(
+            names.contains(&a) && names.contains(&b),
+            "raws untouched: {names:?}"
+        );
     }
 
     #[tokio::test]

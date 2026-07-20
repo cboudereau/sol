@@ -1366,6 +1366,70 @@ mod tests {
         assert_eq!(count(&engine, "logs").await, 3);
     }
 
+    #[tokio::test]
+    async fn test_querier_reads_each_datum_once_across_chunk_level() {
+        // write-side-small-files task 1: the supersession lattice gained the
+        // open-hour chunk level (raw → chunk → hourly). With raw, chunk and
+        // hourly files ALL coexisting on disk (no GC ran), the querier must
+        // still read each datum exactly once.
+        use crate::querier::compaction::{Compactor, CompactorConfig};
+        let tmp = tempfile::tempdir().unwrap();
+        let day2 = JUN01_NS + DAY_NS; // 2026-06-02T00:00:00Z
+        let h8 = day2 + 8 * HOUR_NS;
+        // Two exact-bounds raws in chunk [08:00, 08:05) + a leftover raw in
+        // the hour's tail — one row each.
+        write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            h8 + 10 * NS_PER_SEC,
+            h8 + 20 * NS_PER_SEC,
+            &[h8 + 10 * NS_PER_SEC],
+        );
+        write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            h8 + 60 * NS_PER_SEC,
+            h8 + 70 * NS_PER_SEC,
+            &[h8 + 60 * NS_PER_SEC],
+        );
+        write_timed_log(
+            tmp.path(),
+            "2026-06-02",
+            h8 + 50 * MINUTE_NS,
+            h8 + 50 * MINUTE_NS,
+            &[h8 + 50 * MINUTE_NS],
+        );
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        // 08:08 — chunk pass merges the closed chunk; 10:30 — hourly pass
+        // absorbs the chunk + leftover raw.
+        compactor
+            .compact_active_day("logs", date.and_hms_opt(8, 8, 0).unwrap().and_utc())
+            .await
+            .unwrap();
+        compactor
+            .compact_active_day("logs", date.and_hms_opt(10, 30, 0).unwrap().and_utc())
+            .await
+            .unwrap();
+        // All levels coexist: 3 raw + 1 chunk + 1 hourly (5 files, 8 rows raw-summed).
+        let dir = tmp.path().join("logs").join("dt=2026-06-02");
+        let on_disk = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".parquet"))
+            .count();
+        assert_eq!(on_disk, 5, "raw ∪ chunk ∪ hourly all still on disk");
+
+        let engine = QueryEngine::new(&engine_opts(tmp.path().to_path_buf()))
+            .await
+            .unwrap();
+        assert_eq!(
+            count(&engine, "logs").await,
+            3,
+            "each datum read exactly once across raw ∪ chunk ∪ hourly"
+        );
+    }
+
     #[test]
     fn test_signal_of_table_collapses_rollup_tiers() {
         assert_eq!(signal_of_table("logs"), Some("logs"));

@@ -244,6 +244,20 @@ const EXACT_BOUNDS_MIN_DIGITS: usize = 10;
 /// [`EXACT_BOUNDS_MIN_DIGITS`] digits, `min ≤ max`, and a uniqueness token
 /// follows the bounds.
 fn parse_exact_bounds(name: &str) -> Option<FileInterval> {
+    let (min_ns, max_ns, _) = exact_bounds_fields(name)?;
+    Some(FileInterval {
+        lo_ns: min_ns,
+        hi_ns: max_ns.saturating_add(EXACT_BOUNDS_SKEW_NS),
+    })
+}
+
+/// The raw name-carried fields of the exact-bounds shape: the true
+/// `(min_ns, max_ns)` (no skew cushion) plus the first uniqueness-token field
+/// (`"chunk"` for the compactor's open-hour chunk outputs — see
+/// `super::compaction::CHUNK_TOKEN`). Shared with the compactor, which groups
+/// exact-bounds raws by these bounds and recognises its own chunk outputs by
+/// the token. Same acceptance rules as [`parse_exact_bounds`].
+pub(crate) fn exact_bounds_fields(name: &str) -> Option<(i64, i64, &str)> {
     let stem = name.strip_suffix(".parquet")?;
     let mut parts = stem.split('-');
     let min_ns = parse_bound(parts.next()?)?;
@@ -252,11 +266,8 @@ fn parse_exact_bounds(name: &str) -> Option<FileInterval> {
         return None;
     }
     // The sink always appends a uniqueness token after the bounds.
-    parts.next()?;
-    Some(FileInterval {
-        lo_ns: min_ns,
-        hi_ns: max_ns.saturating_add(EXACT_BOUNDS_SKEW_NS),
-    })
+    let token = parts.next()?;
+    Some((min_ns, max_ns, token))
 }
 
 /// One decimal epoch-ns bound of the exact shape; `None` when the field is

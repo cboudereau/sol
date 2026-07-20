@@ -80,7 +80,7 @@ classDiagram
 - `test_chunk_disabled_is_noop`
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] All six tests green; chunk file names parse as exact-bounds in the inventory (assert via `parse_file_interval` in one test)
+- [x] All six tests green (260/0/2, +6); chunk name parses as exact-bounds via parse_file_interval; PLUS two latent bugs fixed — hourly grouping was dead for exact-bounds raws (parse_hour couldn't read them), and superseded_inputs/gc only scanned compacted-* footers (chunk supersessions invisible)
 **Depends on**: (none)
 **Time-box**: ~90 min
 
