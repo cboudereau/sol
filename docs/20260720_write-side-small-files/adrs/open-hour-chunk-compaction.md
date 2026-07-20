@@ -3,7 +3,7 @@ status: accepted
 ---
 # Open-hour compaction: chunked write-once, not rolling-partial, not cadence
 
-Addresses: [FR1](../DESIGN.md#fr1), [FR2](../DESIGN.md#fr2), [NFR1](../DESIGN.md#nfr1), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR1](../designs/write-side-small-files.md#fr1), [FR2](../designs/write-side-small-files.md#fr2), [NFR1](../designs/write-side-small-files.md#nfr1), [NFR3](../designs/write-side-small-files.md#nfr3)
 
 ## Problem
 

@@ -20,7 +20,7 @@ Not strictly met — settles at ~45. The bar was written before accounting for a
 - **Flush cadence** (30 s → longer): deliberately rejected in the ADR — it trades the demo's visible freshness (verified here at 11 s) for file count. Still a documented deployment knob.
 - **Chunk length**: shorter chunks shrink the raw tail but add chunk files — measured non-monotonic (300/120 → 62; 180/60 → ~45; going shorter re-inflates via chunk count). 180/60 is near the minimum for this cadence.
 
-The workspace's actual win is unambiguous and larger than the file count alone suggests: **237 → ~45 in-window files (5.3×), and the bare-range floor met (148 ms) — confirming file count was the bare-range bottleneck** (it had been flat at ~0.31 s from 237 down to 62 files, then dropped once the count fell far enough). `rate()` improved ~40 %; its residual is the row-work execution cost owned by the [promql-plan-cache follow-up](../../20260717_promql-plan-cache/README.md) (levers E / series-key), exactly the shared-ownership split NFR2 declared.
+The workspace's actual win is unambiguous and larger than the file count alone suggests: **237 → ~45 in-window files (5.3×), and the bare-range floor met (148 ms) — confirming file count was the bare-range bottleneck** (it had been flat at ~0.31 s from 237 down to 62 files, then dropped once the count fell far enough). `rate()` improved ~40 %; its residual is the row-work execution cost owned by the [promql-plan-cache follow-up](../20260717_promql-plan-cache/README.md) (levers E / series-key), exactly the shared-ownership split NFR2 declared.
 
 ## Bonus finding (landed in S1)
 

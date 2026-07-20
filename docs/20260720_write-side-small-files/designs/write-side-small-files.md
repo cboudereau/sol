@@ -1,10 +1,10 @@
 # write-side-small-files — Design Doc
 
-Amends: [promql-plan-cache](../../20260717_promql-plan-cache/designs/promql-plan-cache.md) — lever 1 of its "Next levers"; shares ownership of the inherited latency NFRs with the row-work levers (E / series-key), which stay out of scope here.
+Amends: [promql-plan-cache](../20260717_promql-plan-cache/designs/promql-plan-cache.md) — lever 1 of its "Next levers"; shares ownership of the inherited latency NFRs with the row-work levers (E / series-key), which stay out of scope here.
 
 ## Context
 
-Live measurement ([VERIFY](../../20260717_promql-plan-cache/VERIFY.md)): every 15-min metrics window contains **~240 files** (`files_opened` p95 = 237) → bare-range floor 304 ms and execute-dominated `rate()` at 370–420 ms. The gateway's six Parquet sinks flush every 30 s (`sol-gateway.yaml`, `batch: {max_events: 5000, timeout_secs: 30}`), ~12–14 files/min.
+Live measurement ([VERIFY](../20260717_promql-plan-cache/VERIFY.md)): every 15-min metrics window contains **~240 files** (`files_opened` p95 = 237) → bare-range floor 304 ms and execute-dominated `rate()` at 370–420 ms. The gateway's six Parquet sinks flush every 30 s (`sol-gateway.yaml`, `batch: {max_events: 5000, timeout_secs: 30}`), ~12–14 files/min.
 
 **Premise correction from exploration**: active-day *closed-hour* compaction already exists and is enabled in the demo — `compact_active_day` (`src/querier/compaction.rs:330-397`) produces `compacted-hHH-<date>.parquet` for hours past `hour_end + hour_grace_secs` (600 s demo), on every compactor tick (`interval_secs: 300` demo). So closed hours already collapse to ~6 files each. The ~240 in-window files are the **current hour's raw tail** — a "last 15 minutes" dashboard window almost never leaves the open hour, and nothing compacts inside it.
 
@@ -39,7 +39,7 @@ Bare-range floor ≤ 150 ms and repeated-shape `rate()` measurably improved unde
 ## Non-goals
 
 - **Gateway flush-cadence increase** — evaluated and rejected as the primary lever (ADR): it trades the demo's visible freshness (30 s → 120 s lag vs Mimir side-by-side) for a smaller reduction than chunk compaction achieves freshness-free. Remains a documented knob for deployments that prefer it.
-- **Row-work levers** (E — smaller `rate()` lowering; write-side series-key column): separately owned ([promql-plan-cache README](../../20260717_promql-plan-cache/README.md)).
+- **Row-work levers** (E — smaller `rate()` lowering; write-side series-key column): separately owned ([promql-plan-cache README](../20260717_promql-plan-cache/README.md)).
 - **Retro-compat**: standing directive — no dual-format paths; chunk files use the existing exact-bounds shape + provenance footers, so no layout change and **no store wipe needed**.
 - **Sealed-day/rollup changes**: untouched; rollups never see the active day.
 
@@ -54,7 +54,7 @@ Bare-range floor ≤ 150 ms and repeated-shape `rate()` measurably improved unde
 One new pass inside `compact_active_day`, running before the hourly grouping: group not-yet-superseded raw files of the **current hour** by chunk index (from their exact-bounds `max_ns`), compact each closed chunk with ≥ 2 inputs via the existing `merge_inputs` → staged write → `finalize_writer` (level 1, supersedes list), output name = exact-bounds shape from the merged rows. Hourly and daily passes are untouched — they operate on `resolve_files` survivors, which now include chunk files. Querier side: zero changes (parser already prunes exact-bounds names; supersession already dedups; inventory generation bump on churn is the designed path).
 
 Decisions:
-- [Open-hour compaction strategy](./adrs/open-hour-chunk-compaction.md) — chunked vs rolling-partial vs cadence-only.
+- [Open-hour compaction strategy](../adrs/open-hour-chunk-compaction.md) — chunked vs rolling-partial vs cadence-only.
 
 ## Cross-cutting Concerns
 
