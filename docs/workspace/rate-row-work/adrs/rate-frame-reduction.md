@@ -33,6 +33,10 @@ Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1), [NFR3](../DESIGN.
 
 **Attempt A, fall back to B by what DataFusion 53 fuses** — the golden tests decide correctness, the re-profile decides whether the achieved reduction is enough or FR2/FR3 are still needed. C rejected (custom UDWF re-implements the hard-won extrapolation; the parity history is the reason to keep the formula in DataFrame expressions, not Rust). `duration_to_end`-drop and `MAX(t)`→current-row-`t` are free and taken regardless.
 
+## Outcome (2026-07-20, task 2 re-profile)
+
+Post-FR1 release fixture bench: rate() cold 47.1 ms / warm 26.9–29.5 ms; **execute 5–9 ms (was ~68 ms pre-FR1)** — the 6→5 window reduction cut execute ~7×; physical (~20 ms) is now the dominant stage. All ≤ 80 ms on the fixture → FR2/FR3 (series-key column + sort-pushdown) deferred pending live verification; reopen if live misses (the fixture mispredicted live ~15× at promql-plan-cache T2b).
+
 ## Consequences
 
 - `frame.rs::rate` shrinks; the extrapolatedRate arithmetic (frame.rs:243-295) is unchanged in meaning, only its input windows are fewer. Every golden/parity test named in [NFR3](../DESIGN.md#nfr3) must stay green bit-for-bit.

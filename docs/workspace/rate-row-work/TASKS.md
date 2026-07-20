@@ -87,7 +87,7 @@ classDiagram
 **Goal**: Run the release stage bench after FR1; if cold repeated-shape `rate()` ≤ 80 ms on the fixture, record and mark FR2/FR3 SKIPPED-with-numbers; else proceed.
 **Verify**: `cargo test --release --lib querier::prometheus::tests::bench_cold_range_query_demo_scale -- --ignored --exact --nocapture`
 **Acceptance criteria**:
-- [ ] Post-FR1 stage table recorded here + in the FR1 ADR; FR2/FR3 decision (proceed / skip) stated with the number
+- [x] Post-FR1 release fixture bench: rate() cold **47.1 ms** / warm **26.9–29.5 ms** (execute 5–9 ms, down from ~68 ms pre-FR1; physical ~20 ms now dominant), result-cache 2.2 ms — all ≤ 80 ms. **DECISION: FR2/FR3 SKIPPED pending live** — the ADR gate (fixture ≤ 80 → skip) is met, BUT this fixture mispredicted live by ~15× at promql-plan-cache T2b, so live is the real gate. Skip the wipe now; verify FR1 live (task 5, no wipe); if live misses NFR1, the revisit trigger reopens FR2/FR3 (then a wipe is warranted).
 **Depends on**: task 1
 **Time-box**: ~30 min
 **⚠ DECISION POINT**: surfaced at the S1 checkpoint alongside the FR1 result — if FR1 meets NFR1, the workspace can close early (FR2/FR3 skipped, no wipe needed).
@@ -103,7 +103,7 @@ classDiagram
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
 - [ ] Tests green; UDF removed from the metric window/aggregate/rollup partition paths; logs/traces schemas unchanged
-**Depends on**: task 2 (proceed decision)
+**Depends on**: task 2 (proceed decision) — **SKIPPED pending live (task 5)**
 **Time-box**: ~90 min
 
 ### 4. Write-sort pushdown ([FR3](./DESIGN.md#fr3))
@@ -116,7 +116,7 @@ classDiagram
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
 - [ ] Tests green; SortExec elided for the canonical partition; parity intact
-**Depends on**: task 3
+**Depends on**: task 3 — **SKIPPED pending live (task 5)**
 **Time-box**: ~75 min
 
 ### 5. Live verification ([NFR1](./DESIGN.md#nfr1), [NFR2](./DESIGN.md#nfr2), [NFR3](./DESIGN.md#nfr3))
@@ -124,7 +124,7 @@ classDiagram
 **Verify**: probe set from the two predecessor VERIFYs; stage means via Mimir (port 9009)
 **Acceptance criteria**:
 - [ ] VERIFY.md: execute-stage drop attributed; cold repeated-shape `rate()` + burst recorded vs NFR1/NFR2; parity spot-checked live; or honest re-decomposition
-**Depends on**: tasks 1–4 (+ user rebuild; wipe iff FR2/FR3 shipped)
+**Depends on**: task 1 (FR1 only, this pass; +user rebuild, NO wipe) — FR2/FR3 deferred per task 2
 **Time-box**: ~45 min
 
 ## Sessions
@@ -135,7 +135,7 @@ Tasks: 1, 2
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes — then surface the FR2/FR3 proceed/skip decision
 
-### Session 2 — FR2 + FR3 (only if task 2 says proceed) (~3 H)
+### Session 2 — FR2 + FR3 — DEFERRED (task 2: fixture ≤80 ms; reopen only if live misses)
 Tasks: 3, 4
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
