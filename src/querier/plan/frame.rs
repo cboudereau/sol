@@ -161,8 +161,9 @@ pub fn irate(
 /// 2. over the `RANGE BETWEEN range_ns PRECEDING AND CURRENT ROW` frame (the same
 ///    ns-based frame as [`over_time`]) gather: `sum_delta = SUM(delta)`,
 ///    `first_delta = FIRST_VALUE(delta)`, `first_value = FIRST_VALUE(v)`,
-///    `first_t`/`last_t` (frame's earliest/latest sample time) and `cnt` (frame
-///    row count);
+///    `first_t = FIRST_VALUE(t)` (frame's earliest sample time) and `cnt` (frame
+///    row count). `last_t` (frame's latest time) is not a window — it equals the
+///    current row's `t`, since the frame ends at CURRENT ROW;
 /// 3. the base in-window increase is `result = sum_delta − first_delta`: dropping
 ///    the leading delta (which reaches back to the sample *before* the window)
 ///    yields the reset-adjusted increase between the first and last in-window
@@ -228,17 +229,23 @@ pub fn rate(
     let first_delta_win: Expr =
         WindowFunction::new(first_value_udwf(), vec![col("delta")]).into();
     let first_value_win: Expr = WindowFunction::new(first_value_udwf(), vec![col(v_col)]).into();
-    let min_t_win: Expr = WindowFunction::new(min_udaf(), vec![ns(time_col)]).into();
-    let max_t_win: Expr = WindowFunction::new(max_udaf(), vec![ns(time_col)]).into();
+    // `first_t` (the window start) is the leading row's `t` on the ASC-time-ordered
+    // frame → FIRST_VALUE(t), joining the leading-row family (delta, v, t) that all
+    // share ONE partition/order/frame, so DataFusion co-locates them in a single
+    // window node. `last_t` needs no window at all: the frame ends at CURRENT ROW,
+    // so the frame's greatest time IS the current row's `t` — read straight off the
+    // row. This drops the former MIN(t) and MAX(t) aggregate-window passes.
+    let first_t_win: Expr = WindowFunction::new(first_value_udwf(), vec![ns(time_col)]).into();
     let cnt_win: Expr = WindowFunction::new(count_udaf(), vec![col(v_col)]).into();
     let windowed = win.window(vec![
         over_frame(sum_win, "sum_delta")?,
         over_frame(first_delta_win, "first_delta")?,
         over_frame(first_value_win, "first_value")?,
-        over_frame(min_t_win, "first_t")?,
-        over_frame(max_t_win, "last_t")?,
+        over_frame(first_t_win, "first_t")?,
         over_frame(cnt_win, "cnt")?,
     ])?;
+    // The frame's last time == the current row's time (frame ends at CURRENT ROW).
+    let last_t = ns(time_col);
 
     // --- Prometheus `extrapolatedRate` (promql/functions.go) over the frame ---
     let secs = |ns_expr: Expr| cast(ns_expr, DataType::Float64) / lit(1e9);
@@ -248,14 +255,14 @@ pub fn rate(
     let result = coalesce(vec![col("sum_delta"), lit(0.0_f64)])
         - coalesce(vec![col("first_delta"), lit(0.0_f64)]);
     // sampledInterval = (last_t − first_t) seconds; avg_gap = interval / (cnt−1).
-    let sampled_interval = secs(col("last_t") - col("first_t"));
+    let sampled_interval = secs(last_t.clone() - col("first_t"));
     let avg_gap = sampled_interval.clone() / (cnt.clone() - lit(1.0_f64));
-    // durationToStart = gap from window start (last_t − range) to the first sample;
-    // durationToEnd = gap from the last sample to the window end (= last_t, since
-    // the frame ends at CURRENT ROW) → 0, kept general for fidelity.
-    let window_start = col("last_t") - lit(ScalarValue::Int64(Some(range_ns)));
+    // durationToStart = gap from the window start (last_t − range) to the first
+    // sample. durationToEnd (gap from the last sample to the window end) is
+    // provably 0 — the frame ends at CURRENT ROW so last_t IS the window end —
+    // so the term is dropped from `factor` below rather than computed.
+    let window_start = last_t - lit(ScalarValue::Int64(Some(range_ns)));
     let duration_to_start_raw = secs(col("first_t") - window_start);
-    let duration_to_end_raw = secs(col("last_t") - col("last_t"));
     // Counter zero-clamp: if result>0 and first_value>=0, don't extrapolate the
     // start below the point where the counter would hit zero.
     let duration_to_zero = sampled_interval.clone() * (col("first_value") / result.clone());
@@ -275,9 +282,8 @@ pub fn rate(
         )
     };
     let duration_to_start = cap(duration_to_start_z)?;
-    let duration_to_end = cap(duration_to_end_raw)?;
-    let factor = (sampled_interval.clone() + duration_to_start + duration_to_end)
-        / sampled_interval.clone();
+    // duration_to_end == 0 (proven above), so it contributes nothing to the factor.
+    let factor = (sampled_interval.clone() + duration_to_start) / sampled_interval.clone();
     let extrapolated = result * factor;
     // A single in-window sample (cnt < 2) has no rate. We emit NULL (not 0) so the
     // downstream grid-align/resample drops the point — exactly as before, when the
@@ -525,6 +531,39 @@ mod tests {
         let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, false)
             .unwrap();
         assert_eq!(values_by_time(&engine, df).await, vec![30.0, 60.0]);
+    }
+
+    /// Sum the window expressions across every `Window` node in a logical plan.
+    fn count_window_exprs(plan: &datafusion::logical_expr::LogicalPlan) -> usize {
+        use datafusion::logical_expr::LogicalPlan;
+        let here = match plan {
+            LogicalPlan::Window(w) => w.window_expr.len(),
+            _ => 0,
+        };
+        here + plan
+            .inputs()
+            .iter()
+            .map(|p| count_window_exprs(p))
+            .sum::<usize>()
+    }
+
+    #[tokio::test]
+    async fn test_rate_plan_window_passes_are_reduced() {
+        // FR1 regression guard: the reduced `rate()` lowering builds 6 window
+        // expressions — LAG(prev_v) + {SUM(delta), FIRST_VALUE(delta),
+        // FIRST_VALUE(v), FIRST_VALUE(t), COUNT(v)}. The pre-reduction plan built 7
+        // (an extra MAX(t) pass, plus MIN(t) instead of FIRST_VALUE(t)); MAX(t) is
+        // gone (last_t = current row t) and duration_to_end is dropped. If this
+        // count rises, a window pass crept back in.
+        let engine = counter_engine().await;
+        let part = vec![col("service_name"), col("attributes")];
+        let df = rate(base(&engine).await, part, "v", "time_unix_nano", 300_000_000_000, true)
+            .unwrap();
+        assert_eq!(
+            count_window_exprs(df.logical_plan()),
+            6,
+            "reduced rate() must build 6 window exprs (was 7 before FR1)"
+        );
     }
 
     /// A counter with a caller-supplied (time_ns, value) series for `client` /

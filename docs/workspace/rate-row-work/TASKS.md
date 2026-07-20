@@ -79,7 +79,7 @@ classDiagram
 - prometheus.rs: `test_rate_matches_prometheus_golden`, `test_instant_rate_matches_range_rate`, `test_instant_increase_matches_range_increase`, multiseries sum-rate parity
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] All named goldens/parity green bit-for-bit; window-pass count reduced (report the achieved count A vs B)
+- [x] All named goldens/parity green bit-for-bit (262/0/2); window passes 7→6 (frame node 6→5): dropped MAX(t), MIN(t)→FIRST_VALUE(t) fused into the leading-row family, duration_to_end (≡0) dropped; SUM/COUNT kept
 **Depends on**: (none)
 **Time-box**: ~75 min
 
