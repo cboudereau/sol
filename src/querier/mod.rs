@@ -77,11 +77,11 @@ impl Server {
                 retention_days: opts.retention_days,
                 intraday: opts.intraday,
                 hour_grace_secs: opts.hour_grace_secs,
+                open_hour_chunks: opts.open_hour_chunks,
+                chunk_secs: opts.chunk_secs,
+                chunk_grace_secs: opts.chunk_grace_secs,
                 delete_superseded: opts.delete_superseded,
                 delete_grace_secs: opts.delete_grace_secs,
-                // open-hour chunk fields keep their defaults until the
-                // `compactor:` options grow them (write-side-small-files task 2)
-                ..compaction::CompactorConfig::default()
             };
             let compactor = compaction::Compactor::new(opts.storage.path.clone(), cfg);
             let mut tick = tokio::time::interval(Duration::from_secs(opts.interval_secs.max(1)));

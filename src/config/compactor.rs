@@ -40,6 +40,18 @@ pub struct CompactorOptions {
     /// hour H is compacted once `now > end(H) + this`.
     pub hour_grace_secs: i64,
 
+    /// Whether to compact closed chunks of the OPEN (unsealed) hour into
+    /// write-once level-1 files (exact-bounds names), bounding the live
+    /// window's file count. Requires `intraday`.
+    pub open_hour_chunks: bool,
+
+    /// Chunk length (seconds) for open-hour chunk compaction.
+    pub chunk_secs: i64,
+
+    /// Grace after a chunk ends before it is compacted, for in-flight flushes.
+    /// A chunk is closed once `now ≥ chunk_end + this`.
+    pub chunk_grace_secs: i64,
+
     /// Whether to delete raw/lower-level inputs once a compacted file
     /// supersedes them (reclaims disk + inodes intra-day, not just at
     /// retention). Deletion is deferred by `delete_grace_secs` for read safety.
@@ -63,6 +75,9 @@ impl Default for CompactorOptions {
             rollups: true,
             intraday: true,
             hour_grace_secs: 600,    // 10 min for late-arriving data
+            open_hour_chunks: true,  // bound the open hour's file count
+            chunk_secs: 300,         // 5-min chunks
+            chunk_grace_secs: 120,   // 2 min for in-flight flushes
             delete_superseded: true, // reclaim disk once safely superseded
             delete_grace_secs: 60,   // > querier refresh_interval_secs (15s)
         }
@@ -88,5 +103,11 @@ intraday: true
         assert_eq!(opts.interval_secs, 300);
         assert!(opts.intraday);
         assert!(opts.delete_superseded, "default carried");
+        assert!(opts.open_hour_chunks, "chunk-pass default carried");
+        assert_eq!(opts.chunk_secs, 300, "chunk length default carried");
+        assert_eq!(
+            opts.chunk_grace_secs, 120,
+            "chunk grace default carried"
+        );
     }
 }

@@ -10,12 +10,15 @@
 compactor:
   storage:
     path: "/data/parquet"
-  interval_secs: 300 # run an intraday -> seal -> rollup -> GC pass every 5 min
+  interval_secs: 60 # run an intraday -> seal -> rollup -> GC pass every minute (fits chunk closing)
   grace_days: 1 # active day is hourly-compacted, then sealed into one file
   retention_days: 30
   rollups: true
   intraday: true # compact completed hours of the active day (bounds open files)
   hour_grace_secs: 600 # wait 10 min past an hour's end for late data
+  open_hour_chunks: true # compact closed chunks of the open hour (bounds live-window files)
+  chunk_secs: 300 # 5-min chunks within the open hour
+  chunk_grace_secs: 120 # wait 2 min past a chunk's end for in-flight flushes
   delete_superseded: true # reclaim disk/inodes once inputs are safely superseded
   delete_grace_secs: 60 # must exceed the querier refresh_interval_secs (15s)
 

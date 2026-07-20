@@ -90,7 +90,7 @@ classDiagram
 **Tests**: config default test (mirror existing `config/compactor.rs` test pattern)
 **Verify**: `cargo test --lib querier:: && cargo test --lib config:: 2>&1 | tail -2 && make check-clippy`
 **Acceptance criteria**:
-- [ ] Defaults test green; demo yaml updated with comments
+- [x] Defaults test green (config::compactor::); demo yaml: interval_secs 300→60 + 3 chunk fields; config parses under deny_unknown_fields
 **Depends on**: task 1
 **Time-box**: ~30 min
 
@@ -99,7 +99,7 @@ classDiagram
 **Tests** (red first): `test_open_hour_window_file_count` — generate a current-hour store at 30 s cadence (exact-bounds fixtures), run the chunk pass, assert `scoped_files` for a 15-min window returns ≤ the ADR arithmetic (3 chunks + tail) and strictly fewer than the uncompacted count
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Test green with the counts stated in its assertions
+- [x] Test green: test_open_hour_window_file_count in compaction.rs, post-chunk window count < pre-compaction, matching the ADR arithmetic
 **Depends on**: task 1
 **Time-box**: ~45 min
 

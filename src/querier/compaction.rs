@@ -2165,4 +2165,70 @@ mod tests {
             "intraday off: nothing compacted"
         );
     }
+
+    // ---- write-side-small-files task 3: in-window file-count arithmetic ----
+
+    /// FR3/NFR1: deterministic proof of the reduction. A full current hour of
+    /// 30 s-cadence exact-bounds raws is compacted by the open-hour chunk pass;
+    /// a 15-min window ending at a fixed `now` then resolves (via
+    /// `resolve_files` → `FileInventory::scoped_files`, the querier's own path)
+    /// to a handful of files — far fewer than the raw count it replaced. Fixed
+    /// `now`, no wall-clock and no sleeps: the count is a pure function of the
+    /// fixture layout and the 300 s / 120 s config.
+    #[tokio::test]
+    async fn test_open_hour_window_file_count() {
+        use crate::querier::inventory::{FileInventory, QueryScope};
+        let tmp = tempfile::tempdir().unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 2).unwrap();
+        let dir = tmp.path().join("metrics").join("dt=2026-06-02");
+        let hour_lo = ns_at(date, 10, 0, 0);
+
+        // One raw flush every 30 s across the open hour, up to `now` =
+        // 10:30:00 (60 files: 10:00:00 … 10:29:30). Each is a point-sample
+        // exact-bounds raw, so its inventory interval is [t, t + skew].
+        const CADENCE_NS: i64 = 30 * NS_PER_SEC;
+        let now = date.and_hms_opt(10, 30, 0).unwrap().and_utc();
+        let now_ns = now.timestamp_nanos_opt().unwrap();
+        let mut t = hour_lo;
+        while t < now_ns {
+            write_bounded_raw(&dir, t, t, &[t]);
+            t += CADENCE_NS;
+        }
+
+        // 15-min window ending at `now`: [10:15:00, 10:30:00].
+        let window = QueryScope {
+            lo_ns: ns_at(date, 10, 15, 0),
+            hi_ns: now_ns,
+        };
+        let in_window = |dir: &Path| {
+            let mut inv = FileInventory::default();
+            inv.insert_table("metrics", &resolve_files(dir).unwrap());
+            inv.scoped_files("metrics", window).unwrap().len()
+        };
+
+        // Pre-compaction: one raw per 30 s over the 15-min window = 30 files.
+        let pre = in_window(dir.as_path());
+        assert_eq!(pre, 30, "uncompacted: 30 raws (30 s cadence × 15 min)");
+
+        // Chunk pass at 10:30:00 with the default 300 s / 120 s config. Hour 10
+        // is the open hour (now < 11:00 + grace) so only the chunk pass runs.
+        let compactor = Compactor::new(tmp.path(), CompactorConfig::default());
+        compactor.compact_active_day("metrics", now).await.unwrap();
+
+        // Post-compaction the window resolves to:
+        //   • 2 closed chunks — [10:15,10:20) and [10:20,10:25). The earlier
+        //     chunks fall out of the window: chunk [10:10,10:15)'s rows end at
+        //     10:14:30, so its interval hi = 10:14:35 (+5 s skew) < 10:15:00.
+        //   • 10 open-tail raws — chunk [10:25,10:30) ends exactly at `now`
+        //     10:30:00, still inside its 120 s grace, so its 10 raws stay raw.
+        // = 12 files, within the ADR's ~3 chunks + ≤ 7-min tail ≈ 15–20 bound
+        //   and far below the 30 it replaced.
+        let post = in_window(dir.as_path());
+        assert_eq!(post, 12, "2 closed chunks + 10 open-tail raws");
+        assert!(post <= 20, "within the ADR arithmetic (3 chunks + tail)");
+        assert!(
+            post < pre,
+            "strictly fewer files than uncompacted ({post} < {pre})"
+        );
+    }
 }
