@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # rate() frame reduction: minimal window set, golden-gated
 

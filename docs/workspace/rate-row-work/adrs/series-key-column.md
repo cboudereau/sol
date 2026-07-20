@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 # Stored prom_series_key column + write-sort pushdown
 
