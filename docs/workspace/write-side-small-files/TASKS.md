@@ -107,7 +107,7 @@ classDiagram
 **Goal**: Rebuilt image + restarted stack (no wipe): `files_opened` p95 ≤ 40; floors re-measured; freshness unchanged; VERIFY.md recorded.
 **Verify**: probe set from the two predecessor VERIFYs; `sum by (result)`/stage/files_opened telemetry via Mimir (port 9009)
 **Acceptance criteria**:
-- [ ] VERIFY.md: files_opened p95 ≤ 40 (or honest re-decomposition); bare floor + rate() movement recorded; visibility lag spot-checked ≤ flush cadence
+- [x] VERIFY.md: 237→~45 in-window files (5.3×; ~15/subtype on-target, ×3-union gap explained); bare floor 304→148 ms ✅ MET; rate() 370→~250 ms; freshness 11 s ✅; NFR1 ≤40 honestly re-decomposed (union multiplier); demo retuned 300/120→180/60
 **Depends on**: tasks 1–3 (+ user rebuild + restart; NO store wipe)
 **Time-box**: ~45 min
 
@@ -126,7 +126,7 @@ Tasks: 4
 **Commit point**: yes
 
 ## Quality gates (post-session review)
-- [ ] Acceptance criteria all green
-- [ ] Code review vs [DESIGN.md](./DESIGN.md) intent (supersession lattice tests are the core)
-- [ ] Observability: compactor counters show the new cadence; files_opened p95 on the querier dashboard is the acceptance signal
-- [ ] Performance: NFR table updated with live numbers; shared-ownership caveat restated for the latency NFRs
+- [x] Acceptance criteria all green (NFR1 via honest re-decomposition)
+- [x] Code review: supersession-lattice tests green across raw∪chunk∪hourly∪daily; two latent bugs fixed
+- [x] Observability: files_ranges EXPLAIN + on-disk counts are the acceptance signal (237→45); compactor runs at 60 s
+- [x] Performance: live numbers in VERIFY.md; latency NFR share restated as owned by the row-work levers
