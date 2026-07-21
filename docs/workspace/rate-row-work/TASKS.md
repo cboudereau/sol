@@ -103,7 +103,7 @@ classDiagram
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
 - [ ] Tests green; UDF removed from the metric window/aggregate/rollup partition paths; logs/traces schemas unchanged
-**Depends on**: task 2 (proceed decision) — **SKIPPED pending live (task 5)**
+**Depends on**: task 2 — **REOPENED 2026-07-21 (FR1 live missed NFR1; user approved wipe)**
 **Time-box**: ~90 min
 
 ### 4. Write-sort pushdown ([FR3](./DESIGN.md#fr3))
@@ -116,7 +116,7 @@ classDiagram
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
 - [ ] Tests green; SortExec elided for the canonical partition; parity intact
-**Depends on**: task 3 — **SKIPPED pending live (task 5)**
+**Depends on**: task 3 — **REOPENED 2026-07-21**
 **Time-box**: ~75 min
 
 ### 5. Live verification ([NFR1](./DESIGN.md#nfr1), [NFR2](./DESIGN.md#nfr2), [NFR3](./DESIGN.md#nfr3))
@@ -135,7 +135,7 @@ Tasks: 1, 2
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
 **Commit point**: yes — then surface the FR2/FR3 proceed/skip decision
 
-### Session 2 — FR2 + FR3 — DEFERRED (task 2: fixture ≤80 ms; reopen only if live misses)
+### Session 2 — FR2 + FR3 — REOPENED (FR1 live missed NFR1; execute is per-row UDF + window sort)
 Tasks: 3, 4
 **Skills**: `rust-software-engineer`, `rust-build`, `tdd`
 **Checkpoint**: `cargo test --lib querier:: && make check-clippy`
