@@ -115,7 +115,7 @@ classDiagram
 - reads-each-datum-once + parity suites green (a wrong declaration would break these)
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; SortExec elided for the canonical partition; parity intact
+- [~] Tests green (266/0/2); declared with_file_sort_order on metric tables + drift guard (declaration==write sort, load-bearing). SortExec NOT elided — BLOCKED by DF-53: window ORDER BY casts time_unix_nano→Int64 (ns RANGE frame) which DF-53 won't treat as order-preserving vs the declared Timestamp order (control: raw-time → 0 SortExec). Elision needs a stored Int64 time column (deferred follow-up, see ADR); parity goldens bit-identical
 **Depends on**: task 3 — **REOPENED 2026-07-21**
 **Time-box**: ~75 min
 

@@ -236,7 +236,7 @@ impl ParquetCatalog {
             let provider: Arc<dyn TableProvider> = if files.is_empty() {
                 empty_provider(schema)?
             } else {
-                listing_provider(&files, schema)?
+                listing_provider(&files, schema, table.table_name())?
             };
             inventory.insert_table(table.table_name(), &files);
             out.push((table.table_name().to_string(), provider));
@@ -253,7 +253,8 @@ impl ParquetCatalog {
             }
             let name = format!("metrics_{tier}");
             inventory.insert_table(name.as_str(), &files);
-            out.push((name, listing_provider(&files, Arc::clone(&metric_schema))?));
+            let provider = listing_provider(&files, Arc::clone(&metric_schema), &name)?;
+            out.push((name, provider));
         }
         Ok((out, inventory))
     }
@@ -309,18 +310,59 @@ impl ParquetCatalog {
 /// Rollup tier labels matching [`super::rollup::RollupTier::label`].
 const ROLLUP_TIERS: [&str; 3] = ["5m", "1h", "1d"];
 
+/// The declared on-disk sort order of the metric tables (raw `metrics` + rollup
+/// tiers), by column name and all ascending / nulls-last. It MUST equal the
+/// codec write sort ([`sort_dp_rows`] in `lib/codecs`), the compactor merge sort
+/// ([`super::compaction::sort_exprs_for_schema`]) and the rollup output sort —
+/// all `(service_name, prom_name, time_unix_nano)`. DataFusion *trusts* a
+/// declared `with_file_sort_order` (it does not verify the data), so a mismatch
+/// would let it elide a needed sort and silently return wrong results;
+/// `test_declared_sort_matches_write_sort` guards this against the compactor
+/// sort, and a codec-side test guards `sort_dp_rows`.
+const METRIC_FILE_SORT_COLUMNS: [&str; 3] = ["service_name", "prom_name", "time_unix_nano"];
+
+/// The `with_file_sort_order` for a table name: the [`METRIC_FILE_SORT_COLUMNS`]
+/// order for the metric tables (raw + rollup tiers), nothing for logs/traces
+/// (whose on-disk order — `(service_name, time)` — differs and is not declared
+/// here).
+fn file_sort_order(name: &str) -> Vec<Vec<datafusion::logical_expr::SortExpr>> {
+    use datafusion::prelude::col;
+    match name {
+        "metrics" | "metrics_5m" | "metrics_1h" | "metrics_1d" => vec![
+            METRIC_FILE_SORT_COLUMNS
+                .iter()
+                .map(|c| col(*c).sort(true, false))
+                .collect(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// A `ListingTable` provider over an explicit file list with the declared
 /// schema. Schema is explicit, so don't let DataFusion open every file's
 /// footer for stats at plan time — with thousands of files that exhausts the
 /// fd limit (EMFILE). Used both for the registered tables
 /// ([`ParquetCatalog::build_providers`]) and for the per-query scoped,
 /// **unregistered** providers ([`QueryEngine::table_scoped`]).
-fn listing_provider(files: &[PathBuf], schema: SchemaRef) -> crate::Result<Arc<dyn TableProvider>> {
+///
+/// `name` selects the declared file sort order ([`file_sort_order`]) so the
+/// metric tables advertise their on-disk ordering and DataFusion can elide a
+/// redundant `SortExec` whose required ordering is a prefix of it.
+fn listing_provider(
+    files: &[PathBuf],
+    schema: SchemaRef,
+    name: &str,
+) -> crate::Result<Arc<dyn TableProvider>> {
     let paths = files
         .iter()
         .map(|f| ListingTableUrl::parse(format!("file://{}", f.display())))
         .collect::<Result<Vec<_>, _>>()?;
-    let options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
+    let mut options =
+        ListingOptions::new(Arc::new(ParquetFormat::default())).with_collect_stat(false);
+    let sort_order = file_sort_order(name);
+    if !sort_order.is_empty() {
+        options = options.with_file_sort_order(sort_order);
+    }
     let config = ListingTableConfig::new_with_multi_paths(paths)
         .with_listing_options(options)
         .with_schema(schema);
@@ -917,7 +959,7 @@ impl QueryEngine {
         let provider = if files.is_empty() {
             empty_provider(schema)?
         } else {
-            listing_provider(&files, schema)?
+            listing_provider(&files, schema, name)?
         };
         let source = datafusion::datasource::provider_as_source(provider);
         let plan =
@@ -1145,6 +1187,47 @@ mod tests {
             assert_eq!(f.data_type(), &DataType::Float64, "{name} must be Float64");
             assert!(f.is_nullable(), "{name} must be nullable");
         }
+    }
+
+    #[test]
+    fn test_declared_sort_matches_write_sort() {
+        use datafusion::logical_expr::{Expr, SortExpr};
+        // (column name, ascending) for a flat sort-expr list.
+        fn cols(exprs: &[SortExpr]) -> Vec<(String, bool)> {
+            exprs
+                .iter()
+                .map(|s| match &s.expr {
+                    Expr::Column(c) => (c.name.clone(), s.asc),
+                    other => panic!("expected a plain-column sort, got {other:?}"),
+                })
+                .collect()
+        }
+        // The read-side declaration (`with_file_sort_order`) for the metric tables
+        // MUST equal the compactor's metric-schema merge sort — which is itself
+        // mirrored by the codec `sort_dp_rows` (guarded by a codec-side test) and
+        // the rollup output sort. DataFusion trusts the declaration, so any drift
+        // silently returns wrong results.
+        let declared = file_sort_order("metrics");
+        assert_eq!(declared.len(), 1, "one lexicographic ordering");
+        let declared = cols(&declared[0]);
+        let merge = cols(&crate::querier::compaction::sort_exprs_for_schema(
+            &metric_union_schema(),
+        ));
+        assert_eq!(
+            declared, merge,
+            "read declaration must equal the compactor merge sort"
+        );
+        assert_eq!(
+            declared,
+            vec![
+                ("service_name".to_string(), true),
+                ("prom_name".to_string(), true),
+                ("time_unix_nano".to_string(), true),
+            ],
+        );
+        // logs/traces declare no file order (their on-disk order differs).
+        assert!(file_sort_order("logs").is_empty());
+        assert!(file_sort_order("traces").is_empty());
     }
 
     #[test]

@@ -23,6 +23,14 @@ Addresses: [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [NFR1](../DESIGN.md
 
 Rejected: A alone (wastes the wipe by leaving the sort); C is the "FR1 sufficed" branch, decided by data not fiat.
 
+## Outcome (2026-07-21, task 4) — FR3 sort-elision BLOCKED by a DF-53 limitation
+
+FR2 (stored column, UDF off all partition paths) landed. **FR3's SortExec elision did NOT** — proven empirically, not assumed: the scan advertises the declared order `(name, service_name, prom_series_key, time)` and the window's partition prefix is satisfied, but a `SortExec` survives keyed on `CAST(time_unix_nano AS Int64)` — DataFusion 53 does not treat the Timestamp→Int64 cast (required because the RANGE frame bound is ns/Int64) as order-preserving vs the declared Timestamp ordering. Control: the same window with raw-`time_unix_nano` ORDER BY elides to 0 SortExec — the cast is the sole blocker.
+
+What shipped is the safe, useful subset: the correct `with_file_sort_order` declaration on the metric tables + a drift guard (`test_declared_sort_matches_write_sort` asserts declaration == the authoritative write sort; a false declaration would silently corrupt results, so this is load-bearing). No write-sort change was made (it would only pay off after the cast is removed, and changing it without a matching declaration corrupts).
+
+**Follow-up to elide the sort (deferred, needs its own decision):** materialise `time_unix_nano` as a stored Int64 ns column used by BOTH the declared file sort key and the window ORDER BY (removing the cast), then align the write sort to the partition prefix `(name/service_name, prom_series_key, time_int64)`. That is a further clean-cutover schema change; gated on whether FR2 alone moves live latency enough (task 5).
+
 ## Consequences
 
 - Read paths partition on a plain Utf8 column — UDF gone from rate/sum-by/topk/over_time; rollup groups on the column too (`rollup.rs` UDF call sites drop).

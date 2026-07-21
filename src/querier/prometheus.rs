@@ -3494,6 +3494,247 @@ mod tests {
         crate::querier::QueryEngine::new(&opts).await.unwrap()
     }
 
+    /// Build a single-file `ListingTable` named `m` over a two-series metric
+    /// dataset, declaring `sort_cols` as its `with_file_sort_order`. The rows are
+    /// written physically in `sort_cols` order so the declaration is truthful.
+    /// Returns a `SessionContext` with `m` registered. Used by the sort-elision
+    /// diagnostic to compare the window plan under different declared orders.
+    async fn ctx_with_sorted_metrics(
+        dir: &std::path::Path,
+        sort_cols: &[&str],
+    ) -> datafusion::prelude::SessionContext {
+        use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::file_format::parquet::ParquetFormat;
+        use datafusion::datasource::listing::{
+            ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+        };
+        use datafusion::parquet::arrow::ArrowWriter;
+        use datafusion::prelude::col;
+        use std::sync::Arc;
+
+        // Two series (host=a, host=b), two samples each. Logical rows; we sort a
+        // row-index list by `sort_cols` so the file matches its declaration.
+        const S: i64 = 1_000_000_000;
+        // (service_name, name, prom_series_key, time, prom_name, value)
+        let rows: Vec<(&str, &str, &str, i64, &str, f64)> = vec![
+            ("svc", "reqs", "host=a", S, "reqs", 10.0),
+            ("svc", "reqs", "host=a", 2 * S, "reqs", 20.0),
+            ("svc", "reqs", "host=b", S, "reqs", 30.0),
+            ("svc", "reqs", "host=b", 2 * S, "reqs", 60.0),
+        ];
+        let mut idx: Vec<usize> = (0..rows.len()).collect();
+        idx.sort_by(|&i, &j| {
+            for c in sort_cols {
+                let ord = match *c {
+                    "service_name" => rows[i].0.cmp(rows[j].0),
+                    "name" => rows[i].1.cmp(rows[j].1),
+                    "prom_series_key" => rows[i].2.cmp(rows[j].2),
+                    "time_unix_nano" => rows[i].3.cmp(&rows[j].3),
+                    "prom_name" => rows[i].4.cmp(rows[j].4),
+                    other => panic!("unknown sort col {other}"),
+                };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("prom_name", DataType::Utf8, false),
+            crate::querier::udf::tests::attributes_map_field(),
+            Field::new("double_value", DataType::Float64, true),
+        ]));
+        let attrs: Vec<&str> = idx.iter().map(|_| "{}").collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(
+                    idx.iter().map(|&i| rows[i].0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    idx.iter().map(|&i| rows[i].1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    idx.iter().map(|&i| rows[i].2).collect::<Vec<_>>(),
+                )),
+                Arc::new(
+                    TimestampNanosecondArray::from(
+                        idx.iter().map(|&i| rows[i].3).collect::<Vec<_>>(),
+                    )
+                    .with_timezone("UTC"),
+                ),
+                Arc::new(StringArray::from(
+                    idx.iter().map(|&i| rows[i].4).collect::<Vec<_>>(),
+                )),
+                crate::querier::udf::tests::json_map_array(&attrs),
+                Arc::new(Float64Array::from(
+                    idx.iter().map(|&i| rows[i].5).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let f = std::fs::File::create(dir.join("f.parquet")).unwrap();
+        let mut w = ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let order: Vec<datafusion::logical_expr::SortExpr> =
+            sort_cols.iter().map(|c| col(*c).sort(true, false)).collect();
+        let options = ListingOptions::new(Arc::new(ParquetFormat::default()))
+            .with_collect_stat(false)
+            .with_file_sort_order(vec![order]);
+        let url = ListingTableUrl::parse(format!("file://{}", dir.display())).unwrap();
+        let config = ListingTableConfig::new_with_multi_paths(vec![url])
+            .with_listing_options(options)
+            .with_schema(schema);
+        let ctx = datafusion::prelude::SessionContext::new();
+        ctx.register_table("m", Arc::new(ListingTable::try_new(config).unwrap()))
+            .unwrap();
+        ctx
+    }
+
+    /// Count `SortExec` nodes in the physical plan of a `rate()` over the metric
+    /// table `m` in `ctx` (partition = [name, service_name, prom_series_key],
+    /// order = time). Returns the count and the plan display.
+    async fn rate_plan_sortexec_count(
+        ctx: &datafusion::prelude::SessionContext,
+    ) -> (usize, String) {
+        use datafusion::prelude::col;
+        let base = ctx
+            .table("m")
+            .await
+            .unwrap()
+            .select(vec![
+                col("name"),
+                col("service_name"),
+                col("prom_series_key"),
+                col("attributes"),
+                col("time_unix_nano"),
+                col("double_value").alias("v"),
+            ])
+            .unwrap();
+        let df = crate::querier::plan::frame::rate(
+            base,
+            prom_part(),
+            "v",
+            "time_unix_nano",
+            2_000_000_000,
+            true,
+        )
+        .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let display = datafusion::physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        let count = display.matches("SortExec").count();
+        (count, display)
+    }
+
+    /// Count `SortExec` nodes in the physical plan of a plain-time-ordered `LAG`
+    /// window over `m` (same partition as rate, but ORDER BY the raw
+    /// `time_unix_nano` column — NO `CAST` to Int64). Isolates the cast as the
+    /// elision blocker: this control elides under the canonical declared order.
+    async fn plain_time_lag_sortexec_count(
+        ctx: &datafusion::prelude::SessionContext,
+    ) -> (usize, String) {
+        use datafusion::functions_window::lead_lag::lag;
+        use datafusion::logical_expr::ExprFunctionExt;
+        use datafusion::prelude::col;
+        let base = ctx
+            .table("m")
+            .await
+            .unwrap()
+            .select(vec![
+                col("name"),
+                col("service_name"),
+                col("prom_series_key"),
+                col("time_unix_nano"),
+                col("double_value").alias("v"),
+            ])
+            .unwrap();
+        let prev = lag(col("v"), Some(1), None)
+            .partition_by(prom_part())
+            .order_by(vec![col("time_unix_nano").sort(true, false)])
+            .build()
+            .unwrap()
+            .alias("prev_v");
+        let df = base.window(vec![prev]).unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let display = datafusion::physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        (display.matches("SortExec").count(), display)
+    }
+
+    #[tokio::test]
+    async fn test_rate_plan_sortexec_blocked_by_time_cast() {
+        // FR3 sort-pushdown finding. The rate() window's required input ordering is
+        // `[name, service_name, prom_series_key] + CAST(time_unix_nano AS Int64)`
+        // (the cast comes from `frame::ns`, needed because the RANGE frame bound is
+        // in ns/Int64 while the stored `time_unix_nano` is Timestamp(ns)).
+        //
+        // A metric file declared in the CANONICAL order (partition columns as a
+        // contiguous prefix, then time) DOES get its ordering recognized — the scan
+        // advertises the full order and the partition prefix is satisfied — but
+        // DataFusion 53 still inserts a window SortExec, because it does NOT treat
+        // `CAST(time_unix_nano AS Int64)` as order-preserving w.r.t. the declared
+        // Timestamp ordering. So the cast on the ORDER BY is the SOLE blocker: the
+        // partition side of the declaration works; the elision requires removing the
+        // cast from the window order-by (store/scan time as Int64 ns, or add a
+        // materialized Int64 time column used for both the declared file sort key
+        // and the window ORDER BY). See the workspace report / ADR follow-up.
+        let tmp = tempfile::tempdir().unwrap();
+        let ideal = ctx_with_sorted_metrics(
+            &tmp.path().join("ideal"),
+            &["name", "service_name", "prom_series_key", "time_unix_nano"],
+        )
+        .await;
+        let (ideal_sorts, ideal_plan) = rate_plan_sortexec_count(&ideal).await;
+
+        // 1. The canonical declared order IS picked up by the scan.
+        assert!(
+            ideal_plan.contains(
+                "output_ordering=[name@0 ASC NULLS LAST, service_name@1 ASC NULLS LAST, \
+                 prom_series_key@2 ASC NULLS LAST, time_unix_nano@4 ASC NULLS LAST]"
+            ),
+            "scan must advertise the declared canonical order:\n{ideal_plan}"
+        );
+        // 2. A window SortExec REMAINS, and it is there purely to re-establish the
+        //    CAST(time) tail — the partition-prefix columns are already ordered.
+        assert!(
+            ideal_sorts >= 1,
+            "expected a residual SortExec (cast blocker):\n{ideal_plan}"
+        );
+        assert!(
+            ideal_plan.contains(
+                "SortExec: expr=[name@0 ASC NULLS LAST, service_name@1 ASC NULLS LAST, \
+                 prom_series_key@2 ASC NULLS LAST, CAST(time_unix_nano@4 AS Int64) ASC NULLS LAST]"
+            ),
+            "the residual sort is keyed on CAST(time AS Int64) — the elision blocker:\n{ideal_plan}"
+        );
+
+        // 3. Control: the SAME partition, but ORDER BY the raw Timestamp column
+        //    (no cast), IS fully satisfied by the canonical declared order → NO
+        //    SortExec. This proves the cast — not the partition prefix — is the
+        //    blocker.
+        let (control_sorts, control_plan) = plain_time_lag_sortexec_count(&ideal).await;
+        assert_eq!(
+            control_sorts, 0,
+            "plain-time (uncast) window must elide the sort under the canonical order:\n{control_plan}"
+        );
+    }
+
     // Two services (`sol-collector` on hosts a,b; `other` on host c) each
     // exposing `up`, used to prove label-value queries honor a `match[]` scope.
     async fn host_engine() -> crate::querier::QueryEngine {
