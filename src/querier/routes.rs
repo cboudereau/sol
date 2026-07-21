@@ -791,6 +791,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         for (day, svc, t_ns, attrs) in [
             ("dt=1970-01-01", "old-svc", old_ns, r#"{"old_label":"x"}"#),
@@ -807,6 +808,7 @@ mod tests {
                     crate::querier::udf::tests::json_map_array(&[attrs]),
                     Arc::new(Float64Array::from(vec![1.0])),
                     Arc::new(StringArray::from(vec!["up"])),
+                    crate::querier::udf::tests::series_key_array(&[attrs]),
                 ],
             )
             .unwrap();

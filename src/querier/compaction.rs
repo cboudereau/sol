@@ -1531,6 +1531,7 @@ mod tests {
                 ),
                 Field::new("double_value", DataType::Float64, true),
                 Field::new("prom_name", DataType::Utf8, false),
+                Field::new("prom_series_key", DataType::Utf8, false),
             ]));
             let batch = RecordBatch::try_new(
                 Arc::clone(&s),
@@ -1543,6 +1544,7 @@ mod tests {
                     ),
                     Arc::new(Float64Array::from(vec![1.0, 2.0])),
                     Arc::new(StringArray::from(vec!["cpu", "cpu"])),
+                    crate::querier::udf::tests::series_key_array(&["{}", "{}"]),
                 ],
             )
             .unwrap();

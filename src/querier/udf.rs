@@ -112,32 +112,11 @@ pub fn prom_series_key_udf() -> ScalarUDF {
     )
 }
 
-/// Canonical series-key string for the map at row `i`: sorted raw `k=v` pairs
-/// joined by `\x1f`, with `\`, `=`, `\x1f` backslash-escaped so the encoding is
-/// unambiguous (matches the `GroupKey` escaping scheme).
+/// Canonical series-key string for the map at row `i`: delegates to the shared
+/// [`sol_lib::event::series_key::series_key`] so the write path (the codec's
+/// materialized `prom_series_key` column) and this read-side UDF cannot diverge.
 fn series_key_string(map: &MapArray, i: usize) -> String {
-    let mut entries = map_row_entries(map, i).unwrap_or_default();
-    entries.sort();
-    let mut out = String::new();
-    for (k, v) in entries {
-        if !out.is_empty() {
-            out.push('\u{1f}');
-        }
-        push_escaped(&mut out, &k);
-        out.push('=');
-        push_escaped(&mut out, &v);
-    }
-    out
-}
-
-/// Append `s` escaping `\`, `=`, `\x1f` (shared escaping with `GroupKey`).
-fn push_escaped(out: &mut String, s: &str) {
-    for c in s.chars() {
-        if c == '\\' || c == '=' || c == '\u{1f}' {
-            out.push('\\');
-        }
-        out.push(c);
-    }
+    sol_lib::event::series_key::series_key(map_row_entries(map, i).unwrap_or_default())
 }
 
 /// Normalize an OTLP attribute key to its Prometheus label name: every
@@ -323,6 +302,35 @@ pub(in crate::querier) mod tests {
             b.append(true).unwrap();
         }
         Arc::new(b.finish())
+    }
+
+    /// Build the stored `prom_series_key` Utf8 column for test fixtures from the
+    /// same JSON-object strings passed to [`json_map_array`]: parses each object
+    /// identically, then computes the canonical key via the shared
+    /// [`sol_lib::event::series_key::series_key`] — so a fixture's stored column
+    /// equals exactly what the read side (and the write-side codec) would store.
+    pub(in crate::querier) fn series_key_array<S: AsRef<str>>(rows: &[S]) -> ArrayRef {
+        let keys: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let entries: Vec<(String, String)> =
+                    match serde_json::from_str::<serde_json::Value>(row.as_ref()) {
+                        Ok(serde_json::Value::Object(map)) => map
+                            .into_iter()
+                            .map(|(k, v)| {
+                                let val = match v {
+                                    serde_json::Value::String(s) => s,
+                                    other => other.to_string(),
+                                };
+                                (k, val)
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                sol_lib::event::series_key::series_key(entries)
+            })
+            .collect();
+        Arc::new(StringArray::from(keys))
     }
 
     #[test]

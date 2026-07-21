@@ -1693,6 +1693,18 @@ fn common_metric_schema_fields() -> Vec<Arc<Type>> {
                 .build()
                 .expect("prom_name field"),
         ),
+        // prom_series_key — REQUIRED UTF8: the canonical, groupable series key
+        // (sorted, escaped raw `k=v` join of the data-point attributes,
+        // `sol_core::event::series_key`), materialized at write so the read side
+        // partitions windows/aggregates on a plain Utf8 column instead of the
+        // per-row `prom_series_key` UDF over the `attributes` MAP.
+        Arc::new(
+            Type::primitive_type_builder("prom_series_key", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("prom_series_key field"),
+        ),
     ]
 }
 
@@ -2302,6 +2314,22 @@ fn write_common_metric_columns(
         write_required_bytes_column(rg, &prom_names)?;
     }
 
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
+    }
+
     Ok(())
 }
 
@@ -2640,6 +2668,22 @@ fn write_common_metric_columns_histogram(
             .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
             .collect();
         write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
     }
 
     Ok(())
@@ -3009,6 +3053,22 @@ fn write_common_metric_columns_exp_histogram(
             .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
             .collect();
         write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
     }
 
     Ok(())
@@ -3441,6 +3501,22 @@ fn write_common_metric_columns_summary(
             .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
             .collect();
         write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
     }
 
     Ok(())
@@ -5098,8 +5174,8 @@ mod tests {
         let schema = build_gauge_schema();
         assert_eq!(
             schema.get_fields().len(),
-            18,
-            "expected 18 columns in gauge schema"
+            19,
+            "expected 19 columns in gauge schema"
         );
     }
 
@@ -5113,6 +5189,26 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
         let prom = read_required_string_column(&*rg, 16, 1);
         assert_eq!(prom, vec!["test_gauge_milliseconds"]);
+    }
+
+    #[test]
+    fn test_metric_row_has_stored_series_key() {
+        // FR2: the write path materializes `prom_series_key` (leaf 17, right after
+        // prom_name at leaf 16) as the canonical series key over the data-point
+        // attributes — byte-for-byte the shared `sol_core::event::series_key`
+        // output the querier's read-side UDF computes over the same MAP entries,
+        // so write and read cannot diverge. The gauge dp carries `dp.key=dp-val`.
+        let metric = create_gauge_metric(Some(1), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let stored = read_required_string_column(&*rg, 17, 1);
+        let expected = sol_core::event::series_key::series_key(vec![(
+            "dp.key".to_string(),
+            "dp-val".to_string(),
+        )]);
+        assert_eq!(stored, vec![expected]);
+        assert_eq!(stored, vec!["dp.key=dp-val".to_string()]);
     }
 
     #[test]
@@ -5229,11 +5325,11 @@ mod tests {
         assert_eq!(names, vec!["gauge-svc"]);
 
         // Column 16: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 17, 1);
+        let int_vals = read_optional_i64_column(&*rg, 18, 1);
         assert_eq!(int_vals, vec![Some(42)]);
 
         // Column 17: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals, vec![None]);
     }
 
@@ -5245,11 +5341,11 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 17, 1);
+        let int_vals = read_optional_i64_column(&*rg, 18, 1);
         assert_eq!(int_vals, vec![None]);
 
         // Column 17: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 42.5).abs() < 1e-10);
     }
@@ -5302,7 +5398,7 @@ mod tests {
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
 
         let rg = reader.get_row_group(0).expect("row group");
-        let int_vals = read_optional_i64_column(&*rg, 17, 2);
+        let int_vals = read_optional_i64_column(&*rg, 18, 2);
         assert_eq!(int_vals, vec![Some(10), Some(20)]);
     }
 
@@ -5534,8 +5630,8 @@ mod tests {
         let schema = build_sum_schema();
         assert_eq!(
             schema.get_fields().len(),
-            20,
-            "expected 20 columns in sum schema"
+            21,
+            "expected 21 columns in sum schema"
         );
     }
 
@@ -5548,11 +5644,11 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 18: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 19, 1);
+        let temps = read_optional_i32_column(&*rg, 20, 1);
         assert_eq!(temps, vec![Some(2)]);
 
         // Column 19: is_monotonic (OPTIONAL BOOLEAN)
-        let mono = read_optional_bool_column(&*rg, 20, 1);
+        let mono = read_optional_bool_column(&*rg, 21, 1);
         assert_eq!(mono, vec![Some(false)]);
     }
 
@@ -5565,16 +5661,16 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 17: double_value
-        let dbl_vals = read_optional_double_column(&*rg, 18, 1);
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 99.5).abs() < 1e-10);
 
         // Column 18: aggregation_temporality
-        let temps = read_optional_i32_column(&*rg, 19, 1);
+        let temps = read_optional_i32_column(&*rg, 20, 1);
         assert_eq!(temps, vec![Some(1)]); // DELTA
 
         // Column 19: is_monotonic
-        let mono = read_optional_bool_column(&*rg, 20, 1);
+        let mono = read_optional_bool_column(&*rg, 21, 1);
         assert_eq!(mono, vec![Some(true)]);
     }
 
@@ -5635,8 +5731,8 @@ mod tests {
         let schema = build_histogram_schema();
         assert_eq!(
             schema.get_fields().len(),
-            23,
-            "expected 23 columns in histogram schema"
+            24,
+            "expected 24 columns in histogram schema"
         );
     }
 
@@ -5648,13 +5744,13 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 20: bucket_counts (OPTIONAL UTF8, JSON)
-        let bc = read_string_column(&*rg, 21, 1);
+        let bc = read_string_column(&*rg, 22, 1);
         assert!(bc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(bc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![10, 30, 40, 20]);
 
         // Column 21: explicit_bounds (OPTIONAL UTF8, JSON)
-        let eb = read_string_column(&*rg, 22, 1);
+        let eb = read_string_column(&*rg, 23, 1);
         assert!(eb[0].is_some());
         let bounds: Vec<f64> = serde_json::from_str(eb[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(bounds, vec![10.0, 100.0, 500.0]);
@@ -5668,19 +5764,19 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 17, 1);
+        let counts = read_required_i64_column(&*rg, 18, 1);
         assert_eq!(counts, vec![100]);
 
         // Column 17: sum (OPTIONAL DOUBLE)
-        let sums = read_optional_double_column(&*rg, 18, 1);
+        let sums = read_optional_double_column(&*rg, 19, 1);
         assert!((sums[0].unwrap() - 5000.0).abs() < 1e-10);
 
         // Column 18: min (OPTIONAL DOUBLE)
-        let mins = read_optional_double_column(&*rg, 19, 1);
+        let mins = read_optional_double_column(&*rg, 20, 1);
         assert!((mins[0].unwrap() - 1.0).abs() < 1e-10);
 
         // Column 19: max (OPTIONAL DOUBLE)
-        let maxes = read_optional_double_column(&*rg, 20, 1);
+        let maxes = read_optional_double_column(&*rg, 21, 1);
         assert!((maxes[0].unwrap() - 999.0).abs() < 1e-10);
     }
 
@@ -5751,8 +5847,8 @@ mod tests {
         let schema = build_exp_histogram_schema();
         assert_eq!(
             schema.get_fields().len(),
-            28,
-            "expected 28 columns in exp histogram schema"
+            29,
+            "expected 29 columns in exp histogram schema"
         );
     }
 
@@ -5764,35 +5860,35 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 20: scale (REQUIRED INT32)
-        let scales = read_required_i32_column(&*rg, 21, 1);
+        let scales = read_required_i32_column(&*rg, 22, 1);
         assert_eq!(scales, vec![3]);
 
         // Column 21: zero_count (REQUIRED INT64)
-        let zc = read_required_i64_column(&*rg, 22, 1);
+        let zc = read_required_i64_column(&*rg, 23, 1);
         assert_eq!(zc, vec![2]);
 
         // Column 23: positive_offset (OPTIONAL INT32)
-        let po = read_optional_i32_column(&*rg, 24, 1);
+        let po = read_optional_i32_column(&*rg, 25, 1);
         assert_eq!(po, vec![Some(1)]);
 
         // Column 24: positive_bucket_counts (OPTIONAL UTF8, JSON)
-        let pbc = read_string_column(&*rg, 25, 1);
+        let pbc = read_string_column(&*rg, 26, 1);
         assert!(pbc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(pbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![5, 10, 15, 20]);
 
         // Column 25: negative_offset (OPTIONAL INT32)
-        let no = read_optional_i32_column(&*rg, 26, 1);
+        let no = read_optional_i32_column(&*rg, 27, 1);
         assert_eq!(no, vec![Some(-2)]);
 
         // Column 26: negative_bucket_counts (OPTIONAL UTF8, JSON)
-        let nbc = read_string_column(&*rg, 27, 1);
+        let nbc = read_string_column(&*rg, 28, 1);
         assert!(nbc[0].is_some());
         let narr: Vec<u64> = serde_json::from_str(nbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(narr, vec![3, 7]);
 
         // Column 27: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 28, 1);
+        let temps = read_optional_i32_column(&*rg, 29, 1);
         assert_eq!(temps, vec![Some(2)]);
     }
 
@@ -5858,8 +5954,8 @@ mod tests {
         let schema = build_summary_schema();
         assert_eq!(
             schema.get_fields().len(),
-            19,
-            "expected 19 columns in summary schema"
+            20,
+            "expected 20 columns in summary schema"
         );
     }
 
@@ -5871,15 +5967,15 @@ mod tests {
         let rg = reader.get_row_group(0).expect("row group");
 
         // Column 16: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 17, 1);
+        let counts = read_required_i64_column(&*rg, 18, 1);
         assert_eq!(counts, vec![200]);
 
         // Column 17: sum (REQUIRED DOUBLE)
-        let sums = read_required_double_column(&*rg, 18, 1);
+        let sums = read_required_double_column(&*rg, 19, 1);
         assert!((sums[0] - 10_000.0).abs() < 1e-10);
 
         // Column 18: quantile_values (OPTIONAL UTF8, JSON)
-        let qv = read_string_column(&*rg, 19, 1);
+        let qv = read_string_column(&*rg, 20, 1);
         assert!(qv[0].is_some());
         let json: serde_json::Value =
             serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");
@@ -5967,7 +6063,7 @@ mod tests {
                 .schema()
                 .get_fields()
                 .len(),
-            18, // gauge schema has 18 columns (incl. prom_name)
+            19, // gauge schema has 19 columns (incl. prom_name + prom_series_key)
         );
     }
 

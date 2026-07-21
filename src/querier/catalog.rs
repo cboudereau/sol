@@ -163,6 +163,10 @@ fn metric_union_schema() -> SchemaRef {
         // prom_name — normalized Prometheus name (read-side filter column);
         // REQUIRED (clean cutover — every metric file carries it).
         utf8("prom_name", false),
+        // prom_series_key — canonical, groupable series key (== series_key_string);
+        // REQUIRED (clean cutover). Window/aggregate/rollup partitions key on this
+        // plain Utf8 column instead of the per-row UDF over the `attributes` MAP.
+        utf8("prom_series_key", false),
         // number (gauge/sum)
         i64n("int_value"),
         f64n("double_value"),

@@ -200,6 +200,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let metric_batch = RecordBatch::try_new(
             Arc::clone(&metric_schema),
@@ -211,6 +212,8 @@ mod tests {
                 ),
                 Arc::new(datafusion::arrow::array::Float64Array::from(vec![0.5])),
                 Arc::new(StringArray::from(vec!["cpu"])),
+                // no attributes column here → empty series key.
+                Arc::new(StringArray::from(vec![""])),
             ],
         )
         .unwrap();

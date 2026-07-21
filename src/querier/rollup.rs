@@ -100,8 +100,6 @@ pub async fn rollup_batches(
     }
     let schema = batches[0].schema();
     let ctx = SessionContext::new();
-    // The attributes column is a Map (not partitionable); key on the series-key UDF.
-    ctx.register_udf(super::udf::prom_series_key_udf());
     ctx.register_table(
         "m",
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![batches])?),
@@ -111,10 +109,10 @@ pub async fn rollup_batches(
 }
 
 /// The downsample plan: keep the last raw sample per `(name, service_name,
-/// attributes-series-key, time-bucket)`, project the original columns back, and
+/// prom_series_key, time-bucket)`, project the original columns back, and
 /// sort `(service_name, prom_name, time)` so the tier files prune like raw ones.
-/// `arrow_schema` provides the column projection; the table must come from a ctx
-/// that has [`super::udf::prom_series_key_udf`] registered.
+/// `arrow_schema` provides the column projection and must carry the stored
+/// `prom_series_key` column (FR2 — grouped on directly, no UDF).
 fn rollup_plan(
     table: DataFrame,
     arrow_schema: &datafusion::arrow::datatypes::SchemaRef,
@@ -140,13 +138,11 @@ fn rollup_plan(
     // aggregates cleanly, so memory is bounded by the group count (cardinality ×
     // buckets) regardless of day size — the window+double-sort plan held ~the
     // whole pool and OOMed nondeterministically on full days. Group by the
-    // series key (the attributes Map can't be a GROUP BY key — hence the UDF)
+    // stored `prom_series_key` column (FR2 — the attributes Map can't be a GROUP
+    // BY key; the write side materializes the key so the read side needs no UDF)
     // plus the bucket index `time / resolution`; `last_value(col ORDER BY time)`
     // picks each column from the latest-timestamp row in the bucket.
     let bucket = (cast(col("time_unix_nano"), Int64) / lit(resolution_ns)).alias("__bucket");
-    let series_key = super::udf::prom_series_key_udf()
-        .call(vec![col("attributes")])
-        .alias("__series_key");
     // `name`/`service_name` are real group keys (emitted directly); every other
     // column — including the `attributes` Map, which `last_value` carries by
     // position (it never compares the value, only the ORDER BY time) — is taken
@@ -163,7 +159,12 @@ fn rollup_plan(
         .fields()
         .iter()
         .map(|f| f.name().as_str())
-        .filter(|n| *n != "name" && *n != "service_name" && !VALUE_AGG_COLS.contains(n))
+        .filter(|n| {
+            *n != "name"
+                && *n != "service_name"
+                && *n != "prom_series_key"
+                && !VALUE_AGG_COLS.contains(n)
+        })
         .map(|n| {
             last_value_udaf()
                 .call(vec![col(n)])
@@ -188,7 +189,15 @@ fn rollup_plan(
     // count(scalar) excludes nulls and yields Int64; cast to Float64 happens in
     // the projection below (DataFusion rejects a cast wrapping an aggregate).
     aggrs.push(count(scalar).alias("value_count"));
-    let agg = table.aggregate(vec![col("name"), col("service_name"), series_key, bucket], aggrs)?;
+    let agg = table.aggregate(
+        vec![
+            col("name"),
+            col("service_name"),
+            col("prom_series_key"),
+            bucket,
+        ],
+        aggrs,
+    )?;
     // Project: the input columns (minus any value_* the input happened to carry),
     // then the four value_* aggregates appended exactly once — so the rollup file
     // always carries them regardless of the scanned schema. Sorted
@@ -257,7 +266,6 @@ pub async fn generate_rollup(dir: &Path, tier: RollupTier) -> crate::Result<Opti
     // Single partition: the rollup is a real aggregation (window + sort), not a
     // pre-sorted merge, so keep one partition to bound the spill reservation.
     let ctx = merge_ctx(MERGE_MEM_BUDGET_BYTES, Some(1))?;
-    ctx.register_udf(super::udf::prom_series_key_udf());
     let paths: Vec<String> = sources.iter().map(|p| p.to_string_lossy().to_string()).collect();
     let scan = ctx.read_parquet(paths, ParquetReadOptions::default()).await?;
     let arrow_schema: datafusion::arrow::datatypes::SchemaRef =
@@ -332,6 +340,7 @@ mod tests {
             Field::new("double_value", DataType::Float64, true),
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
             // int_value placed after prom_name to keep the positional column
             // indices the existing tests rely on (time=3, double=4, bucket=5).
             // Realistic raw input: NO value_* columns — the rollup plan adds them.
@@ -351,6 +360,8 @@ mod tests {
                 Arc::new(Float64Array::from(vals.to_vec())),
                 Arc::new(StringArray::from(buckets.to_vec())),
                 Arc::new(StringArray::from(vec!["m"; n])),
+                // series key for `{}` attributes == "".
+                Arc::new(StringArray::from(vec![""; n])),
                 Arc::new(datafusion::arrow::array::Int64Array::from(
                     vec![None::<i64>; n],
                 )),
@@ -373,6 +384,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]))
     }
 
@@ -387,6 +399,8 @@ mod tests {
                 Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                 Arc::new(Float64Array::from(vals.to_vec())),
                 Arc::new(StringArray::from(vec!["m"; n])),
+                // series key for `{}` attributes == "".
+                Arc::new(StringArray::from(vec![""; n])),
             ],
         )
         .unwrap()
@@ -557,7 +571,6 @@ mod tests {
         // window (WindowAggExec) + sort — that's what bounds its memory and
         // stops the nondeterministic ExternalSorterMerge OOM on full days.
         let ctx = SessionContext::new();
-        ctx.register_udf(super::super::udf::prom_series_key_udf());
         let schema = counter_schema();
         ctx.register_table(
             "m",
@@ -580,6 +593,33 @@ mod tests {
         assert!(
             !display.contains("WindowAggExec") && !display.contains("BoundedWindowAggExec"),
             "rollup must not use a window operator (un-spillable), got:\n{display}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollup_groups_on_stored_column() {
+        // FR2: the rollup groups on the stored `prom_series_key` column, not the
+        // per-row `prom_series_key(attributes)` UDF. The logical plan groups on the
+        // column (no UDF call form) and rolls up correctly.
+        let ctx = SessionContext::new();
+        let schema = counter_schema();
+        ctx.register_table(
+            "m",
+            Arc::new(
+                MemTable::try_new(Arc::clone(&schema), vec![vec![batch(&[0, 1], &[1.0, 2.0], &["[]", "[]"])]])
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        let df = rollup_plan(ctx.table("m").await.unwrap(), &schema, M5_NS).unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("prom_series_key"),
+            "rollup groups on the stored column: {plan}"
+        );
+        assert!(
+            !plan.contains("prom_series_key("),
+            "no per-row prom_series_key UDF call in the rollup plan: {plan}"
         );
     }
 

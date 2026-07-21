@@ -102,7 +102,7 @@ classDiagram
 - reads-each-datum-once + all rate/sum-by parity suites green
 **Verify**: `cargo test --lib querier:: && make check-clippy`
 **Acceptance criteria**:
-- [ ] Tests green; UDF removed from the metric window/aggregate/rollup partition paths; logs/traces schemas unchanged
+- [x] Tests green (querier 264/0/2, codecs 66); prom_series_key REQUIRED col in both schemas, computed write-side via shared sol-core `series_key` (write==read structurally); UDF off all metric window/aggregate/rollup partition paths; logs/traces schemas unchanged
 **Depends on**: task 2 — **REOPENED 2026-07-21 (FR1 live missed NFR1; user approved wipe)**
 **Time-box**: ~90 min
 

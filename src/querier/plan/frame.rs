@@ -107,7 +107,7 @@ pub fn lower_topk(
 /// aware (`v < prev_v` → use `v`), divided by the elapsed seconds — i.e. the
 /// latest inter-sample slope. Drops the first sample of each series (no
 /// predecessor) and zero-`dt` duplicate timestamps. Output columns:
-/// `service_name`, `attributes`, `time_unix_nano`, `v`.
+/// `service_name`, `attributes`, `prom_series_key`, `time_unix_nano`, `v`.
 ///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
@@ -143,6 +143,7 @@ pub fn irate(
         .select(vec![
             col("service_name"),
             col("attributes"),
+            col("prom_series_key"),
             col(time_col),
             rate,
         ])?)
@@ -175,7 +176,7 @@ pub fn irate(
 /// 5. for `rate`, divide the extrapolated increase by the window seconds
 ///    (`range_ns / 1e9`).
 ///
-/// Output columns: `service_name`, `attributes`, `time_unix_nano`, `v` — the same
+/// Output columns: `service_name`, `attributes`, `prom_series_key`, `time_unix_nano`, `v` — the same
 /// shape as [`irate`] so the downstream grid-align + resample are unaffected.
 ///
 /// # Errors
@@ -302,6 +303,7 @@ pub fn rate(
     Ok(windowed.select(vec![
         col("service_name"),
         col("attributes"),
+        col("prom_series_key"),
         col(time_col),
         v,
     ])?)
@@ -309,7 +311,7 @@ pub fn rate(
 
 /// P7 — `<agg>_over_time`: a sliding `agg(v)` over a `RANGE BETWEEN range_ns
 /// PRECEDING AND CURRENT ROW` frame, partitioned by `part`, ordered by the ns
-/// time key. Output columns: `service_name`, `attributes`, `time_unix_nano`, `v`.
+/// time key. Output columns: `service_name`, `attributes`, `prom_series_key`, `time_unix_nano`, `v`.
 ///
 /// # Errors
 /// Propagates DataFusion plan-construction errors.
@@ -346,6 +348,7 @@ pub fn over_time(
     Ok(df.select(vec![
         col("service_name"),
         col("attributes"),
+        col("prom_series_key"),
         col(time_col),
         windowed,
     ])?)
@@ -387,6 +390,7 @@ pub fn over_time_ratio(
     Ok(df.select(vec![
         col("service_name"),
         col("attributes"),
+        col("prom_series_key"),
         col(time_col),
         v,
     ])?)
@@ -418,6 +422,7 @@ mod tests {
                 false,
             ),
             crate::querier::udf::tests::attributes_map_field(),
+            Field::new("prom_series_key", DataType::Utf8, false),
             Field::new("double_value", DataType::Float64, true),
         ]));
         let batch = RecordBatch::try_new(
@@ -438,6 +443,8 @@ mod tests {
                     .with_timezone("UTC"),
                 ),
                 crate::querier::udf::tests::json_map_array(&["{}", "{}", "{}"]),
+                // series key for `{}` attributes == series_key_string("{}") == "".
+                Arc::new(StringArray::from(vec!["", "", ""])),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 60.0])),
             ],
         )
@@ -466,6 +473,7 @@ mod tests {
             .select(vec![
                 col("service_name"),
                 col("attributes"),
+                col("prom_series_key"),
                 col("time_unix_nano"),
                 col("double_value").alias("v"),
             ])
@@ -582,6 +590,7 @@ mod tests {
                 false,
             ),
             crate::querier::udf::tests::attributes_map_field(),
+            Field::new("prom_series_key", DataType::Utf8, false),
             Field::new("double_value", DataType::Float64, true),
         ]));
         let n = samples.len();
@@ -595,6 +604,8 @@ mod tests {
                 Arc::new(StringArray::from(vec!["http_total"; n])),
                 Arc::new(TimestampNanosecondArray::from(times).with_timezone("UTC")),
                 crate::querier::udf::tests::json_map_array(&attrs),
+                // series key for `{}` attributes == "".
+                Arc::new(StringArray::from(vec![""; n])),
                 Arc::new(Float64Array::from(vals)),
             ],
         )

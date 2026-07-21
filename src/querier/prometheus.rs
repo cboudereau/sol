@@ -233,6 +233,7 @@ async fn metric_base_df(
         col("name"),
         col("service_name"),
         col("attributes"),
+        col("prom_series_key"),
         col("time_unix_nano"),
     ];
     proj.extend(value_cols);
@@ -245,12 +246,12 @@ fn metric_value_cols(name: &str) -> Vec<datafusion::logical_expr::Expr> {
     vec![metric_value_expr(name).alias("v")]
 }
 
-/// A groupable series key over the columnar `attributes` MAP. DataFusion cannot
-/// `PARTITION BY`/`GROUP BY` a `Map` column, so window partitions key on this
-/// `prom_series_key(attributes)` UDF output instead (promql-pushdown T7).
+/// A groupable series key: the stored `prom_series_key` Utf8 column (materialized
+/// at write == `series_key_string(attributes)`). Window/aggregate partitions key
+/// on this plain column instead of a per-row UDF over the un-partitionable
+/// `attributes` MAP — the FR2 stored-column cutover (series-key-column ADR).
 fn prom_series_key_expr() -> datafusion::logical_expr::Expr {
-    use datafusion::prelude::col;
-    super::udf::prom_series_key_udf().call(vec![col("attributes")])
+    datafusion::prelude::col("prom_series_key")
 }
 
 /// The `(name, service_name, series-key)` window partition for PromQL.
@@ -694,17 +695,13 @@ fn lower_topk_df(
     let part: Vec<datafusion::logical_expr::Expr> = if has("prom_group_key") {
         vec![col("prom_group_key")]
     } else {
-        // `attributes` is a Map (not partitionable) → key on prom_series_key(attributes).
-        ["name", "service_name", "attributes"]
+        // Key on the stored `prom_series_key` column (FR2), not the un-partitionable
+        // `attributes` Map: whichever identity columns the lowered frame carries
+        // (`rate`/`over_time` drop `name`; a bare selector keeps it).
+        ["name", "service_name", "prom_series_key"]
             .into_iter()
             .filter(|n| has(n))
-            .map(|n| {
-                if n == "attributes" {
-                    prom_series_key_expr()
-                } else {
-                    col(n)
-                }
-            })
+            .map(col)
             .collect()
     };
     // The output columns we keep (everything the lowered frame carried, minus the
@@ -803,6 +800,7 @@ async fn selector_base_df(
         col("name"),
         col("service_name"),
         col("attributes"),
+        col("prom_series_key"),
         col("time_unix_nano"),
         metric_value_expr(name).alias("v"),
     ])?)
@@ -1182,8 +1180,8 @@ impl LabelCols {
         use datafusion::arrow::array::{Array, MapArray};
         use datafusion::arrow::compute::cast;
         use datafusion::arrow::datatypes::DataType;
-        // value / internal / raw-name columns are not labels.
-        const SKIP: [&str; 4] = ["v", "time_unix_nano", "rn", "name"];
+        // value / internal / raw-name / series-key columns are not labels.
+        const SKIP: [&str; 5] = ["v", "time_unix_nano", "rn", "name", "prom_series_key"];
         let schema = batch.schema();
         let mut promoted = Vec::new();
         let mut attrs = None;
@@ -3451,6 +3449,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -3476,6 +3475,7 @@ mod tests {
                     "http_total",
                     "http_total",
                 ])),
+                crate::querier::udf::tests::series_key_array(&["{}", "{}", "{}"]),
             ],
         )
         .unwrap();
@@ -3518,6 +3518,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -3535,6 +3536,11 @@ mod tests {
                 ]),
                 Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])),
                 Arc::new(StringArray::from(vec!["up", "up", "up"])),
+                crate::querier::udf::tests::series_key_array(&[
+                    r#"{"host":"a"}"#,
+                    r#"{"host":"b"}"#,
+                    r#"{"host":"c"}"#,
+                ]),
             ],
         )
         .unwrap();
@@ -3612,6 +3618,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         // (cpu, mode, value) at t=1s, repeated at t=2s with the same values.
         let dims = [("0", "user", 1.0), ("0", "system", 2.0), ("1", "user", 3.0), ("1", "system", 4.0)];
@@ -3636,6 +3643,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
+                crate::querier::udf::tests::series_key_array(&attrs),
             ],
         )
         .unwrap();
@@ -3972,6 +3980,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -3986,6 +3995,7 @@ mod tests {
                 // idle, idle, idle, +600 burst, idle
                 Arc::new(Float64Array::from(vec![0.0, 0.0, 0.0, 600.0, 600.0])),
                 Arc::new(StringArray::from(vec!["http_total"; 5])),
+                crate::querier::udf::tests::series_key_array(&["{}"; 5]),
             ],
         )
         .unwrap();
@@ -4059,6 +4069,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let (mut svc, mut name, mut t, mut attrs, mut val, mut pn) =
             (vec![], vec![], vec![], vec![], vec![], vec![]);
@@ -4083,6 +4094,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
+                crate::querier::udf::tests::series_key_array(&attrs),
             ],
         )
         .unwrap();
@@ -4208,6 +4220,7 @@ mod tests {
             Field::new("double_value", DataType::Float64, true),
             Field::new("is_monotonic", DataType::Boolean, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         // Two series of the same OTLP metric, differing only by status_code.
         let batch = RecordBatch::try_new(
@@ -4236,6 +4249,10 @@ mod tests {
                     "http_server_requests_bytes",
                     "http_server_requests_bytes",
                 ])),
+                crate::querier::udf::tests::series_key_array(&[
+                    r#"{"http.response.status_code":"200","http.route":"/user"}"#,
+                    r#"{"http.response.status_code":"500","http.route":"/user"}"#,
+                ]),
             ],
         )
         .unwrap();
@@ -4338,6 +4355,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let mk = |times: &[i64], vals: &[f64]| {
             let n = times.len();
@@ -4350,6 +4368,7 @@ mod tests {
                     Arc::new(TimestampNanosecondArray::from(times.to_vec()).with_timezone("UTC")),
                     Arc::new(Float64Array::from(vals.to_vec())),
                     Arc::new(StringArray::from(vec!["reqs"; n])),
+                crate::querier::udf::tests::series_key_array(&vec![r#"{"sc":"a"}"#; n]),
                 ],
             )
             .unwrap()
@@ -4444,6 +4463,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         // two counter series at t=1s,2s: sc=a rises 10→30 (rate 20), sc=b 5→10 (rate 5)
         let batch = RecordBatch::try_new(
@@ -4468,6 +4488,12 @@ mod tests {
                 ),
                 Arc::new(Float64Array::from(vec![10.0, 30.0, 5.0, 10.0])),
                 Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
+                crate::querier::udf::tests::series_key_array(&[
+                    r#"{"sc":"a"}"#,
+                    r#"{"sc":"a"}"#,
+                    r#"{"sc":"b"}"#,
+                    r#"{"sc":"b"}"#,
+                ]),
             ],
         )
         .unwrap();
@@ -4528,6 +4554,37 @@ mod tests {
         assert!(
             plan.contains("series_rank"),
             "filters on the rank column: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_partitions_on_stored_column() {
+        // FR2: rate() partitions its windows on the stored `prom_series_key`
+        // column, not the per-row `prom_series_key(attributes)` UDF. The lowered
+        // logical plan references the column (no UDF call form) and the numeric
+        // result is unchanged (matches the `counter_engine` rate golden).
+        let engine = counter_engine().await;
+        let inner = parser::parse("rate(http_total[5m])").unwrap();
+        let df = lower_range_df(&engine, &inner, 0, 10_000_000_000, "metrics")
+            .await
+            .unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("prom_series_key"),
+            "windows partition on the stored column: {plan}"
+        );
+        assert!(
+            !plan.contains("prom_series_key("),
+            "no per-row prom_series_key UDF call on the rate path: {plan}"
+        );
+        // Result parity: same extrapolated rate as `test_rate_executes_and_computes_values`
+        // for the identical query (t=2s → 0.1, t=3s → 0.2 over the counter 10,30,60).
+        let resp = handle_range(&engine, "rate(http_total[5m])", 0, 10_000_000_000, 0, 10_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.data.result[0].values,
+            vec![(2.0, (0.1_f64).to_string()), (3.0, (0.2_f64).to_string())]
         );
     }
 
@@ -4646,6 +4703,7 @@ mod tests {
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -4661,6 +4719,7 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("[0,20,30,30,15,5]")])),
                 Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
                 Arc::new(StringArray::from(vec!["http_server_request_duration_seconds"])),
+                crate::querier::udf::tests::series_key_array(&["{}"]),
             ],
         )
         .unwrap();
@@ -4742,6 +4801,7 @@ mod tests {
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let mk = |counts: &str| {
             RecordBatch::try_new(
@@ -4756,6 +4816,7 @@ mod tests {
                     Arc::new(StringArray::from(vec![Some(counts)])),
                     Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
                     Arc::new(StringArray::from(vec!["dur_seconds"])),
+                crate::querier::udf::tests::series_key_array(&["{}"]),
                 ],
             )
             .unwrap()
@@ -4841,6 +4902,7 @@ mod tests {
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let mk = |ts: i64, counts: &str| {
             RecordBatch::try_new(
@@ -4855,6 +4917,7 @@ mod tests {
                     Arc::new(StringArray::from(vec![Some(counts)])),
                     Arc::new(StringArray::from(vec![Some("[10,20,30,40,50]")])),
                     Arc::new(StringArray::from(vec!["dur_seconds"])),
+                crate::querier::udf::tests::series_key_array(&["{}"]),
                 ],
             )
             .unwrap()
@@ -4957,6 +5020,7 @@ mod tests {
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         // two cumulative-increasing snapshots at t=1s and t=2s (bounds [10,20])
         let batch = RecordBatch::try_new(
@@ -4980,6 +5044,7 @@ mod tests {
                     "http_server_request_duration_seconds",
                     "http_server_request_duration_seconds",
                 ])),
+                crate::querier::udf::tests::series_key_array(&["{}", "{}"]),
             ],
         )
         .unwrap();
@@ -5309,6 +5374,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         #[allow(clippy::cast_possible_truncation)] // small test-fixture cardinality
         let n = (HC_CARDINALITY * HC_POINTS) as usize;
@@ -5341,6 +5407,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&attrs),
                 Arc::new(Float64Array::from(val)),
                 Arc::new(StringArray::from(pn)),
+                crate::querier::udf::tests::series_key_array(&attrs),
             ],
         )
         .unwrap();
@@ -5506,6 +5573,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let mk = || {
             RecordBatch::try_new(
@@ -5517,6 +5585,7 @@ mod tests {
                     Arc::new(TimestampNanosecondArray::from(vec![0i64]).with_timezone("UTC")),
                     Arc::new(Float64Array::from(vec![1.0])),
                     Arc::new(StringArray::from(vec!["reqs"])),
+                crate::querier::udf::tests::series_key_array(&vec![r#"{"sc":"a"}"#]),
                 ],
             )
             .unwrap()
@@ -5705,6 +5774,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         // Day-0 (sealed) bucket [0, 5m): samples 10, 99, 20 — peak 99 is NOT last.
         // Day-1 (live) sample at DAY+1m: 5.
@@ -5726,6 +5796,7 @@ mod tests {
                 ),
                 Arc::new(Float64Array::from(vec![10.0, 99.0, 20.0, 5.0])),
                 Arc::new(StringArray::from(vec!["g"; n])),
+                crate::querier::udf::tests::series_key_array(&vec![r#"{"sc":"a"}"#; n]),
             ],
         )
         .unwrap();
@@ -5746,6 +5817,7 @@ mod tests {
             ),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
             Field::new("value_min", DataType::Float64, true),
             Field::new("value_max", DataType::Float64, true),
             Field::new("value_sum", DataType::Float64, true),
@@ -5764,6 +5836,7 @@ mod tests {
                 ),
                 Arc::new(Float64Array::from(vec![20.0])),
                 Arc::new(StringArray::from(vec!["g"])),
+                crate::querier::udf::tests::series_key_array(&[r#"{"sc":"a"}"#]),
                 Arc::new(Float64Array::from(vec![10.0])), // value_min
                 Arc::new(Float64Array::from(vec![99.0])), // value_max
                 Arc::new(Float64Array::from(vec![129.0])), // value_sum (10+99+20)
@@ -6040,6 +6113,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let n = 41usize; // 0..40 → 10m at 15s
         #[allow(clippy::cast_possible_wrap)] // small test-fixture index
@@ -6055,6 +6129,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
                 Arc::new(Float64Array::from(vals)),
                 Arc::new(StringArray::from(vec!["c"; n])),
+                crate::querier::udf::tests::series_key_array(&vec!["{}"; n]),
             ],
         )
         .unwrap();
@@ -6101,6 +6176,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         const STEP_NS: i64 = 300_000_000_000; // 5m sample interval
         let n = 361usize; // 360 steps × 5m = 30h → crosses one UTC midnight
@@ -6117,6 +6193,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&vec!["{}"; n]),
                 Arc::new(Float64Array::from(vals)),
                 Arc::new(StringArray::from(vec!["c"; n])),
+                crate::querier::udf::tests::series_key_array(&vec!["{}"; n]),
             ],
         )
         .unwrap();
@@ -6370,6 +6447,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let n = 41usize; // 0..40 → 10m at 15s, per series
         let mut svc: Vec<&str> = Vec::new();
@@ -6394,6 +6472,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&vec!["{}"; total]),
                 Arc::new(Float64Array::from(vals)),
                 Arc::new(StringArray::from(vec!["m"; total])),
+                crate::querier::udf::tests::series_key_array(&vec!["{}"; total]),
             ],
         )
         .unwrap();
@@ -6676,6 +6755,7 @@ mod tests {
             crate::querier::udf::tests::attributes_map_field(),
             Field::new("double_value", DataType::Float64, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let n = times_ns.len();
         #[allow(clippy::cast_precision_loss)]
@@ -6689,6 +6769,7 @@ mod tests {
                 crate::querier::udf::tests::json_map_array(&vec![attrs; n]),
                 Arc::new(Float64Array::from(values)),
                 Arc::new(StringArray::from(vec!["m"; n])),
+                crate::querier::udf::tests::series_key_array(&vec![attrs; n]),
             ],
         )
         .unwrap();
@@ -6734,6 +6815,7 @@ mod tests {
             Field::new("bucket_counts", DataType::Utf8, true),
             Field::new("explicit_bounds", DataType::Utf8, true),
             Field::new("prom_name", DataType::Utf8, false),
+            Field::new("prom_series_key", DataType::Utf8, false),
         ]));
         let n = times_ns.len();
         let counts: Vec<String> = (0..n)
@@ -6752,6 +6834,7 @@ mod tests {
                 Arc::new(StringArray::from(counts)),
                 Arc::new(StringArray::from(vec!["[10,20,30,40,50]"; n])),
                 Arc::new(StringArray::from(vec!["hist_seconds"; n])),
+                crate::querier::udf::tests::series_key_array(&vec!["{}"; n]),
             ],
         )
         .unwrap();

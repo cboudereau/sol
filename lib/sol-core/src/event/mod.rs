@@ -41,6 +41,7 @@ pub mod otel_metric;
 pub mod otlp;
 pub mod prom_name;
 mod r#ref;
+pub mod series_key;
 mod ser;
 pub use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelValueKind;
 pub use otel_attributes::OtelAttributes;
