@@ -3,7 +3,7 @@ status: accepted
 ---
 # rate() frame reduction: minimal window set, golden-gated
 
-Addresses: [FR1](../DESIGN.md#fr1), [NFR1](../DESIGN.md#nfr1), [NFR3](../DESIGN.md#nfr3)
+Addresses: [FR1](../designs/rate-row-work.md#fr1), [NFR1](../designs/rate-row-work.md#nfr1), [NFR3](../designs/rate-row-work.md#nfr3)
 
 ## Problem
 
@@ -39,6 +39,6 @@ Post-FR1 release fixture bench: rate() cold 47.1 ms / warm 26.9–29.5 ms; **exe
 
 ## Consequences
 
-- `frame.rs::rate` shrinks; the extrapolatedRate arithmetic (frame.rs:243-295) is unchanged in meaning, only its input windows are fewer. Every golden/parity test named in [NFR3](../DESIGN.md#nfr3) must stay green bit-for-bit.
+- `frame.rs::rate` shrinks; the extrapolatedRate arithmetic (frame.rs:243-295) is unchanged in meaning, only its input windows are fewer. Every golden/parity test named in [NFR3](../designs/rate-row-work.md#nfr3) must stay green bit-for-bit.
 - No schema change, no wipe, revertable commit — ships and re-profiles before the heavier FR2/FR3.
 - If A/B save little (fusion limited), that is recorded and the execute-stage win shifts to FR2 (UDF removal) + FR3 (sort elision).

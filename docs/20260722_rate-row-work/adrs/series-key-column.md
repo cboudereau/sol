@@ -3,7 +3,7 @@ status: accepted
 ---
 # Stored prom_series_key column + write-sort pushdown
 
-Addresses: [FR2](../DESIGN.md#fr2), [FR3](../DESIGN.md#fr3), [NFR1](../DESIGN.md#nfr1), [NFR2](../DESIGN.md#nfr2)
+Addresses: [FR2](../designs/rate-row-work.md#fr2), [FR3](../designs/rate-row-work.md#fr3), [NFR1](../designs/rate-row-work.md#nfr1), [NFR2](../designs/rate-row-work.md#nfr2)
 
 ## Problem
 

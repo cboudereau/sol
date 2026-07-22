@@ -1,6 +1,6 @@
 # rate-row-work — Design Doc
 
-Amends: [promql-plan-cache](../../20260717_promql-plan-cache/designs/promql-plan-cache.md) and [write-side-small-files](../../20260720_write-side-small-files/README.md) — the final follow-up owning their twice-inherited latency NFRs, now that file count (write-side-small-files: 237 → ~45 in-window) and plan cost (promql-plan-cache: optimize stage eliminated) are handled and the residual is row-level execution.
+Amends: [promql-plan-cache](../20260717_promql-plan-cache/designs/promql-plan-cache.md) and [write-side-small-files](../../20260720_write-side-small-files/README.md) — the final follow-up owning their twice-inherited latency NFRs, now that file count (write-side-small-files: 237 → ~45 in-window) and plan cost (promql-plan-cache: optimize stage eliminated) are handled and the residual is row-level execution.
 
 ## Context
 
@@ -49,8 +49,8 @@ Measured live on the rebuilt demo; the plan cache already delivers the warm path
 FR1 is a self-contained rewrite of `frame.rs::rate`, ships first (no wipe), re-profiled before committing to the heavier work. FR2 adds the stored column at the write-compute sites + both schemas; FR3 extends the write sort and declares the ordering. FR2+FR3 are a single clean-cutover bundle (both need the wipe; FR3 needs FR2's column). Plan cache and rollup interplay are benign (schema change bumps inventory generation → stale plans dropped; rollup gains the same plain-column grouping).
 
 Decisions:
-- [rate() frame reduction](./adrs/rate-frame-reduction.md) — which windows fuse/drop and why safe.
-- [Stored series-key column + write-sort pushdown](./adrs/series-key-column.md) — schema/sort cutover.
+- [rate() frame reduction](../adrs/rate-frame-reduction.md) — which windows fuse/drop and why safe.
+- [Stored series-key column + write-sort pushdown](../adrs/series-key-column.md) — schema/sort cutover.
 
 ## Cross-cutting Concerns
 
