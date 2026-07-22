@@ -123,7 +123,7 @@ classDiagram
 **Goal**: Rebuild (+ wipe if FR2/FR3 shipped) + restart; re-profile + probe set; targets met or honestly re-decomposed.
 **Verify**: probe set from the two predecessor VERIFYs; stage means via Mimir (port 9009)
 **Acceptance criteria**:
-- [ ] VERIFY.md: execute-stage drop attributed; cold repeated-shape `rate()` + burst recorded vs NFR1/NFR2; parity spot-checked live; or honest re-decomposition
+- [x] VERIFY.md (clean quiet-box): execute 835→35 ms (~24×); repeated-shape rate() ~75–113 ms (NFR1 at-target, best 74 ms); burst ~0.5–0.6 ms net (NFR2 at-target); physical 62 ms now dominant → FR3 elision the remaining lever, blocked pending Int64-time-column follow-up
 **Depends on**: task 1 (FR1 only, this pass; +user rebuild, NO wipe) — FR2/FR3 deferred per task 2
 **Time-box**: ~45 min
 
@@ -148,7 +148,7 @@ Tasks: 5
 **Commit point**: yes
 
 ## Quality gates (post-session review)
-- [ ] Acceptance criteria all green
-- [ ] Code review vs [DESIGN.md](./DESIGN.md) intent (goldens/parity are the FR1 core; declared-sort correctness is the FR3 core)
-- [ ] Observability: plan-stage seam re-profiled; execute-stage drop attributed
-- [ ] Performance: NFR table updated with live numbers; residual honestly attributed if NFR1/NFR2 still miss
+- [x] Acceptance criteria all green (FR1+FR2 full; FR3 declaration+guard, elision blocked-documented; NFR1/NFR2 at-target)
+- [x] Code review: goldens/parity bit-identical (FR1); shared sol-core series_key so write==read (FR2); declared==write sort drift guard (FR3)
+- [x] Observability: plan-stage seam re-profiled live; execute 835→35 ms attributed to FR1+FR2
+- [x] Performance: NFR table updated; both at-target; residual (physical 62 ms) attributed to the blocked FR3 elision + its Int64-time-column follow-up
