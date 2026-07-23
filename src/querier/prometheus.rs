@@ -74,6 +74,32 @@ fn name_pred_expr(name: &str) -> datafusion::logical_expr::Expr {
     }
 }
 
+/// The shared prefix of every metric read path (R1): the time-scoped
+/// `table_scoped` scan, the metric-name filter, and the post-scan predicate
+/// loop — everything *before* the per-caller time predicate and projection.
+///
+/// The four callers diverge on two axes, so both are parameters rather than
+/// baked in: `name_filter` is the caller's name predicate (value paths pass
+/// [`name_pred_expr`], which synthesizes `_count`/`_sum`; the histogram paths
+/// pass a plain `prom_name == base` eq, which must *not*), and `filters` are the
+/// already-lowered label-matcher predicates (value/instant paths lower
+/// `vs.matchers.matchers` through [`matcher_expr`] first; `hist_scan` forwards
+/// its pre-built `preds`). Returns the post-matcher frame; the caller then adds
+/// its own time filter + projection.
+async fn scoped_matched_scan(
+    engine: &super::QueryEngine,
+    table: &str,
+    scope: super::QueryScope,
+    name_filter: datafusion::logical_expr::Expr,
+    filters: &[datafusion::logical_expr::Expr],
+) -> crate::Result<datafusion::dataframe::DataFrame> {
+    let mut df = engine.table_scoped(table, scope).await?.filter(name_filter)?;
+    for p in filters {
+        df = df.filter(p.clone())?;
+    }
+    Ok(df)
+}
+
 /// Build the PromQL `series` query as a `DataFrame` (P4): distinct
 /// `(normalized __name__, service_name)` matching an optional `match[]` selector.
 /// Apply a Prometheus `match[]` selector (metric name + label matchers) to the
@@ -218,15 +244,8 @@ async fn metric_base_df(
         lo_ns: start_ns,
         hi_ns: end_ns,
     };
-    let mut df = engine
-        .table_scoped(table, scope)
-        .await?
-        .filter(name_pred_expr(name))?;
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_expr(m) {
-            df = df.filter(p)?;
-        }
-    }
+    let filters: Vec<_> = vs.matchers.matchers.iter().filter_map(matcher_expr).collect();
+    let mut df = scoped_matched_scan(engine, table, scope, name_pred_expr(name), &filters).await?;
     df = df.filter(prom_time_between(start_ns, end_ns))?;
     let mut proj = vec![
         prom_name_expr().alias("prom_name"),
@@ -777,15 +796,8 @@ async fn selector_base_df(
         lo_ns,
         hi_ns: time_ns,
     };
-    let mut df = engine
-        .table_scoped(table, scope)
-        .await?
-        .filter(name_pred_expr(name))?;
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_expr(m) {
-            df = df.filter(p)?;
-        }
-    }
+    let filters: Vec<_> = vs.matchers.matchers.iter().filter_map(matcher_expr).collect();
+    let mut df = scoped_matched_scan(engine, table, scope, name_pred_expr(name), &filters).await?;
     df = df.filter(cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
     Ok(df.select(vec![
         prom_name_expr().alias("prom_name"),
@@ -2239,13 +2251,8 @@ async fn hist_scan(
         lo_ns: lo,
         hi_ns: hi,
     };
-    let mut df = engine
-        .table_scoped(table, scope)
-        .await?
-        .filter(prom_name_expr().eq(datafusion::prelude::lit(base.to_string())))?;
-    for p in preds {
-        df = df.filter(p.clone())?;
-    }
+    let name_filter = prom_name_expr().eq(datafusion::prelude::lit(base.to_string()));
+    let df = scoped_matched_scan(engine, table, scope, name_filter, preds).await?;
     Ok(df.filter(prom_time_between(lo, hi))?)
 }
 
@@ -2557,15 +2564,9 @@ async fn hist_instant_scan(
         lo_ns,
         hi_ns: time_ns,
     };
-    let mut df = engine
-        .table_scoped(table, scope)
-        .await?
-        .filter(prom_name_expr().eq(lit(name.to_string())))?;
-    for m in &vs.matchers.matchers {
-        if let Some(p) = matcher_expr(m) {
-            df = df.filter(p)?;
-        }
-    }
+    let filters: Vec<_> = vs.matchers.matchers.iter().filter_map(matcher_expr).collect();
+    let name_filter = prom_name_expr().eq(lit(name.to_string()));
+    let mut df = scoped_matched_scan(engine, table, scope, name_filter, &filters).await?;
     df = df.filter(df_cast(col("time_unix_nano"), Int64).lt_eq(lit(time_ns)))?;
     Ok(df.select(vec![
         col("name"),
