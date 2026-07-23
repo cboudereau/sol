@@ -17,7 +17,7 @@ use datafusion::arrow::array::{Array, ArrayRef, MapArray, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::error::Result as DfResult;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarUDF, Signature, SimpleScalarUDF, TypeSignature, Volatility, create_udf,
+    ColumnarValue, ScalarUDF, Signature, SimpleScalarUDF, TypeSignature, Volatility,
 };
 
 /// The Arrow `Map<Utf8,Utf8>` data type the codec writes for the metric
@@ -34,13 +34,6 @@ pub(super) fn attributes_map_type() -> DataType {
         false,
     );
     DataType::Map(Arc::new(entries), false)
-}
-
-/// Downcast a UDF argument array to a `MapArray`, erroring with `name`.
-fn as_map_array<'a>(arr: &'a ArrayRef, name: &str) -> DfResult<&'a MapArray> {
-    arr.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Execution(format!("{name} expects a Map argument"))
-    })
 }
 
 /// The `(raw_key, value)` entries of the attributes map at row `i`, or `None`
@@ -85,38 +78,6 @@ pub(super) fn map_row_normalized_labels(map: &MapArray, i: usize) -> BTreeMap<St
         }
     }
     m
-}
-
-/// `prom_series_key(attributes) -> Utf8`: a canonical, groupable string key for a
-/// data point's label set, derived from the columnar `attributes` MAP. DataFusion
-/// cannot `GROUP BY`/`PARTITION BY` a `Map` column directly (Arrow row-format does
-/// not support maps), so window/partition plans key on this UDF's output instead
-/// of the raw map. The key is the sorted, escaped `k=v` join of the *raw* OTLP
-/// entries (raw keys keep it injective; normalization for display happens in the
-/// materialization path). A null map yields the empty string.
-pub fn prom_series_key_udf() -> ScalarUDF {
-    let fun = move |args: &[ColumnarValue]| -> DfResult<ColumnarValue> {
-        let arrays = ColumnarValue::values_to_arrays(args)?;
-        let map = as_map_array(&arrays[0], "prom_series_key")?;
-        let out: StringArray = (0..map.len())
-            .map(|i| Some(series_key_string(map, i)))
-            .collect();
-        Ok(ColumnarValue::Array(Arc::new(out) as ArrayRef))
-    };
-    create_udf(
-        "prom_series_key",
-        vec![attributes_map_type()],
-        DataType::Utf8,
-        Volatility::Immutable,
-        Arc::new(fun),
-    )
-}
-
-/// Canonical series-key string for the map at row `i`: delegates to the shared
-/// [`sol_lib::event::series_key::series_key`] so the write path (the codec's
-/// materialized `prom_series_key` column) and this read-side UDF cannot diverge.
-fn series_key_string(map: &MapArray, i: usize) -> String {
-    sol_lib::event::series_key::series_key(map_row_entries(map, i).unwrap_or_default())
 }
 
 /// Normalize an OTLP attribute key to its Prometheus label name: every
@@ -351,19 +312,6 @@ pub(in crate::querier) mod tests {
         // A null map yields no value.
         let null_map = map_array_from(&[None]);
         assert_eq!(lookup_map(&null_map, 0, "x"), None);
-    }
-
-    #[test]
-    fn test_prom_series_key_is_injective_and_sorted() {
-        let m = map_array_from(&[
-            Some(&[("cpu", "0"), ("mode", "idle")]),
-            Some(&[("mode", "idle"), ("cpu", "0")]),
-            None,
-        ]);
-        // Order-independent (sorted) → rows 0 and 1 collide; null → empty key.
-        assert_eq!(series_key_string(&m, 0), series_key_string(&m, 1));
-        assert!(series_key_string(&m, 0).contains("cpu=0"));
-        assert_eq!(series_key_string(&m, 2), "");
     }
 
     #[test]

@@ -641,10 +641,6 @@ impl QueryEngine {
         // keys for aggregation pushdown (promql-pushdown T1). Called from plans.
         ctx.register_udf(super::group_key::prom_group_key_udf());
         ctx.register_udf(super::group_key::prom_group_key_reproject_udf());
-        // prom_series_key(attributes): a groupable Utf8 key derived from the
-        // columnar `attributes` MAP — DataFusion cannot GROUP/PARTITION BY a Map,
-        // so window/series plans key on this instead (promql-pushdown T7).
-        ctx.register_udf(super::udf::prom_series_key_udf());
         // Metric-name normalization is materialized into the `prom_name` column at
         // write time (codec), so no read-time `prom_metric_name` UDF is registered.
         let catalog = ParquetCatalog::new(opts.storage.path.clone());

@@ -412,23 +412,15 @@ async fn lower_range_df(
                 // for `increase`). `irate` is the latest inter-sample slope. These
                 // need the last cumulative value per bucket — the coalesced `v` is
                 // correct on both raw and tier (Capability::Last), so no override.
-                "rate" => {
+                "rate" | "increase" | "irate" => {
                     let base =
                         metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
                             .await?;
-                    rate(base, part, "v", "time_unix_nano", r, true)
-                }
-                "increase" => {
-                    let base =
-                        metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
-                            .await?;
-                    rate(base, part, "v", "time_unix_nano", r, false)
-                }
-                "irate" => {
-                    let base =
-                        metric_base_df(engine, vs, start_ns, end_ns, table, metric_value_cols(name))
-                            .await?;
-                    irate(base, part, "v", "time_unix_nano")
+                    match c.func.name {
+                        "rate" => rate(base, part, "v", "time_unix_nano", r, true),
+                        "increase" => rate(base, part, "v", "time_unix_nano", r, false),
+                        _ => irate(base, part, "v", "time_unix_nano"),
+                    }
                 }
                 // `*_over_time`: on a tier window the value comes from the matching
                 // per-bucket aggregate column (FR7) rather than recomputing over the

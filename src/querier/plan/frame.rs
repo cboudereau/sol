@@ -87,7 +87,6 @@ pub fn lower_topk(
     k: i64,
     is_topk: bool,
 ) -> crate::Result<DataFrame> {
-    use datafusion::functions_aggregate::min_max::max_udaf;
     let max_win: Expr = WindowFunction::new(max_udaf(), vec![col(v_col)]).into();
     let peak = max_win.partition_by(part.clone()).build()?.alias("peak");
     let with_peak = df.window(vec![peak])?;
