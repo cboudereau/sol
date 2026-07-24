@@ -615,7 +615,7 @@ Sources:
 
 Vector is licensed under **Mozilla Public License 2.0** (MPL-2.0). This is a **weak copyleft, file-level** open-source license. It is NOT AGPL, NOT SSPL, NOT BSL — it is a true OSI-approved open-source license.
 
-Vector switched to MPL-2.0 in August 2020. The Vector team stated: *"It is not our intent to restrict Vector usage or distribution in any way, now or in the future."*
+Vector switched to MPL-2.0 in August 2020. The Team stated: *"It is not our intent to restrict Vector usage or distribution in any way, now or in the future."*
 
 ### 13.2 What MPL-2.0 allows you to do
 

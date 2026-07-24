@@ -121,7 +121,7 @@ All top-level project documents must reflect the Sol identity:
 - **NOTICE**: add Sol copyright, preserve original Datadog/Vector copyright
 - **SECURITY.md**: replace Datadog-specific security policy (email, issue URLs) with Sol's own
 - **PRIVACY.md**: replace Vector privacy policy with Sol's data handling stance (no sensitive data: GDPR, PCI-DSS, etc.)
-- **CONTRIBUTING.md**: replace Vector team workflow with Sol contributing guide
+- **CONTRIBUTING.md**: replace Team workflow with Sol contributing guide
 - **RELEASES.md / VERSIONING.md**: simplify, remove Vector-specific content
 
 ## Non-Functional Requirements

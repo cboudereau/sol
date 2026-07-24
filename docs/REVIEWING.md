@@ -42,7 +42,7 @@ This checklist is specific for Vector's sources.
 
 - [ ] Does the source handle metrics? If it does, the Datadog Origin Metadata function (`sinks::datadog::metrics::encoder::source_type_to_service`),
       which maps the source to the correct Service value, needs to be updated. If this source is an Agent role and thus is the true origin of it's
-      metrics, this will need to be a follow-up PR by a member of the Vector team.
+      metrics, this will need to be a follow-up PR by a member of the Team.
 
 ### Checklist - new sink
 
@@ -87,7 +87,7 @@ We endeavour to review all PRs within 2 working days (Monday to Friday) of submi
 
 All changes should strive to retain backward compatibility. If a change breaks
 backward compatibility, it is much less likely to be approved. It is highly
-recommended you discuss this change with a Vector team member before investing
+recommended you discuss this change with a Team member before investing
 development time.
 
 Any deprecations should follow our [deprecation policy](DEPRECATION.md).

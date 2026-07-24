@@ -4,7 +4,7 @@
 
 ## Getting started
 
-Whether you're a Vector team member, or an outside contributor, this is the best
+Whether you're a team member, or an outside contributor, this is the best
 place to start. This folder contains internal documentation to help with the
 development of Vector and ensuring your change gets approved in a timely manner.
 
@@ -12,9 +12,9 @@ development of Vector and ensuring your change gets approved in a timely manner.
 2. **[DEVELOPING.md](DEVELOPING.md)** - Everything necessary to develop
 3. **[DOCUMENTING.md](DOCUMENTING.md)** - Preparing your change for Vector users
 
-## Vector team members
+## Team members
 
-Vector team members have additional responsibilities beyond outside
+Team members have additional responsibilities beyond outside
 contributors:
 
 - **[REVIEWING.md](REVIEWING.md)** - Code review expectations and guidelines.

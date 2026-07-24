@@ -238,11 +238,11 @@ user experience.
 #### Contributors
 
 Anyone contributing a change to Vector, both public open-source contributors
-and internal Vector team members.
+and internal Team members.
 
 #### User experience committee
 
-A select group of Vector team members responsible for Vector's resulting user
+A select group of Team members responsible for Vector's resulting user
 experience.
 
 ### Responsibilities
