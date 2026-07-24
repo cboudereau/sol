@@ -60,7 +60,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Overall CPU busy percentage (averaged across all cores)",
       "fieldConfig": {
@@ -129,7 +129,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\",host=\"$host\",job=\"$job\"}[$__rate_interval])))",
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])))",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -143,7 +143,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "System load over all CPU cores together",
       "fieldConfig": {
@@ -212,7 +212,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "scalar(node_load1{host=\"$host\",job=\"$job\"}) * 100 / count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu))",
+          "expr": "scalar(node_load1{host=\"$host\",service_name=\"${service_name}\"}) * 100 / count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu))",
           "format": "time_series",
           "instant": true,
           "range": false,
@@ -226,7 +226,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Real RAM usage excluding cache and reclaimable memory",
       "fieldConfig": {
@@ -285,7 +285,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "clamp_min((1 - (node_memory_available_bytes{host=\"$host\", job=\"$job\"} / node_memory_total_bytes{host=\"$host\", job=\"$job\"})) * 100, 0)",
+          "expr": "clamp_min((1 - (node_memory_available_bytes{host=\"$host\", service_name=\"${service_name}\"} / node_memory_total_bytes{host=\"$host\", service_name=\"${service_name}\"})) * 100, 0)",
           "format": "time_series",
           "instant": true,
           "range": false,
@@ -299,7 +299,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Percentage of swap space currently used by the system",
       "fieldConfig": {
@@ -368,7 +368,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "(node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"} > bool 0) * ((node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"} - node_memory_swap_free_bytes{host=\"$host\",job=\"$job\"}) / (node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"})) * 100",
+          "expr": "(node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"} > bool 0) * ((node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"} - node_memory_swap_free_bytes{host=\"$host\",service_name=\"${service_name}\"}) / (node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"})) * 100",
           "instant": true,
           "range": false,
           "refId": "A",
@@ -381,7 +381,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Used Root FS",
       "fieldConfig": {
@@ -450,7 +450,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "(\n  (node_filesystem_total_bytes{host=\"$host\", job=\"$job\", mountpoint=\"/\", filesystem!=\"rootfs\"}\n   - node_filesystem_free_bytes{host=\"$host\", job=\"$job\", mountpoint=\"/\", filesystem!=\"rootfs\"})\n  / node_filesystem_total_bytes{host=\"$host\", job=\"$job\", mountpoint=\"/\", filesystem!=\"rootfs\"}\n) * 100\n",
+          "expr": "(\n  (node_filesystem_total_bytes{host=\"$host\", service_name=\"${service_name}\", mountpoint=\"/\", filesystem!=\"rootfs\"}\n   - node_filesystem_free_bytes{host=\"$host\", service_name=\"${service_name}\", mountpoint=\"/\", filesystem!=\"rootfs\"})\n  / node_filesystem_total_bytes{host=\"$host\", service_name=\"${service_name}\", mountpoint=\"/\", filesystem!=\"rootfs\"}\n) * 100\n",
           "format": "time_series",
           "instant": true,
           "range": false,
@@ -464,7 +464,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -525,7 +525,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu))",
+          "expr": "count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -538,7 +538,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -604,7 +604,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "node_memory_total_bytes{host=\"$host\",job=\"$job\"}",
+          "expr": "node_memory_total_bytes{host=\"$host\",service_name=\"${service_name}\"}",
           "instant": true,
           "range": false,
           "refId": "A",
@@ -617,7 +617,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -683,7 +683,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"}",
+          "expr": "node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"}",
           "instant": true,
           "range": false,
           "refId": "A",
@@ -696,7 +696,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -766,7 +766,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "node_filesystem_total_bytes{host=\"$host\",job=\"$job\",mountpoint=\"/\",filesystem!=\"rootfs\"}",
+          "expr": "node_filesystem_total_bytes{host=\"$host\",service_name=\"${service_name}\",mountpoint=\"/\",filesystem!=\"rootfs\"}",
           "format": "time_series",
           "instant": true,
           "range": false,
@@ -780,7 +780,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -846,7 +846,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "node_uptime{host=\"$host\",job=\"$job\"}",
+          "expr": "node_uptime{host=\"$host\",service_name=\"${service_name}\"}",
           "instant": true,
           "range": false,
           "refId": "A",
@@ -872,7 +872,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "CPU time spent busy vs idle, split by activity type",
       "fieldConfig": {
@@ -1030,7 +1030,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\", mode=\"system\"}[$__rate_interval]))",
+          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\", mode=\"system\"}[$__rate_interval]))",
           "format": "time_series",
           "instant": false,
           "legendFormat": "Busy System",
@@ -1040,7 +1040,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\", mode=\"user\"}[$__rate_interval]))",
+          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\", mode=\"user\"}[$__rate_interval]))",
           "format": "time_series",
           "legendFormat": "Busy User",
           "range": true,
@@ -1049,7 +1049,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\", mode=\"iowait\"}[$__rate_interval]))",
+          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\", mode=\"iowait\"}[$__rate_interval]))",
           "format": "time_series",
           "legendFormat": "Busy Iowait",
           "range": true,
@@ -1058,7 +1058,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "avg(sum without(mode) (rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\", mode=~\".*irq\"}[$__rate_interval])))",
+          "expr": "avg(sum without(mode) (rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\", mode=~\".*irq\"}[$__rate_interval])))",
           "format": "time_series",
           "legendFormat": "Busy IRQs",
           "range": true,
@@ -1067,7 +1067,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "avg(sum without (mode) (rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\",  mode!='idle',mode!='user',mode!='system',mode!='iowait',mode!='irq',mode!='softirq'}[$__rate_interval])))",
+          "expr": "avg(sum without (mode) (rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\",  mode!='idle',mode!='user',mode!='system',mode!='iowait',mode!='irq',mode!='softirq'}[$__rate_interval])))",
           "format": "time_series",
           "legendFormat": "Busy Other",
           "range": true,
@@ -1076,7 +1076,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",job=\"$job\", mode=\"idle\"}[$__rate_interval]))",
+          "expr": "avg(rate(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\", mode=\"idle\"}[$__rate_interval]))",
           "format": "time_series",
           "legendFormat": "Idle",
           "range": true,
@@ -1090,7 +1090,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "RAM and swap usage overview, including caches",
       "fieldConfig": {
@@ -1243,7 +1243,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "node_memory_total_bytes{host=\"$host\",job=\"$job\"}",
+          "expr": "node_memory_total_bytes{host=\"$host\",service_name=\"${service_name}\"}",
           "format": "time_series",
           "legendFormat": "Total",
           "range": true,
@@ -1252,7 +1252,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "node_memory_free_bytes{host=\"$host\",job=\"$job\"}",
+          "expr": "node_memory_free_bytes{host=\"$host\",service_name=\"${service_name}\"}",
           "format": "time_series",
           "legendFormat": "Free",
           "range": true,
@@ -1261,7 +1261,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"} - node_memory_swap_free_bytes{host=\"$host\",job=\"$job\"})",
+          "expr": "(node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"} - node_memory_swap_free_bytes{host=\"$host\",service_name=\"${service_name}\"})",
           "format": "time_series",
           "legendFormat": "Swap used",
           "range": true,
@@ -1275,7 +1275,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Per-interface network traffic (receive and transmit) in bits per second",
       "fieldConfig": {
@@ -1367,7 +1367,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(node_network_receive_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])*8",
+          "expr": "rate(node_network_receive_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])*8",
           "format": "time_series",
           "legendFormat": "Rx {{device}}",
           "range": true,
@@ -1376,7 +1376,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "rate(node_network_transmit_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])*8",
+          "expr": "rate(node_network_transmit_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])*8",
           "format": "time_series",
           "legendFormat": "Tx {{device}}",
           "range": true,
@@ -1390,7 +1390,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "mimir"
+        "uid": "${datasource}"
       },
       "description": "Percentage of filesystem space used for each mounted device",
       "fieldConfig": {
@@ -1471,7 +1471,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "((node_filesystem_total_bytes{host=\"$host\", job=\"$job\", device!~'rootfs'} - node_filesystem_free_bytes{host=\"$host\", job=\"$job\", device!~'rootfs'}) / node_filesystem_total_bytes{host=\"$host\", job=\"$job\", device!~'rootfs'}) * 100",
+          "expr": "((node_filesystem_total_bytes{host=\"$host\", service_name=\"${service_name}\", device!~'rootfs'} - node_filesystem_free_bytes{host=\"$host\", service_name=\"${service_name}\", device!~'rootfs'}) / node_filesystem_total_bytes{host=\"$host\", service_name=\"${service_name}\", device!~'rootfs'}) * 100",
           "format": "time_series",
           "legendFormat": "{{mountpoint}}",
           "range": true,
@@ -1495,7 +1495,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "CPU time usage split by state, normalized across all CPU cores",
           "fieldConfig": {
@@ -1730,7 +1730,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"system\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"system\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "interval": "",
               "legendFormat": "System - Processes executing in kernel mode",
@@ -1740,7 +1740,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"user\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"user\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "User - Normal processes executing in user mode",
               "range": true,
@@ -1749,7 +1749,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"nice\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"nice\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Nice - Niced processes executing in user mode",
               "range": true,
@@ -1758,7 +1758,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"iowait\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"iowait\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Iowait - Waiting for I/O to complete",
               "range": true,
@@ -1767,7 +1767,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"irq\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"irq\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Irq - Servicing interrupts",
               "range": true,
@@ -1776,7 +1776,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"softirq\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"softirq\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Softirq - Servicing softirqs",
               "range": true,
@@ -1785,7 +1785,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"steal\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"steal\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Steal - Time spent in other operating systems when running in a virtualized environment",
               "range": true,
@@ -1794,7 +1794,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "sum(rate(node_cpu_seconds_total{mode=\"idle\",host=\"$host\",job=\"$job\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",job=\"$job\"}) by (cpu)))",
+              "expr": "sum(rate(node_cpu_seconds_total{mode=\"idle\",host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{host=\"$host\",service_name=\"${service_name}\"}) by (cpu)))",
               "format": "time_series",
               "legendFormat": "Idle - Waiting for something to happen",
               "range": true,
@@ -1808,7 +1808,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Breakdown of physical memory and swap usage. Hardware-detected memory errors are also displayed",
           "fieldConfig": {
@@ -2059,7 +2059,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_memory_cached_bytes{host=\"$host\",job=\"$job\"}",
+              "expr": "node_memory_cached_bytes{host=\"$host\",service_name=\"${service_name}\"}",
               "format": "time_series",
               "legendFormat": "Cache - Parked file data (file content) cache",
               "range": true,
@@ -2068,7 +2068,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "node_memory_buffers_bytes{host=\"$host\",job=\"$job\"}",
+              "expr": "node_memory_buffers_bytes{host=\"$host\",service_name=\"${service_name}\"}",
               "format": "time_series",
               "legendFormat": "Buffers - Block device (e.g. harddisk) cache",
               "range": true,
@@ -2077,7 +2077,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "node_memory_free_bytes{host=\"$host\",job=\"$job\"}",
+              "expr": "node_memory_free_bytes{host=\"$host\",service_name=\"${service_name}\"}",
               "format": "time_series",
               "legendFormat": "Unused - Free memory unassigned",
               "range": true,
@@ -2086,7 +2086,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "(node_memory_swap_total_bytes{host=\"$host\",job=\"$job\"} - node_memory_swap_free_bytes{host=\"$host\",job=\"$job\"})",
+              "expr": "(node_memory_swap_total_bytes{host=\"$host\",service_name=\"${service_name}\"} - node_memory_swap_free_bytes{host=\"$host\",service_name=\"${service_name}\"})",
               "format": "time_series",
               "legendFormat": "Swap - Swap space used",
               "range": true,
@@ -2100,7 +2100,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Incoming and outgoing network traffic per interface",
           "fieldConfig": {
@@ -2196,7 +2196,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_network_receive_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])*8",
+              "expr": "rate(node_network_receive_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])*8",
               "format": "time_series",
               "legendFormat": "{{device}} - Rx in",
               "range": true,
@@ -2205,7 +2205,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_network_transmit_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])*8",
+              "expr": "rate(node_network_transmit_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])*8",
               "format": "time_series",
               "legendFormat": "{{device}} - Tx out",
               "range": true,
@@ -2219,7 +2219,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Disk I/O operations per second for each device",
           "fieldConfig": {
@@ -2315,7 +2315,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_reads_completed_total{host=\"$host\",job=\"$job\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
+              "expr": "rate(node_disk_reads_completed_total{host=\"$host\",service_name=\"${service_name}\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
               "legendFormat": "{{device}} - Read",
               "range": true,
               "refId": "A",
@@ -2323,7 +2323,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_writes_completed_total{host=\"$host\",job=\"$job\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
+              "expr": "rate(node_disk_writes_completed_total{host=\"$host\",service_name=\"${service_name}\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
               "legendFormat": "{{device}} - Write",
               "range": true,
               "refId": "B",
@@ -2336,7 +2336,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Disk I/O throughput per device",
           "fieldConfig": {
@@ -2432,7 +2432,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_read_bytes_total{host=\"$host\",job=\"$job\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
+              "expr": "rate(node_disk_read_bytes_total{host=\"$host\",service_name=\"${service_name}\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "{{device}} - Read",
               "range": true,
@@ -2441,7 +2441,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_written_bytes_total{host=\"$host\",job=\"$job\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
+              "expr": "rate(node_disk_written_bytes_total{host=\"$host\",service_name=\"${service_name}\",device=~\"[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "{{device}} - Write",
               "range": true,
@@ -2455,7 +2455,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Amount of available disk space per mounted filesystem, excluding rootfs. Based on block availability to non-root users",
           "fieldConfig": {
@@ -2539,7 +2539,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_filesystem_free_bytes{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_free_bytes{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "legendFormat": "{{mountpoint}}",
               "metric": "",
@@ -2549,7 +2549,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "node_filesystem_free_bytes{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_free_bytes{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "hide": true,
               "legendFormat": "{{mountpoint}} - Free",
@@ -2559,7 +2559,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "node_filesystem_total_bytes{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_total_bytes{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "hide": true,
               "legendFormat": "{{mountpoint}} - Size",
@@ -2574,7 +2574,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Disk usage (used = total - available) per mountpoint",
           "fieldConfig": {
@@ -2658,7 +2658,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_filesystem_total_bytes{host=\"$host\",job=\"$job\",device!~'rootfs'} - node_filesystem_free_bytes{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_total_bytes{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'} - node_filesystem_free_bytes{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "legendFormat": "{{mountpoint}}",
               "range": true,
@@ -2686,7 +2686,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Number of I/O operations completed per second for the device (after merges), including both reads and writes",
           "fieldConfig": {
@@ -2797,7 +2797,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_reads_completed_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_disk_reads_completed_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "legendFormat": "{{device}} - Read",
               "range": true,
               "refId": "A",
@@ -2805,7 +2805,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_writes_completed_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_disk_writes_completed_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "legendFormat": "{{device}} - Write",
               "range": true,
               "refId": "B",
@@ -2818,7 +2818,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Number of bytes read from or written to the device per second",
           "fieldConfig": {
@@ -2929,7 +2929,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_disk_read_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_disk_read_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "{{device}} - Read",
               "range": true,
@@ -2939,7 +2939,7 @@
             {
               "editorMode": "code",
               "exemplar": false,
-              "expr": "rate(node_disk_written_bytes_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_disk_written_bytes_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{device}} - Write",
@@ -2968,7 +2968,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Number of free file nodes (inodes) available per mounted filesystem. A low count may prevent file creation even if disk space is available",
           "fieldConfig": {
@@ -3052,7 +3052,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_filesystem_inodes_free{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_inodes_free{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "legendFormat": "{{mountpoint}}",
               "range": true,
@@ -3066,7 +3066,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Number of file nodes (inodes) available per mounted filesystem. Reflects maximum file capacity regardless of disk size",
           "fieldConfig": {
@@ -3150,7 +3150,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_filesystem_inodes_total{host=\"$host\",job=\"$job\",device!~'rootfs'}",
+              "expr": "node_filesystem_inodes_total{host=\"$host\",service_name=\"${service_name}\",device!~'rootfs'}",
               "format": "time_series",
               "legendFormat": "{{mountpoint}}",
               "range": true,
@@ -3178,7 +3178,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Number of network packets received and transmitted per second, by interface.",
           "fieldConfig": {
@@ -3275,7 +3275,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_network_receive_packets_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_network_receive_packets_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "interval": "",
               "legendFormat": "{{device}} - Rx in",
@@ -3285,7 +3285,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_network_transmit_packets_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_network_transmit_packets_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "interval": "",
               "legendFormat": "{{device}} - Tx out",
@@ -3300,7 +3300,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "mimir"
+            "uid": "${datasource}"
           },
           "description": "Rate of packet-level errors for each network interface. Receive errors may indicate physical or driver issues; transmit errors may reflect collisions or hardware faults",
           "fieldConfig": {
@@ -3397,7 +3397,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_network_receive_errs_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_network_receive_errs_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "{{device}} - Rx in",
               "range": true,
@@ -3406,7 +3406,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_network_transmit_errs_total{host=\"$host\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_network_transmit_errs_total{host=\"$host\",service_name=\"${service_name}\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "{{device}} - Tx out",
               "range": true,
@@ -3432,20 +3432,43 @@
       {
         "current": {
           "selected": false,
+          "text": "Mimir",
+          "value": "mimir"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false,
           "text": "sol",
           "value": "sol"
         },
-        "definition": "label_values(node_uptime, job)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(node_uptime, service_name)",
         "hide": 0,
         "includeAll": false,
         "multi": false,
-        "name": "job",
+        "name": "service_name",
         "options": [],
         "query": {
-          "query": "label_values(node_uptime, job)",
+          "query": "label_values(node_uptime, service_name)",
           "refId": "StandardVariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
@@ -3457,17 +3480,21 @@
           "text": "",
           "value": ""
         },
-        "definition": "label_values(node_uptime{job=\"$job\"}, host)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(node_uptime{service_name=\"${service_name}\"}, host)",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "host",
         "options": [],
         "query": {
-          "query": "label_values(node_uptime{job=\"$job\"}, host)",
+          "query": "label_values(node_uptime{service_name=\"${service_name}\"}, host)",
           "refId": "StandardVariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
@@ -3497,7 +3524,7 @@
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},

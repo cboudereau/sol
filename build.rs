@@ -104,9 +104,49 @@ fn git_short_hash() -> std::io::Result<String> {
     })
 }
 
+/// Generate the LogQL (and later TraceQL) parsers with grmtools. Gated on the
+/// `querier-backend` feature via Cargo's `CARGO_FEATURE_QUERIER_BACKEND` env var —
+/// build scripts do not receive `cfg(feature = …)`, only the env vars — so the
+/// codegen is a no-op for builds that don't compile the query backend.
+fn build_query_parsers() {
+    if std::env::var_os("CARGO_FEATURE_QUERIER_BACKEND").is_none() {
+        return;
+    }
+    use cfgrammar::yacc::YaccKind;
+    use lrlex::CTLexerBuilder;
+
+    println!("cargo:rerun-if-changed=src/querier/logql/logql.l");
+    println!("cargo:rerun-if-changed=src/querier/logql/logql.y");
+    CTLexerBuilder::new()
+        .lrpar_config(|ctp| {
+            ctp.yacckind(YaccKind::Grmtools)
+                .grammar_in_src_dir("querier/logql/logql.y")
+                .unwrap()
+        })
+        .lexer_in_src_dir("querier/logql/logql.l")
+        .unwrap()
+        .build()
+        .unwrap();
+
+    println!("cargo:rerun-if-changed=src/querier/traceql/traceql.l");
+    println!("cargo:rerun-if-changed=src/querier/traceql/traceql.y");
+    CTLexerBuilder::new()
+        .lrpar_config(|ctp| {
+            ctp.yacckind(YaccKind::Grmtools)
+                .grammar_in_src_dir("querier/traceql/traceql.y")
+                .unwrap()
+        })
+        .lexer_in_src_dir("querier/traceql/traceql.l")
+        .unwrap()
+        .build()
+        .unwrap();
+}
+
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
+
+    build_query_parsers();
 
     // re-run if the HEAD has changed. This is only necessary for non-release and nightly builds.
     #[cfg(not(feature = "nightly"))]

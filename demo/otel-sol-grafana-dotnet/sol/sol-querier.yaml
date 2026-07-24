@@ -1,0 +1,56 @@
+# Sol querier-backend node for the demo.
+#
+# Reads the Parquet the gateway writes (read-only) and serves the
+# Prometheus / Tempo / Loki + SQL APIs on :9009, so Grafana can query Sol
+# side-by-side with Mimir/Tempo/Loki. Its own internal metrics are forwarded
+# to Mimir as service.name = sol/querier, so the `SOL Querier Backend` dashboard's
+# instance template variable resolves.
+
+# Read-side query server (querier-backend feature). Presence of `querier:`
+# starts the HTTP query component (no `role` switch).
+querier:
+  address: "0.0.0.0:9009"
+  storage:
+    path: "/data/parquet"
+  refresh_interval_secs: 15
+  cache:
+    ttl_secs: 15
+    max_bytes: 268435456 # 256 MB (NFR5 cache budget)
+  guardrails:
+    metrics_max_range_secs: 34128000 # 13 months
+    max_bytes_scanned: 1073741824 # 1 GB
+    max_concurrent_queries: 16
+  metadata_default_range_secs: 259200 # 3 days: default start for /labels, /label/:name/values, /series without an explicit start (explicit start, even 0, wins)
+
+sources:
+  self_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+    resource_attributes:
+      service.name: sol/querier
+      service.namespace: querier
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol-querier
+
+transforms:
+  promote_host_metrics_attrs:
+    type: remap
+    inputs: ["host_metrics"]
+    source: |
+      .attributes.job = .resource.attributes."service.name"
+      .name = "node_" + string!(.name)
+
+sinks:
+  otlp_self_metrics:
+    type: opentelemetry
+    inputs: ["self_metrics", "promote_host_metrics_attrs"]
+    protocol:
+      type: grpc
+      endpoint: "http://sol-gateway:4317"
+      batch:
+        max_events: 1000
+        timeout_secs: 15

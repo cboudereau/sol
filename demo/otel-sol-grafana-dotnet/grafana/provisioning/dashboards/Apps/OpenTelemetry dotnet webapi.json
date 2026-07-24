@@ -3083,7 +3083,7 @@
           "query": "label_values(dotnet_process_cpu_count,service_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
@@ -3111,7 +3111,7 @@
           "query": "label_values(dotnet_process_cpu_count{service_name=\"$service_name\"},deployment_environment)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
@@ -3140,7 +3140,7 @@
           "query": "label_values(dotnet_process_cpu_count{service_name=\"$service_name\", deployment_environment=\"$deployment_environment\"},service_version)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
@@ -3168,7 +3168,7 @@
           "query": "label_values(dotnet_process_cpu_count{service_name=\"$service_name\", deployment_environment=\"$deployment_environment\", service_version=~\"$service_version\"},host_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
@@ -3196,7 +3196,7 @@
           "query": "label_values(http_server_request_duration_seconds_count{service_name=\"$service_name\", deployment_environment=\"$deployment_environment\", service_version=~\"$service_version\", host_name=~\"$host_name\"},http_route)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
@@ -3224,7 +3224,7 @@
           "query": "label_values(http_server_request_duration_seconds_count{service_name=\"$service_name\", deployment_environment=\"$deployment_environment\", service_version=~\"$service_version\", host_name=~\"$host_name\", http_route=~\"$http_route\"},http_response_status_code)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,

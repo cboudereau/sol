@@ -5,7 +5,9 @@ authors = ["Clément Boudereau"]
 edition = "2024"
 description = "Sol — Single Observability Layer. A high-performance observability data pipeline."
 homepage = "https://github.com/cboudereau/sol"
-license = "MPL-2.0"
+# Dual-licensed by file: Sol-original code (SPDX AGPL-3.0-only, notably src/querier/**)
+# under AGPL-3.0; Vector-derived code under MPL-2.0. See LICENSE.
+license = "AGPL-3.0-only AND MPL-2.0"
 readme = "README.md"
 publish = false
 default-run = "sol"
@@ -454,6 +456,16 @@ heim = { git = "https://github.com/vectordotdev/heim.git", branch = "update-nix"
 mlua = { version = "0.10.5", default-features = false, features = ["lua54", "send", "vendored", "macros"], optional = true }
 sysinfo = "0.37.2"
 byteorder = "1.5.0"
+datafusion = { version = "53", optional = true }
+datafusion-functions-json = { version = "0.53.1", optional = true }
+moka = { version = "0.12", features = ["sync"], optional = true }
+object_store = { version = "0.13", features = ["aws"], optional = true }
+promql-parser = { version = "0.9", optional = true }
+# grmtools — LogQL/TraceQL parsers (querier-backend). Already in the tree via
+# promql-parser; pinned to the same 0.13 line. Codegen runs in build.rs.
+lrpar = { version = "0.13", optional = true }
+lrlex = { version = "0.13", optional = true }
+cfgrammar = { version = "0.13", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"
@@ -470,6 +482,11 @@ netlink-sys = { version = "0.8.7", features = ["tokio_socket"] }
 [build-dependencies]
 prost-build = { workspace = true, optional = true }
 tonic-build = { workspace = true, optional = true }
+# grmtools codegen for the LogQL/TraceQL grammars (gated at runtime on the
+# querier-backend feature env var inside build.rs).
+cfgrammar = "0.13"
+lrlex = "0.13"
+lrpar = "0.13"
 # update 'openssl_version' in website/config.toml whenever <major.minor> version changes
 openssl-src = { version = "300", default-features = false, features = ["force-engine", "legacy"] }
 
@@ -509,9 +526,9 @@ ntapi = { git = "https://github.com/MSxDOS/ntapi.git", rev = "24fc1e47677fc9f6e3
 
 [features]
 # Default features for *-unknown-linux-gnu and *-apple-darwin
-default = ["api", "api-client", "codecs-parquet", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "secrets"]
+default = ["api", "api-client", "codecs-parquet", "enrichment-tables", "querier-backend", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "secrets"]
 # Default features for `cargo docs`. The same as `default` but without `rdkafka?/gssapi-vendored` which would require installing libsasl in our doc build environment.
-docs = ["api", "api-client", "codecs-parquet", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "secrets"]
+docs = ["api", "api-client", "codecs-parquet", "enrichment-tables", "querier-backend", "sinks", "sources", "sources-dnstap", "transforms", "unix", "secrets"]
 # Default features for *-unknown-linux-* which make use of `cmake` for dependencies
 default-cmake = ["api", "api-client", "codecs-parquet", "enrichment-tables", "rdkafka?/cmake_build", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "secrets"]
 # Default features for *-pc-windows-msvc
@@ -555,6 +572,20 @@ api = [
   "dep:async-graphql-warp",
   "dep:base64",
   "sol-lib/api",
+]
+
+# Read-side query backend: serve Prometheus/Tempo/Loki + SQL APIs over Parquet via DataFusion.
+# Gates src/querier/ and src/config/{querier,compactor}.rs. See docs/workspace/parquet-backend/.
+querier-backend = [
+  "dep:datafusion",
+  "dep:datafusion-functions-json",
+  "dep:moka",
+  "dep:object_store",
+  "dep:promql-parser",
+  "dep:lrpar",
+  "dep:lrlex",
+  "dep:cfgrammar",
+  "codecs-parquet",
 ]
 
 # API client
@@ -1090,6 +1121,9 @@ codecs-benches = []
 loki-benches = ["sinks-loki"]
 enrichment-tables-benches = ["enrichment-tables-geoip", "enrichment-tables-mmdb", "enrichment-tables-memory"]
 proptest = ["dep:proptest", "dep:proptest-derive", "vrl/proptest"]
+datafusion = ["dep:datafusion"]
+object_store = ["dep:object_store"]
+promql-parser = ["dep:promql-parser"]
 
 [[bench]]
 name = "default"

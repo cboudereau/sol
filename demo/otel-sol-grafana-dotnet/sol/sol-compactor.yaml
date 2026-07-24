@@ -1,0 +1,56 @@
+# Sol compactor node (singleton role) for the demo.
+#
+# Seals sealed-day Parquet partitions into compacted + sorted files, generates
+# metric rollup tiers (5m/1h/1d), and runs retention GC over the shared Parquet
+# volume (read-write). No HTTP server. Its own metrics are forwarded to Mimir as
+# service.name = sol/compactor so the SOL Querier Backend dashboard's sol_compactor_*
+# panels populate.
+
+# Presence of `compactor:` starts the singleton compactor loop (no `role`).
+compactor:
+  storage:
+    path: "/data/parquet"
+  interval_secs: 60 # run an intraday -> seal -> rollup -> GC pass every minute (fits chunk closing)
+  grace_days: 1 # active day is hourly-compacted, then sealed into one file
+  retention_days: 30
+  rollups: true
+  intraday: true # compact completed hours of the active day (bounds open files)
+  hour_grace_secs: 600 # wait 10 min past an hour's end for late data
+  open_hour_chunks: true # compact closed chunks of the open hour (bounds live-window files)
+  chunk_secs: 180 # 3-min chunks within the open hour (shorter open-hour raw tail; ×3 metric subtypes)
+  chunk_grace_secs: 60 # 1 min past a chunk end for in-flight flushes (2x the 30s flush)
+  delete_superseded: true # reclaim disk/inodes once inputs are safely superseded
+  delete_grace_secs: 60 # must exceed the querier refresh_interval_secs (15s)
+
+sources:
+  self_metrics:
+    type: internal_metrics
+    scrape_interval_secs: 15
+    resource_attributes:
+      service.name: sol/compactor
+      service.namespace: compactor
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol-compactor
+
+transforms:
+  promote_host_metrics_attrs:
+    type: remap
+    inputs: ["host_metrics"]
+    source: |
+      .attributes.job = .resource.attributes."service.name"
+      .name = "node_" + string!(.name)
+
+sinks:
+  otlp_self_metrics:
+    type: opentelemetry
+    inputs: ["self_metrics", "promote_host_metrics_attrs"]
+    protocol:
+      type: grpc
+      endpoint: "http://sol-gateway:4317"
+      batch:
+        max_events: 1000
+        timeout_secs: 15

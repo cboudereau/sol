@@ -1,0 +1,70 @@
+version = 1
+
+# ---------------------------------------------------------------------------
+# Sol license boundary (REUSE 3.0 spec — https://reuse.software).
+#
+# Precedence is LAST-MATCH-WINS: the broad MPL-2.0 fallback comes first, then
+# vendored third-party, then Sol-original code. The boundary is defined by the
+# PROVENANCE of each file's content, NOT by when git first saw it — Sol renamed
+# the whole `vector-*` crate tree to `sol-*`, so a git "added files" diff is not
+# a valid boundary (it mislabels moved-Vector code as new). See
+# docs/LICENSE-BOUNDARY.md for the derivation.
+# ---------------------------------------------------------------------------
+
+# 1) Base: everything is Vector-derived (MPL-2.0) unless overridden below.
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2020 Vector Authors <vector@datadoghq.com>"
+SPDX-License-Identifier = "MPL-2.0"
+
+# 2) Vendored third-party: OpenTelemetry protobuf definitions are Apache-2.0.
+[[annotations]]
+path = "lib/otel-proto-types/src/proto/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2019 OpenTelemetry Authors"
+SPDX-License-Identifier = "Apache-2.0"
+
+# 3) Sol-original code — the new observability backend & OTLP features. AGPL-3.0.
+[[annotations]]
+path = [
+  "src/querier/**",
+  "src/config/querier.rs",
+  "src/config/compactor.rs",
+  "src/vrl_migrate/**",
+  "src/transforms/servicegraph/**",
+  "src/transforms/span_metrics/**",
+  "src/transforms/tail_sampling/**",
+  "src/sinks/opentelemetry/grpc.rs",
+  "src/sinks/opentelemetry/http.rs",
+  "src/sinks/opentelemetry/load_balancing.rs",
+  "src/sources/source_otel.rs",
+  "lib/sol-core/src/event/otel_attributes.rs",
+  "lib/sol-core/src/event/otel_conv.rs",
+  "lib/sol-core/src/event/otel_event.rs",
+  "lib/sol-core/src/event/otel_fields.rs",
+  "lib/sol-core/src/event/otel_json.rs",
+  "lib/sol-core/src/event/otel_metric.rs",
+  "lib/sol-core/src/event/otlp.rs",
+  "lib/codecs/src/encoding/format/parquet.rs",
+  "lib/opentelemetry-proto/src/buffer_codec.rs",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Clément Boudereau"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+# 4) Sol-original documentation — architecture, ADRs, designs, design plans.
+#    These are new dirs that did not exist in Vector (Vector's own docs —
+#    ARCHITECTURE.md, specs/, tutorials/, etc. — stay MPL-2.0 via the fallback).
+[[annotations]]
+path = [
+  "docs/adrs/**",
+  "docs/designs/**",
+  "docs/workspace/**",
+  "docs/otlp-as-core-protocol-plan/**",
+  "docs/DEV_ENVIRONMENT.md",
+  "docs/LICENSE-BOUNDARY.md",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Clément Boudereau"
+SPDX-License-Identifier = "AGPL-3.0-only"

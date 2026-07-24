@@ -755,7 +755,7 @@ deal with multiple compilation errors before the compiler is satisfied with
 their provided program.
 
 The more accurate and helpful these errors are, the less friction there is for
-operators, and the less likely they require help from the Vector team, or give
+operators, and the less likely they require help from the Team, or give
 up on Vector entirely due to frustrations with VRL.
 
 By improving the ergonomics of error handling, we reduce the upfront cost of

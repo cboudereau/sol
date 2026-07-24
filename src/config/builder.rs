@@ -5,6 +5,8 @@ use sol_lib::{config::GlobalOptions, configurable::configurable_component};
 
 #[cfg(feature = "api")]
 use super::api;
+#[cfg(feature = "querier-backend")]
+use super::{compactor, querier};
 use super::{
     BoxedSink, BoxedSource, BoxedTransform, ComponentKey, Config, EnrichmentTableOuter,
     HealthcheckOptions, SinkOuter, SourceOuter, TestDefinition, TransformOuter, compiler, schema,
@@ -23,6 +25,16 @@ pub struct ConfigBuilder {
     #[configurable(derived)]
     #[serde(default)]
     pub api: api::Options,
+
+    #[cfg(feature = "querier-backend")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub querier: Option<querier::QuerierOptions>,
+
+    #[cfg(feature = "querier-backend")]
+    #[configurable(derived)]
+    #[serde(default)]
+    pub compactor: Option<compactor::CompactorOptions>,
 
     #[configurable(derived)]
     #[configurable(metadata(docs::hidden))]
@@ -82,6 +94,10 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "querier-backend")]
+            querier,
+            #[cfg(feature = "querier-backend")]
+            compactor,
             schema,
             healthchecks,
             enrichment_tables,
@@ -114,6 +130,10 @@ impl From<Config> for ConfigBuilder {
             global,
             #[cfg(feature = "api")]
             api,
+            #[cfg(feature = "querier-backend")]
+            querier,
+            #[cfg(feature = "querier-backend")]
+            compactor,
             schema,
             healthchecks,
             enrichment_tables,
@@ -211,6 +231,18 @@ impl ConfigBuilder {
         #[cfg(feature = "api")]
         if let Err(error) = self.api.merge(with.api) {
             errors.push(error);
+        }
+
+        // Query backend has no field-level merge; later config wins (last-writer),
+        // but a later file that omits a section must not clear an earlier one.
+        #[cfg(feature = "querier-backend")]
+        {
+            if with.querier.is_some() {
+                self.querier = with.querier;
+            }
+            if with.compactor.is_some() {
+                self.compactor = with.compactor;
+            }
         }
 
         self.provider = with.provider;

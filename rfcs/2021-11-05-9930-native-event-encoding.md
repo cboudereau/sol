@@ -116,10 +116,10 @@ _success_ of Vector.
 ## Drawbacks
 
 Encoding `Event` natively via Protocol Buffers should be a feature we can accomplish with no
-additional burden on the Vector team, as we already perform the necessary due diligence and spend
+additional burden on the Team, as we already perform the necessary due diligence and spend
 time ensuring that our Protocol Buffers definition stays backwards/forwards-compatible.
 
-Encoding `Event` to JSON, however, could result in more time spent by the Vector team on support to
+Encoding `Event` to JSON, however, could result in more time spent by the Team on support to
 the lack of a stringent schema, given that we would not be transforming `Event` to a known
 definition like Protocol Buffers.  While the idea to generate a minimal viable schema could
 hopefully alleviate some of those concerns, it still doesn't address the notion of not providing

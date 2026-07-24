@@ -104,6 +104,9 @@ pub mod net;
 #[allow(unreachable_pub)]
 pub(crate) mod proto;
 pub mod providers;
+#[cfg(feature = "querier-backend")]
+#[allow(unreachable_pub)]
+pub mod querier;
 pub mod secrets;
 pub mod serde;
 #[cfg(windows)]

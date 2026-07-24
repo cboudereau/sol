@@ -18,14 +18,14 @@ sources:
     scrape_interval_secs: 15
     namespace: ""
     resource_attributes:
-      service.name: sol
+      service.name: sol-gateway
 
 transforms:
   # Promote resource attributes to metric data point attributes.
   # Equivalent to otelcontribcol transform/metrics/dotnet processor.
   promote_resource_attrs:
     type: remap
-    inputs: ["otlp.metrics"]
+    inputs: ["otlp.metrics", "self_metrics", "promote_host_metrics_attrs"]
     source: |
       .attributes."service.name" = .resource.attributes."service.name"
       .attributes."service.namespace" = .resource.attributes."service.namespace"
@@ -33,17 +33,26 @@ transforms:
       .attributes."deployment.environment" = .resource.attributes."deployment.environment"
       .attributes."host.name" = .resource.attributes."host.name"
 
-  promote_self_metrics_attrs:
-    type: remap
-    inputs: ["self_metrics"]
-    source: |
-      .attributes."service.name" = .resource.attributes."service.name"
-      .attributes."service.namespace" = .resource.attributes."service.namespace"
+  # task 14b: split metrics by subtype so each lands in its own Parquet dir
+  # (metrics/<subtype>/dt=…) → narrow per-subtype schemas, clean ListingTables.
+  route_metrics:
+    type: route
+    inputs: ["promote_resource_attrs"]
+    # the five OTLP metric types are exhaustive; drop anything else rather than
+    # emit an unconsumed _unmatched stream.
+    reroute_unmatched: false
+    route:
+      gauge: '.data.type == "gauge"'
+      sum: '.data.type == "sum"'
+      histogram: '.data.type == "histogram"'
+      exponential_histogram: '.data.type == "exponential_histogram"'
+      summary: '.data.type == "summary"'
 
   promote_host_metrics_attrs:
     type: remap
     inputs: ["host_metrics"]
     source: |
+      .attributes.job = .resource.attributes."service.name"
       .name = "node_" + string!(.name)
 
 sinks:
@@ -83,20 +92,10 @@ sinks:
         max_events: 1000
         timeout_secs: 1
 
-  otlp_self_metrics:
-    type: opentelemetry
-    inputs: ["promote_self_metrics_attrs", "promote_host_metrics_attrs"]
-    protocol:
-      type: http
-      endpoint: "http://mimir:9009/otlp"
-      batch:
-        max_events: 1000
-        timeout_secs: 15
-
   parquet_logs:
     type: file
     inputs: ["otlp.logs"]
-    path: "/data/parquet/logs/%Y-%m-%d-%H-%M-%S.parquet"
+    path: "/data/parquet/logs/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -104,10 +103,12 @@ sinks:
       max_events: 5000
       timeout_secs: 30
 
-  parquet_traces:
+  # task 14b: one Parquet sink per metric subtype → metrics/<subtype>/dt=…
+  # Each sink's batch is single-subtype, so the codec emits one narrow file.
+  parquet_metrics_gauge:
     type: file
-    inputs: ["otlp.traces"]
-    path: "/data/parquet/traces/%Y-%m-%d-%H-%M-%S.parquet"
+    inputs: ["route_metrics.gauge"]
+    path: "/data/parquet/metrics/gauge/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd
@@ -115,10 +116,43 @@ sinks:
       max_events: 5000
       timeout_secs: 30
 
-  parquet_metrics:
+  parquet_metrics_sum:
     type: file
-    inputs: ["promote_resource_attrs"]
-    path: "/data/parquet/metrics/%Y-%m-%d-%H-%M-%S.parquet"
+    inputs: ["route_metrics.sum"]
+    path: "/data/parquet/metrics/sum/dt=%Y-%m-%d/%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
+  parquet_metrics_histogram:
+    type: file
+    inputs: ["route_metrics.histogram"]
+    path: "/data/parquet/metrics/histogram/dt=%Y-%m-%d/%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
+  parquet_metrics_exp_histogram:
+    type: file
+    inputs: ["route_metrics.exponential_histogram"]
+    path: "/data/parquet/metrics/exponential_histogram/dt=%Y-%m-%d/%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
+  parquet_metrics_summary:
+    type: file
+    inputs: ["route_metrics.summary"]
+    path: "/data/parquet/metrics/summary/dt=%Y-%m-%d/%H-%M-%S.parquet"
     batch_encoding:
       codec: parquet
       compression: zstd

@@ -23,6 +23,24 @@ pub enum BatchSerializer {
     Parquet(Box<ParquetSerializer>),
 }
 
+/// One encoded output file plus, when the batch codec can compute them, the
+/// exact `[min, max]` event-time (`time_unix_nano`) bounds of the rows it
+/// contains.
+///
+/// Parquet fills [`Self::time_bounds`] so the file sink can name each file
+/// `<min_ns>-<max_ns>-<uuid>.parquet` and the querier's file inventory can
+/// prune on exact per-file intervals (backend-metrics-perf FR1, ADR A′).
+/// Codecs that cannot (or a partition with no timestamped rows) leave it
+/// `None`, and the sink keeps its legacy timestamped-template name.
+#[derive(Debug, Clone)]
+pub struct EncodedFile {
+    /// The encoded file bytes.
+    pub data: Vec<u8>,
+    /// Exact `[min_ns, max_ns]` `time_unix_nano` over the file's rows, if the
+    /// codec computed them and at least one row carried a non-zero timestamp.
+    pub time_bounds: Option<(i64, i64)>,
+}
+
 /// An encoder that encodes batches of events.
 #[derive(Debug, Clone)]
 pub struct BatchEncoder {
@@ -55,13 +73,27 @@ impl BatchEncoder {
 impl BatchSerializer {
     /// Encode events into individual files.
     /// Returns one `Vec<u8>` per output file.
-    #[allow(unused_variables)]
     pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
+        Ok(self
+            .encode_files_with_bounds(events)?
+            .into_iter()
+            .map(|f| f.data)
+            .collect())
+    }
+
+    /// Encode events into individual files, each paired with the exact event-
+    /// time bounds of its rows when the codec can compute them
+    /// ([`EncodedFile`]). Parquet fills the bounds; Arrow leaves them `None`.
+    #[allow(unused_variables)]
+    pub fn encode_files_with_bounds(
+        &mut self,
+        events: Vec<Event>,
+    ) -> Result<Vec<EncodedFile>, Error> {
         #[allow(unreachable_patterns)]
         match self {
             #[cfg(feature = "parquet")]
             BatchSerializer::Parquet(s) => s
-                .encode_files(events)
+                .encode_files_with_bounds(events)
                 .map_err(|e| Error::SerializingError(Box::new(e))),
             #[cfg(feature = "arrow")]
             BatchSerializer::Arrow(s) => {
@@ -75,7 +107,10 @@ impl BatchSerializer {
                         _ => Error::SerializingError(Box::new(err)),
                     }
                 })?;
-                Ok(vec![buf.to_vec()])
+                Ok(vec![EncodedFile {
+                    data: buf.to_vec(),
+                    time_bounds: None,
+                }])
             }
             _ => unreachable!("BatchSerializer cannot be constructed without encode_files()"),
         }
@@ -87,6 +122,15 @@ impl BatchEncoder {
     /// Returns one `Vec<u8>` per output file.
     pub fn encode_files(&mut self, events: Vec<Event>) -> Result<Vec<Vec<u8>>, Error> {
         self.serializer.encode_files(events)
+    }
+
+    /// Encode events into individual files paired with their exact event-time
+    /// bounds ([`EncodedFile`]); see [`BatchSerializer::encode_files_with_bounds`].
+    pub fn encode_files_with_bounds(
+        &mut self,
+        events: Vec<Event>,
+    ) -> Result<Vec<EncodedFile>, Error> {
+        self.serializer.encode_files_with_bounds(events)
     }
 }
 

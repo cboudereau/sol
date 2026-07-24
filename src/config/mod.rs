@@ -41,6 +41,9 @@ pub mod format;
 mod graph;
 pub mod loading;
 pub mod provider;
+#[cfg(feature = "querier-backend")]
+pub mod compactor;
+pub mod querier;
 pub mod schema;
 mod secret;
 mod sink;
@@ -148,6 +151,10 @@ impl ConfigPath {
 pub struct Config {
     #[cfg(feature = "api")]
     pub api: api::Options,
+    #[cfg(feature = "querier-backend")]
+    pub querier: Option<querier::QuerierOptions>,
+    #[cfg(feature = "querier-backend")]
+    pub compactor: Option<compactor::CompactorOptions>,
     pub schema: schema::Options,
     pub global: GlobalOptions,
     pub healthchecks: HealthcheckOptions,

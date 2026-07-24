@@ -40,6 +40,8 @@ pub struct TopologyController {
     pub require_healthy: Option<bool>,
     #[cfg(feature = "api")]
     pub api_server: Option<api::Server>,
+    #[cfg(feature = "querier-backend")]
+    pub query_servers: Vec<crate::querier::Server>,
     pub extra_context: ExtraContext,
 }
 

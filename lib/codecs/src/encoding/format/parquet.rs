@@ -25,6 +25,8 @@ use sol_core::event::otel_metric::OtelMetric;
 use sol_core::event::{Event, OtelLog};
 use std::sync::Arc;
 
+use crate::encoding::EncodedFile;
+
 // ---------------------------------------------------------------------------
 // Column writer helpers (Task 1)
 // ---------------------------------------------------------------------------
@@ -292,6 +294,93 @@ fn write_optional_fixed_bytes_column(
     Ok(())
 }
 
+/// Write a `MAP<Utf8,Utf8>` column (two leaf columns: `key`, `value`) from one
+/// optional entry-list per row.
+///
+/// `rows[i] == None`  → null map (def 0).
+/// `rows[i] == Some([])` → present-but-empty map (def 1, no entries).
+/// `rows[i] == Some([(k,v), …])` → one repeated `key_value` per entry.
+///
+/// Definition/repetition levels follow the canonical MAP shape
+/// (`optional map → repeated key_value → required key / optional value`):
+/// `key` max-def 2, `value` max-def 3; rep level 0 starts a new row, 1 repeats
+/// within the row. Values here are always present (def == max).
+fn write_string_map_column(
+    rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
+    rows: &[Option<Vec<(String, String)>>],
+) -> Result<(), ParquetEncodingError> {
+    let mut keys: Vec<ByteArray> = Vec::new();
+    let mut key_def: Vec<i16> = Vec::new();
+    let mut key_rep: Vec<i16> = Vec::new();
+    let mut values: Vec<ByteArray> = Vec::new();
+    let mut val_def: Vec<i16> = Vec::new();
+    let mut val_rep: Vec<i16> = Vec::new();
+
+    for row in rows {
+        match row {
+            None => {
+                // Null map: one null record at def 0.
+                key_def.push(0);
+                key_rep.push(0);
+                val_def.push(0);
+                val_rep.push(0);
+            }
+            Some(entries) if entries.is_empty() => {
+                // Present but empty map: def 1 (map present, no key_value).
+                key_def.push(1);
+                key_rep.push(0);
+                val_def.push(1);
+                val_rep.push(0);
+            }
+            Some(entries) => {
+                for (idx, (k, v)) in entries.iter().enumerate() {
+                    let rep = i16::from(idx > 0);
+                    keys.push(ByteArray::from(k.as_bytes().to_vec()));
+                    key_def.push(2);
+                    key_rep.push(rep);
+                    values.push(ByteArray::from(v.as_bytes().to_vec()));
+                    val_def.push(3);
+                    val_rep.push(rep);
+                }
+            }
+        }
+    }
+
+    // key leaf column.
+    {
+        let mut col = rg
+            .next_column()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+            .ok_or(ParquetEncodingError::NoColumn)?;
+        match col.untyped() {
+            ColumnWriter::ByteArrayColumnWriter(w) => {
+                w.write_batch(&keys, Some(&key_def), Some(&key_rep))
+                    .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+            }
+            _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+        }
+        col.close()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    }
+    // value leaf column.
+    {
+        let mut col = rg
+            .next_column()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?
+            .ok_or(ParquetEncodingError::NoColumn)?;
+        match col.untyped() {
+            ColumnWriter::ByteArrayColumnWriter(w) => {
+                w.write_batch(&values, Some(&val_def), Some(&val_rep))
+                    .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+            }
+            _ => return Err(ParquetEncodingError::ColumnTypeMismatch),
+        }
+        col.close()
+            .map_err(|source| ParquetEncodingError::ParquetWrite { source })?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Shared extractors (Task 1)
 // ---------------------------------------------------------------------------
@@ -377,7 +466,52 @@ pub struct ParquetSerializerConfig {
 // Log schema (Task 2)
 // ---------------------------------------------------------------------------
 
-use parquet::basic::{LogicalType, Repetition, TimeUnit as ParquetTimeUnit};
+use parquet::basic::{ConvertedType, LogicalType, Repetition, TimeUnit as ParquetTimeUnit};
+
+/// Build a dictionary-encodable `MAP<Utf8,Utf8>` schema field named `name`.
+///
+/// The Parquet MAP shape is the canonical three-level structure:
+/// ```text
+/// optional group <name> (MAP) {
+///   repeated group key_value { required binary key (STRING); optional binary value (STRING); }
+/// }
+/// ```
+/// Read back by DataFusion as `Map<Struct<key:Utf8, value:Utf8>>`. Used for the
+/// metric data-point `attributes` column so the read side extracts labels
+/// columnar (no per-row JSON parse) — see promql-pushdown T6/materialized-label-columns.
+fn map_string_string_field(name: &str) -> Arc<Type> {
+    use parquet::basic::Type as PhysicalType;
+    let key = Arc::new(
+        Type::primitive_type_builder("key", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .expect("map key field"),
+    );
+    let value = Arc::new(
+        Type::primitive_type_builder("value", PhysicalType::BYTE_ARRAY)
+            .with_logical_type(Some(LogicalType::String))
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .expect("map value field"),
+    );
+    let key_value = Arc::new(
+        Type::group_type_builder("key_value")
+            .with_repetition(Repetition::REPEATED)
+            .with_fields(vec![key, value])
+            .build()
+            .expect("map key_value group"),
+    );
+    Arc::new(
+        Type::group_type_builder(name)
+            .with_repetition(Repetition::OPTIONAL)
+            .with_logical_type(Some(LogicalType::Map))
+            .with_converted_type(ConvertedType::MAP)
+            .with_fields(vec![key_value])
+            .build()
+            .expect("map field"),
+    )
+}
 
 /// Build the fixed Parquet schema for OTLP LogRecord files (18 columns).
 pub fn build_otel_log_schema() -> Arc<Type> {
@@ -639,6 +773,11 @@ fn write_log_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     logs: &[&OtelLog],
 ) -> Result<(), ParquetEncodingError> {
+    // Sort-on-write: order rows by (service_name, time_unix_nano) so the file is
+    // locally sorted. Cheap pointer reorder; all columns below map in this order.
+    let mut logs = logs.to_vec();
+    sort_logs(&mut logs);
+    let logs = logs.as_slice();
     // Column 0: service_name (REQUIRED)
     let service_names: Vec<ByteArray> = logs
         .iter()
@@ -1050,6 +1189,11 @@ fn write_trace_columns(
     rg: &mut SerializedRowGroupWriter<'_, Vec<u8>>,
     spans: &[&OtelSpan],
 ) -> Result<(), ParquetEncodingError> {
+    // Sort-on-write: order rows by (service_name, start_time_unix_nano) so the
+    // file is locally sorted. Cheap pointer reorder; all columns map in order.
+    let mut spans = spans.to_vec();
+    sort_spans(&mut spans);
+    let spans = spans.as_slice();
     // Column 0: service_name (REQUIRED)
     let service_names: Vec<ByteArray> = spans
         .iter()
@@ -1473,14 +1617,9 @@ fn common_metric_schema_fields() -> Vec<Arc<Type>> {
                 .build()
                 .expect("start_time_unix_nano field"),
         ),
-        // 6: attributes — OPTIONAL UTF8
-        Arc::new(
-            Type::primitive_type_builder("attributes", PhysicalType::BYTE_ARRAY)
-                .with_logical_type(Some(LogicalType::String))
-                .with_repetition(Repetition::OPTIONAL)
-                .build()
-                .expect("attributes field"),
-        ),
+        // 6: attributes — dictionary-encodable MAP<Utf8,Utf8> (columnar labels,
+        // read parse-free; promql-pushdown T6 / materialized-label-columns).
+        map_string_string_field("attributes"),
         // 7: flags — OPTIONAL INT32
         Arc::new(
             Type::primitive_type_builder("flags", PhysicalType::INT32)
@@ -1544,10 +1683,32 @@ fn common_metric_schema_fields() -> Vec<Arc<Type>> {
                 .build()
                 .expect("scope_schema_url field"),
         ),
+        // prom_name — REQUIRED UTF8: the normalized Prometheus/Mimir name,
+        // materialized at write so the read side filters a prunable, sorted
+        // column instead of recomputing `prom_metric_name` per row.
+        Arc::new(
+            Type::primitive_type_builder("prom_name", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("prom_name field"),
+        ),
+        // prom_series_key — REQUIRED UTF8: the canonical, groupable series key
+        // (sorted, escaped raw `k=v` join of the data-point attributes,
+        // `sol_core::event::series_key`), materialized at write so the read side
+        // partitions windows/aggregates on a plain Utf8 column instead of the
+        // per-row `prom_series_key` UDF over the `attributes` MAP.
+        Arc::new(
+            Type::primitive_type_builder("prom_series_key", PhysicalType::BYTE_ARRAY)
+                .with_logical_type(Some(LogicalType::String))
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .expect("prom_series_key field"),
+        ),
     ]
 }
 
-/// Build the Parquet schema for OTLP Gauge metrics (17 columns).
+/// Build the Parquet schema for OTLP Gauge metrics (18 columns).
 pub fn build_gauge_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1571,7 +1732,7 @@ pub fn build_gauge_schema() -> Arc<Type> {
     )
 }
 
-/// Build the Parquet schema for OTLP Sum metrics (19 columns).
+/// Build the Parquet schema for OTLP Sum metrics (20 columns).
 pub fn build_sum_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1607,7 +1768,7 @@ pub fn build_sum_schema() -> Arc<Type> {
     )
 }
 
-/// Build the Parquet schema for OTLP Histogram metrics (22 columns).
+/// Build the Parquet schema for OTLP Histogram metrics (23 columns).
 pub fn build_histogram_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1670,7 +1831,7 @@ pub fn build_histogram_schema() -> Arc<Type> {
     )
 }
 
-/// Build the Parquet schema for OTLP ExponentialHistogram metrics (27 columns).
+/// Build the Parquet schema for OTLP ExponentialHistogram metrics (28 columns).
 pub fn build_exp_histogram_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1768,7 +1929,7 @@ pub fn build_exp_histogram_schema() -> Arc<Type> {
     )
 }
 
-/// Build the Parquet schema for OTLP Summary metrics (18 columns).
+/// Build the Parquet schema for OTLP Summary metrics (19 columns).
 pub fn build_summary_schema() -> Arc<Type> {
     use parquet::basic::Type as PhysicalType;
     let mut fields = common_metric_schema_fields();
@@ -1808,22 +1969,93 @@ pub fn build_summary_schema() -> Arc<Type> {
 
 use sol_core::event::otel_metric::{MetricData, NumberDataPointValue};
 
-/// Convert OTLP KeyValue attributes to a JSON string, or None if empty.
-fn kv_attrs_to_json_opt(
+/// Convert OTLP KeyValue data-point attributes to `(key, value)` entries for the
+/// columnar `attributes` MAP, or `None` for an absent/empty attribute set (null
+/// map). Keys are the **raw OTLP keys** (normalization is applied on read, in
+/// `udf::normalize`). Values mirror the previous JSON-string semantics exactly:
+/// a string value is stored verbatim; any other scalar/structured value is
+/// stored as its JSON text — so the read side observes identical label values
+/// without parsing JSON per row.
+fn kv_attrs_to_map_opt(
     attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
-) -> Option<String> {
+) -> Option<Vec<(String, String)>> {
     if attrs.is_empty() {
         return None;
     }
     let tmp = OtelAttributes::from_key_values(attrs.to_vec());
-    let json = attrs_to_json(&tmp);
-    if json == "{}" { None } else { Some(json) }
+    match serde_json::to_value(&tmp) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => Some(
+            map.into_iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    (k, val)
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 /// A flattened row for gauge/sum data points. One row per data point.
 struct NumberDpRow<'a> {
     metric: &'a OtelMetric,
     dp: opentelemetry_proto::tonic::metrics::v1::NumberDataPoint,
+}
+
+/// The normalized Prometheus/Mimir name for a metric — materialized into the
+/// `prom_name` column so the read side filters a prunable column instead of
+/// recomputing the `prom_metric_name` UDF per row. `is_monotonic` is only set on
+/// monotonic `Sum`s; every other subtype is non-monotonic.
+fn metric_prom_name(metric: &OtelMetric) -> String {
+    use sol_core::event::otel_metric::MetricData;
+    let is_monotonic = matches!(
+        metric.metric().data.as_ref(),
+        Some(MetricData::Sum(sum)) if sum.is_monotonic
+    );
+    sol_core::event::prom_name::prom_metric_name(metric.name(), metric.unit(), is_monotonic)
+}
+
+/// Sort metric data-point rows by the read-side sort key
+/// `(service_name, prom_name, time_unix_nano)` so each written Parquet file is
+/// locally sorted on the queried name (file-layout ADR write-side hint — the
+/// `prom_name` sort maximizes read-time row-group pruning). `key` extracts the
+/// metric and the data-point timestamp from each row type.
+fn sort_dp_rows<R>(rows: &mut [R], key: impl Fn(&R) -> (&OtelMetric, u64)) {
+    rows.sort_by_cached_key(|r| {
+        let (metric, time_unix_nano) = key(r);
+        (
+            extract_service_name(metric.resource_attrs()),
+            metric_prom_name(metric),
+            time_unix_nano,
+        )
+    });
+}
+
+/// Sort log rows by the read-side key `(service_name, time_unix_nano)` so each
+/// written Parquet file is locally sorted — the write-side hint that lets the
+/// compactor's seal merge pre-sorted files (zero-resort k-way merge) instead of
+/// re-sorting. `time_unix_nano` is OPTIONAL (0 = absent → NULL); the reader
+/// orders NULLs last, so absent-time logs sort last here too.
+fn sort_logs(logs: &mut [&OtelLog]) {
+    logs.sort_by_cached_key(|l| {
+        let t = l.time_unix_nano();
+        (extract_service_name(l.resource_attrs()), t == 0, t)
+    });
+}
+
+/// Sort span rows by the read-side key `(service_name, start_time_unix_nano)`
+/// (same write-side hint). `start_time_unix_nano` is REQUIRED, so no NULL
+/// handling is needed.
+fn sort_spans(spans: &mut [&OtelSpan]) {
+    spans.sort_by_cached_key(|s| {
+        (
+            extract_service_name(s.resource_attrs()),
+            s.start_time_unix_nano(),
+        )
+    });
 }
 
 /// Collect flattened rows for gauge metrics, using `metric_proto()` to restore dp attrs.
@@ -1837,6 +2069,7 @@ fn collect_gauge_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
     rows
 }
 
@@ -1851,6 +2084,7 @@ fn collect_sum_rows<'a>(metrics: &[&'a OtelMetric]) -> Vec<NumberDpRow<'a>> {
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
     rows
 }
 
@@ -1936,22 +2170,13 @@ fn write_common_metric_columns(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -2078,6 +2303,31 @@ fn write_common_metric_columns(
     {
         let def_levels: Vec<i16> = vec![0_i16; n];
         write_optional_bytes_column(rg, &[], &def_levels)?;
+    }
+
+    // 15: prom_name (REQUIRED) — normalized name, materialized for read-side pruning
+    {
+        let prom_names: Vec<ByteArray> = rows
+            .iter()
+            .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
+            .collect();
+        write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
     }
 
     Ok(())
@@ -2276,22 +2526,13 @@ fn write_common_metric_columns_histogram(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -2420,6 +2661,31 @@ fn write_common_metric_columns_histogram(
         write_optional_bytes_column(rg, &[], &def_levels)?;
     }
 
+    // 15: prom_name (REQUIRED) — normalized name, materialized for read-side pruning
+    {
+        let prom_names: Vec<ByteArray> = rows
+            .iter()
+            .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
+            .collect();
+        write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
+    }
+
     Ok(())
 }
 
@@ -2437,6 +2703,7 @@ fn write_histogram_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_histogram(rg, &rows)?;
 
@@ -2644,22 +2911,13 @@ fn write_common_metric_columns_exp_histogram(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -2788,6 +3046,31 @@ fn write_common_metric_columns_exp_histogram(
         write_optional_bytes_column(rg, &[], &def_levels)?;
     }
 
+    // 15: prom_name (REQUIRED) — normalized name, materialized for read-side pruning
+    {
+        let prom_names: Vec<ByteArray> = rows
+            .iter()
+            .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
+            .collect();
+        write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
+    }
+
     Ok(())
 }
 
@@ -2805,6 +3088,7 @@ fn write_exp_histogram_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_exp_histogram(rg, &rows)?;
 
@@ -3085,22 +3369,13 @@ fn write_common_metric_columns_summary(
         write_optional_i64_column(rg, &values, &def_levels)?;
     }
 
-    // 6: attributes (OPTIONAL — from data point attributes)
+    // 6: attributes (MAP<Utf8,Utf8> — from data point attributes)
     {
-        let mut values = Vec::with_capacity(n);
-        let mut def_levels = Vec::with_capacity(n);
-        for row in rows {
-            match kv_attrs_to_json_opt(&row.dp.attributes) {
-                Some(json) => {
-                    values.push(ByteArray::from(json.into_bytes()));
-                    def_levels.push(1_i16);
-                }
-                None => {
-                    def_levels.push(0_i16);
-                }
-            }
-        }
-        write_optional_bytes_column(rg, &values, &def_levels)?;
+        let maps: Vec<Option<Vec<(String, String)>>> = rows
+            .iter()
+            .map(|row| kv_attrs_to_map_opt(&row.dp.attributes))
+            .collect();
+        write_string_map_column(rg, &maps)?;
     }
 
     // 7: flags (OPTIONAL, 0 = null)
@@ -3219,6 +3494,31 @@ fn write_common_metric_columns_summary(
         write_optional_bytes_column(rg, &[], &def_levels)?;
     }
 
+    // 15: prom_name (REQUIRED) — normalized name, materialized for read-side pruning
+    {
+        let prom_names: Vec<ByteArray> = rows
+            .iter()
+            .map(|r| ByteArray::from(metric_prom_name(r.metric).into_bytes()))
+            .collect();
+        write_required_bytes_column(rg, &prom_names)?;
+    }
+
+    // 16: prom_series_key (REQUIRED) — canonical series key materialized so the
+    // read side partitions windows/aggregates on a plain Utf8 column instead of
+    // the per-row `prom_series_key` UDF over the `attributes` MAP. Computed from
+    // the same data-point attributes written into the `attributes` column, via
+    // the shared `sol_core::event::series_key` (cannot diverge from the UDF).
+    {
+        let series_keys: Vec<ByteArray> = rows
+            .iter()
+            .map(|row| {
+                let entries = kv_attrs_to_map_opt(&row.dp.attributes).unwrap_or_default();
+                ByteArray::from(sol_core::event::series_key::series_key(entries).into_bytes())
+            })
+            .collect();
+        write_required_bytes_column(rg, &series_keys)?;
+    }
+
     Ok(())
 }
 
@@ -3236,6 +3536,7 @@ fn write_summary_columns(
             }
         }
     }
+    sort_dp_rows(&mut rows, |r| (r.metric, r.dp.time_unix_nano));
 
     write_common_metric_columns_summary(rg, &rows)?;
 
@@ -3350,6 +3651,25 @@ impl ParquetSerializer {
         &mut self,
         events: Vec<Event>,
     ) -> Result<Vec<Vec<u8>>, ParquetEncodingError> {
+        Ok(self
+            .encode_files_with_bounds(events)?
+            .into_iter()
+            .map(|f| f.data)
+            .collect())
+    }
+
+    /// Encode events into individual Parquet files, each paired with the exact
+    /// `[min, max]` `time_unix_nano` of its rows ([`EncodedFile`]).
+    ///
+    /// The bounds are the true min/max event time of the rows written to that
+    /// file (backend-metrics-perf FR1, ADR A′) — the read side names files from
+    /// them and prunes on exact per-file intervals. A file whose rows carry no
+    /// non-zero timestamp yields `None` bounds (the sink then keeps a
+    /// conservative timestamped-template name).
+    pub fn encode_files_with_bounds(
+        &mut self,
+        events: Vec<Event>,
+    ) -> Result<Vec<EncodedFile>, ParquetEncodingError> {
         if events.is_empty() {
             return Err(ParquetEncodingError::NoEvents);
         }
@@ -3384,59 +3704,80 @@ impl ParquetSerializer {
         let props = Arc::new(self.writer_props.clone());
 
         if !logs.is_empty() {
-            let buf = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
+            let data = write_parquet_file(Arc::clone(&self.log_schema), Arc::clone(&props), |rg| {
                 write_log_columns(rg, &logs)
             })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: log_time_bounds(&logs),
+            });
         }
 
         if !traces.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.trace_schema), Arc::clone(&props), |rg| {
                     write_trace_columns(rg, &traces)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: span_time_bounds(&traces),
+            });
         }
 
         if !gauge_metrics.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.gauge_schema), Arc::clone(&props), |rg| {
                     write_gauge_columns(rg, &gauge_metrics)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&gauge_metrics),
+            });
         }
 
         if !sum_metrics.is_empty() {
-            let buf = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
+            let data = write_parquet_file(Arc::clone(&self.sum_schema), Arc::clone(&props), |rg| {
                 write_sum_columns(rg, &sum_metrics)
             })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&sum_metrics),
+            });
         }
 
         if !histogram_metrics.is_empty() {
-            let buf = write_parquet_file(
+            let data = write_parquet_file(
                 Arc::clone(&self.histogram_schema),
                 Arc::clone(&props),
                 |rg| write_histogram_columns(rg, &histogram_metrics),
             )?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&histogram_metrics),
+            });
         }
 
         if !exp_histogram_metrics.is_empty() {
-            let buf = write_parquet_file(
+            let data = write_parquet_file(
                 Arc::clone(&self.exp_histogram_schema),
                 Arc::clone(&props),
                 |rg| write_exp_histogram_columns(rg, &exp_histogram_metrics),
             )?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&exp_histogram_metrics),
+            });
         }
 
         if !summary_metrics.is_empty() {
-            let buf =
+            let data =
                 write_parquet_file(Arc::clone(&self.summary_schema), Arc::clone(&props), |rg| {
                     write_summary_columns(rg, &summary_metrics)
                 })?;
-            files.push(buf);
+            files.push(EncodedFile {
+                data,
+                time_bounds: metric_time_bounds(&summary_metrics),
+            });
         }
 
         if files.is_empty() {
@@ -3445,6 +3786,85 @@ impl ParquetSerializer {
 
         Ok(files)
     }
+}
+
+/// Fold one `time_unix_nano` sample into a running `[min, max]`. A `0` sample
+/// is "absent" (the OTLP/schema convention throughout this codec) and never
+/// widens the bounds.
+fn fold_time_bound(bounds: &mut Option<(i64, i64)>, time_unix_nano: u64) {
+    if time_unix_nano == 0 {
+        return;
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "nanosecond timestamps stay well within i64 for any realistic date"
+    )]
+    let t = time_unix_nano as i64;
+    *bounds = Some(match *bounds {
+        Some((lo, hi)) => (lo.min(t), hi.max(t)),
+        None => (t, t),
+    });
+}
+
+/// Exact `[min, max]` `time_unix_nano` over log rows (the column the querier
+/// filters), or `None` if none carried a non-zero timestamp.
+fn log_time_bounds(logs: &[&OtelLog]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for log in logs {
+        fold_time_bound(&mut bounds, log.time_unix_nano());
+    }
+    bounds
+}
+
+/// Exact `[min, max]` `start_time_unix_nano` over span rows — the trace table's
+/// queried/sort column (Tempo/Loki filter on it), so it is the trace analog of
+/// `time_unix_nano`.
+fn span_time_bounds(spans: &[&OtelSpan]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for span in spans {
+        fold_time_bound(&mut bounds, span.start_time_unix_nano());
+    }
+    bounds
+}
+
+/// Exact `[min, max]` `time_unix_nano` over every data point of the metrics in
+/// one subtype partition. Reads the proto in place (no clone) — the per-dp
+/// `time_unix_nano` is a top-level field independent of dp attributes.
+fn metric_time_bounds(metrics: &[&OtelMetric]) -> Option<(i64, i64)> {
+    let mut bounds = None;
+    for metric in metrics {
+        let Some(data) = metric.metric().data.as_ref() else {
+            continue;
+        };
+        match data {
+            MetricData::Gauge(g) => {
+                for dp in &g.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Sum(s) => {
+                for dp in &s.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Histogram(h) => {
+                for dp in &h.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::ExponentialHistogram(h) => {
+                for dp in &h.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+            MetricData::Summary(s) => {
+                for dp in &s.data_points {
+                    fold_time_bound(&mut bounds, dp.time_unix_nano);
+                }
+            }
+        }
+    }
+    bounds
 }
 
 impl tokio_util::codec::Encoder<Vec<Event>> for ParquetSerializer {
@@ -4168,6 +4588,83 @@ mod tests {
             .expect("write trace parquet failed")
     }
 
+    /// Read a `MAP<Utf8,Utf8>` column from two leaf readers (key at `key_col`,
+    /// value at `key_col + 1`) into one optional sorted entry-list per row.
+    /// `None` = null map; `Some(vec![])` = present-but-empty map.
+    fn read_string_map_column(
+        rg: &dyn parquet::file::reader::RowGroupReader,
+        key_col: usize,
+        n_records: usize,
+    ) -> Vec<Option<Vec<(String, String)>>> {
+        // key leaf: required string with def/rep levels.
+        let mut key_reader = rg.get_column_reader(key_col).expect("key reader");
+        let mut keys: Vec<ByteArray> = Vec::new();
+        let mut key_def: Vec<i16> = Vec::new();
+        let mut key_rep: Vec<i16> = Vec::new();
+        match &mut key_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                // Read a generous number of values; the records map to rows via levels.
+                r.read_records(n_records * 64 + 64, Some(&mut key_def), Some(&mut key_rep), &mut keys)
+                    .expect("read keys");
+            }
+            _ => panic!("expected byte array reader for map key"),
+        }
+        // value leaf: optional string with def/rep levels.
+        let mut val_reader = rg.get_column_reader(key_col + 1).expect("value reader");
+        let mut vals: Vec<ByteArray> = Vec::new();
+        let mut val_def: Vec<i16> = Vec::new();
+        let mut val_rep: Vec<i16> = Vec::new();
+        match &mut val_reader {
+            ColumnReader::ByteArrayColumnReader(r) => {
+                r.read_records(
+                    n_records * 64 + 64,
+                    Some(&mut val_def),
+                    Some(&mut val_rep),
+                    &mut vals,
+                )
+                .expect("read values");
+            }
+            _ => panic!("expected byte array reader for map value"),
+        }
+
+        let mut rows: Vec<Option<Vec<(String, String)>>> = Vec::new();
+        let mut key_idx = 0usize;
+        let mut val_idx = 0usize;
+        for (rec, &kd) in key_def.iter().enumerate() {
+            let rep = key_rep[rec];
+            if rep == 0 {
+                // new row
+                if kd == 0 {
+                    rows.push(None); // null map
+                    continue;
+                } else if kd == 1 {
+                    rows.push(Some(Vec::new())); // present empty map
+                    continue;
+                }
+                rows.push(Some(Vec::new()));
+            }
+            // kd == 2 → an entry in the current row.
+            let k = String::from_utf8(keys[key_idx].data().to_vec()).expect("utf8 key");
+            key_idx += 1;
+            let v = if val_def[rec] == 3 {
+                let s = String::from_utf8(vals[val_idx].data().to_vec()).expect("utf8 val");
+                val_idx += 1;
+                s
+            } else {
+                String::new()
+            };
+            rows.last_mut()
+                .expect("row")
+                .as_mut()
+                .expect("present map")
+                .push((k, v));
+        }
+        for r in rows.iter_mut().flatten() {
+            r.sort();
+        }
+        rows
+    }
+
     fn read_string_column(
         rg: &dyn parquet::file::reader::RowGroupReader,
         col: usize,
@@ -4677,9 +5174,141 @@ mod tests {
         let schema = build_gauge_schema();
         assert_eq!(
             schema.get_fields().len(),
-            17,
-            "expected 17 columns in gauge schema"
+            19,
+            "expected 19 columns in gauge schema"
         );
+    }
+
+    #[test]
+    fn test_gauge_writes_prom_name_column() {
+        // prom_name leaf column 16 (the MAP attributes occupies leaves 6+7) is the
+        // normalized name: "test.gauge" + unit "ms" → "test_gauge_milliseconds".
+        let metric = create_gauge_metric(Some(1), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let prom = read_required_string_column(&*rg, 16, 1);
+        assert_eq!(prom, vec!["test_gauge_milliseconds"]);
+    }
+
+    #[test]
+    fn test_metric_row_has_stored_series_key() {
+        // FR2: the write path materializes `prom_series_key` (leaf 17, right after
+        // prom_name at leaf 16) as the canonical series key over the data-point
+        // attributes — byte-for-byte the shared `sol_core::event::series_key`
+        // output the querier's read-side UDF computes over the same MAP entries,
+        // so write and read cannot diverge. The gauge dp carries `dp.key=dp-val`.
+        let metric = create_gauge_metric(Some(1), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let stored = read_required_string_column(&*rg, 17, 1);
+        let expected = sol_core::event::series_key::series_key(vec![(
+            "dp.key".to_string(),
+            "dp-val".to_string(),
+        )]);
+        assert_eq!(stored, vec![expected]);
+        assert_eq!(stored, vec!["dp.key=dp-val".to_string()]);
+    }
+
+    #[test]
+    fn test_attributes_written_as_map() {
+        // The common `attributes` field is a dictionary-encodable MAP<Utf8,Utf8>,
+        // not a JSON string column (promql-pushdown T6).
+        use parquet::basic::{ConvertedType, LogicalType as PqLogical};
+        let schema = build_gauge_schema();
+        let attrs = schema.get_fields()[6].clone();
+        assert!(attrs.is_group(), "attributes must be a group (MAP)");
+        assert_eq!(attrs.name(), "attributes");
+        assert_eq!(
+            attrs.get_basic_info().converted_type(),
+            ConvertedType::MAP,
+            "attributes must carry the MAP converted type"
+        );
+        assert!(matches!(
+            attrs.get_basic_info().logical_type(),
+            Some(PqLogical::Map)
+        ));
+        // repeated key_value { required key (STRING); optional value (STRING) }
+        let kv = &attrs.get_fields()[0];
+        assert_eq!(kv.name(), "key_value");
+        assert_eq!(kv.get_basic_info().repetition(), Repetition::REPEATED);
+        let key = &kv.get_fields()[0];
+        let value = &kv.get_fields()[1];
+        assert_eq!(key.name(), "key");
+        assert_eq!(value.name(), "value");
+        assert_eq!(key.get_basic_info().repetition(), Repetition::REQUIRED);
+    }
+
+    #[test]
+    fn test_attributes_map_roundtrip_read() {
+        // Round-trip: the dp attribute `dp.key=dp-val` written to the MAP column
+        // reads back as a single (raw-key, value) entry; the raw OTLP key is
+        // preserved (normalization happens on read).
+        let metric = create_gauge_metric(Some(1), None);
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let maps = read_string_map_column(&*rg, 6, 1);
+        assert_eq!(
+            maps,
+            vec![Some(vec![("dp.key".to_string(), "dp-val".to_string())])]
+        );
+    }
+
+    #[test]
+    fn test_attributes_map_handles_empty_and_null() {
+        // A data point with no attributes writes a null map (None on read).
+        let metric = create_gauge_metric(None, Some(1.0));
+        // create_gauge_metric always sets one dp attr; build a no-attr metric inline.
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        let _ = metric;
+        let proto = Metric {
+            name: "no.attr.gauge".to_string(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    time_unix_nano: 1,
+                    value: Some(NDPValue::AsInt(1)),
+                    attributes: vec![],
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+        let resource = Resource {
+            attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                key: "service.name".to_string(),
+                value: Some(string_value("svc")),
+            }],
+            ..Default::default()
+        };
+        let metric = OtelMetric::from_parts(
+            proto,
+            Some(resource),
+            None,
+            sol_core::event::EventMetadata::default(),
+        );
+        let data = write_gauge_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let maps = read_string_map_column(&*rg, 6, 1);
+        assert_eq!(maps, vec![None]);
+    }
+
+    #[test]
+    fn test_sum_monotonic_writes_prom_name_with_total() {
+        // A monotonic Sum gets `_total`: "test.sum" + unit "1" (dimensionless) +
+        // monotonic → "test_sum_total" in the prom_name column.
+        let metric = create_sum_metric(7.0, true, 2);
+        let data = write_sum_parquet(&[&metric]);
+        let reader = reader_from_bytes(&data);
+        let rg = reader.get_row_group(0).expect("row group");
+        let prom = read_required_string_column(&*rg, 16, 1);
+        assert_eq!(prom, vec!["test_sum_total"]);
     }
 
     #[test]
@@ -4695,12 +5324,12 @@ mod tests {
         let names = read_required_string_column(&*rg, 0, 1);
         assert_eq!(names, vec!["gauge-svc"]);
 
-        // Column 15: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 15, 1);
+        // Column 16: int_value (OPTIONAL INT64)
+        let int_vals = read_optional_i64_column(&*rg, 18, 1);
         assert_eq!(int_vals, vec![Some(42)]);
 
-        // Column 16: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        // Column 17: double_value (OPTIONAL DOUBLE)
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals, vec![None]);
     }
 
@@ -4711,12 +5340,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 15: int_value (OPTIONAL INT64)
-        let int_vals = read_optional_i64_column(&*rg, 15, 1);
+        // Column 16: int_value (OPTIONAL INT64)
+        let int_vals = read_optional_i64_column(&*rg, 18, 1);
         assert_eq!(int_vals, vec![None]);
 
-        // Column 16: double_value (OPTIONAL DOUBLE)
-        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        // Column 17: double_value (OPTIONAL DOUBLE)
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 42.5).abs() < 1e-10);
     }
@@ -4769,8 +5398,173 @@ mod tests {
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
 
         let rg = reader.get_row_group(0).expect("row group");
-        let int_vals = read_optional_i64_column(&*rg, 15, 2);
+        let int_vals = read_optional_i64_column(&*rg, 18, 2);
         assert_eq!(int_vals, vec![Some(10), Some(20)]);
+    }
+
+    #[test]
+    fn test_metric_rows_sorted_by_service_name_time() {
+        // Sort-on-write (task 14b): rows must come out ordered by
+        // (service_name, name, time_unix_nano) regardless of input order.
+        use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Gauge, Metric, NumberDataPoint, number_data_point::Value as NDPValue,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let gauge = |name: &str, svc: &str, times: &[u64]| {
+            let proto = Metric {
+                name: name.to_string(),
+                data: Some(Data::Gauge(Gauge {
+                    data_points: times
+                        .iter()
+                        .map(|t| NumberDataPoint {
+                            time_unix_nano: *t,
+                            value: Some(NDPValue::AsInt(1)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                })),
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelMetric::from_parts(
+                proto,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+
+        // Deliberately unsorted: later service first, names reversed, times jumbled.
+        let m_z = gauge("z.metric", "svc-a", &[3000, 1000]);
+        let m_a = gauge("a.metric", "svc-a", &[2000]);
+        let m_b = gauge("only", "svc-b", &[500]);
+
+        let rows = collect_gauge_rows(&[&m_z, &m_a, &m_b]);
+        let got: Vec<(String, &str, u64)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    extract_service_name(r.metric.resource_attrs()),
+                    r.metric.name(),
+                    r.dp.time_unix_nano,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), "a.metric", 2000),
+                ("svc-a".to_string(), "z.metric", 1000),
+                ("svc-a".to_string(), "z.metric", 3000),
+                ("svc-b".to_string(), "only", 500),
+            ],
+            "rows sorted by (service_name, name, time_unix_nano)"
+        );
+    }
+
+    #[test]
+    fn test_log_rows_sorted_by_service_name_time() {
+        // Sort-on-write: logs ordered by (service_name, time_unix_nano), absent
+        // time (0 → NULL) last, matching the reader's nulls-last order.
+        use opentelemetry_proto::tonic::logs::v1::LogRecord;
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        let log = |svc: &str, t: u64| {
+            let record = LogRecord {
+                time_unix_nano: t,
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelLog::from_parts(
+                record,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+        let a3 = log("svc-a", 3000);
+        let b1 = log("svc-b", 1000);
+        let a0 = log("svc-a", 0); // absent → last within svc-a
+        let a1 = log("svc-a", 1000);
+        let mut v: Vec<&OtelLog> = vec![&a3, &b1, &a0, &a1];
+        sort_logs(&mut v);
+        let got: Vec<(String, u64)> = v
+            .iter()
+            .map(|l| (extract_service_name(l.resource_attrs()), l.time_unix_nano()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), 1000),
+                ("svc-a".to_string(), 3000),
+                ("svc-a".to_string(), 0),
+                ("svc-b".to_string(), 1000),
+            ],
+            "logs sorted by (service_name, time); absent time last"
+        );
+    }
+
+    #[test]
+    fn test_trace_rows_sorted_by_service_name_start_time() {
+        // Sort-on-write: spans ordered by (service_name, start_time_unix_nano).
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::Span;
+        let span = |svc: &str, start: u64| {
+            let s = Span {
+                start_time_unix_nano: start,
+                end_time_unix_nano: start + 1,
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: vec![opentelemetry_proto::tonic::common::v1::KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(svc)),
+                }],
+                ..Default::default()
+            };
+            OtelSpan::from_parts(
+                s,
+                Some(resource),
+                None,
+                sol_core::event::EventMetadata::default(),
+            )
+        };
+        let b1 = span("svc-b", 1000);
+        let a3 = span("svc-a", 3000);
+        let a1 = span("svc-a", 1000);
+        let mut v: Vec<&OtelSpan> = vec![&b1, &a3, &a1];
+        sort_spans(&mut v);
+        let got: Vec<(String, u64)> = v
+            .iter()
+            .map(|s| {
+                (
+                    extract_service_name(s.resource_attrs()),
+                    s.start_time_unix_nano(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("svc-a".to_string(), 1000),
+                ("svc-a".to_string(), 3000),
+                ("svc-b".to_string(), 1000),
+            ],
+            "spans sorted by (service_name, start_time)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4836,8 +5630,8 @@ mod tests {
         let schema = build_sum_schema();
         assert_eq!(
             schema.get_fields().len(),
-            19,
-            "expected 19 columns in sum schema"
+            21,
+            "expected 21 columns in sum schema"
         );
     }
 
@@ -4849,12 +5643,12 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 17: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 17, 1);
+        // Column 18: aggregation_temporality (OPTIONAL INT32)
+        let temps = read_optional_i32_column(&*rg, 20, 1);
         assert_eq!(temps, vec![Some(2)]);
 
-        // Column 18: is_monotonic (OPTIONAL BOOLEAN)
-        let mono = read_optional_bool_column(&*rg, 18, 1);
+        // Column 19: is_monotonic (OPTIONAL BOOLEAN)
+        let mono = read_optional_bool_column(&*rg, 21, 1);
         assert_eq!(mono, vec![Some(false)]);
     }
 
@@ -4866,17 +5660,17 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 16: double_value
-        let dbl_vals = read_optional_double_column(&*rg, 16, 1);
+        // Column 17: double_value
+        let dbl_vals = read_optional_double_column(&*rg, 19, 1);
         assert_eq!(dbl_vals.len(), 1);
         assert!((dbl_vals[0].unwrap() - 99.5).abs() < 1e-10);
 
-        // Column 17: aggregation_temporality
-        let temps = read_optional_i32_column(&*rg, 17, 1);
+        // Column 18: aggregation_temporality
+        let temps = read_optional_i32_column(&*rg, 20, 1);
         assert_eq!(temps, vec![Some(1)]); // DELTA
 
-        // Column 18: is_monotonic
-        let mono = read_optional_bool_column(&*rg, 18, 1);
+        // Column 19: is_monotonic
+        let mono = read_optional_bool_column(&*rg, 21, 1);
         assert_eq!(mono, vec![Some(true)]);
     }
 
@@ -4937,8 +5731,8 @@ mod tests {
         let schema = build_histogram_schema();
         assert_eq!(
             schema.get_fields().len(),
-            22,
-            "expected 22 columns in histogram schema"
+            24,
+            "expected 24 columns in histogram schema"
         );
     }
 
@@ -4949,14 +5743,14 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 19: bucket_counts (OPTIONAL UTF8, JSON)
-        let bc = read_string_column(&*rg, 19, 1);
+        // Column 20: bucket_counts (OPTIONAL UTF8, JSON)
+        let bc = read_string_column(&*rg, 22, 1);
         assert!(bc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(bc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![10, 30, 40, 20]);
 
-        // Column 20: explicit_bounds (OPTIONAL UTF8, JSON)
-        let eb = read_string_column(&*rg, 20, 1);
+        // Column 21: explicit_bounds (OPTIONAL UTF8, JSON)
+        let eb = read_string_column(&*rg, 23, 1);
         assert!(eb[0].is_some());
         let bounds: Vec<f64> = serde_json::from_str(eb[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(bounds, vec![10.0, 100.0, 500.0]);
@@ -4969,20 +5763,20 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 15: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 15, 1);
+        // Column 16: count (REQUIRED INT64)
+        let counts = read_required_i64_column(&*rg, 18, 1);
         assert_eq!(counts, vec![100]);
 
-        // Column 16: sum (OPTIONAL DOUBLE)
-        let sums = read_optional_double_column(&*rg, 16, 1);
+        // Column 17: sum (OPTIONAL DOUBLE)
+        let sums = read_optional_double_column(&*rg, 19, 1);
         assert!((sums[0].unwrap() - 5000.0).abs() < 1e-10);
 
-        // Column 17: min (OPTIONAL DOUBLE)
-        let mins = read_optional_double_column(&*rg, 17, 1);
+        // Column 18: min (OPTIONAL DOUBLE)
+        let mins = read_optional_double_column(&*rg, 20, 1);
         assert!((mins[0].unwrap() - 1.0).abs() < 1e-10);
 
-        // Column 18: max (OPTIONAL DOUBLE)
-        let maxes = read_optional_double_column(&*rg, 18, 1);
+        // Column 19: max (OPTIONAL DOUBLE)
+        let maxes = read_optional_double_column(&*rg, 21, 1);
         assert!((maxes[0].unwrap() - 999.0).abs() < 1e-10);
     }
 
@@ -5053,8 +5847,8 @@ mod tests {
         let schema = build_exp_histogram_schema();
         assert_eq!(
             schema.get_fields().len(),
-            27,
-            "expected 27 columns in exp histogram schema"
+            29,
+            "expected 29 columns in exp histogram schema"
         );
     }
 
@@ -5065,36 +5859,36 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 19: scale (REQUIRED INT32)
-        let scales = read_required_i32_column(&*rg, 19, 1);
+        // Column 20: scale (REQUIRED INT32)
+        let scales = read_required_i32_column(&*rg, 22, 1);
         assert_eq!(scales, vec![3]);
 
-        // Column 20: zero_count (REQUIRED INT64)
-        let zc = read_required_i64_column(&*rg, 20, 1);
+        // Column 21: zero_count (REQUIRED INT64)
+        let zc = read_required_i64_column(&*rg, 23, 1);
         assert_eq!(zc, vec![2]);
 
-        // Column 22: positive_offset (OPTIONAL INT32)
-        let po = read_optional_i32_column(&*rg, 22, 1);
+        // Column 23: positive_offset (OPTIONAL INT32)
+        let po = read_optional_i32_column(&*rg, 25, 1);
         assert_eq!(po, vec![Some(1)]);
 
-        // Column 23: positive_bucket_counts (OPTIONAL UTF8, JSON)
-        let pbc = read_string_column(&*rg, 23, 1);
+        // Column 24: positive_bucket_counts (OPTIONAL UTF8, JSON)
+        let pbc = read_string_column(&*rg, 26, 1);
         assert!(pbc[0].is_some());
         let arr: Vec<u64> = serde_json::from_str(pbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(arr, vec![5, 10, 15, 20]);
 
-        // Column 24: negative_offset (OPTIONAL INT32)
-        let no = read_optional_i32_column(&*rg, 24, 1);
+        // Column 25: negative_offset (OPTIONAL INT32)
+        let no = read_optional_i32_column(&*rg, 27, 1);
         assert_eq!(no, vec![Some(-2)]);
 
-        // Column 25: negative_bucket_counts (OPTIONAL UTF8, JSON)
-        let nbc = read_string_column(&*rg, 25, 1);
+        // Column 26: negative_bucket_counts (OPTIONAL UTF8, JSON)
+        let nbc = read_string_column(&*rg, 28, 1);
         assert!(nbc[0].is_some());
         let narr: Vec<u64> = serde_json::from_str(nbc[0].as_ref().unwrap()).expect("valid json");
         assert_eq!(narr, vec![3, 7]);
 
-        // Column 26: aggregation_temporality (OPTIONAL INT32)
-        let temps = read_optional_i32_column(&*rg, 26, 1);
+        // Column 27: aggregation_temporality (OPTIONAL INT32)
+        let temps = read_optional_i32_column(&*rg, 29, 1);
         assert_eq!(temps, vec![Some(2)]);
     }
 
@@ -5160,8 +5954,8 @@ mod tests {
         let schema = build_summary_schema();
         assert_eq!(
             schema.get_fields().len(),
-            18,
-            "expected 18 columns in summary schema"
+            20,
+            "expected 20 columns in summary schema"
         );
     }
 
@@ -5172,16 +5966,16 @@ mod tests {
         let reader = reader_from_bytes(&data);
         let rg = reader.get_row_group(0).expect("row group");
 
-        // Column 15: count (REQUIRED INT64)
-        let counts = read_required_i64_column(&*rg, 15, 1);
+        // Column 16: count (REQUIRED INT64)
+        let counts = read_required_i64_column(&*rg, 18, 1);
         assert_eq!(counts, vec![200]);
 
-        // Column 16: sum (REQUIRED DOUBLE)
-        let sums = read_required_double_column(&*rg, 16, 1);
+        // Column 17: sum (REQUIRED DOUBLE)
+        let sums = read_required_double_column(&*rg, 19, 1);
         assert!((sums[0] - 10_000.0).abs() < 1e-10);
 
-        // Column 17: quantile_values (OPTIONAL UTF8, JSON)
-        let qv = read_string_column(&*rg, 17, 1);
+        // Column 18: quantile_values (OPTIONAL UTF8, JSON)
+        let qv = read_string_column(&*rg, 20, 1);
         assert!(qv[0].is_some());
         let json: serde_json::Value =
             serde_json::from_str(qv[0].as_ref().unwrap()).expect("valid json");
@@ -5269,7 +6063,7 @@ mod tests {
                 .schema()
                 .get_fields()
                 .len(),
-            17, // gauge schema has 17 columns
+            19, // gauge schema has 19 columns (incl. prom_name + prom_series_key)
         );
     }
 

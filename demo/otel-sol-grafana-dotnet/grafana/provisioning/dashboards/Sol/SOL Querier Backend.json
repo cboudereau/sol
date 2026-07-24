@@ -1,0 +1,267 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "datasource", "uid": "grafana" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Monitor the SOL query backend (DataFusion over Parquet serving Prometheus/Tempo/Loki APIs): API latency vs NFR6, cache hit rate, scan cost, S3 request limits (NFR10), guardrails (NFR9), and compaction (FR7). Metrics use the sol_querier_* / sol_objectstore_* / sol_compactor_* namespaces emitted by the query backend (planned — see docs/workspace/parquet-backend).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false },
+        "content": "SOL <b>query backend</b> self-monitoring. Metrics: <code>sol_querier_*</code> (querier), <code>sol_objectstore_*</code> (S3), <code>sol_compactor_*</code> (compaction), scraped by <code>internal_metrics</code>. Latency thresholds reflect the <b>NFR6</b> budget; memory the <b>NFR5</b> budget; throttles the <b>NFR10</b> S3 limits.",
+        "mode": "html"
+      },
+      "pluginVersion": "10.3.3",
+      "type": "text"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 2 }, "id": 10, "panels": [], "title": "Query API — latency & throughput (NFR6)", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "p95 end-to-end latency per API. NFR6 budgets (cold): full refresh <2s, rate/sum_by <300ms, histogram_quantile <600ms, trace-by-id <150ms.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.3 }, { "color": "red", "value": 2 } ] }, "unit": "s", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 3 },
+      "id": 11,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, api) (rate(sol_querier_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{api}}", "refId": "A" } ],
+      "title": "Query latency p95 by API",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Result-cache hit ratio. The 15s dashboard refresh should drive this toward 1.0 (FR5/FR8).",
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "max": 1, "min": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 0.9 } ] }, "unit": "percentunit", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 3 },
+      "id": 12,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "mean" ], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "pluginVersion": "10.3.3",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(sol_querier_cache_requests_total{cache=\"result\", result=\"hit\", service_name=~\"$service_name\"}[$__rate_interval])) / clamp_min(sum(rate(sol_querier_cache_requests_total{cache=\"result\", service_name=~\"$service_name\"}[$__rate_interval])), 1)", "legendFormat": "result cache hit", "refId": "A" } ],
+      "title": "Result-cache hit ratio",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "reqps", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 3 },
+      "id": 13,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (api, status) (rate(sol_querier_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{api}} / {{status}}", "refId": "A" } ],
+      "title": "Requests/s by API & status",
+      "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 }, "id": 20, "panels": [], "title": "Scan & resources (NFR5)", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "p95 bytes scanned per query. NFR9 guardrail rejects queries above ~1 GB (red line).",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" }, "thresholdsStyle": { "mode": "line" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1000000000 } ] }, "unit": "bytes", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "id": 21,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_querier_bytes_scanned_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "title": "Bytes scanned p95 by signal",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "p95 files opened per query — the small-files driver (C1). Should drop sharply once compaction (FR7) runs.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "short", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "id": 22,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_querier_files_opened_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "title": "Files opened p95 by signal",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Query-backend cache memory vs the NFR5 budget (256 MB default, red line). In-flight queries (right axis) track concurrency.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" }, "thresholdsStyle": { "mode": "line" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 268435456 } ] }, "unit": "bytes", "unitScale": true }, "overrides": [ { "matcher": { "id": "byName", "options": "in-flight queries" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } } ] } ] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "id": 23,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_querier_cache_memory_bytes{service_name=~\"$service_name\"})", "legendFormat": "cache memory", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(sol_querier_inflight{service_name=~\"$service_name\"})", "legendFormat": "in-flight queries", "refId": "B" }
+      ],
+      "title": "Cache memory (NFR5) & in-flight",
+      "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }, "id": 30, "panels": [], "title": "Object store / S3 (NFR10)", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Object-store requests/s by op. S3 caps ~5500 GET/s and ~3500 PUT/s per prefix (NFR10).",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "reqps", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
+      "id": 31,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (op) (rate(sol_objectstore_requests_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{op}}", "refId": "A" } ],
+      "title": "Object-store requests/s by op",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "S3 503 SlowDown throttling. Any sustained value means a prefix is over its rate limit — compaction + prefix sharding + caching should keep this at zero (NFR10).",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" }, "thresholdsStyle": { "mode": "line" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.001 } ] }, "unit": "reqps", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
+      "id": 32,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (service_name) (rate(sol_objectstore_throttled_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{service_name}} 503", "refId": "A" } ],
+      "title": "S3 503 SlowDown/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "p95 object-store request latency by op (first-byte ~tens of ms on S3).",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "s", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
+      "id": 33,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, op) (rate(sol_objectstore_request_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{op}}", "refId": "A" } ],
+      "title": "Object-store latency p95 by op",
+      "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }, "id": 40, "panels": [], "title": "Guardrails & unsupported (NFR9)", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Queries rejected by the NFR9 guardrails (range / bytes / concurrency). Sustained rejects mean dashboards exceed the configured budget.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.01 } ] }, "unit": "reqps", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+      "id": 41,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (reason) (rate(sol_querier_rejected_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A" } ],
+      "title": "Guardrail rejects/s by reason",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Unsupported query constructs hit (deferred ⛔/⚠️ per QUERY-MAPPING). Shows what users actually need — prioritises future support.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "reqps", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
+      "id": 42,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (lang, construct) (rate(sol_querier_unsupported_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "{{lang}}: {{construct}}", "refId": "A" } ],
+      "title": "Unsupported constructs/s",
+      "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 }, "id": 50, "panels": [], "title": "Compactor (FR7)", "type": "row" },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Files merged: input (raw small files) vs output (compacted). The gap is the small-files reduction that bounds query latency & S3 GET rate.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "short", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 39 },
+      "id": 51,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_input_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "input {{signal}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_files_output_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "output {{signal}}", "refId": "B" }
+      ],
+      "title": "Compaction files in vs out /s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "p95 compaction run duration by signal.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "s", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 39 },
+      "id": 52,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, signal) (rate(sol_compactor_duration_seconds_bucket{service_name=~\"$service_name\"}[$__rate_interval])))", "legendFormat": "p95 {{signal}}", "refId": "A" } ],
+      "title": "Compaction duration p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Compactor lag behind the sealed-day boundary. High lag = compaction falling behind ingest (small files accumulate, query latency rises).",
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 3600 }, { "color": "red", "value": 7200 } ] }, "unit": "s", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 39 },
+      "id": 54,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "pluginVersion": "10.3.3",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(sol_compactor_lag_seconds{service_name=~\"$service_name\"})", "legendFormat": "max lag", "refId": "A" } ],
+      "title": "Compactor lag (sealed boundary)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Rollup rows produced per resolution (FR6) and retention-GC deletions per signal.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "scaleDistribution": { "type": "linear" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "short", "unitScale": true }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 47 },
+      "id": 53,
+      "options": { "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (resolution) (rate(sol_compactor_rollup_rows_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "rollup {{resolution}} rows/s", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (signal) (rate(sol_compactor_retention_deleted_total{service_name=~\"$service_name\"}[$__rate_interval]))", "legendFormat": "deleted {{signal}} files/s", "refId": "B" }
+      ],
+      "title": "Rollup rows/s & retention deletions/s",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": [ "sol", "querier-backend", "observability" ],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Mimir", "value": "mimir" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": { "selected": true, "text": [ "All" ], "value": [ "$__all" ] },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values({__name__=~\"sol_(querier|compactor)_.*\"}, service_name)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Service name",
+        "multi": true,
+        "name": "service_name",
+        "options": [],
+        "query": { "qryType": 1, "query": "label_values({__name__=~\"sol_(querier|compactor)_.*\"}, service_name)" },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "SOL Querier Backend",
+  "uid": "sol-querier-backend",
+  "version": 1,
+  "weekStart": ""
+}

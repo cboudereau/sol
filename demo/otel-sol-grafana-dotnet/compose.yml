@@ -31,6 +31,7 @@ services:
     command: ["--config", "/etc/sol/sol-collector.yaml"]
     volumes:
       - ./sol/sol-collector.yaml:/etc/sol/sol-collector.yaml:ro
+      - parquet-data:/data/parquet:rw
     networks:
       - bridge
     depends_on:
@@ -121,7 +122,7 @@ services:
       # https://github.com/dotnet/runtime/issues/68967
       # https://www.meziantou.net/round-robin-dns-support-in-dotnet-httpclient.htm
       # https://learn.microsoft.com/en-us/aspnet/core/grpc/loadbalancing?view=aspnetcore-8.0#configure-grpc-client-side-load-balancing
-      replicas: 1
+      replicas: 2
       resources:
         limits:
           memory: 300M
@@ -176,10 +177,54 @@ services:
       - parquet-data:/data/parquet:ro
     networks:
       - bridge
-    profiles:
-      - parquet
+
+  # Sol-as-backend: serves Prometheus/Tempo/Loki + SQL over the gateway's
+  # Parquet (read-only), alongside Mimir/Tempo/Loki for side-by-side compare.
+  sol-querier:
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    command: ["--config", "/etc/sol/sol-querier.yaml"]
+    volumes:
+      - ./sol/sol-querier.yaml:/etc/sol/sol-querier.yaml:ro
+      - parquet-data:/data/parquet:ro
+    # DataFusion scans open many Parquet files at once; the default 1024 soft
+    # limit (EMFILE in the accept loop) is far too low for thousands of files.
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    networks:
+      - bridge
+    depends_on:
+      - mimir
+
+  # Sol compactor (singleton role): seals sealed-day partitions, builds rollup
+  # tiers, runs retention GC. The only writer of compacted/rollup files (rw);
+  # queriers stay read-only.
+  sol-compactor:
+    image: ${SOL_IMAGE:-superbeeeeeee/sol:latest}
+    command: ["--config", "/etc/sol/sol-compactor.yaml"]
+    volumes:
+      - ./sol/sol-compactor.yaml:/etc/sol/sol-compactor.yaml:ro
+      - parquet-data:/data/parquet:rw
+    # Sort-merge compaction opens every input file in a partition at once.
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    networks:
+      - bridge
+    depends_on:
+      - mimir
 
 volumes:
+  # NAMING CUTOVER (backend-metrics-perf task 1b, per-query-file-pruning ADR
+  # A′): the gateway Parquet sink now names each batch file with its exact
+  # event-time bounds — `<min_ns>-<max_ns>-<uuid>.parquet` — instead of the old
+  # `HH-MM-SS-<uuid>.parquet`. Rolling this out requires WIPING this volume so
+  # no pre-cutover files remain: `docker compose down -v` (or
+  # `docker volume rm <project>_parquet-data`) before the first `up` on the new
+  # image. Legacy names still parse (conservative fallback), so a wipe is not
+  # strictly required for correctness — but it is the sanctioned clean cutover.
   parquet-data:
 
 networks:

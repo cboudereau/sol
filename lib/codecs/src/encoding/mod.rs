@@ -10,7 +10,7 @@ pub mod serializer;
 mod transformer;
 pub use chunking::{Chunker, Chunking, GelfChunker};
 pub use config::{EncodingConfig, EncodingConfigWithFraming, SinkType};
-pub use encoder::{BatchEncoder, BatchSerializer, Encoder, EncoderKind};
+pub use encoder::{BatchEncoder, BatchSerializer, EncodedFile, Encoder, EncoderKind};
 #[cfg(feature = "arrow")]
 pub use format::{
     ArrowEncodingError, ArrowStreamSerializer, ArrowStreamSerializerConfig, SchemaProvider,

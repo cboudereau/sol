@@ -13,6 +13,13 @@ sources:
       service.name: sol/collector
       service.namespace: collector
 
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 15
+    namespace: ""
+    resource_attributes:
+      service.name: sol-collector
+
 transforms:
   tail_sampling:
     type: tail_sampling
@@ -44,6 +51,12 @@ transforms:
             values: [4..]
             enabled_regex_matching: true
             invert_match: true
+  promote_host_metrics_attrs:
+    type: remap
+    inputs: ["host_metrics"]
+    source: |
+      .attributes.job = .resource.attributes."service.name"
+      .name = "node_" + string!(.name)
 
   span_metrics:
     type: span_metrics
@@ -63,14 +76,18 @@ transforms:
       ttl_secs: 2
       max_items: 1000
 
-  promote_self_metrics_attrs:
-    type: remap
-    inputs: ["self_metrics"]
-    source: |
-      .attributes."service.name" = .resource.attributes."service.name"
-      .attributes."service.namespace" = .resource.attributes."service.namespace"
-
 sinks:
+  parquet_traces:
+    type: file
+    inputs: ["tail_sampling"]
+    path: "/data/parquet/traces/dt=%Y-%m-%d/%H-%M-%S.parquet"
+    batch_encoding:
+      codec: parquet
+      compression: zstd
+    batch:
+      max_events: 5000
+      timeout_secs: 30
+
   otlp_tempo:
     type: opentelemetry
     inputs: ["tail_sampling"]
@@ -97,10 +114,10 @@ sinks:
 
   otlp_self_metrics:
     type: opentelemetry
-    inputs: ["promote_self_metrics_attrs"]
+    inputs: ["self_metrics", "promote_host_metrics_attrs"]
     protocol:
-      type: http
-      endpoint: "http://mimir:9009/otlp"
+      type: grpc
+      endpoint: "http://sol-gateway:4317"
       batch:
         max_events: 1000
         timeout_secs: 15
